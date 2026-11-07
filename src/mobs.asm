@@ -6,7 +6,7 @@ default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
 global mob_spawn, mobs_raycast, mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
-global mobs_save, mobs_load
+global mobs_save, mobs_load, yaw_from
 
 extern body_init, body_step, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
