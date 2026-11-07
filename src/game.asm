@@ -637,9 +637,14 @@ game_frame:
     mov     edi, r12d
     mov     esi, eax
     call    item_break_time
+    movss   xmm1, [f_one]               ; zero break time (TNT): broken at once, no dt/0
+    xorps   xmm2, xmm2
+    comiss  xmm0, xmm2
+    jbe     .progress
     movss   xmm1, [rsp + F_DT]
     divss   xmm1, xmm0
     addss   xmm1, [game_break_progress]
+.progress:
     movss   [game_break_progress], xmm1
     movss   xmm0, [crack_timer]
     subss   xmm0, [rsp + F_DT]

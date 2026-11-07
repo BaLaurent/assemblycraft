@@ -117,6 +117,12 @@ test_game_save_load_roundtrip:
     call    file_unlink
     mov     eax, 1
 .ret:
+    mov     ebx, eax                    ; leave no container records to later tests
+    lea     rdi, [world_header + WORLDHDR.containers]
+    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    xor     eax, eax
+    rep     stosb
+    mov     eax, ebx
     add     rsp, 8
     pop     rbx
     pop     rbp
