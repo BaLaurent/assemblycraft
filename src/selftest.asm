@@ -13,6 +13,14 @@ extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
 extern test_raycast_hit_forward, test_raycast_miss_beyond_reach, test_raycast_hit_from_above
 extern test_physics_land_on_floor, test_physics_wall_blocks
 extern test_physics_jump_clears_one_block, test_body_intersects_block
+extern test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_log
+extern test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
+extern test_fall_damage, test_exhaustion_drains, test_regen_when_fed
+extern test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
+extern test_saves_sanitize_name, test_saves_scan_rename_delete
+extern test_settings_roundtrip, test_settings_clamps_bad_values
+extern test_mob_raycast_hits, test_mob_hurt_pig_drops_food, test_zombie_attacks_player
+extern test_mob_spawn_rules
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -42,6 +50,26 @@ tests:
     TEST physics_wall_blocks
     TEST physics_jump_clears_one_block
     TEST body_intersects_block
+    TEST inv_add_merges
+    TEST inv_right_click_split
+    TEST craft_planks_from_log
+    TEST craft_tool_shapes
+    TEST craft_shift_click_all
+    TEST break_time_rules
+    TEST fall_damage
+    TEST exhaustion_drains
+    TEST regen_when_fed
+    TEST damage_invulnerability
+    TEST starvation_floor
+    TEST sky_day_cycle
+    TEST saves_sanitize_name
+    TEST saves_scan_rename_delete
+    TEST settings_roundtrip
+    TEST settings_clamps_bad_values
+    TEST mob_raycast_hits
+    TEST mob_hurt_pig_drops_food
+    TEST zombie_attacks_player
+    TEST mob_spawn_rules
     dq 0
 
 section .rodata
@@ -63,6 +91,26 @@ section .rodata
     TESTNAME physics_wall_blocks
     TESTNAME physics_jump_clears_one_block
     TESTNAME body_intersects_block
+    TESTNAME inv_add_merges
+    TESTNAME inv_right_click_split
+    TESTNAME craft_planks_from_log
+    TESTNAME craft_tool_shapes
+    TESTNAME craft_shift_click_all
+    TESTNAME break_time_rules
+    TESTNAME fall_damage
+    TESTNAME exhaustion_drains
+    TESTNAME regen_when_fed
+    TESTNAME damage_invulnerability
+    TESTNAME starvation_floor
+    TESTNAME sky_day_cycle
+    TESTNAME saves_sanitize_name
+    TESTNAME saves_scan_rename_delete
+    TESTNAME settings_roundtrip
+    TESTNAME settings_clamps_bad_values
+    TESTNAME mob_raycast_hits
+    TESTNAME mob_hurt_pig_drops_food
+    TESTNAME zombie_attacks_player
+    TESTNAME mob_spawn_rules
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

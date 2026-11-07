@@ -254,7 +254,7 @@ The symbols are `block_flags`, `block_tiles`, `block_hardness`, `block_tool`, `b
 ||`survival_eat_step`|`(edi rmb_held)→eax` 1 on the step an item is eaten|
 ||`survival_can_sprint`|`()→eax`|
 |`sky.asm` (W5)|`sky_brightness`|`(edi time)→xmm0`|
-||`sky_color`|`(edi time, rdi out float[3])`|
+||`sky_color`|`(edi time, rsi out float[3])`|
 ||`sky_angle`|`(edi time)→xmm0` degrees|
 ||`sky_is_night`|`(edi time)→eax`|
 |`mobs.asm` (W6)|`mobs` (`MAX_MOBS×MOB`), `mob_count_type`|`(edi type)→eax`|
