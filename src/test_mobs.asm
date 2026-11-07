@@ -206,6 +206,7 @@ test_zombie_attacks_player:
     call    world_clear
     call    fixture
     call    reset_player
+    mov     dword [game_time], 40000    ; night: the zombie must not burn during the test
     SETF    [player + BODY.x], 16.5
     SETF    [player + BODY.y], 11.0
     SETF    [player + BODY.z], 16.5
@@ -226,6 +227,10 @@ test_zombie_attacks_player:
     dec     ebx
     jnz     .again
     cmp     dword [surv + SURVIVAL.health], 17   ; the 60-step cooldown holds
+    jne     .fail
+    mov     edi, MOB_ZOMBIE                      ; ...and the zombie is still there
+    call    mob_count_type
+    cmp     eax, 1
     jne     .fail
     xor     ebx, ebx
     jmp     .ret
