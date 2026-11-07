@@ -28,7 +28,7 @@ extern test_arrow_hits_mob, test_explosion_breaks_blocks, test_creeper_explodes
 extern test_skeleton_shoots_player, test_mob_drops_by_type
 extern test_gun_reload_fills_magazine, test_gun_fire_cooldown_and_dry
 extern test_shotgun_spawns_six_pellets, test_bullet_hits_mob_and_stops
-extern test_rocket_explodes_on_impact
+extern test_rocket_explodes_on_impact, test_rifle_kills_zombie_point_blank
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -97,6 +97,7 @@ tests:
     TEST shotgun_spawns_six_pellets
     TEST bullet_hits_mob_and_stops
     TEST rocket_explodes_on_impact
+    TEST rifle_kills_zombie_point_blank
     TEST game_save_load_roundtrip
     TEST drops_fall_and_pickup
     dq 0
@@ -159,6 +160,7 @@ section .rodata
     TESTNAME shotgun_spawns_six_pellets
     TESTNAME bullet_hits_mob_and_stops
     TESTNAME rocket_explodes_on_impact
+    TESTNAME rifle_kills_zombie_point_blank
     TESTNAME game_save_load_roundtrip
     TESTNAME drops_fall_and_pickup
 s_ok:     db "ok ", 0

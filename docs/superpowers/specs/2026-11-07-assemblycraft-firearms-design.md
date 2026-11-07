@@ -215,7 +215,7 @@ Same as the 0.3 spec (`2026-11-07-assemblycraft-content-design.md`, section Conv
   3. Check: (8,14,8) and (8,13,8) are AIR, and no projectile is live.
 - **`[settings_reload_key_default]`:** a settings file without `key_reload` loads with `keys[BIND_RELOAD] == 82`. After `key_reload=75`, it loads 75.
 
-Total after this work: 59 tests. The 0.3 suite had 53; this adds the settings test and the five firearm tests.
+Total after this work: 60 tests. The 0.3 suite had 53; this adds the settings test and six firearm tests (the sixth, `[rifle_kills_zombie_point_blank]`, fires four Kalashnikov rounds at a zombie 1.0 and 0.2 blocks ahead and expects it dead).
 
 ## Execution plan
 

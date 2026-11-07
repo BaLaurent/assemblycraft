@@ -4,12 +4,12 @@ default rel
 
 global test_gun_reload_fills_magazine, test_gun_fire_cooldown_and_dry
 global test_shotgun_spawns_six_pellets, test_bullet_hits_mob_and_stops
-global test_rocket_explodes_on_impact
+global test_rocket_explodes_on_impact, test_rifle_kills_zombie_point_blank
 
 extern gun_reset, gun_reload_start, gun_step, gun_fire, gun_reload, gun_cooldown
 extern arrows, arrows_clear, arrows_spawn, arrows_step
 extern inv, inv_sel, inv_clear, game_mode, settings, game_time
-extern mobs, mobs_clear, mob_spawn, rng_seed, tnt_clear, drops_clear
+extern mobs, mobs_clear, mob_spawn, mob_count_type, rng_seed, tnt_clear, drops_clear
 extern world_clear, world_set, world_get, survival_reset
 
 %define STK(id, n, dmg) ((id) | ((n) << 8) | ((dmg) << 16))
@@ -27,6 +27,9 @@ k_8_5:    dd 8.5
 k_20:     dd 20.0
 k_m90:    dd -90.0
 k_m25:    dd -25.0
+; zombie centres in front of the eye (z = 16.5): 1.0 ahead, and 0.2 ahead with the zombie
+; overlapping the player so the muzzle (0.3 ahead) starts inside its box
+zombie_z: dd 15.5, 16.3
 
 section .text
 
@@ -413,6 +416,64 @@ test_rocket_explodes_on_impact:
     mov     eax, 1
 .ret:
     call    cleanup
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Four Kalashnikov rounds (4 x 6 >= 20) kill a zombie straight ahead at point blank, both
+; 1 block in front and pressed against the player with the muzzle inside its box. Between
+; shots the cooldown runs out and the bullets fly.
+test_rifle_kills_zombie_point_blank:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    xor     r13d, r13d                  ; case: zombie_z index
+.case:
+    call    setup
+    mov     dword [game_time], 40000    ; night: no sunburn to help
+    mov     dword [HELD], STK(KALASHNIKOV, 1, 30)
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11]
+    lea     rax, [zombie_z]
+    movss   xmm2, [rax + r13*4]
+    call    mob_spawn
+    test    eax, eax
+    js      .fail
+    mov     ebx, 4                      ; shots
+.shot:
+    call    fire
+    cmp     eax, 1
+    jne     .fail
+    mov     r12d, 6                     ; the rifle's cooldown, the bullets in flight
+.step:
+    call    arrows_step
+    call    gun_step
+    dec     r12d
+    jnz     .step
+    dec     ebx
+    jnz     .shot
+    mov     edi, MOB_ZOMBIE
+    call    mob_count_type
+    test    eax, eax
+    jnz     .fail
+    cmp     word [HELD + ITEMSTACK.dmg], 26
+    jne     .fail
+    inc     r13d
+    cmp     r13d, 2
+    jb      .case
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    call    cleanup
+    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
