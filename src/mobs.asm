@@ -11,7 +11,7 @@ extern body_init, body_step, body_intersects_block, player
 extern rng_next, sincos_deg, atan2_deg
 extern world_top_y, world_get
 extern sky_brightness, sky_is_night
-extern survival_damage, surv, inv_add, audio_play_at
+extern survival_damage, surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
 
 %define ZOMBIE_CAP    8                 ; zombies the spawner keeps alive
@@ -41,6 +41,7 @@ c_aggro2:   dd 576.0                    ; zombies notice the player within 24 bl
 c_reach2:   dd 2.89                     ; zombie hit range 1.7 blocks, squared
 c_far2:     dd 9216.0                   ; zombies further than 96 blocks vanish
 c_kb:       dd 6.0                      ; knockback speed
+c_drop_dy:  dd 0.4                      ; porkchops pop out at mid-body height
 c_tiny:     dd 0.0001
 c_day:      dd 0.8                      ; brightness at which zombies burn
 c_vol_say:  dd 0.7
@@ -765,13 +766,18 @@ mob_hurt:
     jg      .yes
     cmp     dword [rbx + MOB.type], MOB_PIG
     jne     .remove
-    call    rng_next                    ; raw porkchop x (1 + rng % 3)
+    call    rng_next                    ; raw porkchop x (1 + rng % 3), dropped where it died
     xor     edx, edx
     mov     ecx, 3
     div     ecx
     mov     edi, PORKCHOP
     lea     esi, [rdx + 1]
-    call    inv_add
+    xor     edx, edx
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_drop_dy]
+    movss   xmm2, [rbx + BODY.z]
+    call    drops_spawn
 .remove:
     mov     dword [rbx + MOB.type], MOB_NONE
 .yes:

@@ -600,6 +600,11 @@ texgen_build:
     call    shade
     TILE_END
 
+    ; ---- 70 player skin (the first-person arm) ----
+    TILE_BEGIN TILE_PLAYER_SKIN
+    NOISE_PIXEL RGB(198,150,112), 224, 31
+    TILE_END
+
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
 .font_glyph:

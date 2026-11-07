@@ -83,6 +83,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_ZOMBIE_PANTS  67
 %define TILE_PIG_SKIN      68
 %define TILE_PIG_FACE      69
+%define TILE_PLAYER_SKIN   70
 %define FONT_Y             192          ; glyph rows at atlas y 192..239, x 0..127
 
 ; ---- save file ------------------------------------------------------------
@@ -113,6 +114,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MOB_ZOMBIE      1
 %define MOB_PIG         2
 %define MAX_MOBS        32
+%define MAX_DROPS       64              ; item entities lying in the world
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
 %define SLOTREF_GRID    36              ; grid cell c = 36 + c (c 0..8, 3 wide)
@@ -400,6 +402,21 @@ struc SFXLAYER
     .amp:    resd 1
     .vdepth: resd 1
     .vrate:  resd 1
+endstruc
+
+; an item entity lying in the world (not saved with the world)
+struc DROP
+    .x:     resd 1                      ; floats, .y = bottom
+    .y:     resd 1
+    .z:     resd 1
+    .vx:    resd 1
+    .vy:    resd 1
+    .vz:    resd 1
+    .age:   resd 1                      ; steps since spawn
+    .delay: resd 1                      ; steps before it can be picked up
+    .id:    resb 1                      ; 0 = free slot
+    .count: resb 1
+    .dmg:   resw 1
 endstruc
 
 struc VERTEX

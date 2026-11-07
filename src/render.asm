@@ -1,16 +1,17 @@
 ; render.asm - texture atlas, chunk VBOs and the world pass: sky colour, sun and moon,
-; distance fog, night darkening (texture unit 1), chunks, mobs, crack overlay and the
-; target outline. render_box is the textured box primitive shared with mobrender.asm.
+; distance fog, night darkening (texture unit 1), chunks, mobs, dropped items, crack
+; overlay and the target outline. render_box is the textured box primitive shared with
+; mobrender.asm, itemmodel.asm and hand.asm; the CPU copy of the atlas is exported too.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global render_init, render_update_chunks, render_world, render_box, tex_id
+global render_init, render_update_chunks, render_world, render_box, tex_id, atlas
 
 extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
-extern mobs_render
+extern mobs_render, drops_render
 
 section .rodata
 align 8
@@ -562,6 +563,7 @@ render_world:
     xor     esi, esi
     call    glBindBuffer
     call    mobs_render
+    call    drops_render
 
     ; ---- target block: crack overlay, then the outline -------------------------
     cmp     dword [game_has_target], 0

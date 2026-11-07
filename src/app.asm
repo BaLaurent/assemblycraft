@@ -21,6 +21,7 @@ extern screen_settings, screen_controls, screen_pause, screen_inventory
 extern screen_crafting, screen_death, screen_loading
 extern audio_update, player, body_init, world_generate, world_top_y, world_header
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
+extern hand_render, drops_clear
 
 section .rodata
 s_loading:    db "Loading world...", 0
@@ -316,6 +317,7 @@ load_panorama:
     mov     edi, PANORAMA_SEED
     call    world_generate
     call    mobs_clear
+    call    drops_clear
     mov     dword [game_time], NEW_WORLD_TIME
     mov     dword [game_has_target], 0
     mov     dword [game_break_progress], 0
@@ -544,10 +546,12 @@ update_state:
     pop     rbp
     ret
 
-; draw_frame(): world, HUD, then the current state's screen
+; draw_frame(): world, held item, HUD, then the current state's screen
 draw_frame:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
     mov     rdi, [app_window]
     lea     rsi, [fb_w]
     lea     rdx, [fb_h]
@@ -564,21 +568,30 @@ draw_frame:
     mov     esi, [fb_w]
     mov     edx, [fb_h]
     call    render_world
+    xor     ebx, ebx                    ; ebx = 1: in-world screen with hand and HUD
+    cmp     dword [app_in_world], 0
+    je      .ui
+    mov     eax, [app_state]
+    cmp     eax, ST_PLAYING
+    je      .in_view
+    cmp     eax, ST_PAUSED
+    je      .in_view
+    cmp     eax, ST_INVENTORY
+    je      .in_view
+    cmp     eax, ST_CRAFTING
+    jne     .ui
+.in_view:
+    mov     ebx, 1
+    mov     edi, [fb_w]
+    mov     esi, [fb_h]
+    movss   xmm0, [frame_dt]
+    call    hand_render
+.ui:
     mov     edi, [fb_w]
     mov     esi, [fb_h]
     call    ui_begin
-    cmp     dword [app_in_world], 0
-    je      .screen
-    mov     eax, [app_state]
-    cmp     eax, ST_PLAYING
-    je      .hud
-    cmp     eax, ST_PAUSED
-    je      .hud
-    cmp     eax, ST_INVENTORY
-    je      .hud
-    cmp     eax, ST_CRAFTING
-    jne     .screen
-.hud:
+    test    ebx, ebx
+    jz      .screen
     call    hud_draw
 .screen:
     mov     eax, [app_state]
@@ -589,6 +602,8 @@ draw_frame:
     jz      .ret
     call    rax
 .ret:
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 

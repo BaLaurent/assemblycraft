@@ -10,7 +10,7 @@ global game_new, game_load, game_save, game_frame, game_respawn
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
 extern player, player_spawn, body_step, player_look, player_eye, player_forward
 extern body_intersects_block, raycast, frame_input, settings
-extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_add, inv_held
+extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_held
 extern inv_consume_held, inv_damage_held, inv_find_hotbar
 extern item_break_time, item_harvest_drop, item_attack_damage
 extern item_tool, item_food, item_max_stack
@@ -20,6 +20,7 @@ extern survival_can_sprint, survival_exhaust
 extern mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
 extern mobs_intersect_block, mobs_save, mobs_load
 extern audio_play, rng_next, str_copy
+extern drops_clear, drops_spawn, drops_step, hand_swing
 
 section .rodata
 align 4
@@ -29,6 +30,8 @@ reach_surv:   dd 4.5
 reach_crea:   dd 5.0
 mob_reach:    dd 3.5
 f_one:        dd 1.0
+f_half:       dd 0.5
+f_quarter:    dd 0.25
 f_hundred:    dd 100.0
 f_step_len:   dd 1.6
 vol_step:     dd 0.35
@@ -117,6 +120,7 @@ game_new:
 .no_kit:
     mov     dword [inv_sel], 0
     call    mobs_clear
+    call    drops_clear
     call    mobs_populate
     call    reset_session
     add     rsp, 8
@@ -223,6 +227,7 @@ game_load:
     jb      .slot
     mov     rdi, rbx
     call    mobs_load
+    call    drops_clear
     call    reset_session
     xor     eax, eax
 .ret:
@@ -465,6 +470,7 @@ game_frame:
     mov     dword [game_break_progress], 0
     cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     je      .place
+    call    hand_swing
     call    held_id
     mov     edi, eax
     call    item_attack_damage
@@ -498,6 +504,10 @@ game_frame:
     jmp     .place
 
 .blocks:
+    cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
+    je      .no_swing
+    call    hand_swing                  ; a click swings even at thin air
+.no_swing:
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .survival_break
 
@@ -565,6 +575,7 @@ game_frame:
     movss   [break_cooldown], xmm0
     jmp     .place
 .dig:
+    call    hand_swing                  ; keep swinging while digging
     call    held_id
     mov     edi, r12d
     mov     esi, eax
@@ -611,11 +622,18 @@ game_frame:
     lea     rsi, [block_dig_sound]
     movss   xmm0, [f_one]
     call    play_block_sound
-    test    ebx, ebx
+    test    ebx, ebx                    ; the harvest pops out of the block
     jz      .no_drop
+    cvtsi2ss xmm0, dword [game_target + RAYHIT.bx]
+    addss   xmm0, [f_half]
+    cvtsi2ss xmm1, dword [game_target + RAYHIT.by]
+    addss   xmm1, [f_quarter]
+    cvtsi2ss xmm2, dword [game_target + RAYHIT.bz]
+    addss   xmm2, [f_half]
     mov     edi, ebx
     mov     esi, 1
-    call    inv_add
+    xor     edx, edx
+    call    drops_spawn
 .no_drop:
     mov     edi, 2
     mov     esi, 1
@@ -697,6 +715,7 @@ game_frame:
     lea     rsi, [block_dig_sound]
     movss   xmm0, [vol_place]
     call    play_block_sound
+    call    hand_swing
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .pick
     mov     edi, 1
@@ -822,6 +841,7 @@ sim_step:
     call    play_block_sound
 .mobs:
     call    mobs_step
+    call    drops_step
     inc     dword [game_time]
     add     rsp, 56
     pop     rbx

@@ -5,14 +5,14 @@
 default rel
 
 global inv, inv_sel, craft_size
-global inv_clear, inv_set_creative_default, inv_add, inv_room_for, inv_held
+global inv_clear, inv_set_creative_default, inv_add, inv_add_dmg, inv_room_for, inv_held
 global inv_consume_held, inv_damage_held, inv_find_hotbar, inv_click
 global inv_close_screen, craft_update
 global item_break_time, item_harvest_drop, item_attack_damage
 
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack
 extern block_hardness, block_tool, block_needs_tool, block_drop
-extern audio_play
+extern audio_play, drops_toss
 
 %define CURSOR_COUNT (INVENTORY.cursor + 1)
 %define RESULT_COUNT (INVENTORY.result + 1)
@@ -144,6 +144,8 @@ add_range:
 ; inv_add(edi id, esi count) -> eax leftover that did not fit
 inv_add:
     xor     edx, edx
+; inv_add_dmg(edi id, esi count, edx dmg) -> eax leftover (damaged tools never merge)
+inv_add_dmg:
     xor     ecx, ecx
     mov     r8d, INV_SLOTS
     jmp     add_range
@@ -385,7 +387,8 @@ craft_consume:
     pop     rbp
     ret
 
-; return_stack(rdi ITEMSTACK*) - adds the stack to the inventory (overflow is lost), clears it
+; return_stack(rdi ITEMSTACK*) - adds the stack to the inventory, tosses what does not fit
+; in front of the player, clears it
 return_stack:
     push    rbp
     mov     rbp, rsp
@@ -397,9 +400,13 @@ return_stack:
     movzx   edi, byte [rbx]
     movzx   esi, byte [rbx + 1]
     movzx   edx, word [rbx + 2]
-    xor     ecx, ecx
-    mov     r8d, INV_SLOTS
-    call    add_range
+    call    inv_add_dmg
+    test    eax, eax
+    jz      .z
+    movzx   edi, byte [rbx]
+    mov     esi, eax
+    movzx   edx, word [rbx + 2]
+    call    drops_toss
 .z:
     mov     dword [rbx], 0
     add     rsp, 8

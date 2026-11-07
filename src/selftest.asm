@@ -20,7 +20,7 @@ extern test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
 extern test_saves_sanitize_name, test_saves_scan_rename_delete
 extern test_settings_roundtrip, test_settings_clamps_bad_values
 extern test_mob_raycast_hits, test_mob_hurt_pig_drops_food, test_zombie_attacks_player
-extern test_mob_spawn_rules, test_game_save_load_roundtrip
+extern test_mob_spawn_rules, test_game_save_load_roundtrip, test_drops_fall_and_pickup
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -71,6 +71,7 @@ tests:
     TEST zombie_attacks_player
     TEST mob_spawn_rules
     TEST game_save_load_roundtrip
+    TEST drops_fall_and_pickup
     dq 0
 
 section .rodata
@@ -113,6 +114,7 @@ section .rodata
     TESTNAME zombie_attacks_player
     TESTNAME mob_spawn_rules
     TESTNAME game_save_load_roundtrip
+    TESTNAME drops_fall_and_pickup
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

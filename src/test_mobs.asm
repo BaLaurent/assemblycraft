@@ -8,6 +8,7 @@ global test_zombie_attacks_player, test_mob_spawn_rules
 extern mobs, mobs_clear, mobs_step, mob_spawn, mobs_raycast, mob_hurt, mob_count_type
 extern player, body_init, rng_seed, world_clear, world_set, world_mark_all_dirty, blocks
 extern game_mode, game_time, settings, surv, survival_reset, inv, inv_clear
+extern drops, drops_clear
 
 section .rodata
 align 4
@@ -142,6 +143,7 @@ test_mob_hurt_pig_drops_food:
     call    world_clear
     call    fixture
     call    inv_clear
+    call    drops_clear
     SPAWN   MOB_PIG, k_5_5, k_5_5
     test    eax, eax
     js      .fail
@@ -179,13 +181,14 @@ test_mob_hurt_pig_drops_food:
     jne     .fail
     cmp     dword [r12 + MOB.type], MOB_NONE
     jne     .fail
-    movzx   eax, byte [inv + INVENTORY.slots + ITEMSTACK.id]
-    cmp     eax, PORKCHOP
+    cmp     byte [drops + DROP.id], PORKCHOP ; dropped on the ground, not in the inventory
     jne     .fail
-    movzx   eax, byte [inv + INVENTORY.slots + ITEMSTACK.count]
+    movzx   eax, byte [drops + DROP.count]
     dec     eax
     cmp     eax, 2                      ; 1..3
     ja      .fail
+    cmp     byte [inv + INVENTORY.slots + ITEMSTACK.count], 0
+    jne     .fail
     xor     ebx, ebx
     jmp     .ret
 .fail:
