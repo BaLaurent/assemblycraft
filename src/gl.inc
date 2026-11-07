@@ -8,7 +8,7 @@ extern glfwWindowShouldClose, glfwPollEvents, glfwGetTime, glfwSwapBuffers
 extern glfwGetFramebufferSize, glfwSetWindowTitle
 extern glfwGetKey, glfwGetMouseButton, glfwGetCursorPos, glfwSetInputMode
 extern glfwRawMouseMotionSupported, glfwSetScrollCallback
-extern glfwSetKeyCallback, glfwSetCharCallback, glfwGetKeyName
+extern glfwSetKeyCallback, glfwSetCharCallback, glfwGetKeyName, glfwSetMouseButtonCallback
 extern glfwGetWindowSize, glfwGetWindowPos, glfwGetWindowAttrib
 extern glfwGetPrimaryMonitor, glfwGetVideoMode, glfwSetWindowMonitor, glfwSetWindowShouldClose
 

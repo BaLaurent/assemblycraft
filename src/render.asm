@@ -1,37 +1,53 @@
-; render.asm - texture atlas, chunk VBOs, world pass, target outline and HUD.
+; render.asm - texture atlas, chunk VBOs and the world pass: sky colour, sun and moon,
+; distance fog, night darkening (texture unit 1), chunks, mobs, crack overlay and the
+; target outline. render_box is the textured box primitive shared with mobrender.asm.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global render_init, render_update_chunks, render_frame, tex_id
+global render_init, render_update_chunks, render_world, render_box, tex_id
 
-extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty, block_tiles
-extern player, player_eye, hotbar, hotbar_sel, game_target, game_has_target
+extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty
+extern game_target, game_has_target, game_time, game_break_progress
+extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
+extern mobs_render
 
 section .rodata
 align 8
-d_hh:      dq 0.035010377               ; 0.05 * tan(35 deg): 70 deg vertical FOV
-d_near:    dq 0.05
-d_far:     dq 300.0
-d_one:     dq 1.0
-d_mone:    dq -1.0
+d_near:     dq 0.05
+d_far:      dq 300.0
 align 4
 f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units
-f_zero:    dd 0.0
-f_one:     dd 1.0
-f_two:     dd 2.0
-f_half:    dd 0.5
-f_fog_start: dd 80.0
-f_fog_end: dd 128.0
-f_sky_r:   dd 0.62
-f_sky_g:   dd 0.80
-f_hud_bg:  dd 0.45
-f_lo:      dd -0.002
-f_hi:      dd 1.002
-f_draw_d2: dd 19600.0                   ; 140^2
-fog_color: dd 0.62, 0.80, 1.0, 1.0
-; 12 box edges as corner pairs; corner bit0 = x, bit1 = y, bit2 = z (0 lo, 1 hi)
-box_edges: db 0,1, 2,3, 4,5, 6,7,  0,2, 1,3, 4,6, 5,7,  0,4, 1,5, 2,6, 3,7
+f_one:      dd 1.0
+f_two:      dd 2.0
+f_half:     dd 0.5
+f_ten:      dd 10.0
+f_16:       dd 16.0
+f_8:        dd 8.0
+f_fog_near: dd 0.6                      ; fog starts at 60 % of the draw distance
+f_eye:      dd 1.62
+f_lo:       dd -0.002
+f_hi:       dd 1.002
+white_px:   db 255, 255, 255, 255
+align 4
+flat_shade: times 6 dd 1.0
+; sun and moon: x, half size, r, g, b
+sky_bodies: dd 100.0, 12.0, 1.0, 0.93, 0.55
+            dd -100.0, 8.0, 0.85, 0.88, 0.95
+sky_signs:  dd -1.0, -1.0,  1.0, -1.0,  1.0, 1.0,  -1.0, 1.0   ; y, z sign of each quad corner
+; the 12 box edges as corner pairs; corner bit0 = x, bit1 = y, bit2 = z (0 lo, 1 hi)
+box_edges:  db 0,1, 2,3, 4,5, 6,7,  0,2, 1,3, 4,6, 5,7,  0,4, 1,5, 2,6, 3,7
+; box faces +X -X +Y -Y +Z -Z, corners BL, BR, TR, TL: counter-clockwise seen from outside
+face_corners:
+    db 1,0,1,  1,0,0,  1,1,0,  1,1,1
+    db 0,0,0,  0,0,1,  0,1,1,  0,1,0
+    db 0,1,1,  1,1,1,  1,1,0,  0,1,0
+    db 1,0,1,  0,0,1,  0,0,0,  1,0,0
+    db 0,0,1,  1,0,1,  1,1,1,  0,1,1
+    db 1,0,0,  0,0,0,  0,1,0,  1,1,0
+align 4
+corner_du:  dd 0, 254, 254, 0           ; uv offset of corners BL, BR, TR, TL (1/16 px)
+corner_dv:  dd 254, 254, 0, 0
 
 section .bss
 alignb 16
@@ -39,13 +55,52 @@ atlas:       resb ATLAS_PX * ATLAS_PX * 4
 chunk_vbo:   resd NUM_CHUNKS
 chunk_count: resd NUM_CHUNKS
 tex_id:      resd 1
+white_tex:   resd 1
+bright:      resd 1                     ; sky brightness of the frame
+lim2:        resd 1                     ; squared horizontal draw distance
+fog_rgba:    resd 4                     ; sky colour, alpha 1
+env_rgba:    resd 4                     ; texture unit 1 constant: (brightness x3, 1)
 eye:         resd 3
-box_lo:      resd 3
-box_hi:      resd 3
+box:         resd 6                     ; target block lo xyz, hi xyz
+crack_tiles: resb 8
 
 section .text
 
-; render_init(): atlas texture, texture matrix, VBO names, fog, alpha test
+%macro TEXPARAM 2
+    mov     edi, GL_TEXTURE_2D
+    mov     esi, %1
+    mov     edx, %2
+    call    glTexParameteri
+%endmacro
+%macro TEXENV 2
+    mov     edi, GL_TEXTURE_ENV
+    mov     esi, %1
+    mov     edx, %2
+    call    glTexEnvi
+%endmacro
+; TEXIMAGE width, height, pixels: upload RGBA bytes to the bound texture (needs 24 bytes at rsp)
+%macro TEXIMAGE 3
+    mov     qword [rsp], GL_RGBA
+    mov     qword [rsp + 8], GL_UNSIGNED_BYTE
+    lea     rax, [%3]
+    mov     [rsp + 16], rax
+    mov     edi, GL_TEXTURE_2D
+    xor     esi, esi
+    mov     edx, GL_RGBA
+    mov     ecx, %1
+    mov     r8d, %2
+    xor     r9d, r9d
+    call    glTexImage2D
+%endmacro
+%macro NEAREST_CLAMP 0
+    TEXPARAM GL_TEXTURE_MIN_FILTER, GL_NEAREST
+    TEXPARAM GL_TEXTURE_MAG_FILTER, GL_NEAREST
+    TEXPARAM GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE
+    TEXPARAM GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE
+%endmacro
+
+; render_init(): atlas texture, texture matrix, VBO names, fog mode, alpha test, and the
+; unit-1 night combiner: previous colour x constant colour, previous alpha untouched
 render_init:
     push    rbp
     mov     rbp, rsp
@@ -61,27 +116,8 @@ render_init:
     mov     edi, GL_UNPACK_ALIGNMENT
     mov     esi, 1
     call    glPixelStorei
-    mov     qword [rsp], GL_RGBA
-    mov     qword [rsp + 8], GL_UNSIGNED_BYTE
-    lea     rax, [atlas]
-    mov     [rsp + 16], rax
-    mov     edi, GL_TEXTURE_2D
-    xor     esi, esi
-    mov     edx, GL_RGBA
-    mov     ecx, ATLAS_PX
-    mov     r8d, ATLAS_PX
-    xor     r9d, r9d
-    call    glTexImage2D
-%macro TEXPARAM 2
-    mov     edi, GL_TEXTURE_2D
-    mov     esi, %1
-    mov     edx, %2
-    call    glTexParameteri
-%endmacro
-    TEXPARAM GL_TEXTURE_MIN_FILTER, GL_NEAREST
-    TEXPARAM GL_TEXTURE_MAG_FILTER, GL_NEAREST
-    TEXPARAM GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE
-    TEXPARAM GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE
+    TEXIMAGE ATLAS_PX, ATLAS_PX, atlas
+    NEAREST_CLAMP
 
     mov     edi, GL_TEXTURE
     call    glMatrixMode
@@ -100,18 +136,31 @@ render_init:
     mov     edi, GL_FOG_MODE
     mov     esi, GL_LINEAR
     call    glFogi
-    mov     edi, GL_FOG_START
-    movss   xmm0, [f_fog_start]
-    call    glFogf
-    mov     edi, GL_FOG_END
-    movss   xmm0, [f_fog_end]
-    call    glFogf
-    mov     edi, GL_FOG_COLOR
-    lea     rsi, [fog_color]
-    call    glFogfv
     mov     edi, GL_GREATER
     movss   xmm0, [f_half]
     call    glAlphaFunc
+
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, 1
+    lea     rsi, [white_tex]
+    call    glGenTextures
+    mov     edi, GL_TEXTURE_2D
+    mov     esi, [white_tex]
+    call    glBindTexture
+    TEXIMAGE 1, 1, white_px
+    NEAREST_CLAMP                       ; a texture without mipmaps must not use a mipmap filter
+    TEXENV  GL_TEXTURE_ENV_MODE, GL_COMBINE
+    TEXENV  GL_COMBINE_RGB, GL_MODULATE
+    TEXENV  GL_SOURCE0_RGB, GL_PREVIOUS
+    TEXENV  GL_SOURCE1_RGB, GL_CONSTANT
+    TEXENV  GL_OPERAND0_RGB, GL_SRC_COLOR
+    TEXENV  GL_OPERAND1_RGB, GL_SRC_COLOR
+    TEXENV  GL_COMBINE_ALPHA, GL_REPLACE
+    TEXENV  GL_SOURCE0_ALPHA, GL_PREVIOUS
+    TEXENV  GL_OPERAND0_ALPHA, GL_SRC_ALPHA
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
     add     rsp, 32
     pop     rbp
     ret
@@ -162,42 +211,54 @@ render_update_chunks:
     pop     rbp
     ret
 
-; hud_quad(edi x, esi y, edx w, ecx h): untextured screen-space quad
-hud_quad:
+; sky_quad(rdi body): one flat quad on the plane x = body.x; body = x, half size, r, g, b
+sky_quad:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    push    r13
-    push    r14
-    mov     ebx, edi
-    mov     r12d, esi
-    lea     r13d, [rdi + rdx]           ; x + w
-    lea     r14d, [rsi + rcx]           ; y + h
+    mov     rbx, rdi
+    movss   xmm0, [rbx + 8]
+    movss   xmm1, [rbx + 12]
+    movss   xmm2, [rbx + 16]
+    call    glColor3f
     mov     edi, GL_QUADS
     call    glBegin
-    mov     edi, ebx
-    mov     esi, r12d
-    call    glVertex2i
-    mov     edi, r13d
-    mov     esi, r12d
-    call    glVertex2i
-    mov     edi, r13d
-    mov     esi, r14d
-    call    glVertex2i
-    mov     edi, ebx
-    mov     esi, r14d
-    call    glVertex2i
+    xor     r12d, r12d
+.vertex:
+    movss   xmm1, [rbx + 4]
+    movaps  xmm2, xmm1
+    mulss   xmm1, [sky_signs + r12*8]
+    mulss   xmm2, [sky_signs + r12*8 + 4]
+    movss   xmm0, [rbx]
+    call    glVertex3f
+    inc     r12d
+    cmp     r12d, 4
+    jb      .vertex
     call    glEnd
-    pop     r14
-    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; hud_icon(edi x, esi y, edx tile): 32x32 textured quad of one atlas tile
-hud_icon:
+; unit1_off(): texturing off on texture unit 1; texture unit 0 stays the active one
+unit1_off:
+    sub     rsp, 8
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+    add     rsp, 8
+    ret
+
+; render_box(rdi box float[6] = lo xyz, hi xyz; rsi tiles byte[6]; rdx shades float[6];
+;            xmm0 r, xmm1 g, xmm2 b)
+; Six textured quads, counter-clockwise seen from outside, in face order +X -X +Y -Y +Z -Z.
+; Every face is one whole atlas tile (uv inset 1 unit, tile top edge = box top edge) and
+; is coloured shade[face] * (r, g, b). Texture unit 0 and the atlas are set up by the caller.
+render_box:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -205,44 +266,63 @@ hud_icon:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 8
-    mov     ebx, edi                    ; x
-    mov     r12d, esi                   ; y
-    mov     eax, edx
-    and     eax, 15
-    shl     eax, 8
-    lea     r13d, [rax + 1]             ; u0
-    shr     edx, 4
-    shl     edx, 8
-    lea     r14d, [rdx + 1]             ; v0
+    sub     rsp, 24                     ; [rsp] r, g, b; +12 u0; +16 v0
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     r13, rdx
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
     mov     edi, GL_QUADS
     call    glBegin
-    mov     edi, r13d
-    mov     esi, r14d
+    xor     r14d, r14d                  ; face
+.face:
+    movss   xmm3, [r13 + r14*4]
+    movss   xmm0, [rsp]
+    mulss   xmm0, xmm3
+    movss   xmm1, [rsp + 4]
+    mulss   xmm1, xmm3
+    movss   xmm2, [rsp + 8]
+    mulss   xmm2, xmm3
+    movss   xmm3, [f_one]
+    call    glColor4f
+    movzx   eax, byte [r12 + r14]       ; atlas tile of this face
+    mov     edx, eax
+    and     eax, 15
+    shl     eax, 8
+    inc     eax
+    mov     [rsp + 12], eax             ; u0 = col * 256 + 1
+    shr     edx, 4
+    shl     edx, 8
+    inc     edx
+    mov     [rsp + 16], edx             ; v0 = row * 256 + 1
+    xor     r15d, r15d                  ; corner
+.corner:
+    mov     edi, [rsp + 12]
+    add     edi, [corner_du + r15*4]
+    mov     esi, [rsp + 16]
+    add     esi, [corner_dv + r15*4]
     call    glTexCoord2i
-    mov     edi, ebx
-    mov     esi, r12d
-    call    glVertex2i
-    lea     edi, [r13 + 254]
-    mov     esi, r14d
-    call    glTexCoord2i
-    lea     edi, [rbx + 32]
-    mov     esi, r12d
-    call    glVertex2i
-    lea     edi, [r13 + 254]
-    lea     esi, [r14 + 254]
-    call    glTexCoord2i
-    lea     edi, [rbx + 32]
-    lea     esi, [r12 + 32]
-    call    glVertex2i
-    mov     edi, r13d
-    lea     esi, [r14 + 254]
-    call    glTexCoord2i
-    mov     edi, ebx
-    lea     esi, [r12 + 32]
-    call    glVertex2i
+    lea     eax, [r14*4 + r15]
+    lea     eax, [rax + rax*2]          ; offset of the corner's three lo/hi bits
+    movzx   ecx, byte [face_corners + rax]
+    lea     ecx, [rcx + rcx*2]          ; box[bit*3 + 0]
+    movss   xmm0, [rbx + rcx*4]
+    movzx   ecx, byte [face_corners + rax + 1]
+    lea     ecx, [rcx + rcx*2 + 1]
+    movss   xmm1, [rbx + rcx*4]
+    movzx   ecx, byte [face_corners + rax + 2]
+    lea     ecx, [rcx + rcx*2 + 2]
+    movss   xmm2, [rbx + rcx*4]
+    call    glVertex3f
+    inc     r15d
+    cmp     r15d, 4
+    jb      .corner
+    inc     r14d
+    cmp     r14d, 6
+    jb      .face
     call    glEnd
-    add     rsp, 8
+    add     rsp, 24
     pop     r15
     pop     r14
     pop     r13
@@ -251,8 +331,9 @@ hud_icon:
     pop     rbp
     ret
 
-; render_frame(edi fb_w, esi fb_h)
-render_frame:
+; render_world(rdi cam BODY*, esi fb_w, edx fb_h)
+; r15 = cam, r12d = width, r13d = height, ebx = chunk index, r14d = chunk vertex count
+render_world:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -261,55 +342,100 @@ render_frame:
     push    r14
     push    r15
     sub     rsp, 8
-    mov     r12d, edi                   ; w
-    mov     r13d, esi                   ; h
+    mov     r15, rdi
+    mov     r12d, esi
+    mov     r13d, edx
 
-    ; ---- world pass -------------------------------------------------------
+    ; ---- viewport, sky brightness and colour, clear -------------------------
     xor     edi, edi
     xor     esi, esi
     mov     edx, r12d
     mov     ecx, r13d
     call    glViewport
-    movss   xmm0, [f_sky_r]
-    movss   xmm1, [f_sky_g]
-    movss   xmm2, [f_one]
+    mov     edi, [game_time]
+    call    sky_brightness
+    movss   [bright], xmm0
+    mov     edi, [game_time]
+    lea     rsi, [fog_rgba]
+    call    sky_color
+    mov     dword [fog_rgba + 12], __float32__(1.0)
+    movss   xmm0, [fog_rgba]
+    movss   xmm1, [fog_rgba + 4]
+    movss   xmm2, [fog_rgba + 8]
     movss   xmm3, [f_one]
     call    glClearColor
     mov     edi, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT
     call    glClear
 
+    ; ---- projection: hh = 0.05 * tan(fov / 2) ------------------------------
     mov     edi, GL_PROJECTION
     call    glMatrixMode
     call    glLoadIdentity
-    cvtsi2sd xmm0, r12d
-    cvtsi2sd xmm1, r13d
-    divsd   xmm0, xmm1
-    mulsd   xmm0, [d_hh]                ; hh * aspect
-    movapd  xmm1, xmm0
-    xorpd   xmm0, xmm0
-    subsd   xmm0, xmm1
-    movsd   xmm3, [d_hh]
+    cvtsi2ss xmm0, dword [settings + SETTINGS.fov]
+    mulss   xmm0, [f_half]
+    call    sincos_deg                  ; xmm0 = sin, xmm1 = cos
+    divss   xmm0, xmm1
+    cvtss2sd xmm0, xmm0
+    mulsd   xmm0, [d_near]              ; hh
+    cvtsi2sd xmm1, r12d
+    cvtsi2sd xmm2, r13d
+    divsd   xmm1, xmm2
+    mulsd   xmm1, xmm0                  ; right = hh * aspect
+    movapd  xmm3, xmm0                  ; top = hh
     xorpd   xmm2, xmm2
-    subsd   xmm2, xmm3
+    subsd   xmm2, xmm0                  ; bottom = -hh
+    xorpd   xmm0, xmm0
+    subsd   xmm0, xmm1                  ; left = -right
     movsd   xmm4, [d_near]
     movsd   xmm5, [d_far]
     call    glFrustum
 
+    ; ---- sun and moon: view rotation only, turned by the day angle -------------
     mov     edi, GL_MODELVIEW
     call    glMatrixMode
     call    glLoadIdentity
-    movss   xmm0, [player + BODY.pitch]
+    movss   xmm0, [r15 + BODY.pitch]
     movss   xmm1, [f_one]
     xorps   xmm2, xmm2
     xorps   xmm3, xmm3
     call    glRotatef
-    movss   xmm0, [player + BODY.yaw]
+    movss   xmm0, [r15 + BODY.yaw]
     xorps   xmm1, xmm1
     movss   xmm2, [f_one]
     xorps   xmm3, xmm3
     call    glRotatef
-    lea     rdi, [eye]
-    call    player_eye
+    call    glPushMatrix
+    mov     edi, [game_time]
+    call    sky_angle
+    xorps   xmm1, xmm1
+    xorps   xmm2, xmm2
+    movss   xmm3, [f_one]
+    call    glRotatef
+    mov     edi, GL_DEPTH_TEST
+    call    glDisable
+    mov     edi, GL_FOG
+    call    glDisable
+    mov     edi, GL_CULL_FACE
+    call    glDisable
+    mov     edi, GL_BLEND
+    call    glDisable
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    call    unit1_off
+    lea     rdi, [sky_bodies]
+    call    sky_quad
+    lea     rdi, [sky_bodies + 20]
+    call    sky_quad
+    call    glPopMatrix
+
+    ; ---- camera: eye = feet + 1.62 ------------------------------------------
+    movss   xmm0, [r15 + BODY.x]
+    movss   [eye], xmm0
+    movss   xmm0, [r15 + BODY.y]
+    addss   xmm0, [f_eye]
+    movss   [eye + 4], xmm0
+    movss   xmm0, [r15 + BODY.z]
+    movss   [eye + 8], xmm0
     xorps   xmm0, xmm0
     subss   xmm0, [eye]
     xorps   xmm1, xmm1
@@ -318,6 +444,42 @@ render_frame:
     subss   xmm2, [eye + 8]
     call    glTranslatef
 
+    ; ---- fog and draw distance from the render distance -----------------------
+    cvtsi2ss xmm0, dword [settings + SETTINGS.render_dist]
+    mulss   xmm0, [f_16]                ; fog end = render_dist * 16
+    movss   xmm1, xmm0
+    addss   xmm1, [f_8]
+    mulss   xmm1, xmm1
+    movss   [lim2], xmm1                ; chunks are drawn up to (end + 8)^2
+    mov     edi, GL_FOG_END
+    call    glFogf
+    cvtsi2ss xmm0, dword [settings + SETTINGS.render_dist]
+    mulss   xmm0, [f_16]
+    mulss   xmm0, [f_fog_near]
+    mov     edi, GL_FOG_START
+    call    glFogf
+    mov     edi, GL_FOG_COLOR
+    lea     rsi, [fog_rgba]
+    call    glFogfv
+
+    ; ---- night darkening: unit 1 multiplies the lit texel by (b, b, b) --------
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+    mov     eax, [bright]
+    mov     [env_rgba], eax
+    mov     [env_rgba + 4], eax
+    mov     [env_rgba + 8], eax
+    mov     dword [env_rgba + 12], __float32__(1.0)
+    mov     edi, GL_TEXTURE_ENV
+    mov     esi, GL_TEXTURE_ENV_COLOR
+    lea     rdx, [env_rgba]
+    call    glTexEnvfv
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+
+    ; ---- world state ----------------------------------------------------------
     mov     edi, GL_DEPTH_TEST
     call    glEnable
     mov     edi, GL_CULL_FACE
@@ -361,7 +523,7 @@ render_frame:
     subss   xmm1, [eye + 8]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
-    comiss  xmm0, [f_draw_d2]
+    comiss  xmm0, [lim2]
     ja      .chunk_next
     mov     edi, GL_ARRAY_BUFFER
     mov     esi, [chunk_vbo + rbx*4]
@@ -399,179 +561,83 @@ render_frame:
     mov     edi, GL_ARRAY_BUFFER
     xor     esi, esi
     call    glBindBuffer
+    call    mobs_render
 
-    ; ---- target outline ---------------------------------------------------
+    ; ---- target block: crack overlay, then the outline -------------------------
     cmp     dword [game_has_target], 0
-    je      .hud
-    mov     edi, GL_TEXTURE_2D
-    call    glDisable
-    mov     edi, GL_ALPHA_TEST
-    call    glDisable
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    xorps   xmm2, xmm2
-    movss   xmm3, [f_one]
-    call    glColor4f
-    movss   xmm0, [f_two]
-    call    glLineWidth
+    je      .after_crack
     xor     ecx, ecx
 .box_axis:
     cvtsi2ss xmm0, dword [game_target + RAYHIT.bx + rcx*4]
     movss   xmm1, xmm0
     addss   xmm0, [f_lo]
     addss   xmm1, [f_hi]
-    movss   [box_lo + rcx*4], xmm0
-    movss   [box_hi + rcx*4], xmm1
+    movss   [box + rcx*4], xmm0
+    movss   [box + 12 + rcx*4], xmm1
     inc     ecx
     cmp     ecx, 3
     jb      .box_axis
+    movss   xmm0, [game_break_progress]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .after_crack                ; no progress (or NaN)
+    mulss   xmm0, [f_ten]
+    cvttss2si eax, xmm0                 ; crack stage = min(9, floor(progress * 10))
+    mov     ecx, 9
+    cmp     eax, ecx
+    cmova   eax, ecx
+    add     eax, TILE_CRACK0
+    mov     rcx, 0x0101010101010101
+    imul    rax, rcx
+    mov     [crack_tiles], rax          ; the same tile on all six faces
+    lea     rdi, [box]
+    lea     rsi, [crack_tiles]
+    lea     rdx, [flat_shade]
+    movss   xmm0, [f_one]
+    movss   xmm1, [f_one]
+    movss   xmm2, [f_one]
+    call    render_box
+.after_crack:
+    call    unit1_off
+    cmp     dword [game_has_target], 0
+    je      .done
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_ALPHA_TEST
+    call    glDisable
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    xorps   xmm2, xmm2
+    movss   xmm3, [f_one]
+    call    glColor4f
+    movss   xmm0, [f_two]
+    call    glLineWidth
     mov     edi, GL_LINES
     call    glBegin
     xor     ebx, ebx
 .edge:
     movzx   eax, byte [box_edges + rbx]
-    movss   xmm0, [box_lo]
+    movss   xmm0, [box]
     test    eax, 1
     jz      .ex
-    movss   xmm0, [box_hi]
+    movss   xmm0, [box + 12]
 .ex:
-    movss   xmm1, [box_lo + 4]
+    movss   xmm1, [box + 4]
     test    eax, 2
     jz      .ey
-    movss   xmm1, [box_hi + 4]
+    movss   xmm1, [box + 16]
 .ey:
-    movss   xmm2, [box_lo + 8]
+    movss   xmm2, [box + 8]
     test    eax, 4
     jz      .ez
-    movss   xmm2, [box_hi + 8]
+    movss   xmm2, [box + 20]
 .ez:
     call    glVertex3f
     inc     ebx
     cmp     ebx, 24
     jb      .edge
     call    glEnd
-
-    ; ---- HUD --------------------------------------------------------------
-.hud:
-    mov     edi, GL_DEPTH_TEST
-    call    glDisable
-    mov     edi, GL_CULL_FACE
-    call    glDisable
-    mov     edi, GL_FOG
-    call    glDisable
-    mov     edi, GL_PROJECTION
-    call    glMatrixMode
-    call    glLoadIdentity
-    xorpd   xmm0, xmm0
-    cvtsi2sd xmm1, r12d
-    cvtsi2sd xmm2, r13d
-    xorpd   xmm3, xmm3
-    movsd   xmm4, [d_mone]
-    movsd   xmm5, [d_one]
-    call    glOrtho
-    mov     edi, GL_MODELVIEW
-    call    glMatrixMode
-    call    glLoadIdentity
-
-    mov     r14d, r12d
-    sub     r14d, 396
-    sar     r14d, 1                     ; x0
-    lea     r15d, [r13 - 52]            ; y0
-
-    ; translucent hotbar background
-    mov     edi, GL_BLEND
-    call    glEnable
-    mov     edi, GL_SRC_ALPHA
-    mov     esi, GL_ONE_MINUS_SRC_ALPHA
-    call    glBlendFunc
-    mov     edi, GL_TEXTURE_2D
-    call    glDisable
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    xorps   xmm2, xmm2
-    movss   xmm3, [f_hud_bg]
-    call    glColor4f
-    lea     edi, [r14 - 2]
-    lea     esi, [r15 - 2]
-    mov     edx, 400
-    mov     ecx, 48
-    call    hud_quad
-
-    ; block icons (side tile of each slot)
-    mov     edi, GL_TEXTURE_2D
-    call    glEnable
-    mov     edi, GL_ALPHA_TEST
-    call    glEnable
-    movss   xmm0, [f_one]
-    movss   xmm1, [f_one]
-    movss   xmm2, [f_one]
-    movss   xmm3, [f_one]
-    call    glColor4f
-    xor     ebx, ebx
-.icon:
-    movzx   eax, byte [hotbar + rbx]
-    lea     eax, [rax + rax*2]
-    movzx   edx, byte [block_tiles + rax + 1]
-    imul    edi, ebx, 44
-    lea     edi, [rdi + r14 + 6]
-    lea     esi, [r15 + 6]
-    call    hud_icon
-    inc     ebx
-    cmp     ebx, HOTBAR_SLOTS
-    jb      .icon
-
-    ; selection frame
-    mov     edi, GL_TEXTURE_2D
-    call    glDisable
-    movss   xmm0, [f_two]
-    call    glLineWidth
-    imul    ebx, [hotbar_sel], 44
-    add     ebx, r14d
-    mov     edi, GL_LINE_LOOP
-    call    glBegin
-    lea     edi, [rbx + 1]
-    lea     esi, [r15 + 1]
-    call    glVertex2i
-    lea     edi, [rbx + 43]
-    lea     esi, [r15 + 1]
-    call    glVertex2i
-    lea     edi, [rbx + 43]
-    lea     esi, [r15 + 43]
-    call    glVertex2i
-    lea     edi, [rbx + 1]
-    lea     esi, [r15 + 43]
-    call    glVertex2i
-    call    glEnd
-
-    ; inverting crosshair (vertical bar split so the centre inverts once)
-    mov     edi, GL_ONE_MINUS_DST_COLOR
-    mov     esi, GL_ZERO
-    call    glBlendFunc
-    mov     ebx, r12d
-    sar     ebx, 1                      ; cx
-    mov     r14d, r13d
-    sar     r14d, 1                     ; cy
-    lea     edi, [rbx - 10]
-    lea     esi, [r14 - 1]
-    mov     edx, 20
-    mov     ecx, 2
-    call    hud_quad
-    lea     edi, [rbx - 1]
-    lea     esi, [r14 - 10]
-    mov     edx, 2
-    mov     ecx, 9
-    call    hud_quad
-    lea     edi, [rbx - 1]
-    lea     esi, [r14 + 1]
-    mov     edx, 2
-    mov     ecx, 9
-    call    hud_quad
-    mov     edi, GL_SRC_ALPHA
-    mov     esi, GL_ONE_MINUS_SRC_ALPHA
-    call    glBlendFunc
-    mov     edi, GL_BLEND
-    call    glDisable
-
+.done:
     add     rsp, 8
     pop     r15
     pop     r14

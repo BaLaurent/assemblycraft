@@ -1,69 +1,67 @@
-; main.asm - command-line handling, world load/create, window and game loop.
+; main.asm - command line, data directory/settings setup, window creation, app loop.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global main
 
-extern sys_print, str_eq, parse_u32, str_append, i32_to_str, selftest_run
-extern game_load, game_new, game_save, game_frame, frame_input
-extern render_init, render_update_chunks, render_frame, input_init, input_poll
-extern player, hotbar, hotbar_sel, item_names, floor_i
+extern sys_print, str_eq, parse_u32, str_append, str_copy, selftest_run, rng_seed
+extern saves_init, saves_name_to_file, data_dir, worlds_dir, settings_path
+extern settings_load, settings_apply, file_stat_mtime
+extern game_load, game_new, game_save
+extern render_init, ui_init, input_init, audio_init, audio_shutdown
+extern app_run, app_window
 
 section .rodata
 usage_text:
-    db "usage: assemblycraft [--world PATH] [--seed N] [--selftest] [--help]", 10
-    db "  --world PATH  world file to load and save (default: world.acw)", 10
-    db "  --seed N      seed for a newly generated world (default: random)", 10
-    db "  --selftest    run internal tests and exit", 10
-    db "controls: WASD move, mouse look, Space jump (fly: up), Left Shift fly down, Left Ctrl sprint,", 10
-    db "          F toggle fly, LMB break, RMB place, MMB pick block, 1-9 / wheel select,", 10
-    db "          Esc release mouse (click to recapture), close window to save and quit", 10, 0
+    db "usage: assemblycraft [--data-dir DIR] [--play NAME [--creative] [--seed N]] [--selftest] [--help]", 10
+    db "  --data-dir DIR  where worlds and settings live (default: $XDG_DATA_HOME/assemblycraft", 10
+    db "                  or ~/.local/share/assemblycraft)", 10
+    db "  --play NAME     skip the menus and play world NAME, creating it if it does not exist", 10
+    db "  --creative      with --play, create the new world in Creative mode (default: Survival)", 10
+    db "  --seed N        with --play, seed for a newly created world (default: random)", 10
+    db "  --selftest      run internal tests and exit", 10
+    db "controls (rebindable in Settings > Controls): WASD move, Space jump / fly up,", 10
+    db "  Left Shift sneak / fly down, Left Ctrl sprint, E inventory, F toggle fly (Creative),", 10
+    db "  mouse look, LMB break / attack, RMB place / use / eat, MMB pick block,", 10
+    db "  1-9 / wheel select, Esc pause, F3 debug info, F11 fullscreen", 10, 0
 opt_help:     db "--help", 0
 opt_selftest: db "--selftest", 0
+opt_data:     db "--data-dir", 0
+opt_play:     db "--play", 0
+opt_creative: db "--creative", 0
 opt_seed:     db "--seed", 0
-opt_world:    db "--world", 0
-default_world: db "world.acw", 0
 s_prefix:     db "assemblycraft: ", 0
+s_no_dir:     db "assemblycraft: cannot create data directory ", 0
+s_bad_cfg:    db "assemblycraft: ignored invalid lines in ", 0
 s_invalid:    db " is not a valid AssemblyCraft world", 10, 0
 s_cannot_read: db "assemblycraft: cannot read ", 0
 s_save_fail:  db "assemblycraft: failed to save world to ", 0
+s_no_sound:   db "assemblycraft: sound disabled (cannot connect to PulseAudio)", 10, 0
 s_nl:         db 10, 0
+s_slash:      db "/", 0
+s_ext:        db ".acw", 0
 s_glfw_fail:  db "assemblycraft: glfwInit failed", 10, 0
 s_win_fail:   db "assemblycraft: cannot create window", 10, 0
 s_app_id:     db "assemblycraft", 0
 s_title:      db "AssemblyCraft", 0
-s_title_fps:  db "AssemblyCraft | ", 0
-s_fps:        db " FPS | ", 0
-s_space:      db " ", 0
-s_sep:        db " | ", 0
-s_fly:        db " | fly", 0
-align 8
-d_max_dt:     dq 0.25
-d_title_every: dq 0.5
-
-section .data
-align 8
-world_path: dq default_world
-seed_value: dd 0
-seed_given: dd 0
-want_help:  dd 0
-want_test:  dd 0
 
 section .bss
 alignb 8
-window:     resq 1
-last_time:  resq 1
-title_time: resq 1
-frame_dt:   resq 1
-frames:     resd 1
-fb_w:       resd 1
-fb_h:       resd 1
-title_buf:  resb 256
+envp:        resq 1
+data_arg:    resq 1                     ; --data-dir value or 0
+play_name:   resq 1                     ; --play value or 0
+window:      resq 1
+seed_value:  resd 1
+seed_given:  resd 1
+creative:    resd 1
+want_help:   resd 1
+want_test:   resd 1
+play_path:   resb 4096
 
 section .text
 
-; main(edi argc, rsi argv) -> eax exit code
+; main(edi argc, rsi argv, rdx envp) -> eax exit code
 main:
     push    rbp
     mov     rbp, rsp
@@ -73,31 +71,38 @@ main:
     sub     rsp, 8
     mov     r12d, edi                   ; argc
     mov     r13, rsi                    ; argv
+    mov     [envp], rdx
     mov     ebx, 1                      ; i
 .arg:
     cmp     ebx, r12d
     jge     .parsed
+%macro IS_OPT 1                         ; eax = argv[i] == %1
     mov     rdi, [r13 + rbx*8]
-    lea     rsi, [opt_help]
+    lea     rsi, [%1]
     call    str_eq
+%endmacro
+    IS_OPT  opt_help
     test    eax, eax
     jz      .not_help
     mov     dword [want_help], 1
     inc     ebx
     jmp     .arg
 .not_help:
-    mov     rdi, [r13 + rbx*8]
-    lea     rsi, [opt_selftest]
-    call    str_eq
+    IS_OPT  opt_selftest
     test    eax, eax
     jz      .not_test
     mov     dword [want_test], 1
     inc     ebx
     jmp     .arg
 .not_test:
-    mov     rdi, [r13 + rbx*8]
-    lea     rsi, [opt_seed]
-    call    str_eq
+    IS_OPT  opt_creative
+    test    eax, eax
+    jz      .not_creative
+    mov     dword [creative], 1
+    inc     ebx
+    jmp     .arg
+.not_creative:
+    IS_OPT  opt_seed
     test    eax, eax
     jz      .not_seed
     inc     ebx
@@ -112,16 +117,29 @@ main:
     inc     ebx
     jmp     .arg
 .not_seed:
-    mov     rdi, [r13 + rbx*8]
-    lea     rsi, [opt_world]
-    call    str_eq
+    IS_OPT  opt_data
+    test    eax, eax
+    jz      .not_data
+    inc     ebx
+    cmp     ebx, r12d
+    jge     .usage_err
+    mov     rax, [r13 + rbx*8]
+    cmp     byte [rax], 0
+    je      .usage_err
+    mov     [data_arg], rax
+    inc     ebx
+    jmp     .arg
+.not_data:
+    IS_OPT  opt_play
     test    eax, eax
     jz      .usage_err
     inc     ebx
     cmp     ebx, r12d
     jge     .usage_err
     mov     rax, [r13 + rbx*8]
-    mov     [world_path], rax
+    cmp     byte [rax], 0
+    je      .usage_err
+    mov     [play_name], rax
     inc     ebx
     jmp     .arg
 
@@ -134,6 +152,12 @@ main:
     xor     eax, eax
     jmp     .ret
 .no_help:
+    cmp     qword [play_name], 0
+    jne     .play_ok
+    mov     eax, [creative]
+    or      eax, [seed_given]
+    jnz     .usage_err                  ; --creative / --seed need --play
+.play_ok:
     cmp     dword [want_test], 0
     je      .game
     call    selftest_run
@@ -155,119 +179,151 @@ main:
     pop     rbp
     ret
 
-; print_path_msg(rdi prefix, rsi suffix): stderr <prefix><world_path><suffix>
-print_path_msg:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    sub     rsp, 8
-    mov     rbx, rsi
-    mov     rsi, rdi
-    mov     edi, 2
-    call    sys_print
-    mov     edi, 2
-    mov     rsi, [world_path]
-    call    sys_print
-    mov     edi, 2
-    mov     rsi, rbx
-    call    sys_print
-    add     rsp, 8
-    pop     rbx
-    pop     rbp
-    ret
-
-; update_title(xmm0 double fps)
-update_title:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    sub     rsp, 8
-    cvtsd2si ebx, xmm0
-    lea     rdi, [title_buf]
-    lea     rsi, [s_title_fps]
-    call    str_append
-    mov     edi, ebx
-    mov     rsi, rax
-    call    i32_to_str
-    mov     rdi, rax
-    lea     rsi, [s_fps]
-    call    str_append
-    mov     rbx, rax
-%macro TITLE_COORD 2                    ; field, separator
-    movss   xmm0, [player + BODY.%1]
-    call    floor_i
-    mov     edi, eax
-    mov     rsi, rbx
-    call    i32_to_str
-    mov     rdi, rax
-    lea     rsi, [%2]
-    call    str_append
-    mov     rbx, rax
-%endmacro
-    TITLE_COORD x, s_space
-    TITLE_COORD y, s_space
-    TITLE_COORD z, s_sep
-    mov     eax, [hotbar_sel]
-    movzx   eax, byte [hotbar + rax]
-    mov     rsi, [item_names + rax*8]
-    mov     rdi, rbx
-    call    str_append
-    cmp     dword [player + BODY.flying], 0
-    je      .no_fly
-    mov     rdi, rax
-    lea     rsi, [s_fly]
-    call    str_append
-.no_fly:
-    mov     byte [rax], 0
-    mov     rdi, [window]
-    lea     rsi, [title_buf]
-    call    glfwSetWindowTitle
-    add     rsp, 8
-    pop     rbx
-    pop     rbp
-    ret
-
-; run_game() -> eax exit code. World errors surface before any window opens.
-run_game:
+; err3(rdi a, rsi b, rdx c): stderr a b c (b, c may be 0)
+err3:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    mov     rdi, [world_path]
+    mov     rbx, rsi
+    mov     r12, rdx
+    mov     rsi, rdi
+    mov     edi, 2
+    call    sys_print
+    test    rbx, rbx
+    jz      .c
+    mov     edi, 2
+    mov     rsi, rbx
+    call    sys_print
+.c:
+    test    r12, r12
+    jz      .ret
+    mov     edi, 2
+    mov     rsi, r12
+    call    sys_print
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; prepare_play_world() -> eax 0 ok / 1 error reported. Loads or creates play_path.
+prepare_play_world:
+    push    rbp
+    mov     rbp, rsp
+    lea     rdi, [play_path]
+    lea     rsi, [worlds_dir]
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     rdi, [play_name]
+    mov     rsi, rax
+    call    saves_name_to_file
+    mov     rdi, rax
+    lea     rsi, [s_ext]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [play_path]
+    call    file_stat_mtime
+    test    rax, rax
+    js      .create
+    lea     rdi, [play_path]
     call    game_load
     test    eax, eax
-    jz      .world_ready
+    jz      .ok
     cmp     eax, 1
-    je      .new_world
+    je      .create
     cmp     eax, 2
     jne     .unreadable
     lea     rdi, [s_prefix]
-    lea     rsi, [s_invalid]
-    call    print_path_msg
-    mov     eax, 1
-    jmp     .ret
+    lea     rsi, [play_path]
+    lea     rdx, [s_invalid]
+    call    err3
+    jmp     .fail
 .unreadable:
     lea     rdi, [s_cannot_read]
-    lea     rsi, [s_nl]
-    call    print_path_msg
-    mov     eax, 1
-    jmp     .ret
-.new_world:
+    lea     rsi, [play_path]
+    lea     rdx, [s_nl]
+    call    err3
+    jmp     .fail
+.create:
     mov     edi, [seed_value]
     cmp     dword [seed_given], 0
     jne     .seeded
     rdtsc
     mov     edi, eax
 .seeded:
+    mov     esi, [creative]
+    mov     rdx, [play_name]
     call    game_new
-.world_ready:
+    lea     rdi, [play_path]
+    call    game_save
+    test    eax, eax
+    jz      .ok
+    lea     rdi, [s_save_fail]
+    lea     rsi, [play_path]
+    lea     rdx, [s_nl]
+    call    err3
+.fail:
+    mov     eax, 1
+    pop     rbp
+    ret
+.ok:
+    xor     eax, eax
+    pop     rbp
+    ret
 
+; run_game() -> eax exit code. Setup errors surface before any window opens.
+run_game:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    rdtsc
+    mov     edi, eax
+    call    rng_seed
+    mov     rdi, [envp]
+    mov     rsi, [data_arg]
+    call    saves_init
+    test    eax, eax
+    jz      .dirs_ok
+    mov     rsi, [data_arg]
+    test    rsi, rsi
+    jnz     .dir_msg
+    lea     rsi, [data_dir]
+.dir_msg:
+    lea     rdi, [s_no_dir]
+    lea     rdx, [s_nl]
+    call    err3
+    mov     eax, 1
+    jmp     .ret
+.dirs_ok:
+    lea     rdi, [settings_path]
+    call    settings_load
+    cmp     eax, 2
+    jne     .cfg_ok
+    lea     rdi, [s_bad_cfg]
+    lea     rsi, [settings_path]
+    lea     rdx, [s_nl]
+    call    err3
+.cfg_ok:
+    xor     r12d, r12d                  ; play path for app_run
+    cmp     qword [play_name], 0
+    je      .window
+    call    prepare_play_world
+    test    eax, eax
+    jnz     .ret
+    lea     r12, [play_path]
+
+.window:
     call    glfwInit
     test    eax, eax
     jnz     .glfw_ok
-    mov     edi, 2
-    lea     rsi, [s_glfw_fail]
-    call    sys_print
+    lea     rdi, [s_glfw_fail]
+    xor     esi, esi
+    xor     edx, edx
+    call    err3
     mov     eax, 1
     jmp     .ret
 .glfw_ok:
@@ -288,81 +344,36 @@ run_game:
     call    glfwCreateWindow
     test    rax, rax
     jnz     .win_ok
-    mov     edi, 2
-    lea     rsi, [s_win_fail]
-    call    sys_print
+    lea     rdi, [s_win_fail]
+    xor     esi, esi
+    xor     edx, edx
+    call    err3
     call    glfwTerminate
     mov     eax, 1
     jmp     .ret
 .win_ok:
     mov     [window], rax
+    mov     [app_window], rax
     mov     rdi, rax
     call    glfwMakeContextCurrent
-    mov     edi, 1
-    call    glfwSwapInterval
     call    render_init
+    call    ui_init
     mov     rdi, [window]
     call    input_init
-    call    glfwGetTime
-    movsd   [last_time], xmm0
-    movsd   [title_time], xmm0
-    mov     dword [frames], 0
-
-.loop:
-    mov     rdi, [window]
-    call    glfwWindowShouldClose
+    call    audio_init
     test    eax, eax
-    jnz     .quit
-    call    glfwPollEvents
-    call    glfwGetTime
-    movsd   xmm1, xmm0
-    subsd   xmm1, [last_time]
-    movsd   [last_time], xmm0
-    minsd   xmm1, [d_max_dt]
-    movsd   [frame_dt], xmm1
+    jnz     .sound_ok
+    lea     rdi, [s_no_sound]
+    xor     esi, esi
+    xor     edx, edx
+    call    err3
+.sound_ok:
     mov     rdi, [window]
-    call    input_poll
-    cvtsd2ss xmm0, [frame_dt]
-    call    game_frame
-    call    render_update_chunks
-    mov     rdi, [window]
-    lea     rsi, [fb_w]
-    lea     rdx, [fb_h]
-    call    glfwGetFramebufferSize
-    mov     edi, [fb_w]
-    mov     esi, [fb_h]
-    test    edi, edi
-    jle     .no_draw
-    test    esi, esi
-    jle     .no_draw
-    call    render_frame
-.no_draw:
-    mov     rdi, [window]
-    call    glfwSwapBuffers
-    inc     dword [frames]
-    movsd   xmm1, [last_time]
-    subsd   xmm1, [title_time]
-    comisd  xmm1, [d_title_every]
-    jb      .loop
-    cvtsi2sd xmm0, dword [frames]
-    divsd   xmm0, xmm1
-    call    update_title
-    mov     dword [frames], 0
-    movsd   xmm0, [last_time]
-    movsd   [title_time], xmm0
-    jmp     .loop
-
-.quit:
-    xor     ebx, ebx
-    mov     rdi, [world_path]
-    call    game_save
-    test    eax, eax
-    jz      .saved
-    lea     rdi, [s_save_fail]
-    lea     rsi, [s_nl]
-    call    print_path_msg
-    mov     ebx, 1
-.saved:
+    call    settings_apply
+    mov     rdi, r12
+    call    app_run
+    mov     ebx, eax
+    call    audio_shutdown
     mov     rdi, [window]
     call    glfwDestroyWindow
     call    glfwTerminate
