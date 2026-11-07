@@ -4,9 +4,13 @@ default rel
 
 global sys_print, str_len, str_eq, parse_u32, i32_to_str, str_append
 global file_read, file_write_atomic
+global fnv1a, str_copy, f32_to_str, file_stat_mtime, file_patch, file_unlink, time_now
 
 section .rodata
 tmp_suffix: db ".tmp", 0
+align 8
+d_half:     dq 0.5
+d_ten:      dq 10.0
 
 section .bss
 tmp_path:   resb 4104
@@ -277,4 +281,193 @@ file_write_atomic:
     pop     r13
     pop     r12
     pop     rbx
+    ret
+
+; fnv1a(rdi ptr, rsi len) -> eax  (FNV-1a 32-bit)
+fnv1a:
+    mov     eax, 2166136261
+    test    rsi, rsi
+    jz      .done
+.loop:
+    movzx   ecx, byte [rdi]
+    xor     eax, ecx
+    imul    eax, eax, 16777619
+    inc     rdi
+    dec     rsi
+    jnz     .loop
+.done:
+    ret
+
+; str_copy(rdi dst, rsi src, rdx max) -> rax end (points at the written NUL).
+; Copies at most max chars, then writes a NUL.
+str_copy:
+    xor     ecx, ecx
+.loop:
+    cmp     rcx, rdx
+    jae     .done
+    mov     al, [rsi + rcx]
+    test    al, al
+    jz      .done
+    mov     [rdi + rcx], al
+    inc     rcx
+    jmp     .loop
+.done:
+    lea     rax, [rdi + rcx]
+    mov     byte [rax], 0
+    ret
+
+; f32_to_str(xmm0 v, rdi buf, esi decimals) -> rax end (no NUL).
+; Signed fixed-point text, rounding half away from zero. No '-' when it rounds to 0.
+f32_to_str:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     rbx, rdi                    ; out cursor
+    mov     r12d, esi                   ; decimals
+    cvtss2sd xmm0, xmm0
+    xor     r14d, r14d                  ; negative?
+    xorpd   xmm1, xmm1
+    comisd  xmm0, xmm1
+    jae     .pos
+    mov     r14d, 1
+    subsd   xmm1, xmm0
+    movapd  xmm0, xmm1                  ; |v|
+.pos:
+    mov     r13d, 1                     ; scale = 10^decimals
+    mov     ecx, r12d
+.scale:
+    test    ecx, ecx
+    jz      .scaled
+    imul    r13, r13, 10
+    mulsd   xmm0, [d_ten]
+    dec     ecx
+    jmp     .scale
+.scaled:
+    addsd   xmm0, [d_half]
+    cvttsd2si rax, xmm0                 ; n = round(|v| * scale)
+    test    rax, rax
+    jz      .no_sign
+    test    r14d, r14d
+    jz      .no_sign
+    mov     byte [rbx], '-'
+    inc     rbx
+.no_sign:
+    xor     edx, edx
+    div     r13                         ; rax = int part, rdx = fraction
+    mov     r14, rdx
+    mov     edi, eax
+    mov     rsi, rbx
+    call    i32_to_str
+    mov     rbx, rax
+    test    r12d, r12d
+    jz      .done
+    mov     byte [rbx], '.'
+    inc     rbx
+    mov     ecx, r12d                   ; write the fraction right to left, zero padded
+    mov     rax, r14
+    mov     r8d, 10
+.frac:
+    dec     ecx
+    xor     edx, edx
+    div     r8
+    add     dl, '0'
+    mov     [rbx + rcx], dl
+    test    ecx, ecx
+    jnz     .frac
+    add     rbx, r12
+.done:
+    mov     rax, rbx
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; file_stat_mtime(rdi path) -> rax mtime seconds or -errno
+file_stat_mtime:
+    sub     rsp, 152
+    mov     eax, SYS_STAT
+    mov     rsi, rsp
+    syscall
+    test    rax, rax
+    js      .ret
+    mov     rax, [rsp + 88]             ; st_mtime
+.ret:
+    add     rsp, 152
+    ret
+
+; file_patch(rdi path, rsi offset, rdx buf, rcx len) -> eax 0 / -errno.
+; Overwrites len bytes at offset of an existing file.
+file_patch:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12, rsi                    ; offset
+    mov     r13, rdx                    ; buf
+    mov     r14, rcx                    ; remaining
+    mov     eax, SYS_OPEN
+    mov     esi, O_WRONLY
+    xor     edx, edx
+    syscall
+    test    rax, rax
+    js      .ret
+    mov     rbx, rax
+    xor     r15d, r15d                  ; result
+.loop:
+    test    r14, r14
+    jz      .close
+    mov     eax, SYS_PWRITE64
+    mov     rdi, rbx
+    mov     rsi, r13
+    mov     rdx, r14
+    mov     r10, r12
+    syscall
+    cmp     rax, -EINTR
+    je      .loop
+    test    rax, rax
+    js      .err
+    jz      .eio
+    add     r13, rax
+    add     r12, rax
+    sub     r14, rax
+    jmp     .loop
+.eio:
+    mov     rax, -5
+.err:
+    mov     r15, rax
+.close:
+    mov     eax, SYS_CLOSE
+    mov     rdi, rbx
+    syscall
+    test    r15, r15
+    jnz     .res
+    test    rax, rax
+    js      .ret
+.res:
+    mov     rax, r15
+.ret:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; file_unlink(rdi path) -> eax 0 / -errno
+file_unlink:
+    mov     eax, SYS_UNLINK
+    syscall
+    ret
+
+; time_now() -> rax epoch seconds
+time_now:
+    mov     eax, SYS_TIME
+    xor     edi, edi
+    syscall
     ret

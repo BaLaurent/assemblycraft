@@ -2,12 +2,12 @@
 %include "common.inc"
 default rel
 
-global hotbar, hotbar_sel, game_target, game_has_target
+global hotbar, hotbar_sel, game_target, game_has_target, game_mode, game_time
 global game_new, game_load, game_save, game_frame
 
-extern world_header, world_get, world_set, world_load, world_save, world_generate
-extern player, player_spawn, player_step, player_look, player_eye, player_forward
-extern player_intersects_block, raycast, frame_input
+extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
+extern player, player_spawn, body_step, player_look, player_eye, player_forward
+extern body_intersects_block, raycast, frame_input
 
 section .rodata
 default_hotbar: db STONE, DIRT, GRASS, COBBLE, PLANKS, LOG, LEAVES, GLASS, BRICK
@@ -15,6 +15,11 @@ align 4
 step_dt:    dd 0.016666668
 repeat_dt:  dd 0.25
 reach:      dd 5.0
+
+section .data
+align 4
+game_mode: dd MODE_CREATIVE
+game_time: dd NEW_WORLD_TIME
 
 section .bss
 hotbar:          resb HOTBAR_SLOTS
@@ -47,6 +52,15 @@ game_new:
     push    rbp
     mov     rbp, rsp
     call    world_generate
+    mov     edi, 128
+    mov     esi, 128
+    call    world_top_y
+    inc     eax
+    mov     dword [world_header + WORLDHDR.spawn_x], 128
+    mov     [world_header + WORLDHDR.spawn_y], eax
+    mov     dword [world_header + WORLDHDR.spawn_z], 128
+    mov     dword [world_header + WORLDHDR.mode], MODE_CREATIVE
+    mov     dword [world_header + WORLDHDR.time], NEW_WORLD_TIME
     call    player_spawn
     call    reset_session
     pop     rbp
@@ -60,28 +74,27 @@ game_load:
     test    eax, eax
     jnz     .ret
     call    reset_session
-    lea     rsi, [world_header]
-    mov     eax, [rsi + WORLDHDR.px]
-    mov     [player + PLAYER.x], eax
-    mov     eax, [rsi + WORLDHDR.py]
-    mov     [player + PLAYER.y], eax
-    mov     eax, [rsi + WORLDHDR.pz]
-    mov     [player + PLAYER.z], eax
-    mov     eax, [rsi + WORLDHDR.yaw]
-    mov     [player + PLAYER.yaw], eax
-    mov     eax, [rsi + WORLDHDR.pitch]
-    mov     [player + PLAYER.pitch], eax
+    lea     rsi, [world_header + WORLDHDR.player]
+    lea     rdi, [player]
+    mov     ecx, BODY_size
+    rep     movsb
     xor     eax, eax
-    mov     [player + PLAYER.vx], eax
-    mov     [player + PLAYER.vy], eax
-    mov     [player + PLAYER.vz], eax
-    mov     [player + PLAYER.on_ground], eax
-    movzx   eax, byte [rsi + WORLDHDR.flying]
-    and     eax, 1
-    mov     [player + PLAYER.flying], eax
+    mov     [player + BODY.vx], eax
+    mov     [player + BODY.vy], eax
+    mov     [player + BODY.vz], eax
+    mov     [player + BODY.on_ground], eax
+    mov     [player + BODY.kbx], eax
+    mov     [player + BODY.kbz], eax
+    mov     [player + BODY.fall], eax
+    mov     [player + BODY.blocked], eax
+    mov     dword [player + BODY.half_w], __float32__(0.3)
+    mov     dword [player + BODY.height], __float32__(1.8)
+    mov     dword [player + BODY.speed], __float32__(4.317)
+    and     dword [player + BODY.flying], 1
+    lea     rsi, [world_header]
     xor     ecx, ecx
 .slot:
-    movzx   eax, byte [rsi + WORLDHDR.hotbar + rcx]
+    movzx   eax, byte [rsi + WORLDHDR.inventory + rcx*4 + ITEMSTACK.id]
     test    eax, eax
     jz      .keep_default
     cmp     eax, NUM_BLOCKS
@@ -91,7 +104,7 @@ game_load:
     inc     ecx
     cmp     ecx, HOTBAR_SLOTS
     jb      .slot
-    movzx   eax, byte [rsi + WORLDHDR.sel]
+    mov     eax, [rsi + WORLDHDR.sel]
     cmp     eax, HOTBAR_SLOTS
     jb      .sel_ok
     xor     eax, eax
@@ -104,28 +117,24 @@ game_load:
 
 ; game_save(rdi path) -> eax as world_save
 game_save:
+    push    rdi
+    lea     rsi, [player]
+    lea     rdi, [world_header + WORLDHDR.player]
+    mov     ecx, BODY_size
+    rep     movsb
+    pop     rdi
     lea     rsi, [world_header]
-    mov     eax, [player + PLAYER.x]
-    mov     [rsi + WORLDHDR.px], eax
-    mov     eax, [player + PLAYER.y]
-    mov     [rsi + WORLDHDR.py], eax
-    mov     eax, [player + PLAYER.z]
-    mov     [rsi + WORLDHDR.pz], eax
-    mov     eax, [player + PLAYER.yaw]
-    mov     [rsi + WORLDHDR.yaw], eax
-    mov     eax, [player + PLAYER.pitch]
-    mov     [rsi + WORLDHDR.pitch], eax
-    mov     eax, [player + PLAYER.flying]
-    mov     [rsi + WORLDHDR.flying], al
     mov     eax, [hotbar_sel]
-    mov     [rsi + WORLDHDR.sel], al
-    mov     rax, [hotbar]
-    mov     [rsi + WORLDHDR.hotbar], rax
-    mov     al, [hotbar + 8]
-    mov     [rsi + WORLDHDR.hotbar + 8], al
-    xor     eax, eax
-    mov     [rsi + WORLDHDR.pad], eax
-    mov     [rsi + WORLDHDR.pad + 4], al
+    mov     [rsi + WORLDHDR.sel], eax
+    xor     ecx, ecx
+.slot:
+    movzx   eax, byte [hotbar + rcx]
+    mov     [rsi + WORLDHDR.inventory + rcx*4 + ITEMSTACK.id], al
+    mov     byte [rsi + WORLDHDR.inventory + rcx*4 + ITEMSTACK.count], 1
+    mov     word [rsi + WORLDHDR.inventory + rcx*4 + ITEMSTACK.dmg], 0
+    inc     ecx
+    cmp     ecx, HOTBAR_SLOTS
+    jb      .slot
     jmp     world_save
 
 ; repeat_fire(edi held, esi pressed, rdx float* timer, xmm0 dt) -> eax fire
@@ -185,8 +194,8 @@ game_frame:
     ; 2. fly toggle
     cmp     dword [frame_input + FRAMEINPUT.toggle_fly], 0
     je      .no_fly
-    xor     dword [player + PLAYER.flying], 1
-    mov     dword [player + PLAYER.vy], 0
+    xor     dword [player + BODY.flying], 1
+    mov     dword [player + BODY.vy], 0
 .no_fly:
 
     ; 3. look
@@ -205,8 +214,9 @@ game_frame:
     jb      .steps_done
     cmp     ebx, 5
     jae     .steps_capped
-    lea     rdi, [frame_input + FRAMEINPUT.move]
-    call    player_step
+    lea     rdi, [player]
+    lea     rsi, [frame_input + FRAMEINPUT.move]
+    call    body_step
     movss   xmm0, [step_accum]
     subss   xmm0, [step_dt]
     movss   [step_accum], xmm0
@@ -273,10 +283,11 @@ game_frame:
     call    world_get
     test    eax, eax
     jnz     .no_place
-    mov     edi, [game_target + RAYHIT.px]
-    mov     esi, [game_target + RAYHIT.py]
-    mov     edx, [game_target + RAYHIT.pz]
-    call    player_intersects_block
+    lea     rdi, [player]
+    mov     esi, [game_target + RAYHIT.px]
+    mov     edx, [game_target + RAYHIT.py]
+    mov     ecx, [game_target + RAYHIT.pz]
+    call    body_intersects_block
     test    eax, eax
     jnz     .no_place
     mov     eax, [hotbar_sel]

@@ -4,13 +4,16 @@ default rel
 
 global test_raycast_hit_forward, test_raycast_miss_beyond_reach, test_raycast_hit_from_above
 global test_physics_land_on_floor, test_physics_wall_blocks
-global test_physics_jump_clears_one_block, test_player_intersects_block
+global test_physics_jump_clears_one_block, test_body_intersects_block
 
-extern player, player_step, player_intersects_block
+extern player, body_init, body_step, body_intersects_block
 extern raycast, world_clear, world_set
 
 section .rodata
 align 4
+k_half_w: dd 0.3
+k_height: dd 1.8
+k_speed:  dd 4.317
 k_reach: dd 5.0
 k_11:    dd 11.0
 k_12:    dd 12.0
@@ -21,7 +24,7 @@ k_z_hi:  dd 16.51
 
 section .bss
 align 4
-inp:    resb INPUT_size                 ; the INPUT handed to player_step
+inp:    resb INPUT_size                 ; the INPUT handed to body_step
 maxy:   resd 1                          ; highest feet y seen by the jump test
 
 section .text
@@ -102,18 +105,23 @@ set_wall:
     pop     rbp
     ret
 
-; reset_player(): zero the PLAYER struct and the input
+; reset_player(): standard player body (0.3 x 1.8, walk 4.317), zero input
 reset_player:
+    push    rbp
+    mov     rbp, rsp
     lea     rdi, [player]
-    mov     ecx, PLAYER_size
-    xor     eax, eax
-    rep     stosb
+    movss   xmm0, [k_half_w]
+    movss   xmm1, [k_height]
+    movss   xmm2, [k_speed]
+    call    body_init
     lea     rdi, [inp]
     mov     ecx, INPUT_size
+    xor     eax, eax
     rep     stosb
+    pop     rbp
     ret
 
-; run_steps(edi n >= 1): n times player_step(&inp)
+; run_steps(edi n >= 1): n times body_step(&player, &inp)
 run_steps:
     push    rbp
     mov     rbp, rsp
@@ -121,8 +129,9 @@ run_steps:
     sub     rsp, 8
     mov     ebx, edi
 .loop:
-    lea     rdi, [inp]
-    call    player_step
+    lea     rdi, [player]
+    lea     rsi, [inp]
+    call    body_step
     dec     ebx
     jnz     .loop
     add     rsp, 8
@@ -250,13 +259,13 @@ test_physics_land_on_floor:
     call    world_clear
     call    set_floor
     call    reset_player
-    SETF    [player + PLAYER.x], 16.5
-    SETF    [player + PLAYER.y], 12.0
-    SETF    [player + PLAYER.z], 16.5
+    SETF    [player + BODY.x], 16.5
+    SETF    [player + BODY.y], 12.0
+    SETF    [player + BODY.z], 16.5
     mov     edi, 120
     call    run_steps
-    FEQ     [player + PLAYER.y], k_11
-    cmp     dword [player + PLAYER.on_ground], 1
+    FEQ     [player + BODY.y], k_11
+    cmp     dword [player + BODY.on_ground], 1
     jne     .fail
     xor     eax, eax
     pop     rbp
@@ -273,17 +282,17 @@ test_physics_wall_blocks:
     call    set_floor
     call    set_wall
     call    reset_player
-    SETF    [player + PLAYER.x], 16.5
-    SETF    [player + PLAYER.y], 11.0
-    SETF    [player + PLAYER.z], 16.5
-    SETF    [player + PLAYER.yaw], 90.0
-    mov     dword [player + PLAYER.on_ground], 1
+    SETF    [player + BODY.x], 16.5
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 16.5
+    SETF    [player + BODY.yaw], 90.0
+    mov     dword [player + BODY.on_ground], 1
     mov     dword [inp + INPUT.fwd], 1
     mov     edi, 120
     call    run_steps
-    FRANGE  [player + PLAYER.x], k_x_lo, k_x_hi
-    FEQ     [player + PLAYER.y], k_11
-    FRANGE  [player + PLAYER.z], k_z_lo, k_z_hi
+    FRANGE  [player + BODY.x], k_x_lo, k_x_hi
+    FEQ     [player + BODY.y], k_11
+    FRANGE  [player + BODY.z], k_z_lo, k_z_hi
     xor     eax, eax
     pop     rbp
     ret
@@ -298,19 +307,19 @@ test_physics_jump_clears_one_block:
     call    world_clear
     call    set_floor
     call    reset_player
-    SETF    [player + PLAYER.x], 16.5
-    SETF    [player + PLAYER.y], 11.0
-    SETF    [player + PLAYER.z], 16.5
-    mov     dword [player + PLAYER.on_ground], 1
+    SETF    [player + BODY.x], 16.5
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 16.5
+    mov     dword [player + BODY.on_ground], 1
     mov     dword [inp + INPUT.jump], 1
     mov     edi, 1
     call    run_steps
     mov     dword [inp + INPUT.jump], 0
-    mov     eax, [player + PLAYER.y]
+    mov     eax, [player + BODY.y]
     mov     [maxy], eax
     mov     edi, 59
     call    .track
-    FEQ     [player + PLAYER.y], k_11
+    FEQ     [player + BODY.y], k_11
     movss   xmm0, [maxy]
     ucomiss xmm0, [k_12]
     jbe     .fail                       ; need max y > 12.0
@@ -331,7 +340,7 @@ test_physics_jump_clears_one_block:
 .t_loop:
     mov     edi, 1
     call    run_steps
-    movss   xmm0, [player + PLAYER.y]
+    movss   xmm0, [player + BODY.y]
     maxss   xmm0, [maxy]
     movss   [maxy], xmm0
     dec     ebx
@@ -343,22 +352,23 @@ test_physics_jump_clears_one_block:
 
 ; player at (16.5, 11, 16.5): box x 16.2..16.8, y 11..12.8, z 16.2..16.8
 %macro EXPECT_OVERLAP 4                 ; x, y, z, expected 0/1
-    mov     edi, %1
-    mov     esi, %2
-    mov     edx, %3
-    call    player_intersects_block
+    lea     rdi, [player]
+    mov     esi, %1
+    mov     edx, %2
+    mov     ecx, %3
+    call    body_intersects_block
     cmp     eax, %4
     jne     .fail
 %endmacro
 
-test_player_intersects_block:
+test_body_intersects_block:
     push    rbp
     mov     rbp, rsp
     call    world_clear
     call    reset_player
-    SETF    [player + PLAYER.x], 16.5
-    SETF    [player + PLAYER.y], 11.0
-    SETF    [player + PLAYER.z], 16.5
+    SETF    [player + BODY.x], 16.5
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 16.5
     EXPECT_OVERLAP 16, 11, 16, 1
     EXPECT_OVERLAP 16, 12, 16, 1
     EXPECT_OVERLAP 16, 13, 16, 0

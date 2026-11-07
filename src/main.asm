@@ -8,7 +8,7 @@ global main
 extern sys_print, str_eq, parse_u32, str_append, i32_to_str, selftest_run
 extern game_load, game_new, game_save, game_frame, frame_input
 extern render_init, render_update_chunks, render_frame, input_init, input_poll
-extern player, hotbar, hotbar_sel, block_names, floor_i
+extern player, hotbar, hotbar_sel, item_names, floor_i
 
 section .rodata
 usage_text:
@@ -17,7 +17,7 @@ usage_text:
     db "  --seed N      seed for a newly generated world (default: random)", 10
     db "  --selftest    run internal tests and exit", 10
     db "controls: WASD move, mouse look, Space jump (fly: up), Left Shift fly down, Left Ctrl sprint,", 10
-    db "          F toggle fly, LMB break, RMB place, MMB pick block, 1-9 / wheel select, F5 save,", 10
+    db "          F toggle fly, LMB break, RMB place, MMB pick block, 1-9 / wheel select,", 10
     db "          Esc release mouse (click to recapture), close window to save and quit", 10, 0
 opt_help:     db "--help", 0
 opt_selftest: db "--selftest", 0
@@ -194,7 +194,7 @@ update_title:
     call    str_append
     mov     rbx, rax
 %macro TITLE_COORD 2                    ; field, separator
-    movss   xmm0, [player + PLAYER.%1]
+    movss   xmm0, [player + BODY.%1]
     call    floor_i
     mov     edi, eax
     mov     rsi, rbx
@@ -209,10 +209,10 @@ update_title:
     TITLE_COORD z, s_sep
     mov     eax, [hotbar_sel]
     movzx   eax, byte [hotbar + rax]
-    mov     rsi, [block_names + rax*8]
+    mov     rsi, [item_names + rax*8]
     mov     rdi, rbx
     call    str_append
-    cmp     dword [player + PLAYER.flying], 0
+    cmp     dword [player + BODY.flying], 0
     je      .no_fly
     mov     rdi, rax
     lea     rsi, [s_fly]
@@ -322,16 +322,6 @@ run_game:
     movsd   [frame_dt], xmm1
     mov     rdi, [window]
     call    input_poll
-    cmp     dword [frame_input + FRAMEINPUT.save], 0
-    je      .no_save
-    mov     rdi, [world_path]
-    call    game_save
-    test    eax, eax
-    jz      .no_save
-    lea     rdi, [s_save_fail]
-    lea     rsi, [s_nl]
-    call    print_path_msg
-.no_save:
     cvtsd2ss xmm0, [frame_dt]
     call    game_frame
     call    render_update_chunks

@@ -1,12 +1,14 @@
-; blockdefs.asm - per-block flags, atlas tiles and display names.
+; blockdefs.asm - per-block flags, atlas tiles, digging and harvest rules.
+; Indexed by block id 0..12 (NUM_BLOCKS). Display names live in itemdefs.asm.
 %include "common.inc"
 default rel
 
-global block_flags, block_tiles, block_names
+global block_flags, block_tiles, block_hardness, block_tool, block_needs_tool
+global block_drop, block_dig_sound, block_step_sound
 
 section .rodata
-;             AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK
-block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3
+;             AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK TABLE
+block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3,      3
 
 ; tiles per block: top, side, bottom
 block_tiles:
@@ -22,21 +24,21 @@ block_tiles:
     db 10, 10, 10                       ; GLASS
     db 11, 11, 11                       ; BRICK
     db 12, 12, 12                       ; BEDROCK
+    db TILE_TABLE_TOP, TILE_TABLE_SIDE, 5 ; CRAFTING_TABLE
 
-name_air:     db "Air", 0
-name_stone:   db "Stone", 0
-name_grass:   db "Grass", 0
-name_dirt:    db "Dirt", 0
-name_cobble:  db "Cobblestone", 0
-name_planks:  db "Planks", 0
-name_log:     db "Log", 0
-name_leaves:  db "Leaves", 0
-name_sand:    db "Sand", 0
-name_glass:   db "Glass", 0
-name_brick:   db "Bricks", 0
-name_bedrock: db "Bedrock", 0
+align 4
+; seconds-scale hardness; negative = unbreakable
+block_hardness:
+    dd 0.0, 1.5, 0.6, 0.5, 2.0, 2.0, 2.0, 0.2, 0.5, 0.3, 2.0, -1.0, 2.5
 
-align 8
-block_names:
-    dq name_air, name_stone, name_grass, name_dirt, name_cobble, name_planks
-    dq name_log, name_leaves, name_sand, name_glass, name_brick, name_bedrock
+;                  AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK TABLE
+block_tool:       db 0, TOOL_PICKAXE, TOOL_SHOVEL, TOOL_SHOVEL, TOOL_PICKAXE, TOOL_AXE, TOOL_AXE, 0, TOOL_SHOVEL, 0, TOOL_PICKAXE, 0, TOOL_AXE
+block_needs_tool: db 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0
+; harvested item (LEAVES: 0, the apple chance is rolled by the game)
+block_drop:       db 0, COBBLE, DIRT, DIRT, COBBLE, PLANKS, LOG, 0, SAND, 0, BRICK, 0, CRAFTING_TABLE
+block_dig_sound:
+    db 0, SND_DIG_STONE, SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_STONE, SND_DIG_WOOD, SND_DIG_WOOD
+    db SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_GLASS, SND_DIG_STONE, SND_DIG_STONE, SND_DIG_WOOD
+block_step_sound:
+    db 0, SND_STEP_STONE, SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_STONE, SND_STEP_WOOD, SND_STEP_WOOD
+    db SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_WOOD

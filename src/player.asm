@@ -1,11 +1,11 @@
-; player.asm - player state, fixed-step movement physics with block collision, view vectors.
+; player.asm - body physics (player and mobs), the player body, view vectors.
 %include "common.inc"
 default rel
 
-global player, player_spawn, player_step, player_look
-global player_eye, player_forward, player_intersects_block
+global player, body_init, body_step, body_intersects_block
+global player_spawn, player_look, player_eye, player_forward
 
-extern sincos_deg, world_is_solid, world_top_y
+extern sincos_deg, world_is_solid, world_header
 
 section .rodata
 align 4
@@ -13,47 +13,61 @@ c_dt:        dd 0.016666668             ; one fixed step, seconds
 c_gravity:   dd 32.0
 c_jump:      dd 9.0
 c_fall_min:  dd -50.0                   ; terminal fall velocity (lower bound of vy)
-c_walk:      dd 4.317
 c_sprint:    dd 5.612
 c_fly_h:     dd 10.89
 c_fly_v:     dd 7.5
 c_eps:       dd 0.001
 c_eye:       dd 1.62
 c_one:       dd 1.0
+c_half:      dd 0.5
 c_sens:      dd 0.15                    ; degrees per mouse pixel
 c_full:      dd 360.0
 c_pitch_max: dd 89.9
 c_pitch_min: dd -89.9
-; player box relative to (x, y, z), y = feet: half-width 0.3, height 1.8
-box_lo:      dd -0.3, 0.0, -0.3
-box_hi:      dd  0.3, 1.8,  0.3
+c_kb_decay:  dd 0.8
+c_kb_min:    dd 0.05
+c_abs_mask:  dd 0x7FFFFFFF             ; loaded with movss (andps needs a register here)
+c_p_half_w:  dd 0.3
+c_p_height:  dd 1.8
+c_p_speed:   dd 4.317
 
 section .bss
 alignb 16
-player: resb PLAYER_size
+player: resb BODY_size
 
 section .text
 
-; player_spawn(): stand on top of the column at (128, 128), looking slightly down.
+; body_init(rdi body, xmm0 half_w, xmm1 height, xmm2 speed): zero, then set the box/speed
+body_init:
+    mov     rdx, rdi
+    mov     ecx, BODY_size
+    xor     eax, eax
+    rep     stosb
+    movss   [rdx + BODY.half_w], xmm0
+    movss   [rdx + BODY.height], xmm1
+    movss   [rdx + BODY.speed], xmm2
+    ret
+
+; player_spawn(): standard player box at the header spawn cell, looking slightly down.
 player_spawn:
     push    rbp
     mov     rbp, rsp
-    mov     edi, 128
-    mov     esi, 128
-    call    world_top_y
-    inc     eax
-    cvtsi2ss xmm0, eax
+    lea     rdi, [player]
+    movss   xmm0, [c_p_half_w]
+    movss   xmm1, [c_p_height]
+    movss   xmm2, [c_p_speed]
+    call    body_init
     lea     rdx, [player]
-    movss   [rdx + PLAYER.y], xmm0
-    mov     dword [rdx + PLAYER.x], __float32__(128.5)
-    mov     dword [rdx + PLAYER.z], __float32__(128.5)
-    mov     dword [rdx + PLAYER.vx], 0
-    mov     dword [rdx + PLAYER.vy], 0
-    mov     dword [rdx + PLAYER.vz], 0
-    mov     dword [rdx + PLAYER.yaw], 0
-    mov     dword [rdx + PLAYER.pitch], __float32__(30.0)
-    mov     dword [rdx + PLAYER.on_ground], 0
-    mov     dword [rdx + PLAYER.flying], 0
+    movss   xmm1, [c_half]
+    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_x]
+    addss   xmm0, xmm1
+    movss   [rdx + BODY.x], xmm0
+    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_y]
+    movss   [rdx + BODY.y], xmm0
+    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_z]
+    addss   xmm0, xmm1
+    movss   [rdx + BODY.z], xmm0
+    mov     dword [rdx + BODY.pitch], __float32__(30.0)
     pop     rbp
     ret
 
@@ -63,7 +77,7 @@ player_look:
     movss   xmm2, [c_sens]
     mulss   xmm0, xmm2
     mulss   xmm1, xmm2
-    addss   xmm0, [rax + PLAYER.yaw]
+    addss   xmm0, [rax + BODY.yaw]
     movss   xmm3, [c_full]
     xorps   xmm4, xmm4
 .wrap_up:                               ; while (yaw < 0) yaw += 360
@@ -77,22 +91,22 @@ player_look:
     subss   xmm0, xmm3
     jmp     .wrap_down
 .yaw_ok:
-    movss   [rax + PLAYER.yaw], xmm0
-    addss   xmm1, [rax + PLAYER.pitch]
+    movss   [rax + BODY.yaw], xmm0
+    addss   xmm1, [rax + BODY.pitch]
     maxss   xmm1, [c_pitch_min]
     minss   xmm1, [c_pitch_max]
-    movss   [rax + PLAYER.pitch], xmm1
+    movss   [rax + BODY.pitch], xmm1
     ret
 
 ; player_eye(rdi float out[3]): eye position = feet + 1.62 up
 player_eye:
     lea     rax, [player]
-    movss   xmm0, [rax + PLAYER.x]
+    movss   xmm0, [rax + BODY.x]
     movss   [rdi], xmm0
-    movss   xmm0, [rax + PLAYER.y]
+    movss   xmm0, [rax + BODY.y]
     addss   xmm0, [c_eye]
     movss   [rdi + 4], xmm0
-    movss   xmm0, [rax + PLAYER.z]
+    movss   xmm0, [rax + BODY.z]
     movss   [rdi + 8], xmm0
     ret
 
@@ -104,11 +118,11 @@ player_forward:
     push    rbx
     sub     rsp, 24                     ; [rsp] sin yaw, [rsp+4] cos yaw
     mov     rbx, rdi
-    movss   xmm0, [player + PLAYER.yaw]
+    movss   xmm0, [player + BODY.yaw]
     call    sincos_deg
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
-    movss   xmm0, [player + PLAYER.pitch]
+    movss   xmm0, [player + BODY.pitch]
     call    sincos_deg                  ; xmm0 = sin pitch, xmm1 = cos pitch
     movss   xmm2, [rsp]
     mulss   xmm2, xmm1
@@ -126,35 +140,58 @@ player_forward:
     pop     rbp
     ret
 
-; player_intersects_block(edi x, esi y, edx z) -> eax 0/1
-; Strict overlap of the block [b, b+1]^3 with the player box.
-%macro OVERLAP_AXIS 2                   ; %1 = int coordinate register, %2 = axis 0..2
-    cvtsi2ss xmm0, %1
-    movss   xmm1, [rax + PLAYER.x + %2*4]
-    movaps  xmm2, xmm1
-    addss   xmm1, [box_lo + %2*4]       ; box min
-    addss   xmm2, [box_hi + %2*4]       ; box max
+; box_lo(rdi body, ecx axis) -> xmm1 offset of the box min on that axis (0 for y)
+; box_hi(rdi body, ecx axis) -> xmm2 offset of the box max on that axis
+%macro BOX_LO 3                         ; dst xmm, body reg, axis reg (32-bit)
+    xorps   %1, %1
+    cmp     %3, 1
+    je      %%y
+    subss   %1, [%2 + BODY.half_w]
+%%y:
+%endmacro
+%macro BOX_HI 3
+    movss   %1, [%2 + BODY.half_w]
+    cmp     %3, 1
+    jne     %%xz
+    movss   %1, [%2 + BODY.height]
+%%xz:
+%endmacro
+
+; body_intersects_block(rdi body, esi x, edx y, ecx z) -> eax 0/1
+; Strict overlap of the block [b, b+1]^3 with the body box.
+body_intersects_block:
+    sub     rsp, 16
+    mov     [rsp], esi
+    mov     [rsp + 4], edx
+    mov     [rsp + 8], ecx
+    xor     ecx, ecx
+.axis:
+    cvtsi2ss xmm0, dword [rsp + rcx*4]  ; b
+    movss   xmm3, [rdi + rcx*4]         ; position
+    BOX_LO  xmm1, rdi, ecx
+    BOX_HI  xmm2, rdi, ecx
+    addss   xmm1, xmm3                  ; box min
+    addss   xmm2, xmm3                  ; box max
     ucomiss xmm2, xmm0
     jbe     .no                         ; max <= b
     addss   xmm0, [c_one]
     ucomiss xmm0, xmm1
     jbe     .no                         ; b + 1 <= min
-%endmacro
-
-player_intersects_block:
-    lea     rax, [player]
-    OVERLAP_AXIS edi, 0
-    OVERLAP_AXIS esi, 1
-    OVERLAP_AXIS edx, 2
+    inc     ecx
+    cmp     ecx, 3
+    jb      .axis
     mov     eax, 1
+    add     rsp, 16
     ret
 .no:
     xor     eax, eax
+    add     rsp, 16
     ret
 
-; move_axis(edi axis 0/1/2, xmm0 d): move the player by d along one axis and, if the box
-; then overlaps a solid cell, snap it flush against that cell and zero the velocity there.
-; Only the leading slab (the cell layer the box just entered) is tested for the axis moved.
+; move_axis(rdi body, esi axis 0/1/2, xmm0 d): move the body by d along one axis and, if
+; the box then overlaps a solid cell, snap it flush against that cell and zero the velocity
+; there. Only the leading slab (the cell layer the box just entered) is tested for the axis
+; moved, which is valid while |d| < 1 block per step.
 ; Frame: lo[3] @0, hi[3] @16 (cell ranges), direction @32 (1 = moving +, 0 = moving -).
 move_axis:
     push    rbp
@@ -168,8 +205,8 @@ move_axis:
     xorps   xmm1, xmm1
     ucomiss xmm0, xmm1
     je      .done                       ; d == 0 (or NaN): nothing to do
-    lea     rbx, [player]
-    mov     r12d, edi
+    mov     rbx, rdi
+    mov     r12d, esi
     seta    al
     movzx   eax, al
     mov     [rsp + 32], eax
@@ -178,10 +215,11 @@ move_axis:
     movss   [rbx + r12*4], xmm1
     xor     ecx, ecx
 .bounds:                                ; cells overlapped by the box on each axis
-    movss   xmm1, [rbx + rcx*4]
-    movaps  xmm2, xmm1
-    addss   xmm1, [box_lo + rcx*4]
-    addss   xmm2, [box_hi + rcx*4]
+    movss   xmm3, [rbx + rcx*4]
+    BOX_LO  xmm1, rbx, ecx
+    BOX_HI  xmm2, rbx, ecx
+    addss   xmm1, xmm3
+    addss   xmm2, xmm3
     roundss xmm1, xmm1, 9               ; floor(min)
     cvttss2si eax, xmm1
     mov     [rsp + rcx*4], eax
@@ -224,25 +262,31 @@ move_axis:
     jle     .scan_z
     jmp     .done
 .hit:
+    cmp     r12d, 1
+    je      .not_blocked
+    mov     dword [rbx + BODY.blocked], 1
+.not_blocked:
     mov     eax, [rsp + r12*4]          ; i = leading slab index (lo == hi on this axis)
     cvtsi2ss xmm1, eax
     cmp     dword [rsp + 32], 0
     je      .hit_low
-    subss   xmm1, [box_hi + r12*4]      ; i - half extent - eps
+    BOX_HI  xmm2, rbx, r12d
+    subss   xmm1, xmm2                  ; i - extent - eps
     subss   xmm1, [c_eps]
     jmp     .store
 .hit_low:
     addss   xmm1, [c_one]
-    subss   xmm1, [box_lo + r12*4]      ; i + 1 + half extent (+ eps); feet land exactly on i + 1
+    BOX_LO  xmm2, rbx, r12d
+    subss   xmm1, xmm2                  ; i + 1 + extent (+ eps); feet land exactly on i + 1
     cmp     r12d, 1
     jne     .low_side
-    mov     dword [rbx + PLAYER.on_ground], 1
+    mov     dword [rbx + BODY.on_ground], 1
     jmp     .store
 .low_side:
     addss   xmm1, [c_eps]
 .store:
     movss   [rbx + r12*4], xmm1
-    mov     dword [rbx + PLAYER.vx + r12*4], 0
+    mov     dword [rbx + BODY.vx + r12*4], 0
 .done:
     add     rsp, 40
     pop     r15
@@ -253,16 +297,34 @@ move_axis:
     pop     rbp
     ret
 
-; player_step(rdi INPUT*): one fixed 1/60 s step. Sets velocity from input, then moves
-; Y, X, Z in that order so that resting on the ground leaves y exactly integral.
-player_step:
+; decay_kb(rdi float*): kb *= 0.8; zero once |kb| < 0.05
+decay_kb:
+    movss   xmm0, [rdi]
+    mulss   xmm0, [c_kb_decay]
+    movss   xmm1, [c_abs_mask]
+    andps   xmm1, xmm0                  ; |kb|
+    comiss  xmm1, [c_kb_min]
+    jae     .store
+    xorps   xmm0, xmm0
+.store:
+    movss   [rdi], xmm0
+    ret
+
+; body_step(rdi body, rsi INPUT*) -> xmm0 fall distance that ended on this step (0 if none).
+; One fixed 1/60 s step. Sets velocity from input plus knockback, then moves Y, X, Z in that
+; order so that resting on the ground leaves y exactly integral.
+body_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    lea     rbx, [player]
-    mov     r12, rdi
-    movss   xmm0, [rbx + PLAYER.yaw]
+    sub     rsp, 16                     ; [rsp] y0
+    mov     rbx, rdi
+    mov     r12, rsi
+    movss   xmm0, [rbx + BODY.y]
+    movss   [rsp], xmm0
+    mov     dword [rbx + BODY.blocked], 0
+    movss   xmm0, [rbx + BODY.yaw]
     call    sincos_deg                  ; xmm0 = sin yaw, xmm1 = cos yaw
     ; wish direction m = fwd * (sin, -cos) + strafe * (cos, sin) on (x, z)
     cvtsi2ss xmm2, dword [r12 + INPUT.fwd]
@@ -288,23 +350,29 @@ player_step:
     divss   xmm3, xmm5
 .speed:
     movss   xmm5, [c_fly_h]
-    cmp     dword [rbx + PLAYER.flying], 0
+    cmp     dword [rbx + BODY.flying], 0
     jne     .have_speed
-    movss   xmm5, [c_walk]
+    movss   xmm5, [rbx + BODY.speed]
     cmp     dword [r12 + INPUT.sprint], 0
     je      .have_speed
     movss   xmm5, [c_sprint]
 .have_speed:
     mulss   xmm4, xmm5
     mulss   xmm3, xmm5
-    movss   [rbx + PLAYER.vx], xmm4
-    movss   [rbx + PLAYER.vz], xmm3
-    cmp     dword [rbx + PLAYER.flying], 0
+    addss   xmm4, [rbx + BODY.kbx]
+    addss   xmm3, [rbx + BODY.kbz]
+    movss   [rbx + BODY.vx], xmm4
+    movss   [rbx + BODY.vz], xmm3
+    lea     rdi, [rbx + BODY.kbx]
+    call    decay_kb
+    lea     rdi, [rbx + BODY.kbz]
+    call    decay_kb
+    cmp     dword [rbx + BODY.flying], 0
     jne     .fly_vy
-    movss   xmm0, [rbx + PLAYER.vy]
+    movss   xmm0, [rbx + BODY.vy]
     cmp     dword [r12 + INPUT.jump], 0
     je      .fall
-    cmp     dword [rbx + PLAYER.on_ground], 0
+    cmp     dword [rbx + BODY.on_ground], 0
     je      .fall
     movss   xmm0, [c_jump]
     jmp     .vy_set
@@ -324,20 +392,46 @@ player_step:
     je      .vy_set
     subss   xmm0, [c_fly_v]
 .vy_set:
-    movss   [rbx + PLAYER.vy], xmm0
-    mov     dword [rbx + PLAYER.on_ground], 0
-    movss   xmm0, [rbx + PLAYER.vy]
+    movss   [rbx + BODY.vy], xmm0
+    mov     dword [rbx + BODY.on_ground], 0
+    movss   xmm0, [rbx + BODY.vy]
     mulss   xmm0, [c_dt]
-    mov     edi, 1
+    mov     rdi, rbx
+    mov     esi, 1
     call    move_axis
-    movss   xmm0, [rbx + PLAYER.vx]
+    movss   xmm0, [rbx + BODY.vx]
     mulss   xmm0, [c_dt]
-    xor     edi, edi
+    mov     rdi, rbx
+    xor     esi, esi
     call    move_axis
-    movss   xmm0, [rbx + PLAYER.vz]
+    movss   xmm0, [rbx + BODY.vz]
     mulss   xmm0, [c_dt]
-    mov     edi, 2
+    mov     rdi, rbx
+    mov     esi, 2
     call    move_axis
+    ; fall tracking
+    xorps   xmm0, xmm0
+    cmp     dword [rbx + BODY.flying], 0
+    jne     .fall_reset
+    movss   xmm1, [rsp]                 ; y0 - y
+    subss   xmm1, [rbx + BODY.y]
+    cmp     dword [rbx + BODY.on_ground], 0
+    je      .airborne
+    maxss   xmm1, xmm0                  ; max(0, y0 - y)
+    addss   xmm1, [rbx + BODY.fall]
+    movss   [rbx + BODY.fall], xmm0
+    movaps  xmm0, xmm1                  ; landed
+    jmp     .ret
+.airborne:
+    comiss  xmm1, xmm0
+    jbe     .ret                        ; not descending
+    addss   xmm1, [rbx + BODY.fall]
+    movss   [rbx + BODY.fall], xmm1
+    jmp     .ret
+.fall_reset:
+    movss   [rbx + BODY.fall], xmm0
+.ret:
+    add     rsp, 16
     pop     r12
     pop     rbx
     pop     rbp

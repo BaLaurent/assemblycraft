@@ -3,7 +3,7 @@
 %include "gl.inc"
 default rel
 
-global render_init, render_update_chunks, render_frame
+global render_init, render_update_chunks, render_frame, tex_id
 
 extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty, block_tiles
 extern player, player_eye, hotbar, hotbar_sel, game_target, game_has_target
@@ -298,12 +298,12 @@ render_frame:
     mov     edi, GL_MODELVIEW
     call    glMatrixMode
     call    glLoadIdentity
-    movss   xmm0, [player + PLAYER.pitch]
+    movss   xmm0, [player + BODY.pitch]
     movss   xmm1, [f_one]
     xorps   xmm2, xmm2
     xorps   xmm3, xmm3
     call    glRotatef
-    movss   xmm0, [player + PLAYER.yaw]
+    movss   xmm0, [player + BODY.yaw]
     xorps   xmm1, xmm1
     movss   xmm2, [f_one]
     xorps   xmm3, xmm3

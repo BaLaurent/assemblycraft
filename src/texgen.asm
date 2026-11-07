@@ -1,8 +1,9 @@
-; texgen.asm - procedural 256x256 RGBA texture atlas (13 tiles of 16x16).
+; texgen.asm - procedural 256x256 RGBA texture atlas (16x16 tiles plus the 8x8 font).
 ;
-; texgen_build(rdi out): zero out[262144], then draw tiles 0..12 in order using a
-; single xorshift32 stream (state 0x12345678, x ^= x<<13; x ^= x>>17; x ^= x<<5;
-; a "draw" returns the NEW state). Pixel = base*m >> 8 per channel, alpha 255.
+; texgen_build(rdi out): zero out[262144], then draw tiles in order using a single
+; xorshift32 stream (state 0x12345678, x ^= x<<13; x ^= x>>17; x ^= x<<5; a "draw"
+; returns the NEW state). Pixel = base*m >> 8 per channel, alpha 255. The font is
+; painted last (white glyph texels) at atlas rows FONT_Y..FONT_Y+47.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -13,6 +14,8 @@
 default rel
 
 global texgen_build
+
+extern font8x8
 
 ; packed colour: R | G<<8 | B<<16 (little-endian dword = RGBA bytes, A in bits 24..31)
 %define RGB(r, g, b) ((r) | ((g) << 8) | ((b) << 16))
@@ -329,6 +332,39 @@ texgen_build:
     TILE_BEGIN 12
     NOISE_PIXEL RGB(80,80,80), 64, 191
     TILE_END
+
+    ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
+    xor     r9d, r9d                    ; glyph index 0..95
+.font_glyph:
+    xor     r14d, r14d                  ; row y
+.font_row:
+    mov     eax, r9d
+    lea     eax, [r14 + rax * 8]
+    lea     rcx, [font8x8]
+    movzx   r10d, byte [rcx + rax]      ; row bits, bit 0 = leftmost
+    xor     r15d, r15d                  ; column x
+.font_col:
+    bt      r10d, r15d
+    jnc     .font_next
+    mov     eax, r9d                    ; atlas y = FONT_Y + (g>>4)*8 + y
+    shr     eax, 4
+    lea     eax, [r14 + rax * 8 + FONT_Y]
+    shl     eax, 8
+    mov     ecx, r9d                    ; atlas x = (g&15)*8 + x
+    and     ecx, 15
+    lea     ecx, [r15 + rcx * 8]
+    add     eax, ecx
+    mov     dword [r12 + rax * 4], 0xFFFFFFFF
+.font_next:
+    inc     r15d
+    cmp     r15d, 8
+    jb      .font_col
+    inc     r14d
+    cmp     r14d, 8
+    jb      .font_row
+    inc     r9d
+    cmp     r9d, 96
+    jb      .font_glyph
 
     add     rsp, 24
     pop     r15

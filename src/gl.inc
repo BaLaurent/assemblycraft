@@ -8,6 +8,9 @@ extern glfwWindowShouldClose, glfwPollEvents, glfwGetTime, glfwSwapBuffers
 extern glfwGetFramebufferSize, glfwSetWindowTitle
 extern glfwGetKey, glfwGetMouseButton, glfwGetCursorPos, glfwSetInputMode
 extern glfwRawMouseMotionSupported, glfwSetScrollCallback
+extern glfwSetKeyCallback, glfwSetCharCallback, glfwGetKeyName
+extern glfwGetWindowSize, glfwGetWindowPos, glfwGetWindowAttrib
+extern glfwGetPrimaryMonitor, glfwGetVideoMode, glfwSetWindowMonitor, glfwSetWindowShouldClose
 
 ; ---- GL functions ---------------------------------------------------------
 extern glViewport, glClearColor, glClear
@@ -18,10 +21,16 @@ extern glVertexPointer, glTexCoordPointer, glColorPointer, glDrawArrays
 extern glGenTextures, glBindTexture, glPixelStorei, glTexImage2D, glTexParameteri
 extern glFogi, glFogf, glFogfv, glAlphaFunc, glBlendFunc
 extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoord2i
+extern glActiveTexture, glTexEnvi, glTexEnvfv, glPushMatrix, glPopMatrix
+extern glColor3f, glColor4ub, glDepthMask
 
 ; ---- GLFW enums -----------------------------------------------------------
 %define GLFW_TRUE              1
 %define GLFW_PRESS             1
+%define GLFW_RELEASE           0
+%define GLFW_REPEAT            2
+%define GLFW_FOCUSED           0x20001
+%define GLFW_DONT_CARE         -1
 %define GLFW_DEPTH_BITS        0x21005
 %define GLFW_CURSOR            0x33001
 %define GLFW_CURSOR_NORMAL     0x34001
@@ -38,13 +47,18 @@ extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoor
 %define KEY_9             57
 %define KEY_A             65
 %define KEY_D             68
-%define KEY_F             70
+%define KEY_E             69
 %define KEY_S             83
 %define KEY_W             87
 %define KEY_ESCAPE        256
-%define KEY_F5            294
+%define KEY_ENTER         257
+%define KEY_BACKSPACE     259
+%define KEY_F3            292
+%define KEY_F11           300
+%define KEY_KP_ENTER      335
 %define KEY_LEFT_SHIFT    340
 %define KEY_LEFT_CONTROL  341
+%define KEY_RIGHT_SHIFT   344
 
 %define MOUSE_LEFT    0
 %define MOUSE_RIGHT   1
@@ -90,3 +104,24 @@ extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoor
 %define GL_DEPTH_BUFFER_BIT      0x100
 %define GL_ARRAY_BUFFER          0x8892
 %define GL_STATIC_DRAW           0x88E4
+
+; texture units / env combiner
+%define GL_TEXTURE0              0x84C0
+%define GL_TEXTURE1              0x84C1
+%define GL_TEXTURE_ENV           0x2300
+%define GL_TEXTURE_ENV_MODE      0x2200
+%define GL_TEXTURE_ENV_COLOR     0x2201
+%define GL_COMBINE               0x8570
+%define GL_COMBINE_RGB           0x8571
+%define GL_COMBINE_ALPHA         0x8572
+%define GL_SOURCE0_RGB           0x8580
+%define GL_SOURCE1_RGB           0x8581
+%define GL_SOURCE0_ALPHA         0x8588
+%define GL_OPERAND0_RGB          0x8590
+%define GL_OPERAND1_RGB          0x8591
+%define GL_OPERAND0_ALPHA        0x8598
+%define GL_PREVIOUS              0x8578
+%define GL_CONSTANT              0x8576
+%define GL_MODULATE              0x2100
+%define GL_REPLACE               0x1E01
+%define GL_SRC_COLOR             0x0300

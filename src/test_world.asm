@@ -1,33 +1,23 @@
-; test_world.asm - world storage tests plus the shared fnv1a helper.
+; test_world.asm - world storage tests.
 %include "common.inc"
 default rel
 
-global fnv1a, test_world_bounds, test_world_set_marks_dirty, test_world_save_load
+global test_world_bounds, test_world_set_marks_dirty, test_world_save_load
+global test_world_load_v1_converts
 
 extern blocks, chunk_dirty, world_header
 extern world_get, world_set, world_is_solid, world_clear, world_save, world_load
-extern file_write_atomic
+extern file_write_atomic, file_unlink, fnv1a
 
 section .rodata
 save_path: db "/tmp/assemblycraft-selftest.acw", 0
+v1_path:   db "/tmp/assemblycraft-selftest-v1.acw", 0
 garbage:   db "garbage!!!"
+v1_magic:  db "ACRAFT01"
+v2_magic:  db "ACRAFT02"
+v1_hotbar: db 1, 3, 2, 4, 5, 6, 7, 9, 10
 
 section .text
-
-; fnv1a(rdi ptr, rsi len) -> eax  (FNV-1a 32-bit)
-fnv1a:
-    mov     eax, 2166136261
-    test    rsi, rsi
-    jz      .done
-.loop:
-    movzx   ecx, byte [rdi]
-    xor     eax, ecx
-    imul    eax, eax, 16777619
-    inc     rdi
-    dec     rsi
-    jnz     .loop
-.done:
-    ret
 
 ; expect eax == value, else fail
 %macro EXPECT_EAX 1
@@ -132,6 +122,12 @@ test_world_save_load:
     push    rbx
     sub     rsp, 8
     call    world_clear
+%if WORLDHDR_size != 1024
+    jmp     .fail
+%endif
+%if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.mobs != 304
+    jmp     .fail
+%endif
     mov     edi, 1
     mov     esi, 2
     mov     edx, 3
@@ -187,5 +183,69 @@ test_world_save_load:
 .ret:
     add     rsp, 8
     pop     rbx
+    pop     rbp
+    ret
+
+; A 0.1 file (48-byte header + blocks) loads as a v2 Creative world.
+test_world_load_v1_converts:
+    push    rbp
+    mov     rbp, rsp
+    call    world_clear
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    mov     ecx, BRICK
+    call    world_set
+    lea     rdi, [world_header]
+    mov     ecx, WORLD_V1_HDR
+    xor     eax, eax
+    rep     stosb
+    mov     rax, [v1_magic]
+    mov     [world_header], rax
+    mov     dword [world_header + V1_SEED], 77
+    mov     byte [world_header + V1_SEL], 2
+    lea     rsi, [v1_hotbar]
+    lea     rdi, [world_header + V1_HOTBAR]
+    mov     ecx, 9
+    rep     movsb
+    ; blocks forward to world_header+48 (dest < src, so a forward copy is safe)
+    lea     rsi, [blocks]
+    lea     rdi, [world_header + WORLD_V1_HDR]
+    mov     ecx, WORLD_VOLUME
+    rep     movsb
+    lea     rdi, [v1_path]
+    lea     rsi, [world_header]
+    mov     edx, WORLD_V1_SIZE
+    call    file_write_atomic
+    EXPECT_EAX 0
+    call    world_clear
+    lea     rdi, [v1_path]
+    call    world_load
+    EXPECT_EAX 0
+    mov     rax, [v2_magic]
+    cmp     [world_header + WORLDHDR.magic], rax
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.seed], 77
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.mode], MODE_CREATIVE
+    jne     .fail
+    cmp     byte [world_header + WORLDHDR.inventory + 2*4 + ITEMSTACK.id], GRASS
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.sel], 2
+    jne     .fail
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    call    world_get
+    EXPECT_EAX BRICK
+    lea     rdi, [v1_path]
+    call    file_unlink
+    xor     eax, eax
+    pop     rbp
+    ret
+.fail:
+    lea     rdi, [v1_path]
+    call    file_unlink
+    mov     eax, 1
     pop     rbp
     ret

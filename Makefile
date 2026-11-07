@@ -3,7 +3,7 @@ SRCS := $(wildcard src/*.asm)
 OBJS := $(patsubst src/%.asm,build/%.o,$(SRCS))
 INCS := $(wildcard src/*.inc)
 all: build/assemblycraft
-build/assemblycraft: $(OBJS) ; gcc -no-pie -o $@ $(OBJS) -lglfw -lGL
+build/assemblycraft: $(OBJS) ; gcc -no-pie -o $@ $(OBJS) -lglfw -lGL -lpulse-simple
 build/%.o: src/%.asm $(INCS) | build ; nasm $(NASMFLAGS) $< -o $@
 build: ; mkdir -p build
 test: build/assemblycraft ; ./build/assemblycraft --selftest

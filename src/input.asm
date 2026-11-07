@@ -3,22 +3,25 @@
 %include "gl.inc"
 default rel
 
-global frame_input, input_init, input_poll
+global frame_input, ui_input, input_captured, input_init, input_poll
+
+%define KEY_F 70                        ; fly toggle (0.2 wave 2 reads the bindings)
 
 section .bss
 alignb 8
 frame_input:  resb FRAMEINPUT_size
+alignb 8
+ui_input:     resb UIINPUT_size
 alignb 8
 scroll_accum: resq 1                    ; double, wheel steps not yet reported
 base_x:       resq 1                    ; double cursor baseline
 base_y:       resq 1
 cur_x:        resq 1
 cur_y:        resq 1
-captured:     resd 1
+input_captured: resd 1
 suppress_lmb: resd 1                    ; the recapture click must not break a block
 prev_esc:     resd 1
 prev_f:       resd 1
-prev_f5:      resd 1
 prev_lmb:     resd 1
 prev_rmb:     resd 1
 prev_mmb:     resd 1
@@ -66,7 +69,7 @@ input_init:
     lea     rsi, [base_x]
     lea     rdx, [base_y]
     call    glfwGetCursorPos
-    mov     dword [captured], 1
+    mov     dword [input_captured], 1
     add     rsp, 8
     pop     rbx
     pop     rbp
@@ -122,13 +125,13 @@ input_poll:
     EDGE    prev_esc
     test    edx, edx
     jz      .esc_done
-    cmp     dword [captured], 0
+    cmp     dword [input_captured], 0
     je      .esc_done
     mov     rdi, rbx
     mov     esi, GLFW_CURSOR
     mov     edx, GLFW_CURSOR_NORMAL
     call    glfwSetInputMode
-    mov     dword [captured], 0
+    mov     dword [input_captured], 0
 .esc_done:
 
     ; edge state is tracked every frame so capture changes never fake an edge
@@ -146,9 +149,6 @@ input_poll:
     KEY     KEY_F
     EDGE    prev_f
     mov     [frame_input + FRAMEINPUT.toggle_fly], edx
-    KEY     KEY_F5
-    EDGE    prev_f5
-    mov     [frame_input + FRAMEINPUT.save], edx
     xor     ecx, ecx
 .num:
     mov     [rsp], ecx
@@ -171,7 +171,7 @@ input_poll:
     cmp     ecx, 9
     jb      .num
 
-    cmp     dword [captured], 0
+    cmp     dword [input_captured], 0
     jne     .captured
 
     ; not captured: a left click recaptures; nothing else is reported
@@ -192,12 +192,11 @@ input_poll:
     lea     rsi, [base_x]
     lea     rdx, [base_y]
     call    glfwGetCursorPos
-    mov     dword [captured], 1
+    mov     dword [input_captured], 1
     mov     dword [suppress_lmb], 1
     jmp     .ret
 
 .captured:
-    mov     dword [frame_input + FRAMEINPUT.captured], 1
     ; left button, ignoring the click that recaptured the mouse until released
     cmp     dword [suppress_lmb], 0
     je      .lmb
