@@ -7,7 +7,7 @@ default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, explode_at
+extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_shot, explode_at
 extern survival_damage, surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg
@@ -287,7 +287,12 @@ arrows_step:
     mov     esi, [rbx + ARROWENT.damage]
     movss   xmm0, [rsp + S_H]
     movss   xmm1, [rsp + S_H + 4]
+    cmp     dword [rbx + ARROWENT.kind], PROJ_BULLET
+    je      .shot
     call    mob_hurt
+    jmp     .impact
+.shot:
+    call    mob_shot                    ; every bullet counts, even in the hurt window
     jmp     .impact
 
 .player_arrow:

@@ -5,7 +5,7 @@
 default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
-global mob_spawn, mobs_raycast, mob_hurt, mobs_intersect_block, ray_aabb
+global mob_spawn, mobs_raycast, mob_hurt, mob_shot, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load
 
 extern body_init, body_step, body_intersects_block, player, player_eye
@@ -1257,8 +1257,15 @@ mob_drops:
 ; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, or still in its
 ; hurt window). Knocks the mob along (dirx, dirz); a passive mob panics and flees that way, a dead
 ; mob drops its loot (mob_drops).
+; mob_shot(...): the same for a bullet, which lands even inside the hurt window, so rapid fire
+; and shotgun pellets all count.
 ; Frame: [rsp] dirx, [rsp+4] dirz.
+mob_shot:
+    mov     r8d, 1
+    jmp     mob_damage
 mob_hurt:
+    xor     r8d, r8d
+mob_damage:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -1270,8 +1277,11 @@ mob_hurt:
     add     rbx, rax
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .no
+    test    r8d, r8d
+    jnz     .apply
     cmp     dword [rbx + MOB.hurt], 0
     jg      .no
+.apply:
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
     sub     [rbx + MOB.health], esi

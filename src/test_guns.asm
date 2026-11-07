@@ -257,7 +257,8 @@ spawn_bullet:
     add     rsp, 8
     ret
 
-; A bullet hurts the pig in its way (10 - 5) and is spent; a bullet into a stone wall
+; Two bullets fired together both hurt the pig in their way (20 - 5 - 5: the second lands
+; inside the hurt window the first opened) and are spent; a bullet into a stone wall
 ; vanishes and leaves the wall standing.
 test_bullet_hits_mob_and_stops:
     push    rbp
@@ -275,6 +276,13 @@ test_bullet_hits_mob_and_stops:
     imul    ebx, eax, MOB_size
     lea     rax, [mobs]
     add     rbx, rax
+    mov     dword [rbx + MOB.health], 20
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11_5]
+    movss   xmm2, [k_16_5]
+    movss   xmm5, [k_m90]
+    mov     esi, 5
+    call    spawn_bullet
     movss   xmm0, [k_16_5]
     movss   xmm1, [k_11_5]
     movss   xmm2, [k_16_5]
@@ -286,7 +294,7 @@ test_bullet_hits_mob_and_stops:
     call    arrows_step
     dec     r12d
     jnz     .fly
-    cmp     dword [rbx + MOB.health], 5
+    cmp     dword [rbx + MOB.health], 10
     jne     .fail
     mov     edi, PROJ_BULLET
     call    live_of_kind
