@@ -12,6 +12,7 @@ extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
 extern mobs_render, drops_render, arrows_render, tnt_render
+extern fire_render, fx_render, fx_shake_yaw, fx_shake_pitch, game_aim
 
 section .rodata
 align 8
@@ -20,6 +21,7 @@ d_far:      dq 300.0
 align 4
 f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units
 f_one:      dd 1.0
+f_aim_zoom: dd 0.3                     ; fully aimed the FOV narrows by 30 %
 f_two:      dd 2.0
 f_half:     dd 0.5
 f_ten:      dd 10.0
@@ -373,6 +375,11 @@ render_world:
     call    glMatrixMode
     call    glLoadIdentity
     cvtsi2ss xmm0, dword [settings + SETTINGS.fov]
+    movss   xmm1, [game_aim]            ; aiming narrows the view: fov (1 - 0.3 aim)
+    mulss   xmm1, [f_aim_zoom]
+    movss   xmm2, [f_one]
+    subss   xmm2, xmm1
+    mulss   xmm0, xmm2
     mulss   xmm0, [f_half]
     call    sincos_deg                  ; xmm0 = sin, xmm1 = cos
     divss   xmm0, xmm1
@@ -396,11 +403,13 @@ render_world:
     call    glMatrixMode
     call    glLoadIdentity
     movss   xmm0, [r15 + BODY.pitch]
+    addss   xmm0, [fx_shake_pitch]      ; explosions shake the camera
     movss   xmm1, [f_one]
     xorps   xmm2, xmm2
     xorps   xmm3, xmm3
     call    glRotatef
     movss   xmm0, [r15 + BODY.yaw]
+    addss   xmm0, [fx_shake_yaw]
     xorps   xmm1, xmm1
     movss   xmm2, [f_one]
     xorps   xmm3, xmm3
@@ -566,6 +575,8 @@ render_world:
     call    drops_render
     call    arrows_render
     call    tnt_render
+    call    fire_render
+    call    fx_render
 
     ; ---- target block: crack overlay, then the outline -------------------------
     cmp     dword [game_has_target], 0

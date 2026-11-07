@@ -568,6 +568,10 @@ texgen_build:
     HUD     55, armor_bmp, armor_pal_full, armor_pal_empty, 5
     HUD     56, armor_bmp, armor_pal_full, armor_pal_empty, 0
 
+    ; ---- 57, 58 fire flames: two animation frames, transparent around the flames (no rng) ----
+    BMP     57, fire0_bmp, pal_fire
+    BMP     58, fire1_bmp, pal_fire
+
     ; ---- 64 zombie skin ----
     TILE_BEGIN 64
     NOISE_PIXEL RGB(74,128,64), 200, 55
@@ -1518,6 +1522,11 @@ pal_arrow:
 pal_string:
     PAL 's', 235, 235, 235
     dq 0
+pal_fire:
+    PAL 'Y', 255, 230, 90
+    PAL 'O', 250, 140, 30
+    PAL 'R', 200, 50, 20
+    dq 0
 pal_gunpowder:
     PAL 'k', 60, 60, 60
     PAL 'g', 110, 110, 110
@@ -1705,6 +1714,40 @@ arrow_bmp:
     db "..ff............"
     db "................"
     db "................"
+fire0_bmp:
+    db "................"
+    db "......R........."
+    db "......R....R...."
+    db ".....RO....R...."
+    db ".R...RO...RO.R.."
+    db ".R..RROR..RO.RR."
+    db ".RR.ROOR.RROORO."
+    db ".RO.ROYOR.ROOOR."
+    db ".ROR.ROYOR.ROYOR"
+    db "RROORROYYORROYOR"
+    db "ROOOROOYYOOROYOR"
+    db "ROYOROYYYYOOOYOR"
+    db "ROYYOOYYYYYOYYOR"
+    db "ROYYYOYYYYYYYYOR"
+    db ".ROYYYYYYYYYYOR."
+    db "..RROOYYYYOORR.."
+fire1_bmp:
+    db "................"
+    db ".........R......"
+    db ".........R...R.."
+    db "....R...RO...R.."
+    db "....R...RO..RO.."
+    db "...RO..RROR.RO.."
+    db "..RRO..ROOR.ROR."
+    db "..ROOR.ROYOR.ROR"
+    db ".RROYOR.ROYOR.RR"
+    db "RROOYOROROYYOORR"
+    db "ROOYYOOOOOYYYOOR"
+    db "ROYYYOOYYYYYYOOR"
+    db "ROYYYYYYYYYYYYOR"
+    db "ROYYYYYYYYYYYYOR"
+    db ".ROYYYYYYYYYYOR."
+    db "..RROOYYYYOORR.."
 string_bmp:
     db "................"
     db "................"

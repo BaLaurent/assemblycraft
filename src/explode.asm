@@ -1,5 +1,6 @@
-; explode.asm - explosions (creepers, TNT) and primed TNT blocks. Primed TNT is not saved with
-; the world, does not fall, and flashes white while it burns.
+; explode.asm - explosions (creepers, TNT, rockets) and primed TNT. Primed TNT is a physics
+; body: it hops when lit, falls, is thrown by blasts, and flashes white while it burns. It is
+; not saved with the world.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -8,7 +9,8 @@ global explode_at, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
 extern audio_play_at, player, settings, survival_damage
-extern mobs, mob_hurt, item_model_draw
+extern mobs, mob_hurt, item_model_draw, body_init, body_step
+extern fx_explosion, fx_debris
 
 ; explode_at frame (rsp-relative)
 %define X_C     0                       ; float blast centre[3]
@@ -21,6 +23,7 @@ extern mobs, mob_hurt, item_model_draw
 %define X_TWOR  44                      ; float 2r
 %define X_K     48                      ; float r / 3
 %define X_CELL  52                      ; int cell being cleared [3]
+%define X_NDEB  64                      ; int blocks destroyed so far (every third: debris)
 %define X_FRAME 72
 
 section .rodata
@@ -34,6 +37,12 @@ c_kb:        dd 12.0                    ; player knockback speed at full strengt
 c_hop:       dd 6.0                     ; and the hop off the ground
 c_mob_base:  dd 24.0                    ; mob damage at full strength for r = 3
 c_blast:     dd 4.0                     ; primed TNT blast radius
+c_tnt_half:  dd 0.49                    ; primed TNT body: half width, height, centre height
+c_tnt_h:     dd 0.98
+c_hop_up:    dd 2.0                     ; the little jump TNT makes when lit
+c_hundred:   dd 100.0
+c_throw:     dd 14.0                    ; blast push on primed TNT at full strength
+c_lift:      dd 5.0                     ; and the extra upward kick
 f_one:       dd 1.0
 base_dmg:    dd 8, 12, 22, 33           ; player damage at full strength for r = 3, by difficulty
 
@@ -41,6 +50,7 @@ section .bss
 alignb 16
 primed:      resb MAX_PRIMED * PRIMED_size
 primed_end:
+zero_input:  resb INPUT_size            ; primed TNT has no controls
 
 section .text
 
@@ -53,8 +63,8 @@ tnt_clear:
     ret
 
 ; tnt_prime(edi x, esi y, edx z, ecx fuse): the block there becomes air and a primed TNT with
-; that fuse (steps, at least 1) appears at its centre. When every slot burns, the one with
-; the shortest fuse is replaced.
+; that fuse (steps, at least 1) sits in its cell, hopping slightly. When every slot burns, the
+; one with the shortest fuse is replaced.
 tnt_prime:
     push    rbp
     mov     rbp, rsp
@@ -62,7 +72,8 @@ tnt_prime:
     push    r12
     push    r13
     push    r14
-    sub     rsp, 16
+    push    r15
+    sub     rsp, 8
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx
@@ -73,7 +84,7 @@ tnt_prime:
     xor     ecx, ecx
     call    world_set                   ; edi, esi, edx are still x, y, z
     lea     rcx, [primed]
-    mov     rax, rcx                    ; slot to use
+    mov     r15, rcx                    ; slot to use
     mov     edx, 0x7FFFFFFF             ; shortest fuse seen
 .find:
     mov     esi, [rcx + PRIMED.fuse]
@@ -82,7 +93,7 @@ tnt_prime:
     cmp     esi, edx
     jge     .next
     mov     edx, esi
-    mov     rax, rcx
+    mov     r15, rcx
 .next:
     add     rcx, PRIMED_size
     lea     rsi, [primed_end]
@@ -90,20 +101,31 @@ tnt_prime:
     jb      .find
     jmp     .fill
 .free:
-    mov     rax, rcx
+    mov     r15, rcx
 .fill:
+    mov     rdi, r15
+    movss   xmm0, [c_tnt_half]
+    movss   xmm1, [c_tnt_h]
+    xorps   xmm2, xmm2                  ; it never walks
+    call    body_init
     movss   xmm1, [c_half]
     cvtsi2ss xmm0, r12d
     addss   xmm0, xmm1
-    movss   [rax + PRIMED.x], xmm0
+    movss   [r15 + PRIMED.body + BODY.x], xmm0
     cvtsi2ss xmm0, r13d
-    addss   xmm0, xmm1
-    movss   [rax + PRIMED.y], xmm0
+    movss   [r15 + PRIMED.body + BODY.y], xmm0
     cvtsi2ss xmm0, r14d
     addss   xmm0, xmm1
-    movss   [rax + PRIMED.z], xmm0
-    mov     [rax + PRIMED.fuse], ebx
-    add     rsp, 16
+    movss   [r15 + PRIMED.body + BODY.z], xmm0
+    movss   xmm0, [c_hop_up]
+    movss   [r15 + PRIMED.body + BODY.vy], xmm0
+    call    hop_unit
+    movss   [r15 + PRIMED.body + BODY.kbx], xmm0
+    call    hop_unit
+    movss   [r15 + PRIMED.body + BODY.kbz], xmm0
+    mov     [r15 + PRIMED.fuse], ebx
+    add     rsp, 8
+    pop     r15
     pop     r14
     pop     r13
     pop     r12
@@ -111,29 +133,61 @@ tnt_prime:
     pop     rbp
     ret
 
-; tnt_step(): burn every primed TNT down; at 0 it blows with radius 4. The slot is freed
-; before the blast, so TNT primed by it may reuse the slot (their fuses are >= 10).
+; hop_unit() -> xmm0 uniform in [-1, 1] blocks/s (steps of 0.01)
+hop_unit:
+    sub     rsp, 8
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, 201
+    div     ecx
+    sub     edx, 100
+    cvtsi2ss xmm0, edx
+    divss   xmm0, [c_hundred]
+    add     rsp, 8
+    ret
+
+; tnt_step(): every primed TNT moves (gravity, collisions, blast pushes decaying) and burns
+; down; at 0 it blows with radius 4 from its centre. The slot is freed before the blast, so
+; TNT primed by it may reuse the slot (their fuses are >= 10).
 tnt_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 16                     ; centre[3]
+    sub     rsp, 16                     ; saved push (kbx, kbz)
     lea     rbx, [primed]
     lea     r12, [primed_end]
 .loop:
+    cmp     dword [rbx + PRIMED.fuse], 0
+    je      .next
+    mov     eax, [rbx + PRIMED.body + BODY.kbx]
+    mov     [rsp], eax                  ; body_step decays the push; only friction should
+    mov     eax, [rbx + PRIMED.body + BODY.kbz]
+    mov     [rsp + 4], eax
+    mov     rdi, rbx
+    lea     rsi, [zero_input]
+    call    body_step
+    cmp     dword [rbx + PRIMED.body + BODY.on_ground], 0
+    jne     .fuse                       ; sliding on the ground: friction (body_step's decay)
+    cmp     dword [rbx + PRIMED.body + BODY.blocked], 0
+    jne     .stopped                    ; hit a wall
+    mov     eax, [rsp]                  ; flying: no air drag
+    mov     [rbx + PRIMED.body + BODY.kbx], eax
+    mov     eax, [rsp + 4]
+    mov     [rbx + PRIMED.body + BODY.kbz], eax
+    jmp     .fuse
+.stopped:
+    mov     dword [rbx + PRIMED.body + BODY.kbx], 0
+    mov     dword [rbx + PRIMED.body + BODY.kbz], 0
+.fuse:
     mov     eax, [rbx + PRIMED.fuse]
-    test    eax, eax
-    jz      .next
     dec     eax
     mov     [rbx + PRIMED.fuse], eax
     jnz     .next
-    movss   xmm0, [rbx + PRIMED.x]
-    movss   [rsp], xmm0
-    movss   xmm1, [rbx + PRIMED.y]
-    movss   [rsp + 4], xmm1
-    movss   xmm2, [rbx + PRIMED.z]
-    movss   [rsp + 8], xmm2
+    movss   xmm0, [rbx + PRIMED.body + BODY.x]
+    movss   xmm1, [rbx + PRIMED.body + BODY.y]
+    addss   xmm1, [c_tnt_half]
+    movss   xmm2, [rbx + PRIMED.body + BODY.z]
     movss   xmm3, [c_blast]
     call    explode_at
 .next:
@@ -164,9 +218,10 @@ tnt_render:
     and     eax, 1
     mov     [rsp], eax                  ; flash this frame?
     call    glPushMatrix
-    movss   xmm0, [rbx + PRIMED.x]
-    movss   xmm1, [rbx + PRIMED.y]
-    movss   xmm2, [rbx + PRIMED.z]
+    movss   xmm0, [rbx + PRIMED.body + BODY.x]
+    movss   xmm1, [rbx + PRIMED.body + BODY.y]
+    addss   xmm1, [c_tnt_half]
+    movss   xmm2, [rbx + PRIMED.body + BODY.z]
     call    glTranslatef
     cmp     dword [rsp], 0
     je      .draw
@@ -197,7 +252,9 @@ tnt_render:
 ;    with a 10..29 step fuse, 3 in 10 blocks drop their item, containers spill);
 ; 2. the player within 2r takes ceil(f * base * r / 3), f = 1 - d / 2r, d measured to his chest
 ;    (survival_damage decides whether it applies), and is thrown away from the blast;
-; 3. every mob within 2r takes ceil(f * 24 * r / 3) and is knocked away.
+; 3. every mob within 2r takes ceil(f * 24 * r / 3) and is knocked away;
+; 4. every primed TNT within 2r is thrown away (14 f, plus 5 f upwards).
+; Effects: fx_explosion at the centre, fx_debris for every third destroyed block.
 ; r12d, r13d, r14d = x, y, z offsets of the cell from floor(centre) while sweeping blocks;
 ; r12d = mob index, rbx = mob while hurting mobs.
 explode_at:
@@ -239,6 +296,13 @@ explode_at:
     movss   xmm2, [rsp + X_C + 8]
     movss   xmm3, [c_one]
     call    audio_play_at
+    movss   xmm0, [rsp + X_C]           ; fireball, smoke, shake and flash
+    movss   xmm1, [rsp + X_C + 4]
+    movss   xmm2, [rsp + X_C + 8]
+    movss   xmm3, [rsp + X_TWOR]
+    mulss   xmm3, [c_half]
+    call    fx_explosion
+    mov     dword [rsp + X_NDEB], 0
 
     ; ---- blocks --------------------------------------------------------------------
     mov     r14d, [rsp + X_RI]
@@ -295,6 +359,24 @@ explode_at:
     mov     edx, [rsp + X_CELL + 8]
     xor     ecx, ecx
     call    world_set
+    inc     dword [rsp + X_NDEB]        ; every third destroyed block flies off as debris
+    mov     eax, [rsp + X_NDEB]
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    cmp     edx, 1
+    jne     .no_debris
+    cmp     ebx, FIRE
+    je      .no_debris
+    mov     edi, [rsp + X_CELL]
+    mov     esi, [rsp + X_CELL + 4]
+    mov     edx, [rsp + X_CELL + 8]
+    mov     ecx, ebx
+    movss   xmm0, [rsp + X_C]
+    movss   xmm1, [rsp + X_C + 4]
+    movss   xmm2, [rsp + X_C + 8]
+    call    fx_debris
+.no_debris:
     call    rng_next                    ; 3 in 10 blocks drop their item
     xor     edx, edx
     mov     ecx, 10
@@ -452,6 +534,62 @@ explode_at:
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
+
+    ; ---- primed TNT: thrown away from the blast (chain-lit TNT included) -----------
+    lea     rbx, [primed]
+.tnt:
+    cmp     dword [rbx + PRIMED.fuse], 0
+    je      .tnt_next
+    movss   xmm0, [rbx + PRIMED.body + BODY.x]
+    subss   xmm0, [rsp + X_C]
+    movss   xmm1, [rbx + PRIMED.body + BODY.y]
+    addss   xmm1, [c_tnt_half]
+    subss   xmm1, [rsp + X_C + 4]
+    movss   xmm2, [rbx + PRIMED.body + BODY.z]
+    subss   xmm2, [rsp + X_C + 8]
+    movaps  xmm3, xmm0
+    mulss   xmm3, xmm3
+    movaps  xmm4, xmm1
+    mulss   xmm4, xmm4
+    addss   xmm3, xmm4
+    movaps  xmm4, xmm2
+    mulss   xmm4, xmm4
+    addss   xmm3, xmm4
+    sqrtss  xmm3, xmm3                  ; d
+    comiss  xmm3, [rsp + X_TWOR]
+    jae     .tnt_next
+    comiss  xmm3, [c_tiny]
+    jae     .tnt_dir
+    xorps   xmm0, xmm0                  ; right at the centre: straight up
+    movss   xmm1, [c_one]
+    xorps   xmm2, xmm2
+    xorps   xmm5, xmm5
+    jmp     .tnt_push
+.tnt_dir:
+    movaps  xmm5, xmm3
+    divss   xmm5, [rsp + X_TWOR]        ; d / 2r
+    divss   xmm0, xmm3                  ; unit vector away from the blast
+    divss   xmm1, xmm3
+    divss   xmm2, xmm3
+.tnt_push:
+    movss   xmm4, [c_one]
+    subss   xmm4, xmm5                  ; f
+    movaps  xmm6, xmm4
+    mulss   xmm6, [c_throw]             ; 14 f
+    mulss   xmm0, xmm6
+    mulss   xmm1, xmm6
+    mulss   xmm2, xmm6
+    mulss   xmm4, [c_lift]
+    addss   xmm1, xmm4                  ; + 5 f upwards
+    movss   [rbx + PRIMED.body + BODY.kbx], xmm0
+    movss   [rbx + PRIMED.body + BODY.vy], xmm1
+    movss   [rbx + PRIMED.body + BODY.kbz], xmm2
+    mov     dword [rbx + PRIMED.body + BODY.on_ground], 0
+.tnt_next:
+    add     rbx, PRIMED_size
+    lea     rax, [primed_end]
+    cmp     rbx, rax
+    jb      .tnt
     add     rsp, X_FRAME
     pop     r15
     pop     r14

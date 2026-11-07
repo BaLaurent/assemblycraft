@@ -4,7 +4,7 @@
 default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
-global game_open_screen, game_open_cont, game_bow_charge
+global game_open_screen, game_open_cont, game_bow_charge, game_aim
 global game_new, game_load, game_save, game_frame, game_respawn
 
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
@@ -25,6 +25,7 @@ extern drops_clear, drops_spawn, drops_step, hand_swing
 extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
 extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
+extern fire_clear, fire_place, fire_step, fire_rebuild, fx_clear, fx_step
 
 section .rodata
 align 4
@@ -52,12 +53,16 @@ f_two:        dd 2.0
 f_three:      dd 3.0
 f_eight:      dd 8.0
 vol_bow:      dd 0.8
+aim_rate:     dd 12.0                  ; aiming eases in/out at min(1, 12 dt) per frame
+aim_spread:   dd 0.75                  ; fully aimed: a quarter of the hip spread
+aim_look:     dd 0.4                   ; fully aimed: 60 % look sensitivity
 
 section .data
 align 4
 game_mode: dd MODE_CREATIVE
 game_time: dd NEW_WORLD_TIME
 game_break_progress: dd 0.0
+game_aim: dd 0.0                       ; float 0 (hip) .. 1 (down the sights)
 
 section .bss
 alignb 8
@@ -92,6 +97,7 @@ reset_session:
     mov     [game_open_cont], rax
     mov     [game_bow_charge], eax
     mov     [game_break_progress], eax
+    mov     [game_aim], eax
     mov     dword [brk_y], -1
     jmp     gun_reset                   ; and the firearm's cooldown, reload and recoil
 
@@ -139,6 +145,8 @@ game_new:
     call    drops_clear
     call    arrows_clear
     call    tnt_clear
+    call    fire_clear
+    call    fx_clear
     mov     qword [inv_container], 0
     call    mobs_populate
     call    reset_session
@@ -263,11 +271,13 @@ game_load:
     cmp     ecx, 4
     jb      .armor
     call    conts_validate
+    call    fire_rebuild                ; the table of the FIRE blocks just loaded
     mov     rdi, rbx
     call    mobs_load
     call    drops_clear
     call    arrows_clear
     call    tnt_clear
+    call    fx_clear
     mov     qword [inv_container], 0
     call    reset_session
     xor     eax, eax
@@ -459,9 +469,14 @@ game_frame:
     mov     dword [player + BODY.vy], 0
 .no_fly:
 
-    ; 3. look, scaled by sensitivity, optionally inverted
+    ; 3. look, scaled by sensitivity (and down while aiming), optionally inverted
     cvtsi2ss xmm2, dword [settings + SETTINGS.sensitivity]
     divss   xmm2, [f_hundred]
+    movss   xmm3, [game_aim]
+    mulss   xmm3, [aim_look]
+    movss   xmm4, [f_one]
+    subss   xmm4, xmm3
+    mulss   xmm2, xmm4                  ; x (1 - 0.4 aim)
     movss   xmm0, [frame_input + FRAMEINPUT.look_dx]
     mulss   xmm0, xmm2
     movss   xmm1, [frame_input + FRAMEINPUT.look_dy]
@@ -526,7 +541,18 @@ game_frame:
     mov     dword [rsp + F_MOB], -1
 .mob_done:
 
-    ; 6. attack the targeted mob (no block breaking this frame)
+    ; 6. attack the targeted mob (no block breaking this frame). A held firearm owns both
+    ; buttons (section 12): it never punches, digs, uses or places.
+    call    held_id
+    mov     edi, eax
+    call    gun_index
+    test    eax, eax
+    js      .unarmed
+    mov     dword [game_break_progress], 0
+    mov     dword [break_cooldown], 0
+    mov     dword [brk_y], -1
+    jmp     .pick
+.unarmed:
     cmp     dword [rsp + F_MOB], 0
     jl      .blocks
     mov     dword [game_break_progress], 0
@@ -771,11 +797,22 @@ game_frame:
     mov     [game_open_screen], eax
     jmp     .pick
 .not_cont:
-    cmp     ebx, TNT
-    jne     .not_use
     call    held_id
     cmp     eax, FLINT_AND_STEEL
     jne     .not_use
+    cmp     ebx, TNT
+    je      .light_tnt
+    mov     edi, [game_target + RAYHIT.px] ; anything else: fire on the face struck
+    mov     esi, [game_target + RAYHIT.py]
+    mov     edx, [game_target + RAYHIT.pz]
+    call    fire_place
+    test    eax, eax
+    jz      .pick
+    mov     edi, SND_FUSE
+    movss   xmm0, [f_half]
+    call    audio_play
+    jmp     .struck
+.light_tnt:
     mov     edi, [game_target + RAYHIT.bx]
     mov     esi, [game_target + RAYHIT.by]
     mov     edx, [game_target + RAYHIT.bz]
@@ -790,6 +827,7 @@ game_frame:
     addss   xmm2, [f_half]
     movss   xmm3, [f_one]
     call    audio_play_at
+.struck:
     call    hand_swing
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .pick
@@ -900,25 +938,25 @@ game_frame:
     comiss  xmm0, xmm1
     ja      .bow_drawing
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
-    je      .ret
+    je      .gun
     cmp     dword [game_open_screen], 0
-    jne     .ret
+    jne     .gun
     cmp     dword [game_mode], MODE_CREATIVE
     je      .bow_draw
     mov     edi, ARROW
     call    inv_count
     test    eax, eax
-    jz      .ret
+    jz      .gun
 .bow_draw:
     movss   xmm0, [bow_start]
     movss   [game_bow_charge], xmm0
-    jmp     .ret
+    jmp     .gun
 .bow_drawing:
     cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
     je      .bow_release
     addss   xmm0, [rsp + F_DT]
     movss   [game_bow_charge], xmm0
-    jmp     .ret
+    jmp     .gun
 .bow_release:
     cmp     dword [input_captured], 1
     jne     .bow_reset                  ; released inside a screen: no shot
@@ -971,30 +1009,56 @@ game_frame:
 .bow_reset:
     mov     dword [game_bow_charge], 0
 
-    ; 12. firearm: R reloads, RMB fires (held RMB keeps an automatic firing)
+.gun:
+    ; 12. firearm: RMB aims down the sights (game_aim eases towards 1), LMB fires (held LMB
+    ; keeps an automatic firing), R reloads. Aiming tightens the spread.
     call    held_id
     mov     ebx, eax
     mov     edi, eax
     call    gun_index
+    xor     r12d, r12d                  ; 1 = armed and in control this frame
     test    eax, eax
-    js      .ret
+    js      .aim
     cmp     dword [game_open_screen], 0
-    jne     .ret
+    jne     .aim
     cmp     dword [input_captured], 1
-    jne     .ret
+    jne     .aim
+    mov     r12d, 1
+.aim:
+    xorps   xmm1, xmm1                  ; aim target
+    test    r12d, r12d
+    jz      .ease
+    cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    je      .ease
+    movss   xmm1, [f_one]
+.ease:
+    movss   xmm2, [rsp + F_DT]
+    mulss   xmm2, [aim_rate]
+    minss   xmm2, [f_one]               ; min(1, 12 dt)
+    subss   xmm1, [game_aim]
+    mulss   xmm1, xmm2
+    addss   xmm1, [game_aim]
+    movss   [game_aim], xmm1
+    test    r12d, r12d
+    jz      .ret
     cmp     dword [frame_input + FRAMEINPUT.reload], 0
     je      .trigger
     call    gun_reload_start
 .trigger:
-    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     jne     .fire
-    cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    cmp     dword [frame_input + FRAMEINPUT.lmb_held], 0
     je      .ret
     mov     edi, ebx
     call    gun_automatic
     test    eax, eax
     jz      .ret
 .fire:
+    movss   xmm0, [game_aim]
+    mulss   xmm0, [aim_spread]
+    movss   xmm1, [f_one]
+    subss   xmm1, xmm0
+    movaps  xmm0, xmm1                  ; spread scale 1 - 0.75 aim
     lea     rdi, [rsp + F_EYE]
     lea     rsi, [rsp + F_DIR]
     call    gun_fire
@@ -1099,6 +1163,8 @@ sim_step:
     call    arrows_step
     call    tnt_step
     call    gun_step
+    call    fire_step
+    call    fx_step
     call    conts_step
     inc     dword [game_time]
     add     rsp, 56

@@ -29,6 +29,7 @@ n_furnace:  db "Furnace", 0
 n_chest:    db "Chest", 0
 n_gravel:   db "Gravel", 0
 n_tnt:      db "TNT", 0
+n_fire:     db "Fire", 0
 n_unused:   db "?", 0
 n_stick:    db "Stick", 0
 n_wpick:    db "Wooden Pickaxe", 0
@@ -96,7 +97,8 @@ item_names:
     dq n_air, n_stone, n_grass, n_dirt, n_cobble, n_planks, n_log, n_leaves
     dq n_sand, n_glass, n_brick, n_bedrock, n_table
     dq n_coalore, n_ironore, n_goldore, n_diaore, n_furnace, n_furnace, n_chest, n_gravel, n_tnt
-    times 10 dq n_unused                ; 22..31
+    dq n_fire
+    times 9 dq n_unused                 ; 23..31
     dq n_stick, n_wpick, n_waxe, n_wshovel, n_wsword
     dq n_spick, n_saxe, n_sshovel, n_ssword, n_apple, n_pork
     dq n_coal, n_iingot, n_gingot, n_diamond

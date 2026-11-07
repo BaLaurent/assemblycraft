@@ -15,7 +15,7 @@ extern app_state, app_show_debug, app_fps
 extern surv, inv, inv_sel, player, mob_count_kind, sky_brightness, world_get
 extern item_names, item_durability, armor_points
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
-extern str_append, i32_to_str, f32_to_str
+extern str_append, i32_to_str, f32_to_str, fx_flash
 
 %define WHITE   0xFFFFFFFF
 
@@ -24,8 +24,9 @@ align 4
 f_one:      dd 1.0
 f_two:      dd 2.0
 f_255:      dd 255.0
+f_200:      dd 200.0
 f_100:      dd 100.0
-s_dbg_title: db "AssemblyCraft 0.4  ", 0
+s_dbg_title: db "AssemblyCraft 0.5  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -78,6 +79,7 @@ hud_draw:
     mov     r12d, [ui_h]
     sub     r12d, 22                    ; y0
     call    hud_flash
+    call    hud_blast_flash
     call    hud_crosshair
     mov     edi, ebx
     mov     esi, r12d
@@ -101,6 +103,28 @@ hud_draw:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; hud_blast_flash(): a warm full-screen flash near an explosion, alpha 200 * fx_flash
+hud_blast_flash:
+    sub     rsp, 8
+    movss   xmm0, [fx_flash]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .ret
+    minss   xmm0, [f_one]
+    mulss   xmm0, [f_200]
+    cvttss2si eax, xmm0
+    shl     eax, 24
+    or      eax, RGBA(255, 210, 150, 0)
+    mov     r8d, eax
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    call    ui_rect
+.ret:
+    add     rsp, 8
     ret
 
 ; hud_flash(): red full-screen flash while the player is hurt (survival)

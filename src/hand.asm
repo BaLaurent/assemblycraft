@@ -8,7 +8,8 @@ default rel
 global hand_render, hand_swing
 
 extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge, gun_kick
-extern render_box, item_model_draw, tex_id
+extern render_box, item_model_draw, tex_id, gun_model_draw, game_aim
+extern gun_reload, gun_reload_total
 
 section .rodata
 align 8
@@ -31,8 +32,19 @@ f_sw_y:      dd 0.12
 f_sw_z:      dd -0.2
 f_sw_rot:    dd -55.0
 f_bow_pull:  dd 0.18                    ; how far a fully drawn bow comes back
-f_kick_back: dd 0.12                    ; firearm recoil at full kick: back and muzzle up
-f_kick_rot:  dd 12.0
+f_kick_back: dd 0.09                    ; firearm recoil at full kick: back and muzzle up
+f_kick_rot:  dd 10.0
+f_quarter:   dd 0.25                    ; a firearm bobs a quarter as much
+; firearm position: from the hip (right, low) to down the sights (centred under the eye)
+g_hip_x:     dd 0.30
+g_hip_y:     dd -0.30
+g_hip_z:     dd -0.55
+g_aim_x:     dd 0.0
+g_aim_y:     dd -0.16
+g_aim_z:     dd -0.42
+f_rel_dip:   dd 0.12                    ; reload: drop, roll and tip at mid-reload
+f_rel_roll:  dd 25.0
+f_rel_tip:   dd -20.0
 ; bare arm: a skin-coloured box reaching from below the screen corner
 arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
 arm_tiles:   times 6 db TILE_PLAYER_SKIN
@@ -55,6 +67,8 @@ sw_s2:       resd 1                     ; sin(p * 180)
 sw_s3:       resd 1                     ; sin(sqrt(p) * 360)
 bob_s:       resd 1
 bob_c:       resd 1
+loaded:      resd 1                     ; held firearm: rounds in the magazine
+reload_s:    resd 1                     ; held firearm: sin(180 * reload progress)
 
 section .text
 
@@ -187,6 +201,19 @@ hand_render:
     mov     edi, GL_BLEND
     call    glDisable
 
+    ; ---- what is held ------------------------------------------------------------
+    call    inv_held
+    xor     ebx, ebx
+    cmp     byte [rax + ITEMSTACK.count], 0
+    je      .held
+    movzx   ebx, byte [rax + ITEMSTACK.id]
+    movzx   eax, word [rax + ITEMSTACK.dmg]
+    mov     [loaded], eax               ; a firearm's rounds in the magazine
+.held:
+    lea     eax, [rbx - PISTOL]
+    cmp     eax, NUM_GUNS
+    jb      .gun_view
+
     ; ---- position: screen corner + walk bob + swing ------------------------------
     movss   xmm0, [bob_s]
     mulss   xmm0, [f_bob_x]
@@ -212,12 +239,6 @@ hand_render:
     xorps   xmm3, xmm3
     call    rot
 
-    ; ---- what is held ------------------------------------------------------------
-    call    inv_held
-    xor     ebx, ebx
-    cmp     byte [rax + ITEMSTACK.count], 0
-    je      .kind
-    movzx   ebx, byte [rax + ITEMSTACK.id]
 .kind:
     cmp     ebx, BOW                    ; a drawn bow comes back towards the eye
     jne     .no_draw
@@ -230,23 +251,6 @@ hand_render:
     xorps   xmm1, xmm1
     call    glTranslatef
 .no_draw:
-    lea     eax, [rbx - PISTOL]         ; a firearm kicks back and up after a shot
-    cmp     eax, NUM_GUNS
-    jae     .no_kick
-    movss   xmm2, [gun_kick]
-    xorps   xmm0, xmm0
-    comiss  xmm2, xmm0
-    jbe     .no_kick
-    mulss   xmm2, [f_kick_back]
-    xorps   xmm1, xmm1
-    call    glTranslatef
-    movss   xmm0, [gun_kick]
-    mulss   xmm0, [f_kick_rot]
-    movss   xmm1, [f_one]
-    xorps   xmm2, xmm2
-    xorps   xmm3, xmm3
-    call    rot
-.no_kick:
     lea     rdi, [pose_arm]
     test    ebx, ebx
     jz      .pose
@@ -261,6 +265,78 @@ hand_render:
     mov     edi, ebx
     movss   xmm0, [light]
     call    item_model_draw
+    jmp     .ret
+
+    ; ---- firearm: hip or aimed position, light bob, recoil, reload dip; no swing ----
+.gun_view:
+    mov     dword [reload_s], 0         ; reload motion: sin(180 p), p = reload progress
+    mov     ecx, [gun_reload_total]
+    test    ecx, ecx
+    jz      .gun_place
+    mov     eax, [gun_reload]
+    test    eax, eax
+    jz      .gun_place
+    cvtsi2ss xmm0, eax
+    cvtsi2ss xmm1, ecx
+    divss   xmm0, xmm1
+    movss   xmm1, [f_one]
+    subss   xmm1, xmm0
+    mulss   xmm1, [f_180]
+    movaps  xmm0, xmm1
+    call    sincos_deg
+    movss   [reload_s], xmm0
+.gun_place:
+    movss   xmm3, [game_aim]
+    movss   xmm0, [g_aim_x]             ; x = lerp(hip, aimed) + bob / 4
+    subss   xmm0, [g_hip_x]
+    mulss   xmm0, xmm3
+    addss   xmm0, [g_hip_x]
+    movss   xmm4, [bob_s]
+    mulss   xmm4, [f_bob_x]
+    mulss   xmm4, [f_quarter]
+    addss   xmm0, xmm4
+    movss   xmm1, [g_aim_y]             ; y = lerp - bob / 4 - reload dip
+    subss   xmm1, [g_hip_y]
+    mulss   xmm1, xmm3
+    addss   xmm1, [g_hip_y]
+    movss   xmm4, [bob_c]
+    mulss   xmm4, [f_bob_y]
+    mulss   xmm4, [f_quarter]
+    subss   xmm1, xmm4
+    movss   xmm4, [reload_s]
+    mulss   xmm4, [f_rel_dip]
+    subss   xmm1, xmm4
+    movss   xmm2, [g_aim_z]             ; z = lerp + recoil
+    subss   xmm2, [g_hip_z]
+    mulss   xmm2, xmm3
+    addss   xmm2, [g_hip_z]
+    movss   xmm4, [gun_kick]
+    mulss   xmm4, [f_kick_back]
+    addss   xmm2, xmm4
+    call    glTranslatef
+    movss   xmm0, [gun_kick]            ; muzzle climbs with the recoil
+    mulss   xmm0, [f_kick_rot]
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    rot
+    movss   xmm0, [reload_s]            ; reload: roll the gun over and tip it down
+    mulss   xmm0, [f_rel_roll]
+    xorps   xmm1, xmm1
+    xorps   xmm2, xmm2
+    movss   xmm3, [f_one]
+    call    rot
+    movss   xmm0, [reload_s]
+    mulss   xmm0, [f_rel_tip]
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    rot
+    mov     edi, ebx
+    mov     esi, [loaded]
+    movss   xmm0, [light]
+    movss   xmm1, [gun_kick]
+    call    gun_model_draw
     jmp     .ret
 .arm:
     xor     ecx, ecx

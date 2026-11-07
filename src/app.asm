@@ -22,6 +22,7 @@ extern screen_crafting, screen_death, screen_loading, screen_furnace, screen_che
 extern audio_update, player, body_init, world_generate, world_top_y, world_header
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
+extern fire_clear, fx_clear, game_aim
 
 section .rodata
 s_loading:    db "Loading world...", 0
@@ -320,6 +321,9 @@ load_panorama:
     call    drops_clear
     call    arrows_clear
     call    tnt_clear
+    call    fire_clear
+    call    fx_clear
+    mov     dword [game_aim], 0
     mov     dword [game_time], NEW_WORLD_TIME
     mov     dword [game_has_target], 0
     mov     dword [game_break_progress], 0

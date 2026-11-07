@@ -4,9 +4,10 @@ default rel
 
 global test_arrow_hits_mob, test_explosion_breaks_blocks, test_creeper_explodes
 global test_skeleton_shoots_player, test_mob_drops_by_type
+global test_tnt_thrown_by_blast, test_tnt_falls
 
 extern arrows, arrows_clear, arrows_spawn, arrows_step
-extern primed, tnt_clear, tnt_step, explode_at
+extern primed, tnt_clear, tnt_prime, tnt_step, explode_at
 extern mobs, mobs_clear, mobs_step, mob_spawn, mob_hurt
 extern mob_count_type
 extern drops, drops_clear
@@ -29,6 +30,11 @@ k_11_5f:  dd 11.5
 k_m30:    dd -30.0
 k_one:    dd 1.0
 k_three:  dd 3.0
+k_13_5:   dd 13.5
+k_four:   dd 4.0
+k_16:     dd 16.0                      ; 4 blocks, squared
+k_11_01:  dd 11.01
+k_10_99:  dd 10.99
 
 section .text
 
@@ -449,6 +455,92 @@ test_mob_drops_by_type:
     call    cleanup
     mov     eax, ebx
     add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; A primed TNT 3 blocks from a radius-4 blast is thrown more than 4 blocks away from it
+; (horizontally) within half a second; its long fuse keeps it from going off.
+test_tnt_thrown_by_blast:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    world_clear
+    call    fixture
+    mov     edi, 16
+    mov     esi, 11
+    mov     edx, 16
+    mov     ecx, 200
+    call    tnt_prime
+    movss   xmm0, [k_13_5]
+    movss   xmm1, [k_11_5]
+    movss   xmm2, [k_16_5]
+    movss   xmm3, [k_four]
+    call    explode_at
+    mov     r12d, 30
+.step:
+    call    tnt_step
+    dec     r12d
+    jnz     .step
+    cmp     dword [primed + PRIMED.fuse], 0
+    je      .fail                       ; it must still be burning
+    movss   xmm0, [primed + PRIMED.body + BODY.x]
+    subss   xmm0, [k_13_5]
+    mulss   xmm0, xmm0
+    movss   xmm1, [primed + PRIMED.body + BODY.z]
+    subss   xmm1, [k_16_5]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [k_16]
+    jbe     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     r12d, eax
+    call    cleanup
+    mov     eax, r12d
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; A primed TNT lit 3 blocks above the floor falls and comes to rest on it.
+test_tnt_falls:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    world_clear
+    call    fixture
+    mov     edi, 16
+    mov     esi, 14
+    mov     edx, 16
+    mov     ecx, 200
+    call    tnt_prime
+    mov     r12d, 60
+.step:
+    call    tnt_step
+    dec     r12d
+    jnz     .step
+    movss   xmm0, [primed + PRIMED.body + BODY.y]
+    comiss  xmm0, [k_11_01]
+    ja      .fail
+    comiss  xmm0, [k_10_99]
+    jb      .fail
+    cmp     dword [primed + PRIMED.body + BODY.on_ground], 0
+    je      .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     r12d, eax
+    call    cleanup
+    mov     eax, r12d
+    pop     r12
     pop     rbx
     pop     rbp
     ret

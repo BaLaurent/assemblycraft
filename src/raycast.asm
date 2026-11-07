@@ -83,7 +83,10 @@ raycast:
     mov     edx, [rsp + RC_CELL + 8]
     call    world_get
     test    eax, eax
-    jnz     .hit
+    jz      .pass
+    cmp     eax, FIRE
+    jne     .hit                        ; flames never stop a ray
+.pass:
     movss   xmm0, [rsp + RC_TMAX]       ; a = axis with the smallest tMax (ties: x, then y)
     xor     ecx, ecx
     movss   xmm1, [rsp + RC_TMAX + 4]

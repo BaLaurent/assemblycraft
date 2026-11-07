@@ -5,6 +5,7 @@ default rel
 global test_gun_reload_fills_magazine, test_gun_fire_cooldown_and_dry
 global test_shotgun_spawns_six_pellets, test_bullet_hits_mob_and_stops
 global test_rocket_explodes_on_impact, test_rifle_kills_zombie_point_blank
+global test_aimed_shotgun_has_no_spread
 
 extern gun_reset, gun_reload_start, gun_step, gun_fire, gun_reload, gun_cooldown
 extern arrows, arrows_clear, arrows_spawn, arrows_step
@@ -30,6 +31,7 @@ k_m25:    dd -25.0
 ; zombie centres in front of the eye (z = 16.5): 1.0 ahead, and 0.2 ahead with the zombie
 ; overlapping the player so the muzzle (0.3 ahead) starts inside its box
 zombie_z: dd 15.5, 16.3
+k_one:    dd 1.0
 
 section .text
 
@@ -117,10 +119,11 @@ steps:
     pop     rbx
     ret
 
-; fire() -> eax gun_fire(eye, -z)
+; fire() -> eax gun_fire(eye, -z, full spread)
 fire:
     lea     rdi, [eye]
     lea     rsi, [dir_n]
+    movss   xmm0, [k_one]
     jmp     gun_fire
 
 ; A reload takes the pistol's 60 steps and fills the magazine from the inventory: all 5
@@ -214,6 +217,44 @@ test_gun_fire_cooldown_and_dry:
     mov     edi, PROJ_BULLET
     call    live_of_kind
     cmp     eax, 2
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    call    cleanup
+    pop     rbp
+    ret
+
+; Fired fully aimed (spread scale 0), all six shotgun pellets fly dead straight along -z.
+test_aimed_shotgun_has_no_spread:
+    push    rbp
+    mov     rbp, rsp
+    call    setup
+    mov     dword [HELD], STK(SHOTGUN, 1, 1)
+    lea     rdi, [eye]
+    lea     rsi, [dir_n]
+    xorps   xmm0, xmm0
+    call    gun_fire
+    cmp     eax, 1
+    jne     .fail
+    lea     rcx, [arrows]
+    xor     edx, edx                    ; pellets checked
+    mov     r8d, MAX_ARROWS
+.l:
+    cmp     dword [rcx + ARROWENT.live], 0
+    je      .n
+    cmp     dword [rcx + ARROWENT.vx], 0
+    jne     .fail
+    cmp     dword [rcx + ARROWENT.vy], 0
+    jne     .fail
+    inc     edx
+.n:
+    add     rcx, ARROWENT_size
+    dec     r8d
+    jnz     .l
+    cmp     edx, 6
     jne     .fail
     xor     eax, eax
     jmp     .ret

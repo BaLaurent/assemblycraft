@@ -9,7 +9,7 @@ global gun_index, gun_magazine, gun_ammo, gun_automatic
 global gun_reset, gun_reload_start, gun_step, gun_fire
 
 extern inv, inv_sel, inv_count, inv_remove_one, game_mode
-extern arrows_spawn, audio_play, hand_swing, rng_next
+extern arrows_spawn, audio_play, rng_next
 
 %define DRY_COOLDOWN 10                 ; steps between dry clicks
 
@@ -246,11 +246,13 @@ spread_unit:
 %define F_POS    12                     ; float[3] muzzle
 %define F_SPREAD 24                     ; float
 %define F_SPEED  28                     ; float
+%define F_SCALE  32                     ; float spread scale (aiming tightens it)
 %define F_SIZE   40
 
-; gun_fire(rdi eye[3], rsi dir[3] unit) -> eax 1 if a shot left the barrel.
+; gun_fire(rdi eye[3], rsi dir[3] unit, xmm0 spread scale) -> eax 1 if a shot left the barrel.
 ; Nothing while reloading or cooling down; an empty magazine clicks and starts a reload.
-; Each pellet leaves from eye + dir * 0.3 along dir jittered by the weapon's spread.
+; Each pellet leaves from eye + dir * 0.3 along dir jittered by the weapon's spread times the
+; scale (1 from the hip, less while aiming, 0 dead straight).
 ; rbx = g, r12 = eye, r13 = dir, r14 = stack, r15d = pellets left
 gun_fire:
     push    rbp
@@ -263,6 +265,7 @@ gun_fire:
     sub     rsp, F_SIZE                 ; 6 pushes leave rsp 8 off; F_SIZE = 40 realigns
     mov     r12, rdi
     mov     r13, rsi
+    movss   [rsp + F_SCALE], xmm0
     call    held_gun
     test    rax, rax
     jz      .no
@@ -287,6 +290,7 @@ gun_fire:
     mov     [gun_cooldown], eax
     lea     rcx, [g_spread]
     movss   xmm0, [rcx + rbx*4]
+    mulss   xmm0, [rsp + F_SCALE]
     movss   [rsp + F_SPREAD], xmm0
     lea     rcx, [g_speed]
     movss   xmm0, [rcx + rbx*4]
@@ -352,7 +356,6 @@ gun_fire:
     call    audio_play
     movss   xmm0, [c_one]
     movss   [gun_kick], xmm0
-    call    hand_swing
     mov     eax, 1
     jmp     .ret
 .no:

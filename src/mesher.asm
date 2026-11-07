@@ -120,6 +120,8 @@ mesh_chunk:
     mov     r14d, eax
     test    eax, eax
     jz      .next_block
+    cmp     eax, FIRE
+    je      .next_block                 ; fire.asm draws the flames
     xor     r13d, r13d
 
 .face_loop:

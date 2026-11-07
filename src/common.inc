@@ -40,9 +40,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CHEST          19
 %define GRAVEL         20
 %define TNT            21
-%define NUM_BLOCKS     22
+%define FIRE           22               ; not solid, drawn by fire.asm, not an item
+%define NUM_BLOCKS     23
 
-; ---- item ids (22..31 unused) ---------------------------------------------
+; ---- item ids (23..31 unused) ---------------------------------------------
 %define STICK          32
 %define WOOD_PICKAXE   33
 %define WOOD_AXE       34
@@ -158,6 +159,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_ARMOR_FULL    54
 %define TILE_ARMOR_HALF    55
 %define TILE_ARMOR_EMPTY   56
+%define TILE_FIRE0         57           ; two flame frames, transparent around the flames
+%define TILE_FIRE1         58
 %define TILE_ZOMBIE_SKIN   64
 %define TILE_ZOMBIE_FACE   65
 %define TILE_ZOMBIE_SHIRT  66
@@ -205,6 +208,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_SKELETON  5
 %define CAUSE_EXPLOSION 6
 %define CAUSE_SPIDER    7
+%define CAUSE_FIRE      8
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -222,6 +226,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define PROJ_BULLET     1
 %define PROJ_ROCKET     2
 %define MAX_PRIMED      32              ; primed TNT
+%define MAX_FIRES       1024
+%define MAX_PARTICLES   768
+%define FX_FIRE         1               ; PARTICLE.kind (0 = free)
+%define FX_SMOKE        2
+%define FX_DEBRIS       3
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
 %define SLOTREF_GRID    36              ; grid cell c = 36 + c (c 0..8, 3 wide)
@@ -591,12 +600,34 @@ struc ARROWENT
     .kind:   resd 1                     ; PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET
 endstruc                                ; 52 bytes
 
-; a primed TNT block (not saved with the world)
+; a primed TNT block: a physics body (y = bottom of the 0.98 cube) burning down (not saved)
 struc PRIMED
-    .x:    resd 1                       ; floats, block centre
+    .body: resb BODY_size
+    .fuse: resd 1                       ; steps; 0 = free
+endstruc
+
+; a burning cell (the world holds FIRE there)
+struc FIREENT
+    .x:    resd 1                       ; -1 = free slot
     .y:    resd 1
     .z:    resd 1
-    .fuse: resd 1                       ; steps; 0 = free
+    .age:  resd 1                       ; steps
+    .tick: resd 1                       ; steps to the next spread / burn roll
+endstruc
+
+; an effect particle: explosion fire, smoke, block debris (not saved)
+struc PARTICLE
+    .x:    resd 1                       ; floats, centre
+    .y:    resd 1
+    .z:    resd 1
+    .vx:   resd 1
+    .vy:   resd 1
+    .vz:   resd 1
+    .age:  resd 1                       ; steps
+    .life: resd 1                       ; steps
+    .size: resd 1                       ; float edge length
+    .kind: resd 1                       ; 0 free, FX_FIRE, FX_SMOKE, FX_DEBRIS
+    .tile: resd 1                       ; atlas tile of a debris cube
 endstruc
 
 struc VERTEX

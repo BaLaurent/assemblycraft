@@ -29,6 +29,10 @@ extern test_skeleton_shoots_player, test_mob_drops_by_type
 extern test_gun_reload_fills_magazine, test_gun_fire_cooldown_and_dry
 extern test_shotgun_spawns_six_pellets, test_bullet_hits_mob_and_stops
 extern test_rocket_explodes_on_impact, test_rifle_kills_zombie_point_blank
+extern test_aimed_shotgun_has_no_spread, test_tnt_thrown_by_blast, test_tnt_falls
+extern test_fire_spreads_and_burns_wood, test_fire_ignites_tnt
+extern test_fire_dies_on_stone, test_fire_hurts_player
+extern test_fx_explosion_spawns_and_expires, test_fx_debris_falls_and_bounces
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -98,6 +102,15 @@ tests:
     TEST bullet_hits_mob_and_stops
     TEST rocket_explodes_on_impact
     TEST rifle_kills_zombie_point_blank
+    TEST aimed_shotgun_has_no_spread
+    TEST tnt_thrown_by_blast
+    TEST tnt_falls
+    TEST fire_spreads_and_burns_wood
+    TEST fire_ignites_tnt
+    TEST fire_dies_on_stone
+    TEST fire_hurts_player
+    TEST fx_explosion_spawns_and_expires
+    TEST fx_debris_falls_and_bounces
     TEST game_save_load_roundtrip
     TEST drops_fall_and_pickup
     dq 0
@@ -161,6 +174,15 @@ section .rodata
     TESTNAME bullet_hits_mob_and_stops
     TESTNAME rocket_explodes_on_impact
     TESTNAME rifle_kills_zombie_point_blank
+    TESTNAME aimed_shotgun_has_no_spread
+    TESTNAME tnt_thrown_by_blast
+    TESTNAME tnt_falls
+    TESTNAME fire_spreads_and_burns_wood
+    TESTNAME fire_ignites_tnt
+    TESTNAME fire_dies_on_stone
+    TESTNAME fire_hurts_player
+    TESTNAME fx_explosion_spawns_and_expires
+    TESTNAME fx_debris_falls_and_bounces
     TESTNAME game_save_load_roundtrip
     TESTNAME drops_fall_and_pickup
 s_ok:     db "ok ", 0

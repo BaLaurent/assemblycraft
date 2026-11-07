@@ -105,7 +105,7 @@ f_zero:         dd 0.0
 
 t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
-t_version:      db "AssemblyCraft 0.3", 0
+t_version:      db "AssemblyCraft 0.5", 0
 t_singleplayer: db "Singleplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
@@ -155,13 +155,14 @@ c_suffocate:    db "You suffocated in a wall", 0
 c_skeleton:     db "You were shot by a Skeleton", 0
 c_explosion:    db "You blew up", 0
 c_spider:       db "You were slain by a Spider", 0
+c_fire:         db "You burned to death", 0
 
 m_rename_fail:  db "Could not rename the world", 0
 m_delete_fail:  db "Could not delete the world", 0
 
 align 8
 death_causes:   dq c_none, c_fall, c_zombie, c_starve, c_suffocate
-                dq c_skeleton, c_explosion, c_spider
+                dq c_skeleton, c_explosion, c_spider, c_fire
 
 section .bss
 alignb 8
@@ -886,7 +887,7 @@ screen_death:
     TXTC    t_died, r12, 0, r14, 0, WHITE, 2
     mov     eax, [surv + SURVIVAL.death_cause]
     xor ecx, ecx
-    cmp     eax, CAUSE_SPIDER           ; unknown causes show no line
+    cmp     eax, CAUSE_FIRE             ; unknown causes show no line
     cmova   eax, ecx
     lea     rdx, [death_causes]
     mov     rdi, [rdx + rax*8]
