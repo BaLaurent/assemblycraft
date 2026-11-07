@@ -3,9 +3,11 @@
 ; texgen_build(rdi out): zero out[262144], then draw tiles in order using a single
 ; xorshift32 stream (state 0x12345678, x ^= x<<13; x ^= x>>17; x ^= x<<5; a "draw"
 ; returns the NEW state). Pixel = base*m >> 8 per channel, alpha 255. Tiles 13, 14,
-; the crack stages (256 draws first) and 64..69 continue the stream after tile 12;
-; item icons (32..42) and HUD icons (48..53) use no rng. The font is painted last
-; (white glyph texels) at atlas rows FONT_Y..FONT_Y+47.
+; the crack stages (256 draws first) and 64..70 continue the stream after tile 12;
+; then, in this order, the ores 26..29, furnaces 30/31, chest 43/44, gravel 45, TNT
+; 46/47 and the mob tiles 71..79 follow tile 70; item icons (32..42, 80..118) and HUD
+; icons (48..56) use no rng. The font is painted last (white glyph texels) at atlas
+; rows FONT_Y..FONT_Y+47.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -131,6 +133,55 @@ shade:
     call    hud_px
     mov     [rdi], eax
     TILE_END
+%endmacro
+
+; 16x16 bitmap icon: tile, bitmap (256 chars), palette (PAL records, 0 terminated)
+%macro BMP 3
+    TILE_BEGIN %1
+    lea     r9, [%2]
+    lea     r10, [%3]
+    call    bmp_px
+    mov     [rdi], eax
+    TILE_END
+%endmacro
+
+; porkchop-shaped icon: r9d = fat, r10d = meat, r11d = rim colours
+%macro ICON3 5
+    TILE_BEGIN %1
+    mov     r9d, %3
+    mov     r10d, %4
+    mov     r11d, %5
+    call    %2
+    mov     [rdi], eax
+    TILE_END
+%endmacro
+
+; rng-drawn tile: one draw per pixel, r9d = r, r8d = mbase + ((r >> shift) & mask),
+; func returns the base colour in esi (r10d/r11d = variant parameters set by the caller)
+%macro RNGTILE 5                        ; tile, mbase, mask, shift, func
+    TILE_BEGIN %1
+    call    rng
+    mov     r9d, eax
+    shr     eax, %4
+    and     eax, %3
+    add     eax, %2
+    mov     r8d, eax
+    call    %5
+    mov     edx, r8d
+    call    shade
+    TILE_END
+%endmacro
+
+; jump to %1 when the pixel is on the tile border
+%macro IF_BORDER 1
+    test    r15d, r15d
+    jz      %1
+    cmp     r15d, 15
+    je      %1
+    test    r14d, r14d
+    jz      %1
+    cmp     r14d, 15
+    je      %1
 %endmacro
 
 ; m = mbase + (rng & mask) -> r8d (one draw)
@@ -504,7 +555,7 @@ texgen_build:
     ICONT   39, icon_shovel, {RGBO(150,150,150)}, {RGBO(86,86,86)}
     ICONT   40, icon_sword,  {RGBO(150,150,150)}, {RGBO(86,86,86)}
     ICON    41, icon_apple
-    ICON    42, icon_pork
+    ICON3   42, icon_pork, {RGBO(250,215,205)}, {RGBO(232,138,138)}, {RGBO(180,80,80)}
 
     ; ---- 48..53 HUD hearts and food (9x9 bitmaps, no rng) ----
     HUD     48, heart_bmp, heart_pal_full, heart_pal_empty, 9
@@ -513,6 +564,9 @@ texgen_build:
     HUD     51, food_bmp, food_pal_full, food_pal_empty, 9
     HUD     52, food_bmp, food_pal_full, food_pal_empty, 5
     HUD     53, food_bmp, food_pal_full, food_pal_empty, 0
+    HUD     54, armor_bmp, armor_pal_full, armor_pal_empty, 9
+    HUD     55, armor_bmp, armor_pal_full, armor_pal_empty, 5
+    HUD     56, armor_bmp, armor_pal_full, armor_pal_empty, 0
 
     ; ---- 64 zombie skin ----
     TILE_BEGIN 64
@@ -604,6 +658,96 @@ texgen_build:
     TILE_BEGIN TILE_PLAYER_SKIN
     NOISE_PIXEL RGB(198,150,112), 224, 31
     TILE_END
+
+    ; ---- 26..29 ores: stone with a shared vein mask; r10d = ore colour, r11d = highlight ----
+    mov     r10d, RGB(30,30,30)
+    mov     r11d, RGB(60,60,60)
+    RNGTILE 26, 200, 55, 0, px_ore
+    mov     r10d, RGB(216,175,147)
+    mov     r11d, RGB(240,210,180)
+    RNGTILE 27, 200, 55, 0, px_ore
+    mov     r10d, RGB(252,238,75)
+    mov     r11d, RGB(255,255,180)
+    RNGTILE 28, 200, 55, 0, px_ore
+    mov     r10d, RGB(93,236,245)
+    mov     r11d, RGB(200,255,255)
+    RNGTILE 29, 200, 55, 0, px_ore
+
+    ; ---- 30 furnace front, 31 lit ----
+    xor     r10d, r10d
+    RNGTILE 30, 200, 55, 0, px_furnace
+    mov     r10d, 1
+    RNGTILE 31, 200, 55, 0, px_furnace
+
+    ; ---- 43 chest top, 44 chest side, 45 gravel, 46 TNT side, 47 TNT top ----
+    RNGTILE 43, 216, 31, 0, px_chest_top
+    RNGTILE 44, 216, 31, 0, px_chest_side
+    RNGTILE 45, 216, 39, 8, px_gravel
+    RNGTILE 46, 216, 31, 0, px_tnt_side
+    RNGTILE 47, 216, 31, 0, px_tnt_top
+
+    ; ---- 71 creeper skin, 72 face, 73 skeleton bone, 74 face, 75 spider body, 76 face,
+    ;      77 chicken body, 78 face, 79 leg ----
+    xor     r10d, r10d
+    RNGTILE 71, 200, 55, 0, px_creeper
+    mov     r10d, 1
+    RNGTILE 72, 200, 55, 0, px_creeper
+    xor     r10d, r10d
+    RNGTILE 73, 200, 55, 0, px_skeleton
+    mov     r10d, 1
+    RNGTILE 74, 200, 55, 0, px_skeleton
+    xor     r10d, r10d
+    RNGTILE 75, 200, 55, 0, px_spider
+    mov     r10d, 1
+    RNGTILE 76, 200, 55, 0, px_spider
+    xor     r10d, r10d
+    RNGTILE 77, 220, 35, 0, px_chicken
+    mov     r10d, 1
+    RNGTILE 78, 220, 35, 0, px_chicken
+    TILE_BEGIN 79
+    NOISE_PIXEL RGB(240,180,40), 220, 35
+    TILE_END
+
+    ; ---- 80..118 item icons (no rng): materials, tools, bow and misc, armor ----
+    BMP     80, coal_bmp, pal_coal
+    BMP     81, ingot_bmp, pal_ingot_iron
+    BMP     82, ingot_bmp, pal_ingot_gold
+    BMP     83, diamond_bmp, pal_diamond
+    ICONT   84, icon_pick,   {RGBO(220,220,220)}, {RGBO(130,130,130)}
+    ICONT   85, icon_axe,    {RGBO(220,220,220)}, {RGBO(130,130,130)}
+    ICONT   86, icon_shovel, {RGBO(220,220,220)}, {RGBO(130,130,130)}
+    ICONT   87, icon_sword,  {RGBO(220,220,220)}, {RGBO(130,130,130)}
+    ICONT   88, icon_pick,   {RGBO(250,220,60)}, {RGBO(180,130,10)}
+    ICONT   89, icon_axe,    {RGBO(250,220,60)}, {RGBO(180,130,10)}
+    ICONT   90, icon_shovel, {RGBO(250,220,60)}, {RGBO(180,130,10)}
+    ICONT   91, icon_sword,  {RGBO(250,220,60)}, {RGBO(180,130,10)}
+    ICONT   92, icon_pick,   {RGBO(90,230,230)}, {RGBO(25,140,140)}
+    ICONT   93, icon_axe,    {RGBO(90,230,230)}, {RGBO(25,140,140)}
+    ICONT   94, icon_shovel, {RGBO(90,230,230)}, {RGBO(25,140,140)}
+    ICONT   95, icon_sword,  {RGBO(90,230,230)}, {RGBO(25,140,140)}
+    BMP     96, bow_bmp, pal_bow
+    BMP     97, arrow_bmp, pal_arrow
+    BMP     98, string_bmp, pal_string
+    BMP     99, gunpowder_bmp, pal_gunpowder
+    BMP     100, flint_bmp, pal_flint
+    BMP     101, flintsteel_bmp, pal_flintsteel
+    BMP     102, rotten_bmp, pal_rotten
+    ICON3   103, icon_pork, {RGBO(225,190,150)}, {RGBO(165,95,50)}, {RGBO(110,60,30)}
+    BMP     104, feather_bmp, pal_feather
+    BMP     105, drumstick_bmp, pal_drum_raw
+    BMP     106, drumstick_bmp, pal_drum_cooked
+    BMP     107, helmet_bmp, pal_armor_iron
+    BMP     108, chestplate_bmp, pal_armor_iron
+    BMP     109, leggings_bmp, pal_armor_iron
+    BMP     110, boots_bmp, pal_armor_iron
+    BMP     111, helmet_bmp, pal_armor_gold
+    BMP     112, chestplate_bmp, pal_armor_gold
+    BMP     113, leggings_bmp, pal_armor_gold
+    BMP     114, boots_bmp, pal_armor_gold
+    BMP     115, helmet_bmp, pal_armor_diamond
+    BMP     116, chestplate_bmp, pal_armor_diamond
+    BMP     117, leggings_bmp, pal_armor_diamond
+    BMP     118, boots_bmp, pal_armor_diamond
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -875,15 +1019,15 @@ icon_pork:
     xor     eax, eax
     comiss  xmm0, [f1_0]
     ja      .done                       ; outside
-    mov     eax, RGBO(180,80,80)
+    mov     eax, r11d                   ; rim
     comiss  xmm0, [f0_72]
     ja      .done                       ; rim
-    mov     eax, RGBO(232,138,138)
+    mov     eax, r10d                   ; meat
     comiss  xmm0, [f0_45]
     jbe     .done                       ; core
     cmp     r15d, 7
     jg      .done
-    mov     eax, RGBO(250,215,205)      ; fat highlight (left part of the mid ring)
+    mov     eax, r9d                    ; fat highlight (left part of the mid ring)
 .done:
     ret
 
@@ -914,6 +1058,311 @@ hud_px:
     jmp     .entry
 .found:
     mov     eax, [rdx + 4]
+.done:
+    ret
+
+; 16x16 bitmap pixel. In: r9 = bitmap (256 chars), r10 = palette (PAL records). A char
+; that is not in the palette is transparent. Out: eax.
+bmp_px:
+    mov     eax, r14d
+    shl     eax, 4
+    add     eax, r15d
+    movzx   ecx, byte [r9 + rax]
+    mov     rdx, r10
+.entry:
+    movzx   esi, byte [rdx]
+    test    esi, esi
+    jz      .none
+    cmp     esi, ecx
+    je      .found
+    add     rdx, 8
+    jmp     .entry
+.found:
+    mov     eax, [rdx + 4]
+    ret
+.none:
+    xor     eax, eax
+    ret
+
+; ---------------------------------------------------------------------------
+; Base-colour routines for the rng tiles. In: r15d = px, r14d = py, r9d = the pixel's
+; rng draw, r10d (and r11d for the ores) = variant parameters. Out: esi = base colour
+; (before the m multiplier). They clobber eax, ecx, edx only.
+; ---------------------------------------------------------------------------
+
+; ores: stone, ore colour r10d on 'o', highlight r11d on 'O' of ore_mask
+px_ore:
+    lea     rax, [ore_mask]
+    mov     ecx, r14d
+    shl     ecx, 4
+    add     ecx, r15d
+    movzx   ecx, byte [rax + rcx]
+    mov     esi, RGB(128,128,128)
+    cmp     ecx, 'o'
+    cmove   esi, r10d
+    cmp     ecx, 'O'
+    cmove   esi, r11d
+    ret
+
+; furnace front (r10d = 1: lit)
+px_furnace:
+    mov     esi, RGB(80,80,80)
+    IF_BORDER .done
+    mov     esi, RGB(60,60,60)
+    lea     eax, [r15 - 3]
+    cmp     eax, 9
+    ja      .open
+    lea     eax, [r14 - 3]
+    cmp     eax, 1
+    jbe     .done                       ; top slot 3<=px<=12, 3<=py<=4
+.open:
+    mov     esi, RGB(120,120,120)
+    lea     eax, [r15 - 4]
+    cmp     eax, 7
+    ja      .done
+    lea     eax, [r14 - 8]
+    cmp     eax, 4
+    ja      .done                       ; opening 4<=px<=11, 8<=py<=12
+    mov     esi, RGB(24,24,24)
+    test    r10d, r10d
+    jz      .done
+    mov     esi, RGB(255,170,40)
+    cmp     r14d, 11
+    jae     .done
+    mov     esi, RGB(250,110,20)
+    cmp     r14d, 10
+    je      .done
+    mov     esi, RGB(190,50,10)
+.done:
+    ret
+
+px_chest_top:
+    mov     esi, RGB(92,64,32)
+    IF_BORDER .done
+    mov     esi, RGB(162,130,78)
+.done:
+    ret
+
+px_chest_side:
+    mov     esi, RGB(162,130,78)
+    IF_BORDER .dark
+    lea     eax, [r14 - 5]
+    cmp     eax, 1
+    ja      .latch
+.dark:
+    mov     esi, RGB(92,64,32)          ; border and the lid seam py 5..6
+.latch:
+    lea     eax, [r15 - 7]
+    cmp     eax, 1
+    ja      .done
+    lea     eax, [r14 - 4]
+    cmp     eax, 4
+    ja      .done
+    mov     esi, RGB(210,210,210)       ; latch 7..8 x 4..8
+.done:
+    ret
+
+; gravel: colour by r & 3
+px_gravel:
+    mov     eax, r9d
+    and     eax, 3
+    lea     rcx, [gravel_cols]
+    mov     esi, [rcx + rax * 4]
+    ret
+
+; TNT side: red bands py <= 3 / >= 12 (dark every px%4 == 3), white label with "TNT"
+px_tnt_side:
+    cmp     r14d, 3
+    jbe     .band
+    cmp     r14d, 12
+    jae     .band
+    mov     esi, RGB(230,230,230)
+    lea     eax, [r14 - 6]
+    cmp     eax, 4
+    ja      .done
+    shl     eax, 4
+    add     eax, r15d
+    lea     rcx, [tnt_mask]
+    cmp     byte [rcx + rax], '#'
+    jne     .done
+    mov     esi, RGB(30,30,30)
+    ret
+.band:
+    mov     esi, RGB(200,40,30)
+    mov     eax, r15d
+    and     eax, 3
+    cmp     eax, 3
+    jne     .done
+    mov     esi, RGB(150,25,20)
+.done:
+    ret
+
+px_tnt_top:
+    mov     esi, RGB(200,40,30)
+    lea     eax, [r15 - 6]
+    cmp     eax, 3
+    ja      .done
+    lea     eax, [r14 - 6]
+    cmp     eax, 3
+    ja      .done
+    mov     esi, RGB(230,230,230)
+    lea     eax, [r15 - 7]
+    cmp     eax, 1
+    ja      .done
+    lea     eax, [r14 - 7]
+    cmp     eax, 1
+    ja      .done
+    mov     esi, RGB(40,40,40)
+.done:
+    ret
+
+; creeper skin (r10d = 1: face)
+px_creeper:
+    mov     esi, RGB(80,180,70)
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 7
+    jnz     .light
+    mov     esi, RGB(50,120,45)
+.light:
+    mov     eax, r9d
+    shr     eax, 11
+    and     eax, 7
+    cmp     eax, 1
+    jne     .face
+    mov     esi, RGB(140,220,120)
+.face:
+    test    r10d, r10d
+    jz      .done
+    lea     eax, [r14 - 4]
+    cmp     eax, 2
+    ja      .mouth
+    lea     eax, [r15 - 3]
+    cmp     eax, 2
+    jbe     .black                      ; eyes 3..5, 10..12 x 4..6
+    lea     eax, [r15 - 10]
+    cmp     eax, 2
+    jbe     .black
+.mouth:
+    lea     eax, [r15 - 6]
+    cmp     eax, 3
+    ja      .sides
+    lea     eax, [r14 - 7]
+    cmp     eax, 3
+    jbe     .black                      ; mouth 6..9 x 7..10
+.sides:
+    lea     eax, [r14 - 10]
+    cmp     eax, 2
+    ja      .done
+    lea     eax, [r15 - 5]
+    cmp     eax, 5
+    ja      .done
+    cmp     eax, 1
+    jbe     .black                      ; px 5, 6
+    cmp     eax, 4
+    jb      .done                       ; px 7, 8
+.black:
+    mov     esi, RGB(20,20,20)          ; px 9, 10 fall through
+.done:
+    ret
+
+; skeleton bone (r10d = 1: face)
+px_skeleton:
+    mov     esi, RGB(200,200,200)
+    test    r10d, r10d
+    jz      .done
+    lea     eax, [r14 - 5]
+    cmp     eax, 2
+    ja      .nose
+    lea     eax, [r15 - 3]
+    cmp     eax, 3
+    jbe     .socket                     ; sockets 3..6, 9..12 x 5..7
+    lea     eax, [r15 - 9]
+    cmp     eax, 3
+    ja      .nose
+.socket:
+    mov     esi, RGB(40,40,40)
+    ret
+.nose:
+    cmp     r14d, 9
+    jne     .teeth
+    lea     eax, [r15 - 7]
+    cmp     eax, 1
+    ja      .teeth
+    mov     esi, RGB(60,60,60)
+    ret
+.teeth:
+    cmp     r14d, 12
+    jne     .done
+    lea     eax, [r15 - 3]
+    cmp     eax, 9
+    ja      .done
+    test    r15d, 1
+    jnz     .done
+    mov     esi, RGB(60,60,60)
+.done:
+    ret
+
+; spider body (r10d = 1: face, with the spider_pts specials)
+px_spider:
+    mov     esi, RGB(52,44,40)
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 7
+    jnz     .face
+    mov     esi, RGB(80,66,58)
+.face:
+    test    r10d, r10d
+    jz      .done
+    lea     rdx, [spider_pts]
+.pt:
+    movzx   eax, byte [rdx]
+    cmp     eax, 0xFF
+    je      .done
+    cmp     eax, r15d
+    jne     .next
+    movzx   eax, byte [rdx + 1]
+    cmp     eax, r14d
+    jne     .next
+    mov     esi, [rdx + 4]
+    ret
+.next:
+    add     rdx, 8
+    jmp     .pt
+.done:
+    ret
+
+; chicken body (r10d = 1: face)
+px_chicken:
+    mov     esi, RGB(240,240,240)
+    test    r10d, r10d
+    jz      .done
+    cmp     r14d, 5
+    jne     .beak
+    cmp     r15d, 3
+    je      .eye
+    cmp     r15d, 12
+    jne     .beak
+.eye:
+    mov     esi, RGB(24,24,24)
+    ret
+.beak:
+    lea     eax, [r15 - 6]
+    cmp     eax, 3
+    ja      .wattle
+    lea     eax, [r14 - 7]
+    cmp     eax, 2
+    ja      .wattle
+    mov     esi, RGB(240,180,40)        ; beak 6..9 x 7..9
+    ret
+.wattle:
+    lea     eax, [r15 - 7]
+    cmp     eax, 1
+    ja      .done
+    lea     eax, [r14 - 10]
+    cmp     eax, 2
+    ja      .done
+    mov     esi, RGB(200,30,30)         ; wattle 7..8 x 10..12
 .done:
     ret
 
@@ -1000,5 +1449,436 @@ food_bmp:
     db ".KbK....."
     db "KbbK....."
     db ".KK......"
+
+armor_pal_full:
+    PAL 'K', 30, 30, 30
+    PAL 'm', 190, 190, 200
+    PAL 'L', 255, 255, 255
+    dq 0
+armor_pal_empty:
+    PAL 'K', 30, 30, 30
+    PAL 'm', 60, 60, 60
+    PAL 'L', 60, 60, 60
+    dq 0
+armor_bmp:
+    db ".KK...KK."
+    db "KmLK.KmmK"
+    db "KmmmKmmmK"
+    db ".KmmmmmK."
+    db ".KmmmmmK."
+    db ".KmmmmmK."
+    db ".KKKKKKK."
+    db "........."
+    db "........."
+
+; ---- 16x16 icon palettes ----
+pal_coal:
+    PAL 'K', 24, 24, 24
+    PAL 'k', 48, 48, 52
+    PAL 'g', 96, 96, 100
+    dq 0
+pal_ingot_iron:
+    PAL 'L', 245, 245, 245
+    PAL 'm', 206, 206, 206
+    PAL 'D', 120, 120, 120
+    dq 0
+pal_ingot_gold:
+    PAL 'L', 255, 250, 160
+    PAL 'm', 250, 215, 60
+    PAL 'D', 175, 125, 10
+    dq 0
+pal_diamond:
+    PAL 'K', 18, 90, 90
+    PAL 'm', 90, 230, 230
+    PAL 'L', 220, 255, 255
+    dq 0
+pal_bow:
+    PAL 'w', 150, 112, 50
+    PAL 'W', 84, 62, 22
+    PAL 's', 230, 230, 230
+    dq 0
+pal_arrow:
+    PAL 'h', 137, 103, 39
+    PAL 'G', 220, 220, 220
+    PAL 'g', 120, 120, 120
+    PAL 'f', 245, 245, 245
+    dq 0
+pal_string:
+    PAL 's', 235, 235, 235
+    dq 0
+pal_gunpowder:
+    PAL 'k', 60, 60, 60
+    PAL 'g', 110, 110, 110
+    PAL 'l', 160, 160, 160
+    dq 0
+pal_flint:
+    PAL 'K', 20, 20, 22
+    PAL 'd', 60, 60, 66
+    PAL 'l', 120, 120, 130
+    dq 0
+pal_flintsteel:
+    PAL 'D', 110, 110, 110
+    PAL 'L', 210, 210, 210
+    PAL 'K', 20, 20, 22
+    PAL 'd', 60, 60, 66
+    PAL 'l', 120, 120, 130
+    dq 0
+pal_rotten:
+    PAL 'd', 90, 50, 30
+    PAL 'm', 150, 90, 55
+    PAL 'g', 100, 130, 60
+    dq 0
+pal_feather:
+    PAL 'W', 180, 180, 180
+    PAL 'w', 245, 245, 245
+    PAL 'q', 150, 150, 150
+    dq 0
+pal_drum_raw:
+    PAL 'm', 236, 170, 160
+    PAL 'w', 255, 215, 205
+    PAL 'b', 240, 236, 224
+    dq 0
+pal_drum_cooked:
+    PAL 'm', 176, 98, 40
+    PAL 'w', 212, 140, 72
+    PAL 'b', 240, 236, 224
+    dq 0
+pal_armor_iron:
+    PAL 'D', 90, 90, 90
+    PAL 'm', 200, 200, 205
+    PAL 'L', 245, 245, 245
+    dq 0
+pal_armor_gold:
+    PAL 'D', 160, 110, 10
+    PAL 'm', 245, 205, 50
+    PAL 'L', 255, 245, 150
+    dq 0
+pal_armor_diamond:
+    PAL 'D', 20, 100, 100
+    PAL 'm', 90, 225, 225
+    PAL 'L', 215, 255, 255
+    dq 0
+
+gravel_cols:
+    dd RGB(118,110,106), RGB(146,138,134), RGB(92,88,86), RGB(166,156,146)
+
+; spider face specials: db px, py, 0, 0 ; dd colour; px == 0xFF ends the list
+%macro SPT 3
+    db %1, %2, 0, 0
+    dd %3
+%endmacro
+spider_pts:
+    SPT 4, 6, RGB(200,30,30)
+    SPT 5, 6, RGB(200,30,30)
+    SPT 10, 6, RGB(200,30,30)
+    SPT 11, 6, RGB(200,30,30)
+    SPT 6, 4, RGB(200,30,30)
+    SPT 9, 4, RGB(200,30,30)
+    SPT 3, 8, RGB(200,30,30)
+    SPT 12, 8, RGB(200,30,30)
+    SPT 6, 12, RGB(30,24,22)
+    SPT 9, 12, RGB(30,24,22)
+    SPT 6, 13, RGB(30,24,22)
+    SPT 9, 13, RGB(30,24,22)
+    SPT 0xFF, 0, 0
+
+ore_mask:
+    db "................"
+    db "..oo........O..."
+    db ".oOo.......ooo.."
+    db "..o.........o..."
+    db "......oo........"
+    db ".....oOoo......."
+    db "......oo........"
+    db ".............o.."
+    db "..o.........oOo."
+    db ".ooo.........o.."
+    db "..O............."
+    db ".......oo......."
+    db "......oOoo....o."
+    db ".......o.....oo."
+    db "................"
+    db "................"
+
+; TNT label rows (py 6..10)
+tnt_mask:
+    db "..###.#..#.###.."
+    db "...#..##.#..#..."
+    db "...#..#.##..#..."
+    db "...#..#..#..#..."
+    db "...#..#..#..#..."
+
+coal_bmp:
+    db "................"
+    db "................"
+    db "......KKKK......"
+    db "....KKkkkkKK...."
+    db "...KkkggkkkkK..."
+    db "...KkgkkkkkkK..."
+    db "..KkkkkkkgkkkK.."
+    db "..KkkkkkkkkkkK.."
+    db "..KkkgkkkkkkkK.."
+    db "..KkkkkkkkkgkkK."
+    db "...KkkkkkkkkK..."
+    db "...KKkkgkkkKK..."
+    db ".....KKkkKKK...."
+    db ".......KKK......"
+    db "................"
+    db "................"
+ingot_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "......LLLLLLL..."
+    db ".....LmmmmmmLD.."
+    db "....LmmmmmmmLDD."
+    db "...LLLLLLLLLDDD."
+    db "...LmmmmmmmmLDD."
+    db "...LmmmmmmmmLD.."
+    db "...DDDDDDDDDDD.."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+diamond_bmp:
+    db "................"
+    db "................"
+    db ".....KKKKKK....."
+    db "....KLLmmmmK...."
+    db "...KLLmmmmmmK..."
+    db "..KmmmmmmmmmmK.."
+    db "..KKKKKKKKKKKK.."
+    db "...KmmmmmmmmK..."
+    db "....KmmmmmmK...."
+    db ".....KmmmmK....."
+    db "......KmmK......"
+    db ".......KK......."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+bow_bmp:
+    db "................"
+    db "............wW.."
+    db "............wW.."
+    db "...........swW.."
+    db "..........swwW.."
+    db ".........s.wWW.."
+    db "........s..wW..."
+    db ".......s..wwW..."
+    db "......s..wwWW..."
+    db ".....s..wwWW...."
+    db "....s..wwWW....."
+    db "...swwwwWW......"
+    db ".wwwwWWWW......."
+    db ".WWWWW.........."
+    db "................"
+    db "................"
+arrow_bmp:
+    db "................"
+    db "............GGG."
+    db "...........gGGG."
+    db "..........hgGG.."
+    db ".........h..g..."
+    db "........h......."
+    db ".......h........"
+    db "......h........."
+    db ".....h.........."
+    db "....h..........."
+    db "...h............"
+    db ".ffh............"
+    db ".fff............"
+    db "..ff............"
+    db "................"
+    db "................"
+string_bmp:
+    db "................"
+    db "................"
+    db "............ss.."
+    db "...........s..s."
+    db "..........s....."
+    db ".........s......"
+    db "........s......."
+    db ".......s........"
+    db "......s........."
+    db ".....s.........."
+    db "....s..........."
+    db "...s............"
+    db "..s............."
+    db "..s............."
+    db "...ss..........."
+    db "................"
+gunpowder_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "........g......."
+    db "......gkkgl....."
+    db ".....kkgkklk...."
+    db "....kglkkgkkk..."
+    db "...kkkkglkkgkk.."
+    db "..kglkkkkkklkkk."
+    db "..kkkkglkkkkgkk."
+    db "...kkkkkkgkkkk.."
+    db "................"
+    db "................"
+flint_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db ".......KK......."
+    db "......KllK......"
+    db ".....KlddK......"
+    db "....KlddddK....."
+    db "....KdddddK....."
+    db "...KlddddddK...."
+    db "...KddddddddK..."
+    db "...KddddddddK..."
+    db "....KdddddddK..."
+    db ".....KddddKK...."
+    db "......KKKK......"
+    db "................"
+    db "................"
+flintsteel_bmp:
+    db "................"
+    db "................"
+    db "...DDDDD........"
+    db "..DLLLLLD......."
+    db "..DL...LD......."
+    db "..DL...LD......."
+    db "..DLLLLLD......."
+    db "...DDDLD........"
+    db "......LD........"
+    db "......LD..KK...."
+    db ".......D.KllK..."
+    db "........KlddK..."
+    db ".......KddddK..."
+    db ".......KdddK...."
+    db "........KKK....."
+    db "................"
+rotten_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "......dd........"
+    db "....ddmmd......."
+    db "...dmmgmmd......"
+    db "...dmmmmmmdd...."
+    db "..dmgmmmmmmmd..."
+    db "..dmmmmmgmmmmd.."
+    db "...dmmmmmmmgmd.."
+    db "....ddmmgmmmmd.."
+    db "......ddmmmmd..."
+    db "........dddd...."
+    db "................"
+    db "................"
+    db "................"
+feather_bmp:
+    db "................"
+    db "............WW.."
+    db "..........WWww.."
+    db ".........Wwwww.."
+    db "........Wwwww..."
+    db ".......Wwwwq...."
+    db "......Wwwwq....."
+    db ".....Wwwwq......"
+    db "....Wwwwq......."
+    db "....wwwq........"
+    db "....wwq........."
+    db "....wq.........."
+    db "...q............"
+    db "..q............."
+    db "................"
+    db "................"
+drumstick_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "........mmmm...."
+    db ".......mwmmmm..."
+    db "......mwmmmmmm.."
+    db "......mmmmmmmm.."
+    db "......mmmmmmmm.."
+    db ".......mmmmmmm.."
+    db "......bmmmmmm..."
+    db ".....bbbmmmm...."
+    db "....bb.........."
+    db "...bb..........."
+    db "..bbb..........."
+    db "..bb............"
+    db "................"
+helmet_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "....DDDDDDDD...."
+    db "...DLLLmmmmmD..."
+    db "..DLmmmmmmmmmD.."
+    db "..DmmmmmmmmmmD.."
+    db "..DmmDDDDDDmmD.."
+    db "..DmmD....DmmD.."
+    db "..DmmD....DmmD.."
+    db "..DDDD....DDDD.."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+chestplate_bmp:
+    db "................"
+    db "..DDDD....DDDD.."
+    db "..DLmD....DmmD.."
+    db "..DmmDDDDDDmmD.."
+    db "..DmmmmmmmmmmD.."
+    db "...DLmmmmmmmD..."
+    db "....DmmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DDDDDDDD...."
+    db "................"
+    db "................"
+    db "................"
+leggings_bmp:
+    db "................"
+    db "................"
+    db "....DDDDDDDD...."
+    db "....DLmmmmmD...."
+    db "....DmmmmmmD...."
+    db "....DmmDDmmD...."
+    db "....DmmDDmmD...."
+    db "....DmmDDmmD...."
+    db "....DmmDDmmD...."
+    db "....DmmDDmmD...."
+    db "....DmmDDmmD...."
+    db "....DDDDDDDD...."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+boots_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "...DDDD..DDDD..."
+    db "...DLmD..DLmD..."
+    db "...DmmD..DmmD..."
+    db "...DmmD..DmmD..."
+    db "..DDmmD..DmmDD.."
+    db ".DLmmmD..DmmmmD."
+    db ".DDDDDD..DDDDDD."
+    db "................"
+    db "................"
+    db "................"
 
 section .text

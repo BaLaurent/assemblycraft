@@ -4,23 +4,26 @@
 default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
-global game_open_table
+global game_open_screen, game_open_cont, game_bow_charge
 global game_new, game_load, game_save, game_frame, game_respawn
 
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
 extern player, player_spawn, body_step, player_look, player_eye, player_forward
 extern body_intersects_block, raycast, frame_input, settings
 extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_held
-extern inv_consume_held, inv_damage_held, inv_find_hotbar
+extern inv_consume_held, inv_damage_held, inv_find_hotbar, inv_container
+extern inv_count, inv_remove_one
 extern item_break_time, item_harvest_drop, item_attack_damage
-extern item_tool, item_food, item_max_stack
+extern item_tool, item_food, item_max_stack, item_armor_slot
 extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
 extern mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
 extern mobs_intersect_block, mobs_save, mobs_load
-extern audio_play, rng_next, str_copy
+extern audio_play, audio_play_at, rng_next, str_copy, input_captured
 extern drops_clear, drops_spawn, drops_step, hand_swing
+extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
+extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
 
 section .rodata
 align 4
@@ -40,6 +43,14 @@ vol_place:    dd 0.8
 exh_attack:   dd 0.1
 exh_break:    dd 0.005
 abs_mask:     dd 0x7FFFFFFF
+bow_start:    dd 0.001
+bow_offset:   dd 0.3                   ; arrow spawn distance in front of the eye
+bow_speed:    dd 45.0
+bow_min:      dd 0.1                   ; weakest shot that leaves the bow
+f_two:        dd 2.0
+f_three:      dd 3.0
+f_eight:      dd 8.0
+vol_bow:      dd 0.8
 
 section .data
 align 4
@@ -48,10 +59,12 @@ game_time: dd NEW_WORLD_TIME
 game_break_progress: dd 0.0
 
 section .bss
-alignb 4
+alignb 8
+game_open_cont:  resq 1                 ; CONTAINER* of the furnace/chest to open
 game_target:     resb RAYHIT_size
 game_has_target: resd 1
-game_open_table: resd 1
+game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE or ST_CHEST
+game_bow_charge: resd 1                 ; float seconds drawn, 0 = not drawing
 step_accum:      resd 1
 break_timer:     resd 1                 ; creative repeat timer
 place_timer:     resd 1
@@ -74,7 +87,9 @@ reset_session:
     mov     [crack_timer], eax
     mov     [step_dist], eax
     mov     [game_has_target], eax
-    mov     [game_open_table], eax
+    mov     [game_open_screen], eax
+    mov     [game_open_cont], rax
+    mov     [game_bow_charge], eax
     mov     [game_break_progress], eax
     mov     dword [brk_y], -1
     ret
@@ -121,6 +136,9 @@ game_new:
     mov     dword [inv_sel], 0
     call    mobs_clear
     call    drops_clear
+    call    arrows_clear
+    call    tnt_clear
+    mov     qword [inv_container], 0
     call    mobs_populate
     call    reset_session
     add     rsp, 8
@@ -225,9 +243,31 @@ game_load:
     inc     ecx
     cmp     ecx, INV_SLOTS
     jb      .slot
+    ; armor: a slot keeps only a single piece made for it
+    xor     ecx, ecx
+.armor:
+    mov     eax, [rbx + WORLDHDR.armor + rcx*4]
+    movzx   edx, al
+    cmp     edx, NUM_ITEMS
+    jae     .armor_next
+    movzx   r8d, byte [item_armor_slot + rdx]
+    lea     r9d, [ecx + 1]
+    cmp     r8d, r9d
+    jne     .armor_next
+    cmp     byte [rbx + WORLDHDR.armor + rcx*4 + ITEMSTACK.count], 1
+    jne     .armor_next
+    mov     [inv + INVENTORY.armor + rcx*4], eax
+.armor_next:
+    inc     ecx
+    cmp     ecx, 4
+    jb      .armor
+    call    conts_validate
     mov     rdi, rbx
     call    mobs_load
     call    drops_clear
+    call    arrows_clear
+    call    tnt_clear
+    mov     qword [inv_container], 0
     call    reset_session
     xor     eax, eax
 .ret:
@@ -261,6 +301,10 @@ game_save:
     lea     rsi, [inv + INVENTORY.slots]
     lea     rdi, [rbx + WORLDHDR.inventory]
     mov     ecx, INV_SLOTS * 4
+    rep     movsb
+    lea     rsi, [inv + INVENTORY.armor]
+    lea     rdi, [rbx + WORLDHDR.armor]
+    mov     ecx, 16
     rep     movsb
     mov     eax, [game_time]
     mov     [rbx + WORLDHDR.time], eax
@@ -329,6 +373,22 @@ target_block:
     mov     edx, [game_target + RAYHIT.bz]
     jmp     world_get
 
+; remove_target_block(): game_target's block becomes AIR; a furnace or chest spills
+remove_target_block:
+    push    rbp
+    mov     rbp, rsp
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    call    cont_block_removed
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    mov     ecx, AIR
+    call    world_set
+    pop     rbp
+    ret
+
 ; held_id() -> eax id of the selected hotbar stack
 held_id:
     mov     eax, [inv_sel]
@@ -360,6 +420,7 @@ damage_held_tool:
 %define F_WAS    84
 %define F_LAND   88
 %define F_DIST   92
+%define F_SCR    96                     ; scratch: screen to open / bow power
 %define F_SIZE   112
 
 ; game_frame(xmm0 float dt)
@@ -526,11 +587,7 @@ game_frame:
     cmp     eax, BEDROCK
     je      .place
     mov     r12d, eax
-    mov     edi, [game_target + RAYHIT.bx]
-    mov     esi, [game_target + RAYHIT.by]
-    mov     edx, [game_target + RAYHIT.bz]
-    mov     ecx, AIR
-    call    world_set
+    call    remove_target_block
     mov     edi, r12d
     lea     rsi, [block_dig_sound]
     movss   xmm0, [f_one]
@@ -607,17 +664,24 @@ game_frame:
     call    item_harvest_drop
     mov     ebx, eax
     cmp     r12d, LEAVES
-    jne     .drop_ready
+    jne     .not_leaves
     call    rng_next
     test    eax, 15
     jnz     .drop_ready
     mov     ebx, APPLE
+    jmp     .drop_ready
+.not_leaves:
+    cmp     r12d, GRAVEL
+    jne     .drop_ready
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, 10
+    div     ecx
+    test    edx, edx
+    jnz     .drop_ready
+    mov     ebx, FLINT
 .drop_ready:
-    mov     edi, [game_target + RAYHIT.bx]
-    mov     esi, [game_target + RAYHIT.by]
-    mov     edx, [game_target + RAYHIT.bz]
-    mov     ecx, AIR
-    call    world_set
+    call    remove_target_block
     mov     edi, r12d
     lea     rsi, [block_dig_sound]
     movss   xmm0, [f_one]
@@ -661,15 +725,72 @@ game_frame:
     cmp     dword [game_has_target], 0
     je      .pick
     call    target_block
-    cmp     eax, CRAFTING_TABLE
-    jne     .not_table
+    mov     ebx, eax
     cmp     dword [frame_input + FRAMEINPUT.move + INPUT.down], 0
-    jne     .not_table
+    jne     .not_use
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
-    je      .not_table
-    mov     dword [game_open_table], 1
+    je      .not_use
+    cmp     ebx, CRAFTING_TABLE
+    jne     .not_table
+    mov     dword [game_open_screen], ST_CRAFTING
     jmp     .pick
 .not_table:
+    mov     r12d, CONT_FURNACE
+    mov     dword [rsp + F_SCR], ST_FURNACE
+    cmp     ebx, FURNACE
+    je      .open_cont
+    cmp     ebx, FURNACE_LIT
+    je      .open_cont
+    mov     r12d, CONT_CHEST
+    mov     dword [rsp + F_SCR], ST_CHEST
+    cmp     ebx, CHEST
+    jne     .not_cont
+.open_cont:
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    call    cont_at
+    test    rax, rax
+    jnz     .have_cont
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    mov     ecx, r12d
+    call    cont_create
+    test    rax, rax
+    jz      .pick                       ; every container record is in use
+.have_cont:
+    mov     [game_open_cont], rax
+    mov     eax, [rsp + F_SCR]
+    mov     [game_open_screen], eax
+    jmp     .pick
+.not_cont:
+    cmp     ebx, TNT
+    jne     .not_use
+    call    held_id
+    cmp     eax, FLINT_AND_STEEL
+    jne     .not_use
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    mov     ecx, 80
+    call    tnt_prime
+    mov     edi, SND_FUSE
+    cvtsi2ss xmm0, dword [game_target + RAYHIT.bx]
+    addss   xmm0, [f_half]
+    cvtsi2ss xmm1, dword [game_target + RAYHIT.by]
+    addss   xmm1, [f_half]
+    cvtsi2ss xmm2, dword [game_target + RAYHIT.bz]
+    addss   xmm2, [f_half]
+    movss   xmm3, [f_one]
+    call    audio_play_at
+    call    hand_swing
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .pick
+    mov     edi, 1
+    call    inv_damage_held
+    jmp     .pick
+.not_use:
     call    held_id
     mov     r12d, eax
     cmp     dword [game_mode], MODE_SURVIVAL
@@ -706,6 +827,20 @@ game_frame:
     call    mobs_intersect_block
     test    eax, eax
     jnz     .pick
+    mov     ecx, CONT_FURNACE
+    cmp     r12d, FURNACE
+    je      .place_cont
+    mov     ecx, CONT_CHEST
+    cmp     r12d, CHEST
+    jne     .place_block
+.place_cont:
+    mov     edi, [game_target + RAYHIT.px]
+    mov     esi, [game_target + RAYHIT.py]
+    mov     edx, [game_target + RAYHIT.pz]
+    call    cont_create
+    test    rax, rax
+    jz      .pick                       ; no free container record: nothing placed
+.place_block:
     mov     edi, [game_target + RAYHIT.px]
     mov     esi, [game_target + RAYHIT.py]
     mov     edx, [game_target + RAYHIT.pz]
@@ -724,12 +859,16 @@ game_frame:
     ; 10. pick block
 .pick:
     cmp     dword [frame_input + FRAMEINPUT.mmb_pressed], 0
-    je      .ret
+    je      .bow
     cmp     dword [game_has_target], 0
-    je      .ret
+    je      .bow
     call    target_block
     test    eax, eax
-    jz      .ret
+    jz      .bow
+    cmp     eax, FURNACE_LIT
+    jne     .pick_id
+    mov     eax, FURNACE
+.pick_id:
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .pick_survival
     mov     ecx, [inv_sel]
@@ -737,13 +876,93 @@ game_frame:
     mov     [rdx + ITEMSTACK.id], al
     mov     byte [rdx + ITEMSTACK.count], 1
     mov     word [rdx + ITEMSTACK.dmg], 0
-    jmp     .ret
+    jmp     .bow
 .pick_survival:
     mov     edi, eax
     call    inv_find_hotbar
     test    eax, eax
-    js      .ret
+    js      .bow
     mov     [inv_sel], eax
+
+    ; 11. bow: draw while RMB is held, shoot on release
+.bow:
+    call    held_id
+    cmp     eax, BOW
+    jne     .bow_reset
+    movss   xmm0, [game_bow_charge]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    ja      .bow_drawing
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .ret
+    cmp     dword [game_open_screen], 0
+    jne     .ret
+    cmp     dword [game_mode], MODE_CREATIVE
+    je      .bow_draw
+    mov     edi, ARROW
+    call    inv_count
+    test    eax, eax
+    jz      .ret
+.bow_draw:
+    movss   xmm0, [bow_start]
+    movss   [game_bow_charge], xmm0
+    jmp     .ret
+.bow_drawing:
+    cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    je      .bow_release
+    addss   xmm0, [rsp + F_DT]
+    movss   [game_bow_charge], xmm0
+    jmp     .ret
+.bow_release:
+    cmp     dword [input_captured], 1
+    jne     .bow_reset                  ; released inside a screen: no shot
+    minss   xmm0, [f_one]               ; f
+    movaps  xmm1, xmm0
+    mulss   xmm1, xmm0
+    addss   xmm1, xmm0
+    addss   xmm1, xmm0
+    divss   xmm1, [f_three]             ; power = (f^2 + 2f) / 3
+    comiss  xmm1, [bow_min]
+    jb      .bow_reset
+    movss   [rsp + F_SCR], xmm1
+    mulss   xmm1, [f_eight]
+    cvtss2si esi, xmm1
+    inc     esi                         ; damage = 1 + round(8 * power)
+    xor     edx, edx
+    cmp     dword [game_mode], MODE_SURVIVAL
+    sete    dl                          ; survival arrows can be picked up again
+    movss   xmm6, [rsp + F_SCR]
+    mulss   xmm6, [bow_speed]
+    movss   xmm3, [rsp + F_DIR]
+    movss   xmm4, [rsp + F_DIR + 4]
+    movss   xmm5, [rsp + F_DIR + 8]
+    movss   xmm7, [bow_offset]
+    movaps  xmm0, xmm3
+    mulss   xmm0, xmm7
+    addss   xmm0, [rsp + F_EYE]
+    movaps  xmm1, xmm4
+    mulss   xmm1, xmm7
+    addss   xmm1, [rsp + F_EYE + 4]
+    movaps  xmm2, xmm5
+    mulss   xmm2, xmm7
+    addss   xmm2, [rsp + F_EYE + 8]
+    mulss   xmm3, xmm6
+    mulss   xmm4, xmm6
+    mulss   xmm5, xmm6
+    xor     edi, edi                    ; owner: player
+    call    arrows_spawn
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .bow_sound
+    mov     edi, ARROW
+    call    inv_remove_one
+    mov     edi, 1
+    call    inv_damage_held
+.bow_sound:
+    mov     edi, SND_BOW
+    movss   xmm0, [vol_bow]
+    call    audio_play
+.bow_reset:
+    mov     dword [game_bow_charge], 0
 .ret:
     add     rsp, F_SIZE
     pop     r12
@@ -842,6 +1061,9 @@ sim_step:
 .mobs:
     call    mobs_step
     call    drops_step
+    call    arrows_step
+    call    tnt_step
+    call    conts_step
     inc     dword [game_time]
     add     rsp, 56
     pop     rbx

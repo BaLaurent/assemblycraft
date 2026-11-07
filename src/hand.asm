@@ -7,7 +7,7 @@ default rel
 
 global hand_render, hand_swing
 
-extern player, inv_held, sky_brightness, game_time, sincos_deg
+extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge
 extern render_box, item_model_draw, tex_id
 
 section .rodata
@@ -30,6 +30,7 @@ f_sw_x:      dd -0.25
 f_sw_y:      dd 0.12
 f_sw_z:      dd -0.2
 f_sw_rot:    dd -55.0
+f_bow_pull:  dd 0.18                    ; how far a fully drawn bow comes back
 ; bare arm: a skin-coloured box reaching from below the screen corner
 arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
 arm_tiles:   times 6 db TILE_PLAYER_SKIN
@@ -216,6 +217,17 @@ hand_render:
     je      .kind
     movzx   ebx, byte [rax + ITEMSTACK.id]
 .kind:
+    cmp     ebx, BOW                    ; a drawn bow comes back towards the eye
+    jne     .no_draw
+    movss   xmm2, [game_bow_charge]
+    xorps   xmm0, xmm0
+    comiss  xmm2, xmm0
+    jbe     .no_draw
+    minss   xmm2, [f_one]
+    mulss   xmm2, [f_bow_pull]
+    xorps   xmm1, xmm1
+    call    glTranslatef
+.no_draw:
     lea     rdi, [pose_arm]
     test    ebx, ebx
     jz      .pose

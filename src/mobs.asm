@@ -1,55 +1,106 @@
-; mobs.asm - zombies and pigs: slot storage, AI, spawning, ray/block queries, damage, save records.
+; mobs.asm - zombies, pigs, creepers, skeletons, spiders and chickens: slot storage, AI,
+; spawning, ray/block queries, damage, drops, save records.
 ; A MOB starts with its BODY (MOB.body = 0), so a mob pointer is also a body pointer.
 %include "common.inc"
 default rel
 
-global mobs, mob_count_type, mobs_clear, mobs_step, mobs_populate
-global mob_spawn, mobs_raycast, mob_hurt, mobs_intersect_block
+global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
+global mob_spawn, mobs_raycast, mob_hurt, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load
 
-extern body_init, body_step, body_intersects_block, player
+extern body_init, body_step, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
-extern world_top_y, world_get
+extern world_top_y, world_get, raycast
 extern sky_brightness, sky_is_night
 extern survival_damage, surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
+extern arrows_spawn, explode_at
 
-%define ZOMBIE_CAP    8                 ; zombies the spawner keeps alive
+%define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive
 %define PIG_CAP       10                ; pigs the spawner keeps alive
+%define CHICKEN_CAP   8                 ; chickens the spawner keeps alive
+%define CHICKEN_START 6                 ; chickens a new world starts with
 %define HURT_STEPS    10                ; mob_hurt invulnerability window
 %define HIT_COOLDOWN  60                ; steps between zombie hits
-%define PANIC_STEPS   180               ; a hurt pig runs this long
+%define PANIC_STEPS   180               ; a hurt pig or chicken runs this long
+%define CREEPER_FUSE  90                ; steps from a lit fuse to the blast
 ; ground a mob may spawn on, one bit per block id
-%define ZOMBIE_GROUND ((1 << STONE) | (1 << GRASS) | (1 << DIRT) | (1 << COBBLE) | (1 << SAND))
-%define PIG_GROUND    (1 << GRASS)
+%define HOSTILE_GROUND ((1 << STONE) | (1 << GRASS) | (1 << DIRT) | (1 << COBBLE) | (1 << SAND) | (1 << GRAVEL))
+%define PASSIVE_GROUND (1 << GRASS)
 
 section .rodata
 align 4
-; per-type tables, index = type - 1 (zombie, pig)
-t_half_w:   dd 0.3, 0.45
-t_height:   dd 1.8, 0.9
-t_speed:    dd 2.6, 1.6
-t_health:   dd 20, 10
-t_dmg:      dd 0, 2, 3, 4               ; zombie hit by difficulty
-t_say:      db SND_ZOMBIE_SAY, SND_PIG_SAY
-t_hurt:     db SND_ZOMBIE_HURT, SND_PIG_HURT
+; per-type tables, index = type - 1 (zombie, pig, creeper, skeleton, spider, chicken)
+t_half_w:   dd 0.3, 0.45, 0.3, 0.3, 0.7, 0.2
+t_height:   dd 1.8, 0.9, 1.7, 1.8, 0.9, 0.7
+t_speed:    dd 2.6, 1.6, 2.4, 2.5, 3.0, 1.4
+t_run:      dd 0.0, 3.2, 0.0, 0.0, 0.0, 2.4     ; panic speed of the passive types
+t_health:   dd 20, 10, 20, 20, 16, 4
+t_dmg:      dd 0, 2, 3, 4               ; zombie and skeleton hit by difficulty
+t_dmg_spider: dd 0, 2, 2, 3
+t_spread:   dd 0.0, 1.5, 1.0, 0.5       ; skeleton aim error in blocks/s by difficulty
+t_hostile:  db 1, 0, 1, 1, 1, 0
+t_burns:    db 1, 0, 0, 1, 0, 0         ; sunlight hurts the undead
+t_say:      db SND_ZOMBIE_SAY, SND_PIG_SAY, 0xFF, SND_SKELETON_SAY, SND_SPIDER_SAY, SND_CHICKEN_SAY
+t_hurt:     db SND_ZOMBIE_HURT, SND_PIG_HURT, SND_CREEPER_HURT, SND_SKELETON_HURT
+            db SND_SPIDER_HURT, SND_CHICKEN_HURT
+; death drops, 8 bytes per type: two (item, base, range) entries, count = base + rng % range;
+; item 0 = unused entry
+t_drops:    db ROTTEN_FLESH, 0, 3, 0, 0, 0, 0, 0
+            db PORKCHOP, 1, 3, 0, 0, 0, 0, 0
+            db GUNPOWDER, 0, 3, 0, 0, 0, 0, 0
+            db ARROW, 0, 3, 0, 0, 0, 0, 0
+            db STRING, 0, 3, 0, 0, 0, 0, 0
+            db FEATHER, 0, 3, RAW_CHICKEN, 1, 1, 0, 0
+; what the night spawner picks from
+night_kinds: db MOB_ZOMBIE, MOB_SKELETON, MOB_CREEPER, MOB_SPIDER
+align 8
+hunt_ai:    dq 0, 0, ai_creeper, ai_skeleton, ai_spider, 0   ; by type - 1; the zombie's AI is inline
 align 4
 c_360:      dd 360.0
 c_180:      dd 180.0                    ; walk-cycle degrees per block walked
 c_half:     dd 0.5
 c_aggro2:   dd 576.0                    ; zombies notice the player within 24 blocks
+c_hunt2:    dd 256.0                    ; creepers, skeletons and spiders within 16
 c_reach2:   dd 2.89                     ; zombie hit range 1.7 blocks, squared
-c_far2:     dd 9216.0                   ; zombies further than 96 blocks vanish
+c_bite2:    dd 1.96                     ; spider bite range 1.4 blocks, squared
+c_far2:     dd 9216.0                   ; hostile mobs further than 96 blocks vanish
 c_kb:       dd 6.0                      ; knockback speed
+c_kb_spider: dd 5.0                     ; knockback of a spider's bite and leap
 c_drop_dy:  dd 0.4                      ; porkchops pop out at mid-body height
 c_tiny:     dd 0.0001
 c_day:      dd 0.8                      ; brightness at which zombies burn
 c_vol_say:  dd 0.7
 c_vol_hurt: dd 1.0
-c_pig_run:  dd 3.2                      ; panicking pig speed
-c_pig_walk: dd 1.6
+c_glide:    dd -3.0                     ; slowest a chicken falls, blocks/s
 c_256:      dd 256.0
 c_64:       dd 64.0
+c_one:      dd 1.0
+; creeper
+c_ignite2:  dd 9.0                      ; the fuse lights within 3 blocks
+c_stop2:    dd 4.0                      ; it stops walking within 2
+c_calm2:    dd 49.0                     ; the fuse burns on while the player is within 7
+c_chest:    dd 0.9                      ; player centre above his feet
+c_mid:      dd 0.85                     ; creeper centre above its feet
+c_blast:    dd 3.0
+c_vol_fuse: dd 1.0
+; skeleton
+c_near2:    dd 25.0                     ; backs away within 5 blocks
+c_far_in2:  dd 100.0                    ; closes in beyond 10
+c_shoot2:   dd 225.0                    ; shoots within 15
+c_eye:      dd 1.62                     ; eye height above the feet
+c_muzzle:   dd 0.6                      ; arrow starts this far along the aim
+c_arrow_v:  dd 24.0                     ; arrow speed, blocks/s
+c_lift:     dd 10.0                     ; upward aim per second of flight against gravity
+c_cent:     dd 0.01
+c_vol_bow:  dd 0.8
+; spider
+c_reach_y2: dd 2.25                     ; bite height window 1.5, squared
+c_leap_lo2: dd 4.0                      ; leaps from 2 to 4 blocks away
+c_leap_hi2: dd 16.0
+c_climb:    dd 3.0
+c_leap_vy:  dd 5.5
+c_lift_vy:  dd 5.0
 
 section .bss
 alignb 16
@@ -81,6 +132,25 @@ mob_count_type:
     jb      .loop
     ret
 
+; mob_count_kind(edi hostile 0/1) -> eax number of live mobs that are hostile (1) or passive (0)
+mob_count_kind:
+    xor     eax, eax
+    lea     rcx, [mobs]
+    lea     rdx, [mobs_end]
+.loop:
+    mov     esi, [rcx + MOB.type]
+    test    esi, esi
+    jz      .next
+    movzx   esi, byte [t_hostile + rsi - 1]
+    cmp     esi, edi
+    jne     .next
+    inc     eax
+.next:
+    add     rcx, MOB_size
+    cmp     rcx, rdx
+    jb      .loop
+    ret
+
 ; mob_spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1 (bad type / no free slot)
 mob_spawn:
     push    rbp
@@ -90,8 +160,8 @@ mob_spawn:
     push    r13
     sub     rsp, 24                     ; [rsp] x, [rsp+4] y, [rsp+8] z
     lea     eax, [rdi - 1]
-    cmp     eax, 1
-    ja      .none                       ; only zombies and pigs exist
+    cmp     eax, NUM_MOB_TYPES - 1
+    ja      .none                       ; not a mob type
     mov     ebx, edi
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
@@ -162,9 +232,11 @@ yaw_from:
     add     rsp, 8
     ret
 
-; mob_ai(rdi mob): this step's input and heading.
-; Zombies hunt a living player within 24 blocks (Survival, difficulty > 0) and hit when close;
-; a panicking pig runs along its heading; everything else wanders in 1-4 s legs.
+; mob_ai(rdi mob) -> eax 1 when the mob blew up and is gone, else 0.
+; This step's input and heading. Zombies hunt a living player within 24 blocks (Survival,
+; difficulty > 0) and hit when close; creepers, skeletons and spiders hunt within 16 blocks
+; (ai_creeper, ai_skeleton, ai_spider); a panicking pig or chicken runs along its heading;
+; everything else wanders in 1-4 s legs.
 ; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player.
 mob_ai:
     push    rbp
@@ -176,14 +248,15 @@ mob_ai:
     mov     [rbx + MOB.input + INPUT.strafe], eax
     mov     [rbx + MOB.input + INPUT.down], eax
     mov     [rbx + MOB.input + INPUT.sprint], eax
-    cmp     dword [rbx + MOB.type], MOB_ZOMBIE
-    jne     .pig
+    mov     ecx, [rbx + MOB.type]
+    cmp     byte [t_hostile + rcx - 1], 0
+    je      .passive
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .wander
+    jne     .idle
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
-    je      .wander
+    je      .idle
     cmp     dword [surv + SURVIVAL.dead], 0
-    jne     .wander
+    jne     .idle
     movss   xmm0, [player + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0                 ; dx
@@ -194,12 +267,28 @@ mob_ai:
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     movss   [rsp + 8], xmm0
-    comiss  xmm0, [c_aggro2]
-    jae     .wander                     ; too far to notice
+    movss   xmm1, [c_hunt2]
+    cmp     ecx, MOB_ZOMBIE
+    jne     .range
+    movss   xmm1, [c_aggro2]
+.range:
+    comiss  xmm0, xmm1
+    jae     .idle                       ; too far to notice
     movss   xmm0, [rsp]
     movss   xmm1, [rsp + 4]
     call    yaw_from
     movss   [rbx + BODY.yaw], xmm0
+    mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_ZOMBIE
+    je      .zombie
+    mov     rdi, rbx
+    mov     rsi, rsp
+    lea     rcx, [hunt_ai]
+    call    [rcx + rax*8 - 8]
+    test    eax, eax
+    jnz     .ret                        ; it blew up
+    jmp     .jump
+.zombie:
     mov     dword [rbx + MOB.input + INPUT.fwd], 1
     cmp     dword [rbx + MOB.cooldown], 0
     jne     .jump
@@ -237,16 +326,22 @@ mob_ai:
 .hit_done:
     mov     dword [rbx + MOB.cooldown], HIT_COOLDOWN
     jmp     .jump
-.pig:
+.idle:                                  ; not hunting: a lit fuse dies down while it wanders
+    cmp     dword [rbx + MOB.fuse], 0
+    jle     .wander
+    dec     dword [rbx + MOB.fuse]
+    jmp     .wander
+.passive:
     cmp     dword [rbx + MOB.panic], 0
     jle     .wander
-    mov     eax, [c_pig_run]
-    mov     [rbx + BODY.speed], eax
+    mov     eax, [rbx + MOB.type]
+    mov     edx, [t_run + rax*4 - 4]    ; a hurt pig or chicken runs
+    mov     [rbx + BODY.speed], edx
     mov     dword [rbx + MOB.input + INPUT.fwd], 1
     dec     dword [rbx + MOB.panic]
     jnz     .jump
-    mov     eax, [c_pig_walk]           ; panic over: back to the stroll speed
-    mov     [rbx + BODY.speed], eax
+    mov     edx, [t_speed + rax*4 - 4]  ; panic over: back to the stroll speed
+    mov     [rbx + BODY.speed], edx
     jmp     .jump
 .wander:
     mov     eax, [rbx + MOB.ai_timer]
@@ -283,7 +378,298 @@ mob_ai:
     mov     eax, 1
 .store_jump:
     mov     [rbx + MOB.input + INPUT.jump], eax
+    xor     eax, eax
+.ret:
     add     rsp, 24
+    pop     rbx
+    pop     rbp
+    ret
+
+; ai_creeper(rdi mob, rsi frame) -> eax 1 when it exploded (the mob is gone).
+; frame = mob_ai's [dx, dz, horizontal distance^2]. A creeper walks up to the player; within 3
+; blocks (between body centres) the fuse lights and keeps burning while the player stays
+; within 7, else it dies down; once lit it stops walking within 2 blocks; at CREEPER_FUSE
+; it blows up with radius 3 where it stands.
+ai_creeper:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rbx, rdi
+    movss   xmm0, [player + BODY.y]
+    addss   xmm0, [c_chest]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_mid]
+    subss   xmm0, xmm1                  ; dy between the centres
+    mulss   xmm0, xmm0
+    addss   xmm0, [rsi + 8]             ; + horizontal distance^2
+    cmp     dword [rbx + MOB.fuse], 0
+    jne     .lit
+    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    comiss  xmm0, [c_ignite2]
+    jae     .check
+    mov     dword [rbx + MOB.fuse], 1   ; close enough: light the fuse
+    mov     edi, SND_FUSE
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_fuse]
+    call    audio_play_at
+    jmp     .check
+.lit:
+    xor     eax, eax
+    comiss  xmm0, [c_stop2]
+    seta    al
+    mov     [rbx + MOB.input + INPUT.fwd], eax  ; walks on only while farther than 2 blocks
+    comiss  xmm0, [c_calm2]
+    jae     .dying
+    inc     dword [rbx + MOB.fuse]
+    jmp     .check
+.dying:
+    dec     dword [rbx + MOB.fuse]
+.check:
+    xor     eax, eax
+    cmp     dword [rbx + MOB.fuse], CREEPER_FUSE
+    jl      .ret
+    mov     dword [rbx + MOB.type], MOB_NONE    ; gone before the blast looks for mobs to hurt
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_mid]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_blast]
+    call    explode_at
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ai_skeleton(rdi mob, rsi frame) -> eax 0.
+; Keeps 5..10 blocks from the player (closes in beyond 10, backs off inside 5) and, every
+; 40..69 steps, shoots an arrow when within 15 blocks with a clear line to the player's eye.
+; The arrow leaves 0.6 blocks along the aim at 24 blocks/s, lifted against gravity and
+; scattered by the difficulty.
+; Frame: own eye o[3] @0, unit aim dir[3] @12, player eye[3] @24, distance @36,
+; sx @44, sz @48, RAYHIT scratch @52 (24 bytes), clamped difficulty @76.
+ai_skeleton:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 80
+    mov     rbx, rdi
+    mov     r12, rsi
+    xor     eax, eax
+    movss   xmm0, [r12 + 8]             ; horizontal distance^2
+    comiss  xmm0, [c_far_in2]
+    jbe     .not_far
+    mov     eax, 1                      ; too far to shoot well: close in
+    jmp     .set_fwd
+.not_far:
+    comiss  xmm0, [c_near2]
+    jae     .set_fwd                    ; 5..10 blocks: stand and shoot
+    mov     eax, -1                     ; too close: back away, still facing the player
+.set_fwd:
+    mov     [rbx + MOB.input + INPUT.fwd], eax
+    cmp     dword [rbx + MOB.cooldown], 0
+    jne     .done
+    comiss  xmm0, [c_shoot2]
+    jae     .done
+    movss   xmm0, [rbx + BODY.x]        ; own eye
+    movss   [rsp], xmm0
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_eye]
+    movss   [rsp + 4], xmm0
+    movss   xmm0, [rbx + BODY.z]
+    movss   [rsp + 8], xmm0
+    lea     rdi, [rsp + 24]
+    call    player_eye
+    xor     ecx, ecx
+.aim:                                   ; dir = player eye - own eye
+    movss   xmm0, [rsp + 24 + rcx*4]
+    subss   xmm0, [rsp + rcx*4]
+    movss   [rsp + 12 + rcx*4], xmm0
+    inc     ecx
+    cmp     ecx, 3
+    jb      .aim
+    movss   xmm0, [rsp + 12]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsp + 16]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    movss   xmm1, [rsp + 20]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0                  ; distance
+    comiss  xmm0, [c_tiny]
+    jb      .done                       ; eye to eye: no direction to aim along
+    movss   [rsp + 36], xmm0
+    xor     ecx, ecx
+.unit:
+    movss   xmm1, [rsp + 12 + rcx*4]
+    divss   xmm1, xmm0
+    movss   [rsp + 12 + rcx*4], xmm1
+    inc     ecx
+    cmp     ecx, 3
+    jb      .unit
+    lea     rdi, [rsp]                  ; line of sight: no block between the two eyes
+    lea     rsi, [rsp + 12]
+    lea     rdx, [rsp + 52]
+    movss   xmm0, [rsp + 36]
+    call    raycast
+    test    eax, eax
+    jnz     .done
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     ecx, DIFF_HARD
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [rsp + 76], eax
+    call    rng_next                    ; aim error: (rng % 201 - 100) / 100 * spread, per axis
+    xor     edx, edx
+    mov     ecx, 201
+    div     ecx
+    sub     edx, 100
+    cvtsi2ss xmm0, edx
+    mulss   xmm0, [c_cent]
+    mov     eax, [rsp + 76]
+    mulss   xmm0, [t_spread + rax*4]
+    movss   [rsp + 44], xmm0
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, 201
+    div     ecx
+    sub     edx, 100
+    cvtsi2ss xmm0, edx
+    mulss   xmm0, [c_cent]
+    mov     eax, [rsp + 76]
+    mulss   xmm0, [t_spread + rax*4]
+    movss   [rsp + 48], xmm0
+    movss   xmm6, [rsp + 36]            ; flight time dist / 24: lift 10 t against gravity
+    divss   xmm6, [c_arrow_v]
+    mulss   xmm6, [c_lift]
+    movss   xmm3, [rsp + 12]
+    mulss   xmm3, [c_arrow_v]
+    addss   xmm3, [rsp + 44]            ; vx
+    movss   xmm4, [rsp + 16]
+    mulss   xmm4, [c_arrow_v]
+    addss   xmm4, xmm6                  ; vy
+    movss   xmm5, [rsp + 20]
+    mulss   xmm5, [c_arrow_v]
+    addss   xmm5, [rsp + 48]            ; vz
+    movss   xmm0, [rsp + 12]            ; starts 0.6 blocks along the aim
+    mulss   xmm0, [c_muzzle]
+    addss   xmm0, [rsp]
+    movss   xmm1, [rsp + 16]
+    mulss   xmm1, [c_muzzle]
+    addss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 20]
+    mulss   xmm2, [c_muzzle]
+    addss   xmm2, [rsp + 8]
+    mov     edi, 1                      ; fired by a mob
+    mov     eax, [rsp + 76]
+    mov     esi, [t_dmg + rax*4]
+    xor     edx, edx                    ; cannot be picked up
+    call    arrows_spawn
+    mov     edi, SND_BOW
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_bow]
+    call    audio_play_at
+    call    rng_next                    ; reload: 40..69 steps
+    xor     edx, edx
+    mov     ecx, 30
+    div     ecx
+    add     edx, 40
+    mov     [rbx + MOB.cooldown], edx
+.done:
+    xor     eax, eax
+    add     rsp, 80
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ai_spider(rdi mob, rsi frame) -> eax 0.
+; Always runs at the player and climbs what blocks it. Within 1.4 blocks it bites (every 20
+; steps); from 2..4 blocks away it leaps at him (every 30 steps, from the ground).
+ai_spider:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    cmp     dword [rbx + BODY.blocked], 0
+    je      .free
+    mov     eax, [c_climb]              ; against a wall: climb it
+    mov     [rbx + BODY.vy], eax
+.free:
+    cmp     dword [rbx + MOB.cooldown], 0
+    jne     .done
+    movss   xmm0, [r12 + 8]             ; horizontal distance^2
+    comiss  xmm0, [c_bite2]
+    jae     .leap
+    movss   xmm1, [player + BODY.y]
+    subss   xmm1, [rbx + BODY.y]
+    mulss   xmm1, xmm1
+    comiss  xmm1, [c_reach_y2]
+    jae     .done                       ; above or below its reach
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     ecx, DIFF_HARD
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     edi, [t_dmg_spider + rax*4]
+    mov     esi, CAUSE_SPIDER
+    call    survival_damage
+    test    eax, eax
+    jz      .done                       ; not applied (invulnerable): bite again next step
+    movss   xmm2, [r12 + 8]
+    sqrtss  xmm2, xmm2                  ; knock the player back along spider -> player
+    comiss  xmm2, [c_tiny]
+    jb      .lift
+    movss   xmm3, [c_kb_spider]
+    divss   xmm3, xmm2
+    movss   xmm0, [r12]
+    mulss   xmm0, xmm3
+    movss   [player + BODY.kbx], xmm0
+    movss   xmm1, [r12 + 4]
+    mulss   xmm1, xmm3
+    movss   [player + BODY.kbz], xmm1
+.lift:
+    cmp     dword [player + BODY.on_ground], 0
+    je      .bitten
+    mov     eax, [c_lift_vy]
+    mov     [player + BODY.vy], eax
+.bitten:
+    mov     dword [rbx + MOB.cooldown], 20
+    jmp     .done
+.leap:
+    cmp     dword [rbx + BODY.on_ground], 0
+    je      .done
+    comiss  xmm0, [c_leap_lo2]
+    jb      .done
+    comiss  xmm0, [c_leap_hi2]
+    ja      .done
+    sqrtss  xmm2, xmm0
+    movss   xmm3, [c_kb_spider]
+    divss   xmm3, xmm2
+    movss   xmm0, [r12]
+    mulss   xmm0, xmm3
+    movss   [rbx + BODY.kbx], xmm0      ; hurl itself at the player
+    movss   xmm1, [r12 + 4]
+    mulss   xmm1, xmm3
+    movss   [rbx + BODY.kbz], xmm1
+    mov     eax, [c_leap_vy]
+    mov     [rbx + BODY.vy], eax
+    mov     dword [rbx + MOB.cooldown], 30
+.done:
+    xor     eax, eax
+    add     rsp, 16
+    pop     r12
     pop     rbx
     pop     rbp
     ret
@@ -297,6 +683,8 @@ mob_update:
     sub     rsp, 24
     mov     rbx, rdi
     call    mob_ai
+    test    eax, eax
+    jnz     .done                       ; blew up: nothing left to move
     movss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0
     movss   xmm0, [rbx + BODY.z]
@@ -304,6 +692,12 @@ mob_update:
     mov     rdi, rbx
     lea     rsi, [rbx + MOB.input]
     call    body_step
+    cmp     dword [rbx + MOB.type], MOB_CHICKEN
+    jne     .no_glide
+    movss   xmm0, [rbx + BODY.vy]       ; chickens flutter down: they never fall faster than 3 blocks/s
+    maxss   xmm0, [c_glide]
+    movss   [rbx + BODY.vy], xmm0
+.no_glide:
     movss   xmm0, [rbx + BODY.x]        ; walk cycle: 180 degrees per block walked
     subss   xmm0, [rsp]
     mulss   xmm0, xmm0
@@ -336,14 +730,19 @@ mob_update:
     jnz     .quiet
     mov     eax, [rbx + MOB.type]
     movzx   edi, byte [t_say + rax - 1]
+    cmp     edi, 0xFF
+    je      .quiet                      ; creepers make no ambient sound
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
     movss   xmm2, [rbx + BODY.z]
     movss   xmm3, [c_vol_say]
     call    audio_play_at
 .quiet:
-    cmp     dword [rbx + MOB.type], MOB_ZOMBIE
-    jne     .done
+    mov     eax, [rbx + MOB.type]
+    cmp     byte [t_hostile + rax - 1], 0
+    je      .done                       ; passive mobs neither burn nor despawn
+    cmp     byte [t_burns + rax - 1], 0
+    je      .despawn                    ; hostile but sun-proof
     mov     eax, [game_time]            ; sunlight: -2 health every 20 steps in bright daylight
     xor     edx, edx
     mov     ecx, 20
@@ -392,7 +791,8 @@ mob_update:
     ret
 
 ; spawn_at_ground(edi type, esi x, edx z, ecx ground mask) -> eax slot index, or -1.
-; Needs 1 <= x, z <= 254, a surface at y + 1 <= 62 and a top block whose bit is set in the mask.
+; Needs 1 <= x, z <= 254, a surface at y + 1 <= 62 and a top block whose bit is set in the mask;
+; a spider (1.4 blocks wide) also needs the 3 x 3 cells above that block free.
 spawn_at_ground:
     push    rbp
     mov     rbp, rsp
@@ -428,6 +828,15 @@ spawn_at_ground:
     ja      .fail
     bt      r14d, eax
     jnc     .fail
+    cmp     ebx, MOB_SPIDER
+    jne     .place
+    mov     edi, r12d
+    lea     esi, [r15 + 1]
+    mov     edx, r13d
+    call    area_clear
+    test    eax, eax
+    jz      .fail
+.place:
     movss   xmm3, [c_half]
     cvtsi2ss xmm0, r12d
     addss   xmm0, xmm3                  ; x + 0.5
@@ -500,9 +909,70 @@ spawn_near_player:
     pop     rbp
     ret
 
+; area_clear(edi x, esi y, edx z) -> eax 1 when the 3 x 3 cells centred on (x, y, z) are all air
+area_clear:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    mov     ebx, 9                      ; cell index 8..0: column = i % 3, row = i / 3
+.cell:
+    dec     ebx
+    js      .clear
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    lea     edi, [r12 + rdx - 1]
+    lea     edx, [r14 + rax - 1]
+    mov     esi, r13d
+    call    world_get
+    test    eax, eax
+    jz      .cell
+    xor     eax, eax
+    jmp     .ret
+.clear:
+    mov     eax, 1
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; spawn_passive(edi type, esi cap): one more of that type around the player (24..48 blocks
+; away, on grass) unless `cap` already live
+spawn_passive:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     ebx, edi
+    mov     r12d, esi
+    call    mob_count_type
+    cmp     eax, r12d
+    jae     .done
+    mov     edi, ebx
+    mov     esi, 24
+    mov     edx, 25
+    mov     ecx, PASSIVE_GROUND
+    call    spawn_near_player
+.done:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; mobs_spawn_tick(): the ambient spawner, once per fixed step.
-; Zombies every 60 steps at night in Survival (difficulty > 0, at most 8); pigs every
-; 1800 steps by day (at most 10).
+; Every 60 steps at night in Survival (difficulty > 0): a zombie, skeleton, creeper or spider
+; while fewer than 12 hostile mobs live. Every 1800 steps by day: a pig (at most 10) and a
+; chicken (at most 8).
 mobs_spawn_tick:
     push    rbp
     mov     rbp, rsp
@@ -511,25 +981,27 @@ mobs_spawn_tick:
     mov     ecx, 60
     div     ecx
     test    edx, edx
-    jnz     .pigs
+    jnz     .passive
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .pigs
+    jne     .passive
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
-    je      .pigs
+    je      .passive
     mov     edi, [game_time]
     call    sky_is_night
     test    eax, eax
-    jz      .pigs
-    mov     edi, MOB_ZOMBIE
-    call    mob_count_type
-    cmp     eax, ZOMBIE_CAP
-    jae     .pigs
-    mov     edi, MOB_ZOMBIE
+    jz      .passive
+    mov     edi, 1
+    call    mob_count_kind
+    cmp     eax, HOSTILE_CAP
+    jae     .passive
+    call    rng_next                    ; which kind: night_kinds[rng % 4]
+    and     eax, 3
+    movzx   edi, byte [night_kinds + rax]
     mov     esi, 24
     mov     edx, 17
-    mov     ecx, ZOMBIE_GROUND
+    mov     ecx, HOSTILE_GROUND
     call    spawn_near_player
-.pigs:
+.passive:
     mov     eax, [game_time]
     xor     edx, edx
     mov     ecx, 1800
@@ -541,14 +1013,11 @@ mobs_spawn_tick:
     test    eax, eax
     jnz     .done
     mov     edi, MOB_PIG
-    call    mob_count_type
-    cmp     eax, PIG_CAP
-    jae     .done
-    mov     edi, MOB_PIG
-    mov     esi, 24
-    mov     edx, 25
-    mov     ecx, PIG_GROUND
-    call    spawn_near_player
+    mov     esi, PIG_CAP
+    call    spawn_passive
+    mov     edi, MOB_CHICKEN
+    mov     esi, CHICKEN_CAP
+    call    spawn_passive
 .done:
     pop     rbp
     ret
@@ -576,17 +1045,36 @@ mobs_step:
     pop     rbp
     ret
 
-; mobs_populate(): scatter pigs around the world centre (up to 200 tries, until 10 pigs live)
+; mobs_populate(): scatter pigs, then chickens, around the world centre (up to 200 tries
+; each, until 10 pigs / 6 chickens live)
 mobs_populate:
+    push    rbp
+    mov     rbp, rsp
+    mov     edi, MOB_PIG
+    mov     esi, PIG_CAP
+    call    populate
+    mov     edi, MOB_CHICKEN
+    mov     esi, CHICKEN_START
+    call    populate
+    pop     rbp
+    ret
+
+; populate(edi type, esi count): up to 200 tries at spawning that type on grass in the 97 x 97
+; square around the world centre, until `count` of them live
+populate:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    push    r13
+    push    r14
+    mov     r13d, edi
+    mov     r14d, esi
     mov     ebx, 200
 .try:
-    mov     edi, MOB_PIG
+    mov     edi, r13d
     call    mob_count_type
-    cmp     eax, PIG_CAP
+    cmp     eax, r14d
     jae     .done
     call    rng_next                    ; x = 128 + rng % 97 - 48
     xor     edx, edx
@@ -598,13 +1086,15 @@ mobs_populate:
     mov     ecx, 97
     div     ecx
     add     edx, 80                     ; z
-    mov     edi, MOB_PIG
+    mov     edi, r13d
     mov     esi, r12d
-    mov     ecx, PIG_GROUND
+    mov     ecx, PASSIVE_GROUND
     call    spawn_at_ground
     dec     ebx
     jnz     .try
 .done:
+    pop     r14
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
@@ -717,8 +1207,55 @@ mobs_raycast:
     pop     rbp
     ret
 
+; mob_drops(rdi mob): the loot of a dead mob, popped out at mid-body height (a pig's a little
+; lower). Each of the type's two table entries (item, base, range) drops base + rng % range.
+mob_drops:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     eax, [rbx + MOB.type]
+    lea     r12, [t_drops + rax*8 - 8]
+    mov     r13d, 2
+.entry:
+    cmp     byte [r12], 0
+    je      .next
+    call    rng_next
+    movzx   ecx, byte [r12 + 2]
+    xor     edx, edx
+    div     ecx
+    movzx   esi, byte [r12 + 1]
+    add     esi, edx                    ; count
+    jz      .next                       ; nothing this time
+    movzx   edi, byte [r12]
+    xor     edx, edx
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.height]
+    mulss   xmm1, [c_half]
+    cmp     dword [rbx + MOB.type], MOB_PIG
+    jne     .height
+    movss   xmm1, [c_drop_dy]
+.height:
+    addss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    call    drops_spawn
+.next:
+    add     r12, 3
+    dec     r13d
+    jnz     .entry
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, or still in its
-; hurt window). Knocks the mob along (dirx, dirz); a pig panics and flees that way, a dead pig drops pork.
+; hurt window). Knocks the mob along (dirx, dirz); a passive mob panics and flees that way, a dead
+; mob drops its loot (mob_drops).
 ; Frame: [rsp] dirx, [rsp+4] dirz.
 mob_hurt:
     push    rbp
@@ -754,31 +1291,19 @@ mob_hurt:
     movss   xmm2, [rbx + BODY.z]
     movss   xmm3, [c_vol_hurt]
     call    audio_play_at
-    cmp     dword [rbx + MOB.type], MOB_PIG
-    jne     .check_dead
+    mov     eax, [rbx + MOB.type]
+    cmp     byte [t_hostile + rax - 1], 0
+    jne     .check_dead                 ; hostile mobs stand and fight
     mov     dword [rbx + MOB.panic], PANIC_STEPS
     movss   xmm0, [rsp]
     movss   xmm1, [rsp + 4]
-    call    yaw_from                    ; run away from the attacker
+    call    yaw_from                    ; passive mobs run away from the attacker
     movss   [rbx + BODY.yaw], xmm0
 .check_dead:
     cmp     dword [rbx + MOB.health], 0
     jg      .yes
-    cmp     dword [rbx + MOB.type], MOB_PIG
-    jne     .remove
-    call    rng_next                    ; raw porkchop x (1 + rng % 3), dropped where it died
-    xor     edx, edx
-    mov     ecx, 3
-    div     ecx
-    mov     edi, PORKCHOP
-    lea     esi, [rdx + 1]
-    xor     edx, edx
-    movss   xmm0, [rbx + BODY.x]
-    movss   xmm1, [rbx + BODY.y]
-    addss   xmm1, [c_drop_dy]
-    movss   xmm2, [rbx + BODY.z]
-    call    drops_spawn
-.remove:
+    mov     rdi, rbx
+    call    mob_drops
     mov     dword [rbx + MOB.type], MOB_NONE
 .yes:
     mov     eax, 1
@@ -874,8 +1399,8 @@ mobs_save:
     jae     .skip
 %endmacro
 
-; mobs_load(rdi WORLDHDR*): clear, then respawn every saved record that describes a zombie or
-; pig inside the world, with its health clamped to 1..max
+; mobs_load(rdi WORLDHDR*): clear, then respawn every saved record that describes a known mob
+; type inside the world, with its health clamped to 1..max
 mobs_load:
     push    rbp
     mov     rbp, rsp
@@ -897,8 +1422,8 @@ mobs_load:
     dec     r12d
     mov     eax, [r13 + MOBSAVE.type]
     dec     eax
-    cmp     eax, 1
-    ja      .skip                       ; not a zombie or pig
+    cmp     eax, NUM_MOB_TYPES - 1
+    ja      .skip                       ; not a mob type
     IN_RANGE [r13 + MOBSAVE.x], c_256
     IN_RANGE [r13 + MOBSAVE.y], c_64
     IN_RANGE [r13 + MOBSAVE.z], c_256

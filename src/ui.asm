@@ -14,7 +14,7 @@ global ui_button, ui_slider, ui_textfield, ui_slot
 global ui_item_icon, ui_icon9, ui_tooltip
 
 extern settings, ui_input, audio_play, tex_id
-extern font8x8, item_icon, item_max_stack, item_tool, item_durability
+extern font8x8, item_icon, item_max_stack, item_durability
 extern str_append, i32_to_str
 
 %define WHITE   0xFFFFFFFF
@@ -1077,10 +1077,8 @@ ui_slot:
     lea     edx, [r13 + 1]
     mov     ecx, 16
     call    ui_item_icon
-    ; durability bar: tools with damage
+    ; durability bar: wearing items (tools, bow, armor...) with damage
     movzx   eax, byte [rbx + ITEMSTACK.id]
-    cmp     byte [item_tool + rax], 0
-    je      .count
     movzx   ecx, word [item_durability + rax*2]
     movzx   edx, word [rbx + ITEMSTACK.dmg]
     test    ecx, ecx

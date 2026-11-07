@@ -1,4 +1,4 @@
-; sfx.asm - procedural sound effects: the 17 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural sound effects: the 28 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few layers (noise / square / saw through a one-pole filter and an
 ; envelope). sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
@@ -6,7 +6,7 @@ default rel
 
 global sfx_build, sfx_table, sfx_pool
 
-%define POOL_SAMPLES 262144
+%define POOL_SAMPLES 524288
 
 %define W_NOISE  0                      ; SFXLAYER.wave
 %define W_SQUARE 1
@@ -65,6 +65,26 @@ layers:
     LAYER SND_TOOL_BREAK,  W_NOISE,  0.0,    0.0,    0.3,  1, E_EXP, 0.05,  0.0,  0.0,  0.25, 0.4,  0.0,  0.0
     LAYER SND_TOOL_BREAK,  W_SQUARE, 1800.0, 1200.0, 1.0,  0, E_EXP, 0.05,  0.0,  0.0,  0.20, 0.08, 0.0,  0.0
     LAYER SND_POP,         W_SQUARE, 400.0,  900.0,  0.4,  0, E_LIN, 0.0,   0.0,  0.0,  0.06, 0.3,  0.0,  0.0
+    LAYER SND_EXPLODE,       W_NOISE,  0.0,    0.0,    0.12, 0, E_EXP, 0.25,  0.0,  0.0,  1.2,  1.0,  0.0,  0.0
+    LAYER SND_EXPLODE,       W_NOISE,  0.0,    0.0,    0.6,  1, E_EXP, 0.05,  0.0,  0.0,  0.3,  0.6,  0.0,  0.0
+    LAYER SND_FUSE,          W_NOISE,  0.0,    0.0,    0.7,  1, E_LIN, 0.0,   0.3,  0.0,  1.5,  0.45, 0.0,  0.0
+    LAYER SND_BOW,           W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.03,  0.0,  0.0,  0.12, 0.45, 0.0,  0.0
+    LAYER SND_BOW,           W_SQUARE, 220.0,  110.0,  0.2,  0, E_LIN, 0.0,   0.0,  0.0,  0.15, 0.3,  0.0,  0.0
+    LAYER SND_ARROW_HIT,     W_NOISE,  0.0,    0.0,    0.35, 0, E_EXP, 0.02,  0.0,  0.0,  0.08, 0.7,  0.0,  0.0
+    LAYER SND_ARROW_HIT,     W_SQUARE, 900.0,  600.0,  0.5,  0, E_EXP, 0.02,  0.0,  0.0,  0.06, 0.12, 0.0,  0.0
+    LAYER SND_SKELETON_SAY,  W_SQUARE, 1100.0, 900.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.05, 0.35, 0.0,  0.0
+    LAYER SND_SKELETON_SAY,  W_SQUARE, 1100.0, 900.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.08, 0.05, 0.35, 0.0,  0.0
+    LAYER SND_SKELETON_SAY,  W_SQUARE, 1100.0, 900.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.16, 0.05, 0.35, 0.0,  0.0
+    LAYER SND_SKELETON_HURT, W_SQUARE, 800.0,  400.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.2,  0.4,  0.0,  0.0
+    LAYER SND_SKELETON_HURT, W_NOISE,  0.0,    0.0,    0.5,  0, E_EXP, 0.03,  0.0,  0.0,  0.1,  0.35, 0.0,  0.0
+    LAYER SND_SPIDER_SAY,    W_NOISE,  0.0,    0.0,    0.15, 0, E_LIN, 0.0,   0.05, 0.0,  0.45, 0.6,  0.0,  0.0
+    LAYER SND_SPIDER_SAY,    W_SAW,    70.0,   60.0,   0.1,  0, E_LIN, 0.0,   0.0,  0.0,  0.45, 0.35, 8.0,  9.0
+    LAYER SND_SPIDER_HURT,   W_SAW,    220.0,  120.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.0,  0.25, 0.5,  0.0,  0.0
+    LAYER SND_CREEPER_HURT,  W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.06,  0.0,  0.0,  0.25, 0.5,  0.0,  0.0
+    LAYER SND_CREEPER_HURT,  W_SAW,    160.0,  110.0,  0.2,  0, E_LIN, 0.0,   0.0,  0.0,  0.2,  0.35, 0.0,  0.0
+    LAYER SND_CHICKEN_SAY,   W_SQUARE, 1500.0, 1700.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.06, 0.3,  0.0,  0.0
+    LAYER SND_CHICKEN_SAY,   W_SQUARE, 1700.0, 1300.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.1,  0.08, 0.3,  0.0,  0.0
+    LAYER SND_CHICKEN_HURT,  W_SQUARE, 1900.0, 1000.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.15, 0.35, 0.0,  0.0
 layers_end:
 
 section .bss

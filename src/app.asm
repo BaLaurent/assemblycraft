@@ -12,16 +12,16 @@ global app_respawn, app_request_quit
 extern sys_print, str_append, str_copy, i32_to_str, floor_i
 extern input_poll, input_set_captured, input_captured, frame_input, ui_input
 extern game_new, game_load, game_save, game_frame, game_respawn, game_mode, game_time
-extern game_open_table, game_has_target, game_break_progress
+extern game_open_screen, game_open_cont, game_has_target, game_break_progress
 extern settings, settings_apply, settings_save, settings_path
 extern saves_scan, saves_entry_path, saves_new_file_path, world_list
 extern render_world, render_update_chunks, ui_begin, ui_focus, hud_draw, hud_dt
 extern screen_title, screen_worlds, screen_create, screen_rename, screen_delete
 extern screen_settings, screen_controls, screen_pause, screen_inventory
-extern screen_crafting, screen_death, screen_loading
+extern screen_crafting, screen_death, screen_loading, screen_furnace, screen_chest
 extern audio_update, player, body_init, world_generate, world_top_y, world_header
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
-extern hand_render, drops_clear
+extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 
 section .rodata
 s_loading:    db "Loading world...", 0
@@ -55,7 +55,7 @@ d_title_every: dq 0.5
 screens:
     dq screen_title, screen_worlds, screen_create, screen_rename, screen_delete
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
-    dq screen_crafting, screen_death, 0
+    dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
 
 section .data
 align 4
@@ -318,6 +318,8 @@ load_panorama:
     call    world_generate
     call    mobs_clear
     call    drops_clear
+    call    arrows_clear
+    call    tnt_clear
     mov     dword [game_time], NEW_WORLD_TIME
     mov     dword [game_has_target], 0
     mov     dword [game_break_progress], 0
@@ -477,6 +479,10 @@ update_state:
     je      .screen
     cmp     eax, ST_CRAFTING
     je      .screen
+    cmp     eax, ST_FURNACE
+    je      .screen
+    cmp     eax, ST_CHEST
+    je      .screen
     jmp     .ret                        ; paused, death, settings: nothing simulates
 
 .playing:
@@ -512,11 +518,18 @@ update_state:
     call    to_death
     jmp     .ret
 .alive:
-    cmp     dword [game_open_table], 0
-    je      .autosave
-    mov     dword [game_open_table], 0
+    mov     edi, [game_open_screen]
+    test    edi, edi
+    jz      .autosave
+    mov     dword [game_open_screen], 0
+    cmp     edi, ST_CRAFTING
+    jne     .container
     mov     dword [craft_size], 3
-    mov     edi, ST_CRAFTING
+    jmp     .open
+.container:
+    mov     rax, [game_open_cont]
+    mov     [inv_container], rax
+.open:
     call    app_goto
 .autosave:
     call    tick_autosave
@@ -525,7 +538,7 @@ update_state:
 .screen:                                ; inventory screens: the world keeps running
     movss   xmm0, [frame_dt]
     call    game_frame
-    mov     dword [game_open_table], 0
+    mov     dword [game_open_screen], 0
     cmp     dword [surv + SURVIVAL.dead], 0
     je      .autosave
     call    inv_close_screen
@@ -579,6 +592,10 @@ draw_frame:
     cmp     eax, ST_INVENTORY
     je      .in_view
     cmp     eax, ST_CRAFTING
+    je      .in_view
+    cmp     eax, ST_FURNACE
+    je      .in_view
+    cmp     eax, ST_CHEST
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -595,7 +612,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_QUIT
+    cmp     eax, ST_CHEST
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax

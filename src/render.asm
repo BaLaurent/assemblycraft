@@ -11,7 +11,7 @@ global render_init, render_update_chunks, render_world, render_box, tex_id, atla
 extern texgen_build, mesh_chunk, mesh_scratch, chunk_dirty
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
-extern mobs_render, drops_render
+extern mobs_render, drops_render, arrows_render, tnt_render
 
 section .rodata
 align 8
@@ -564,6 +564,8 @@ render_world:
     call    glBindBuffer
     call    mobs_render
     call    drops_render
+    call    arrows_render
+    call    tnt_render
 
     ; ---- target block: crack overlay, then the outline -------------------------
     cmp     dword [game_has_target], 0

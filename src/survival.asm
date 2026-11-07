@@ -7,7 +7,7 @@ global survival_reset, survival_damage, survival_land, survival_exhaust
 global survival_step, survival_eat_step, survival_can_sprint
 
 extern game_mode, settings, player
-extern audio_play, inv_held, inv_consume_held
+extern audio_play, inv_held, inv_consume_held, armor_points, armor_wear
 extern item_food, item_saturation, block_step_sound
 extern world_get, world_is_solid, world_is_opaque
 
@@ -43,16 +43,46 @@ survival_reset:
     mov     dword [surv + SURVIVAL.saturation], __float32__(5.0)
     ret
 
-; survival_damage(edi amount, esi cause) -> eax 1 if applied
+; survival_damage(edi amount, esi cause) -> eax 1 if applied. Worn armor reduces
+; damage from mobs and explosions (and wears by one point per applied hit).
 survival_damage:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     ebx, edi
+    mov     r12d, esi
     cmp     dword [game_mode], MODE_CREATIVE
     je      .no
     cmp     dword [surv + SURVIVAL.dead], 0
     jne     .no
     cmp     dword [surv + SURVIVAL.invuln], 0
     jg      .no
+    cmp     r12d, CAUSE_ZOMBIE
+    je      .armored
+    cmp     r12d, CAUSE_SKELETON
+    jb      .apply
+    cmp     r12d, CAUSE_SPIDER
+    ja      .apply
+.armored:
+    call    armor_points
+    test    eax, eax
+    jz      .apply
+    mov     ecx, 25
+    sub     ecx, eax
+    imul    ecx, ebx                    ; amount * (25 - points)
+    lea     eax, [rcx + 12]
+    xor     edx, edx
+    mov     ecx, 25
+    div     ecx
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovb   eax, ecx                    ; max(1, ...)
+    mov     ebx, eax
+    call    armor_wear
+.apply:
+    mov     edi, ebx
+    mov     esi, r12d
     mov     eax, [surv + SURVIVAL.health]
     sub     eax, edi
     xor     edx, edx
@@ -73,10 +103,14 @@ survival_damage:
     movss   xmm0, [k_1]
     call    audio_play
     mov     eax, 1
+    pop     r12
+    pop     rbx
     pop     rbp
     ret
 .no:
     xor     eax, eax
+    pop     r12
+    pop     rbx
     pop     rbp
     ret
 

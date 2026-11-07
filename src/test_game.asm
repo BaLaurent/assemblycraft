@@ -6,6 +6,7 @@ global test_game_save_load_roundtrip
 
 extern world_clear, world_header, rng_seed, game_new, game_save, game_load
 extern game_time, game_mode, surv, inv, mob_count_type, str_eq, file_unlink
+extern world_set, cont_create, cont_at
 
 section .rodata
 path:     db "/tmp/assemblycraft-selftest-game.acw", 0
@@ -32,6 +33,24 @@ test_game_save_load_roundtrip:
     mov     byte [rax + ITEMSTACK.id], STONE_PICKAXE
     mov     byte [rax + ITEMSTACK.count], 1
     mov     word [rax + ITEMSTACK.dmg], 7
+    lea     rax, [inv + INVENTORY.armor + 1*4]
+    mov     byte [rax + ITEMSTACK.id], IRON_CHESTPLATE
+    mov     byte [rax + ITEMSTACK.count], 1
+    mov     word [rax + ITEMSTACK.dmg], 3
+    mov     edi, 128
+    mov     esi, 60
+    mov     edx, 128
+    mov     ecx, CHEST
+    call    world_set
+    mov     edi, 128
+    mov     esi, 60
+    mov     edx, 128
+    mov     ecx, CONT_CHEST
+    call    cont_create
+    test    rax, rax
+    jz      .fail
+    mov     byte [rax + CONTAINER.slots + 5*4 + ITEMSTACK.id], COAL
+    mov     byte [rax + CONTAINER.slots + 5*4 + ITEMSTACK.count], 7
     mov     dword [game_time], 12345
     mov     edi, MOB_PIG
     call    mob_count_type
@@ -58,6 +77,23 @@ test_game_save_load_roundtrip:
     cmp     byte [rax + ITEMSTACK.count], 1
     jne     .fail
     cmp     word [rax + ITEMSTACK.dmg], 7
+    jne     .fail
+    lea     rax, [inv + INVENTORY.armor + 1*4]
+    cmp     byte [rax + ITEMSTACK.id], IRON_CHESTPLATE
+    jne     .fail
+    cmp     byte [rax + ITEMSTACK.count], 1
+    jne     .fail
+    cmp     word [rax + ITEMSTACK.dmg], 3
+    jne     .fail
+    mov     edi, 128
+    mov     esi, 60
+    mov     edx, 128
+    call    cont_at
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax + CONTAINER.slots + 5*4 + ITEMSTACK.id], COAL
+    jne     .fail
+    cmp     byte [rax + CONTAINER.slots + 5*4 + ITEMSTACK.count], 7
     jne     .fail
     cmp     dword [game_time], 12345
     jne     .fail

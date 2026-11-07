@@ -4,10 +4,12 @@ default rel
 
 global test_fall_damage, test_exhaustion_drains, test_regen_when_fed
 global test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
+global test_armor_reduces_damage
 
 extern surv, survival_reset, survival_damage, survival_land, survival_exhaust, survival_step
 extern sky_brightness, sky_is_night
 extern game_mode, settings, world_clear
+extern inv, inv_clear, armor_points
 
 section .rodata
 align 4
@@ -255,4 +257,65 @@ test_sky_day_cycle:
 .fail:
     mov     eax, 1
     leave
+    ret
+
+; set the four armor slots to ids %1..%1+3, count 1, dmg 0
+%macro WEAR 1
+    mov     dword [inv + INVENTORY.armor + 0], (%1) | (1 << 8)
+    mov     dword [inv + INVENTORY.armor + 4], (%1 + 1) | (1 << 8)
+    mov     dword [inv + INVENTORY.armor + 8], (%1 + 2) | (1 << 8)
+    mov     dword [inv + INVENTORY.armor + 12], (%1 + 3) | (1 << 8)
+%endmacro
+
+; Full diamond (20 points) turns a 3-damage zombie hit into 1 and wears each piece;
+; falls ignore armor; full iron (15 points) turns a 10-damage blast into 4.
+test_armor_reduces_damage:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    setup
+    call    inv_clear
+    WEAR    DIAMOND_HELMET
+    call    armor_points
+    cmp     eax, 20
+    jne     .fail
+    mov     edi, 3
+    mov     esi, CAUSE_ZOMBIE
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 19
+    jne     .fail
+    xor     ebx, ebx
+.wear:
+    cmp     word [inv + INVENTORY.armor + rbx*4 + ITEMSTACK.dmg], 1
+    jne     .fail
+    inc     ebx
+    cmp     ebx, 4
+    jb      .wear
+    mov     dword [surv + SURVIVAL.invuln], 0
+    mov     edi, 5
+    mov     esi, CAUSE_FALL
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 14
+    jne     .fail
+    WEAR    IRON_HELMET
+    call    armor_points
+    cmp     eax, 15
+    jne     .fail
+    mov     dword [surv + SURVIVAL.invuln], 0
+    mov     edi, 10
+    mov     esi, CAUSE_EXPLOSION
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 10
+    jne     .fail
+    call    inv_clear
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    call    inv_clear
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
     ret

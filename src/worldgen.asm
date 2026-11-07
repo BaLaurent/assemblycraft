@@ -223,6 +223,199 @@ place_layer:
     jle     .dz
     ret
 
+; Ore table: dw salt, id, y_min, y_max, chance (of 65536, per column), size (random-walk cells)
+section .rodata
+align 2
+ore_tab:
+    dw 1, COAL_ORE,    5, 52, 3932, 8
+    dw 2, IRON_ORE,    5, 40, 2294, 6
+    dw 3, GOLD_ORE,    5, 28,  524, 5
+    dw 4, DIAMOND_ORE, 2, 14,  262, 4
+ore_tab_end:
+
+section .text
+; gen_ores(): per column and ore, maybe start a random walk that turns STONE cells into ore.
+gen_ores:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [0]=wx [4]=wz [8]=wy [12]=i
+    xor     r12d, r12d                  ; z
+.oz:
+    xor     ebx, ebx                    ; x
+.ox:
+    lea     r13, [ore_tab]
+.oo:
+    movzx   edx, word [r13]
+    add     edx, 500
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hash32
+    mov     r14d, eax                   ; r
+    movzx   eax, r14w
+    movzx   ecx, word [r13 + 8]
+    cmp     eax, ecx
+    jae     .onext
+    movzx   ecx, word [r13 + 4]         ; y_min
+    movzx   esi, word [r13 + 6]
+    sub     esi, ecx
+    inc     esi                         ; y_max - y_min + 1
+    mov     eax, r14d
+    shr     eax, 16
+    xor     edx, edx
+    div     esi
+    add     edx, ecx
+    mov     [rsp + 8], edx
+    mov     [rsp], ebx
+    mov     [rsp + 4], r12d
+    mov     dword [rsp + 12], 0
+.walk:
+    movzx   edx, word [r13]
+    shl     edx, 6
+    add     edx, [rsp + 12]
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hash32
+    mov     r15d, eax                   ; h
+    mov     eax, [rsp]
+    cmp     eax, 255
+    ja      .step
+    mov     ecx, [rsp + 4]
+    cmp     ecx, 255
+    ja      .step
+    mov     edx, [rsp + 8]
+    cmp     edx, 63
+    ja      .step
+    shl     edx, 16
+    shl     ecx, 8
+    or      edx, ecx
+    or      edx, eax                    ; cell index
+    lea     rsi, [blocks]
+    cmp     byte [rsi + rdx], STONE
+    jne     .step
+    movzx   eax, word [r13 + 2]
+    mov     [rsi + rdx], al
+.step:
+    mov     ecx, 3
+    mov     eax, r15d
+    xor     edx, edx
+    div     ecx
+    dec     edx
+    add     [rsp], edx                  ; dx = h%3 - 1
+    mov     eax, r15d
+    shr     eax, 8
+    xor     edx, edx
+    div     ecx
+    dec     edx
+    add     [rsp + 8], edx              ; dy = (h>>8)%3 - 1
+    mov     eax, r15d
+    shr     eax, 16
+    xor     edx, edx
+    div     ecx
+    dec     edx
+    add     [rsp + 4], edx              ; dz = (h>>16)%3 - 1
+    inc     dword [rsp + 12]
+    movzx   eax, word [r13 + 10]
+    cmp     [rsp + 12], eax
+    jb      .walk
+.onext:
+    add     r13, 12
+    lea     rax, [ore_tab_end]
+    cmp     r13, rax
+    jb      .oo
+    inc     ebx
+    cmp     ebx, 256
+    jb      .ox
+    inc     r12d
+    cmp     r12d, 256
+    jb      .oz
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; gen_ugravel(): per column, rarely a 3x2x3 box of gravel replacing STONE.
+gen_ugravel:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    xor     r12d, r12d                  ; z
+.gz:
+    xor     ebx, ebx                    ; x
+.gx:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 520
+    call    hash32
+    movzx   ecx, ax
+    cmp     ecx, 262
+    jae     .gnext
+    shr     eax, 16
+    xor     edx, edx
+    mov     ecx, 30
+    div     ecx
+    lea     r13d, [rdx + 5]             ; centre y
+    mov     r14d, -1                    ; dz
+.gdz:
+    mov     r15d, -1                    ; dx
+.gdx:
+    lea     eax, [rbx + r15]
+    cmp     eax, 255
+    ja      .gskip
+    lea     ecx, [r12 + r14]
+    cmp     ecx, 255
+    ja      .gskip
+    shl     ecx, 8
+    or      ecx, eax
+    mov     eax, r13d
+    shl     eax, 16
+    add     ecx, eax                    ; cell (x+dx, cy, z+dz)
+    lea     rsi, [blocks]
+    cmp     byte [rsi + rcx], STONE
+    jne     .g1
+    mov     byte [rsi + rcx], GRAVEL
+.g1:
+    add     ecx, 65536                  ; dy = 1
+    cmp     byte [rsi + rcx], STONE
+    jne     .gskip
+    mov     byte [rsi + rcx], GRAVEL
+.gskip:
+    inc     r15d
+    cmp     r15d, 1
+    jle     .gdx
+    inc     r14d
+    cmp     r14d, 1
+    jle     .gdz
+.gnext:
+    inc     ebx
+    cmp     ebx, 256
+    jb      .gx
+    inc     r12d
+    cmp     r12d, 256
+    jb      .gz
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+section .text
 ; world_generate(edi seed)
 world_generate:
     push    rbp
@@ -276,12 +469,34 @@ world_generate:
     inc     ecx
     cmp     ecx, r13d
     jle     .yl
+    cmp     r13d, 22
+    jg      .nobeach
+    mov     edi, ebx
+    shr     edi, 2
+    mov     esi, r12d
+    shr     esi, 2
+    mov     edx, 78
+    call    hash32
+    test    al, 7
+    jnz     .nobeach
+    mov     eax, r12d
+    shl     eax, 8
+    or      eax, ebx
+    mov     ecx, r13d
+    shl     ecx, 16
+    add     eax, ecx                    ; cell (x, h, z)
+    lea     rsi, [blocks]
+    mov     byte [rsi + rax], GRAVEL
+    mov     byte [rsi + rax - 65536], GRAVEL
+.nobeach:
     inc     ebx
     cmp     ebx, 256
     jb      .hx
     inc     r12d
     cmp     r12d, 256
     jb      .hz
+    call    gen_ores
+    call    gen_ugravel
     ; ---- trees ----
     mov     r12d, 2                     ; z
 .tz:

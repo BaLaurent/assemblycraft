@@ -5,10 +5,10 @@ default rel
 global test_mob_raycast_hits, test_mob_hurt_pig_drops_food
 global test_zombie_attacks_player, test_mob_spawn_rules
 
-extern mobs, mobs_clear, mobs_step, mob_spawn, mobs_raycast, mob_hurt, mob_count_type
+extern mobs, mobs_clear, mobs_step, mob_spawn, mobs_raycast, mob_hurt, mob_count_type, mob_count_kind
 extern player, body_init, rng_seed, world_clear, world_set, world_mark_all_dirty, blocks
 extern game_mode, game_time, settings, surv, survival_reset, inv, inv_clear
-extern drops, drops_clear
+extern drops, drops_clear, arrows_clear, tnt_clear
 
 section .rodata
 align 4
@@ -270,10 +270,10 @@ test_mob_spawn_rules:
     inc     dword [game_time]
     dec     ebx
     jnz     .night
-    mov     edi, MOB_ZOMBIE
-    call    mob_count_type
+    mov     edi, 1                      ; hostile mobs: zombies, skeletons, creepers, spiders
+    call    mob_count_kind
     dec     eax
-    cmp     eax, 7                      ; 1..8 zombies
+    cmp     eax, 11                     ; 1..12
     ja      .fail
     call    mobs_clear
     mov     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
@@ -283,8 +283,8 @@ test_mob_spawn_rules:
     inc     dword [game_time]
     dec     ebx
     jnz     .peaceful
-    mov     edi, MOB_ZOMBIE
-    call    mob_count_type
+    mov     edi, 1
+    call    mob_count_kind
     test    eax, eax
     jnz     .fail
     xor     ebx, ebx
@@ -294,6 +294,9 @@ test_mob_spawn_rules:
 .ret:
     mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
     call    mobs_clear
+    call    arrows_clear                ; skeletons and creepers may have left arrows, drops, TNT
+    call    tnt_clear
+    call    drops_clear
     mov     eax, ebx
     add     rsp, 8
     pop     rbx

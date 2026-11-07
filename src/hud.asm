@@ -1,6 +1,6 @@
 ; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, crosshair, hotbar,
-; hearts and food, held-item name and the F3 debug lines. GUI units; hud_draw runs after
-; ui_begin. The hotbar sits at x0 = ui_w/2 - 91, y0 = ui_h - 22.
+; hearts, armor and food, held-item name and the F3 debug lines. GUI units; hud_draw runs
+; after ui_begin. The hotbar sits at x0 = ui_w/2 - 91, y0 = ui_h - 22.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -11,8 +11,8 @@ extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9
 extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
-extern surv, inv, inv_sel, player, mob_count_type, sky_brightness, world_get
-extern item_names, item_tool, item_durability
+extern surv, inv, inv_sel, player, mob_count_kind, sky_brightness, world_get
+extern item_names, item_durability, armor_points
 extern str_append, i32_to_str, f32_to_str
 
 %define WHITE   0xFFFFFFFF
@@ -23,7 +23,7 @@ f_one:      dd 1.0
 f_two:      dd 2.0
 f_255:      dd 255.0
 f_100:      dd 100.0
-s_dbg_title: db "AssemblyCraft 0.2  ", 0
+s_dbg_title: db "AssemblyCraft 0.3  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -39,8 +39,8 @@ s_creative: db "Creative", 0
 s_day:      db "  Day ", 0
 s_colon:    db ":", 0
 s_mobs:     db "Mobs: ", 0
-s_zombies:  db " zombies, ", 0
-s_pigs:     db " pigs", 0
+s_hostile:  db " hostile, ", 0
+s_passive:  db " passive", 0
 s_light:    db "Light: ", 0
 s_percent:  db "%", 0
 s_health:   db "Health ", 0
@@ -171,8 +171,6 @@ hud_durability:
     movzx   eax, byte [rdi + ITEMSTACK.id]
     cmp     eax, NUM_ITEMS
     jae     .ret
-    cmp     byte [item_tool + rax], 0
-    je      .ret
     movzx   ecx, word [item_durability + rax*2]
     movzx   r8d, word [rdi + ITEMSTACK.dmg]
     test    ecx, ecx
@@ -315,6 +313,8 @@ hud_bars:
     sub     rsp, 8
     mov     r12d, edi
     lea     r13d, [rsi - 10]            ; icon row
+    call    armor_points
+    mov     [rsp], eax
     xor     ebx, ebx
 .i:
     mov     edi, [surv + SURVIVAL.health]
@@ -341,6 +341,23 @@ hud_bars:
     inc     ebx
     cmp     ebx, 10
     jb      .i
+    cmp     dword [rsp], 0              ; armor row above the hearts, when worn
+    je      .done
+    xor     ebx, ebx
+.armor:
+    mov     edi, [rsp]
+    lea     eax, [rbx + rbx]
+    sub     edi, eax
+    mov     esi, TILE_ARMOR_FULL
+    call    bar_tile
+    mov     edi, eax
+    lea     esi, [r12 + rbx*8]
+    lea     edx, [r13 - 10]
+    call    ui_icon9
+    inc     ebx
+    cmp     ebx, 10
+    jb      .armor
+.done:
     add     rsp, 8
     pop     r13
     pop     r12
@@ -390,10 +407,19 @@ hud_held_name:
     cvttss2si ecx, xmm0                 ; alpha = min(1, timer / 0.5) * 255
     shl     ecx, 24
     or      ecx, 0x00FFFFFF
-    lea     edx, [r12 - 24]             ; above the hearts in survival,
+    mov     edx, r12d
+    sub     edx, 12                     ; just above the bar in creative,
     cmp     dword [game_mode], MODE_SURVIVAL
-    je      .row
-    lea     edx, [r12 - 12]             ; just above the bar otherwise
+    jne     .row
+    sub     edx, 12                     ; above the hearts in survival,
+    push    rcx
+    push    rdx
+    call    armor_points
+    pop     rdx
+    pop     rcx
+    test    eax, eax
+    jz      .row
+    sub     edx, 10                     ; and above the armor row when it shows
 .row:
     lea     rax, [item_names]
     mov     rdi, [rax + rbx*8]
@@ -596,14 +622,14 @@ hud_debug:
     EMIT
 
     APPEND_STR s_mobs
-    mov     edi, MOB_ZOMBIE
-    call    mob_count_type
+    mov     edi, 1
+    call    mob_count_kind
     APPEND_EAX
-    APPEND_STR s_zombies
-    mov     edi, MOB_PIG
-    call    mob_count_type
+    APPEND_STR s_hostile
+    xor     edi, edi
+    call    mob_count_kind
     APPEND_EAX
-    APPEND_STR s_pigs
+    APPEND_STR s_passive
     EMIT
 
     APPEND_STR s_light

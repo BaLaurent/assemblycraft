@@ -1,16 +1,18 @@
 ; items.asm - inventory, crafting and tool rules.
-; Slot refs map straight onto the INVENTORY struct: ref*4 + inv is a slot (0..35),
-; grid cell (36..44) or the craft result (45); ref 46 is the cursor stack.
+; Slot refs map straight onto the INVENTORY struct: ref*4 + inv is a slot (0..35), grid cell
+; (36..44), the craft result (45), the cursor stack (46, never clickable) or a worn armor
+; piece (47..50). Refs 51..77 are the cells of the open furnace/chest (inv_container).
 %include "common.inc"
 default rel
 
-global inv, inv_sel, craft_size
+global inv, inv_sel, craft_size, inv_container
 global inv_clear, inv_set_creative_default, inv_add, inv_add_dmg, inv_room_for, inv_held
 global inv_consume_held, inv_damage_held, inv_find_hotbar, inv_click
-global inv_close_screen, craft_update
+global inv_close_screen, craft_update, inv_count, inv_remove_one, armor_points, armor_wear
 global item_break_time, item_harvest_drop, item_attack_damage
 
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack
+extern item_burn, item_smelt, item_armor_slot, item_armor_points
 extern block_hardness, block_tool, block_harvest_level, block_drop
 extern audio_play, drops_toss
 
@@ -38,6 +40,12 @@ creative_default: db STONE, DIRT, GRASS, COBBLE, PLANKS, LOG, LEAVES, GLASS, BRI
     db 1, 3, %4, 1, %1, STICK, STICK, 0, 0, 0, 0, 0, 0
     db 1, 3, %5, 1, %1, %1, STICK, 0, 0, 0, 0, 0, 0
 %endmacro
+%macro ARMOR 5                          ; material, helmet, chestplate, leggings, boots
+    db 3, 2, %2, 1, %1, %1, %1, %1, 0, %1, 0, 0, 0
+    db 3, 3, %3, 1, %1, 0, %1, %1, %1, %1, %1, %1, %1
+    db 3, 3, %4, 1, %1, %1, %1, %1, 0, %1, %1, 0, %1
+    db 3, 2, %5, 1, %1, 0, %1, %1, 0, %1, 0, 0, 0
+%endmacro
 RECIPE_SIZE equ 13
 
 recipes:
@@ -46,6 +54,21 @@ recipes:
     db 2, 2, CRAFTING_TABLE, 1, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0, 0, 0
     TOOLS PLANKS, WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL, WOOD_SWORD
     TOOLS COBBLE, STONE_PICKAXE, STONE_AXE, STONE_SHOVEL, STONE_SWORD
+    db 3, 3, FURNACE, 1, COBBLE, COBBLE, COBBLE, COBBLE, 0, COBBLE, COBBLE, COBBLE, COBBLE
+    db 3, 3, CHEST, 1, PLANKS, PLANKS, PLANKS, PLANKS, 0, PLANKS, PLANKS, PLANKS, PLANKS
+    TOOLS IRON_INGOT, IRON_PICKAXE, IRON_AXE, IRON_SHOVEL, IRON_SWORD
+    TOOLS GOLD_INGOT, GOLD_PICKAXE, GOLD_AXE, GOLD_SHOVEL, GOLD_SWORD
+    TOOLS DIAMOND, DIAMOND_PICKAXE, DIAMOND_AXE, DIAMOND_SHOVEL, DIAMOND_SWORD
+    db 3, 3, BOW, 1, 0, STICK, STRING, STICK, 0, STRING, 0, STICK, STRING
+    db 3, 3, BOW, 1, STRING, STICK, 0, STRING, 0, STICK, STRING, STICK, 0
+    db 1, 3, ARROW, 4, FLINT, STICK, FEATHER, 0, 0, 0, 0, 0, 0
+    db 2, 2, FLINT_AND_STEEL, 1, IRON_INGOT, 0, 0, FLINT, 0, 0, 0, 0, 0
+    db 2, 2, FLINT_AND_STEEL, 1, 0, IRON_INGOT, FLINT, 0, 0, 0, 0, 0, 0
+    db 2, 1, FLINT_AND_STEEL, 1, IRON_INGOT, FLINT, 0, 0, 0, 0, 0, 0, 0
+    db 3, 3, TNT, 1, GUNPOWDER, SAND, GUNPOWDER, SAND, GUNPOWDER, SAND, GUNPOWDER, SAND, GUNPOWDER
+    ARMOR IRON_INGOT, IRON_HELMET, IRON_CHESTPLATE, IRON_LEGGINGS, IRON_BOOTS
+    ARMOR GOLD_INGOT, GOLD_HELMET, GOLD_CHESTPLATE, GOLD_LEGGINGS, GOLD_BOOTS
+    ARMOR DIAMOND, DIAMOND_HELMET, DIAMOND_CHESTPLATE, DIAMOND_LEGGINGS, DIAMOND_BOOTS
 recipes_end:
 
 section .data
@@ -56,6 +79,8 @@ craft_size: dd 2                        ; 2 = inventory grid, 3 = crafting table
 section .bss
 align 4
 inv: resb INVENTORY_size
+alignb 8
+inv_container: resq 1                   ; CONTAINER* of the open furnace/chest, or 0
 
 section .text
 
@@ -81,64 +106,63 @@ inv_set_creative_default:
     jb      .l
     ret
 
-; add_range(edi id, esi count, edx dmg, ecx lo, r8d hi) -> eax leftover
-; Fills slots [lo, hi): merges into same-id undamaged stacks first, then empty slots.
-add_range:
-    mov     edi, edi
-    lea     rax, [item_max_stack]
-    movzx   r10d, byte [rax + rdi]
+; add_cells(rdi base, esi ncells, edx id, ecx count, r8d dmg) -> eax leftover
+; Fills the ncells stacks at base: merges into same-id undamaged stacks first (a damaged item
+; never merges), then empty cells, each stack capped at item_max_stack.
+add_cells:
+    mov     eax, edx
+    lea     r9, [item_max_stack]
+    movzx   r10d, byte [r9 + rax]
+    mov     eax, ecx                    ; eax = count still to place
     test    r10d, r10d
     jz      .done                       ; not an item: nothing fits
-    mov     r9d, ecx
-    test    edx, edx
+    mov     r9d, esi                    ; r9d = ncells
+    test    r8d, r8d
     jnz     .pass2                      ; damaged tools never merge
-    mov     r11d, r9d
+    xor     r11d, r11d
 .p1:
-    cmp     r11d, r8d
+    cmp     r11d, r9d
     jae     .pass2
-    test    esi, esi
+    test    eax, eax
     jz      .done
-    lea     rax, [inv]
-    lea     rax, [rax + r11*4]
-    cmp     byte [rax], dil
+    lea     rsi, [rdi + r11*4]
+    cmp     byte [rsi], dl
     jne     .p1n
-    cmp     word [rax + 2], 0
+    cmp     word [rsi + 2], 0
     jne     .p1n
-    movzx   ecx, byte [rax + 1]
+    movzx   ecx, byte [rsi + 1]
     cmp     ecx, r10d
     jae     .p1n
     neg     ecx
     add     ecx, r10d                   ; room in this stack
-    cmp     ecx, esi
-    cmova   ecx, esi
-    add     [rax + 1], cl
-    sub     esi, ecx
+    cmp     ecx, eax
+    cmova   ecx, eax
+    add     [rsi + 1], cl
+    sub     eax, ecx
 .p1n:
     inc     r11d
     jmp     .p1
 .pass2:
-    mov     r11d, r9d
+    xor     r11d, r11d
 .p2:
-    cmp     r11d, r8d
+    cmp     r11d, r9d
     jae     .done
-    test    esi, esi
+    test    eax, eax
     jz      .done
-    lea     rax, [inv]
-    lea     rax, [rax + r11*4]
-    cmp     byte [rax + 1], 0
+    lea     rsi, [rdi + r11*4]
+    cmp     byte [rsi + 1], 0
     jne     .p2n
-    mov     ecx, esi
+    mov     ecx, eax
     cmp     ecx, r10d
     cmova   ecx, r10d                   ; take = min(count, max)
-    mov     [rax], dil
-    mov     [rax + 1], cl
-    mov     [rax + 2], dx
-    sub     esi, ecx
+    mov     [rsi], dl
+    mov     [rsi + 1], cl
+    mov     [rsi + 2], r8w
+    sub     eax, ecx
 .p2n:
     inc     r11d
     jmp     .p2
 .done:
-    mov     eax, esi
     ret
 
 ; inv_add(edi id, esi count) -> eax leftover that did not fit
@@ -146,9 +170,12 @@ inv_add:
     xor     edx, edx
 ; inv_add_dmg(edi id, esi count, edx dmg) -> eax leftover (damaged tools never merge)
 inv_add_dmg:
-    xor     ecx, ecx
-    mov     r8d, INV_SLOTS
-    jmp     add_range
+    mov     ecx, esi                    ; add_cells(inv, 36, id, count, dmg)
+    mov     r8d, edx
+    mov     edx, edi
+    lea     rdi, [inv]
+    mov     esi, INV_SLOTS
+    jmp     add_cells
 
 ; inv_room_for(edi id) -> eax how many of this item fit in the 36 slots
 inv_room_for:
@@ -215,11 +242,10 @@ inv_damage_held:
     HELD_RAX
     mov     rbx, rax
     movzx   ecx, byte [rbx]
-    lea     rdx, [item_tool]
-    cmp     byte [rdx + rcx], 0
-    je      .no
     lea     rdx, [item_durability]
     movzx   edx, word [rdx + rcx*2]
+    test    edx, edx
+    jz      .no                         ; no durability: the item never wears
     movzx   eax, word [rbx + 2]
     add     eax, edi
     cmp     eax, edx
@@ -257,6 +283,97 @@ inv_find_hotbar:
     ret
 .found:
     mov     eax, ecx
+    ret
+
+; inv_count(edi id) -> eax total of that item over the 36 slots
+inv_count:
+    lea     rsi, [inv]
+    xor     eax, eax
+    xor     ecx, ecx
+.l:
+    cmp     byte [rsi + rcx*4], dil
+    jne     .n
+    movzx   edx, byte [rsi + rcx*4 + 1]
+    add     eax, edx
+.n:
+    inc     ecx
+    cmp     ecx, INV_SLOTS
+    jb      .l
+    ret
+
+; inv_remove_one(edi id) -> eax 1 if one was taken from the first of the 36 slots holding it
+inv_remove_one:
+    lea     rsi, [inv]
+    xor     ecx, ecx
+.l:
+    cmp     byte [rsi + rcx*4 + 1], 0
+    je      .n
+    cmp     byte [rsi + rcx*4], dil
+    je      .found
+.n:
+    inc     ecx
+    cmp     ecx, INV_SLOTS
+    jb      .l
+    xor     eax, eax
+    ret
+.found:
+    dec     byte [rsi + rcx*4 + 1]
+    jnz     .ok
+    mov     dword [rsi + rcx*4], 0
+.ok:
+    mov     eax, 1
+    ret
+
+; armor_points() -> eax sum of item_armor_points over the worn pieces
+armor_points:
+    lea     rsi, [inv + INVENTORY.armor]
+    lea     r8, [item_armor_points]
+    xor     eax, eax
+    xor     ecx, ecx
+.l:
+    cmp     byte [rsi + rcx*4 + 1], 0
+    je      .n
+    movzx   edx, byte [rsi + rcx*4]
+    movzx   edx, byte [r8 + rdx]
+    add     eax, edx
+.n:
+    inc     ecx
+    cmp     ecx, 4
+    jb      .l
+    ret
+
+; armor_wear() - every worn piece takes 1 damage; one that reaches its durability breaks
+armor_wear:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    lea     rbx, [inv + INVENTORY.armor]
+    xor     r12d, r12d
+.l:
+    cmp     byte [rbx + r12*4 + 1], 0
+    je      .n
+    movzx   ecx, byte [rbx + r12*4]
+    lea     rdx, [item_durability]
+    movzx   edx, word [rdx + rcx*2]
+    movzx   eax, word [rbx + r12*4 + 2]
+    inc     eax
+    cmp     eax, edx
+    jae     .break
+    mov     [rbx + r12*4 + 2], ax
+    jmp     .n
+.break:
+    mov     dword [rbx + r12*4], 0
+    mov     edi, SND_TOOL_BREAK
+    movss   xmm0, [f_break]
+    call    audio_play
+.n:
+    inc     r12d
+    cmp     r12d, 4
+    jb      .l
+    pop     r12
+    pop     rbx
+    pop     rbp
     ret
 
 ; craft_update() - recomputes inv.result from the active craft_size x craft_size grid
@@ -414,7 +531,7 @@ return_stack:
     pop     rbp
     ret
 
-; inv_close_screen() - grid and cursor items go back to the inventory
+; inv_close_screen() - grid and cursor items go back to the inventory; no container stays open
 inv_close_screen:
     push    rbp
     mov     rbp, rsp
@@ -430,6 +547,7 @@ inv_close_screen:
     jb      .l
     lea     rdi, [inv + INVENTORY.cursor]
     call    return_stack
+    mov     qword [inv_container], 0
     mov     dword [craft_size], 2
     call    craft_update
     pop     r12
@@ -438,6 +556,8 @@ inv_close_screen:
     ret
 
 ; inv_click(edi slotref, esi button 0 left/1 right, edx shift) -> eax 1 if anything changed
+; Refs: 0..35 slots, 36..44 grid, 45 craft result, 46 none (the cursor), 47..50 armor,
+; 51..77 cells of the open container (inv_container)
 inv_click:
     push    rbp
     mov     rbp, rsp
@@ -452,11 +572,51 @@ inv_click:
     mov     r15d, edx                   ; shift
     lea     r12, [inv]
     cmp     r13d, SLOTREF_RESULT
-    ja      .none
     je      .result
-    lea     rbx, [r12 + r13*4]          ; the clicked stack
+    ja      .high
+    lea     rbx, [r12 + r13*4]          ; slot or grid cell: inv + ref*4
+    jmp     .have
+.high:
+    cmp     r13d, SLOTREF_ARMOR
+    jb      .none                       ; 46: the cursor is never clickable
+    cmp     r13d, SLOTREF_CONTAINER
+    jb      .armor_cell
+    cmp     r13d, SLOTREF_CONTAINER + 26
+    ja      .none
+    mov     rax, [inv_container]
+    test    rax, rax
+    jz      .none
+    lea     ecx, [r13 - SLOTREF_CONTAINER]
+    cmp     byte [rax + CONTAINER.kind], CONT_FURNACE
+    jne     .cont_cell
+    cmp     ecx, 2
+    ja      .none                       ; a furnace has three cells
+.cont_cell:
+    lea     rbx, [rax + CONTAINER.slots + rcx*4]
+    jmp     .have
+.armor_cell:
+    lea     rbx, [r12 + r13*4]          ; the armor row follows the cursor: inv + ref*4
+.have:
     test    r15d, r15d
     jnz     .shift
+    cmp     r13d, SLOTREF_ARMOR
+    jb      .plain
+    cmp     r13d, SLOTREF_CONTAINER
+    jb      .armor_rule
+    mov     rax, [inv_container]
+    cmp     byte [rax + CONTAINER.kind], CONT_FURNACE
+    jne     .plain
+    cmp     r13d, SLOTREF_CONTAINER + 2
+    je      .output_rule
+    cmp     r13d, SLOTREF_CONTAINER + 1
+    jne     .plain
+    cmp     byte [r12 + CURSOR_COUNT], 0
+    je      .plain
+    movzx   ecx, byte [r12 + INVENTORY.cursor]
+    lea     rdx, [item_burn]
+    cmp     word [rdx + rcx*2], 0
+    je      .none                       ; fuel cell: only fuel goes in
+.plain:
     test    r14d, r14d
     jnz     .right
 
@@ -559,24 +719,102 @@ inv_click:
     mov     [r12 + INVENTORY.cursor], eax
     jmp     .changed
 
-    ; shift click: move between hotbar and main, or grid -> inventory
+    ; armor cell, either button: only the matching piece goes in; the cursor and the cell swap
+.armor_rule:
+    cmp     byte [r12 + CURSOR_COUNT], 0
+    je      .a_take
+    movzx   ecx, byte [r12 + INVENTORY.cursor]
+    lea     rdx, [item_armor_slot]
+    movzx   ecx, byte [rdx + rcx]
+    lea     eax, [r13 - (SLOTREF_ARMOR - 1)] ; this cell's armor slot number, 1..4
+    cmp     ecx, eax
+    jne     .none                       ; wrong piece for this cell
+    jmp     .swap
+.a_take:
+    cmp     byte [rbx + 1], 0
+    je      .none
+    jmp     .swap
+
+    ; furnace output cell, either button: take-only, the whole stack
+.output_rule:
+    cmp     byte [rbx + 1], 0
+    je      .none
+    cmp     byte [r12 + CURSOR_COUNT], 0
+    jne     .o_merge
+    mov     eax, [rbx]
+    mov     [r12 + INVENTORY.cursor], eax
+    mov     dword [rbx], 0
+    jmp     .changed
+.o_merge:
+    mov     eax, [rbx]
+    mov     ecx, [r12 + INVENTORY.cursor]
+    cmp     al, cl
+    jne     .none
+    test    eax, 0xFFFF0000
+    jnz     .none
+    test    ecx, 0xFFFF0000
+    jnz     .none
+    movzx   edx, al
+    lea     rsi, [item_max_stack]
+    movzx   edx, byte [rsi + rdx]
+    movzx   esi, byte [r12 + CURSOR_COUNT]
+    movzx   eax, byte [rbx + 1]
+    add     esi, eax
+    cmp     esi, edx
+    ja      .none                       ; the cursor stack would overflow
+    mov     [r12 + CURSOR_COUNT], sil
+    mov     dword [rbx], 0
+    jmp     .changed
+
+    ; shift click: move the stack to the other side. add_cells wants rdi base, esi ncells,
+    ; edx id, ecx count, r8d dmg
 .shift:
     cmp     byte [rbx + 1], 0
     je      .none
-    movzx   edi, byte [rbx]
-    movzx   esi, byte [rbx + 1]
-    movzx   edx, word [rbx + 2]
-    mov     ecx, HOTBAR_SLOTS           ; hotbar -> main [9, 36)
-    mov     r8d, INV_SLOTS
+    movzx   edx, byte [rbx]
+    movzx   ecx, byte [rbx + 1]
+    movzx   r8d, word [rbx + 2]
+    mov     rdi, r12                    ; grid, armor and container cells -> inventory [0, 36)
+    mov     esi, INV_SLOTS
+    cmp     r13d, SLOTREF_GRID
+    jae     .sh_go
+    mov     rax, [inv_container]        ; an inventory slot with a container open
+    test    rax, rax
+    jz      .sh_nocont
+    lea     rdi, [rax + CONTAINER.slots]
+    mov     esi, 27
+    cmp     byte [rax + CONTAINER.kind], CONT_FURNACE
+    jne     .sh_go                      ; chest: any cell
+    mov     esi, 1
+    lea     r9, [item_smelt]
+    cmp     byte [r9 + rdx], 0
+    jne     .sh_go                      ; smeltable -> input cell
+    lea     r9, [item_burn]
+    cmp     word [r9 + rdx*2], 0
+    je      .sh_hm                      ; neither: the plain hotbar <-> main move
+    add     rdi, 4                      ; fuel -> fuel cell
+    jmp     .sh_go
+.sh_nocont:
+    lea     r9, [item_armor_slot]       ; armor goes to its free cell first
+    movzx   eax, byte [r9 + rdx]
+    test    eax, eax
+    jz      .sh_hm
+    lea     r9, [r12 + INVENTORY.armor + rax*4 - 4]
+    cmp     byte [r9 + 1], 0
+    jne     .sh_hm                      ; that cell is taken
+    mov     eax, [rbx]
+    mov     [r9], eax
+    mov     dword [rbx], 0
+    jmp     .changed
+.sh_hm:
+    lea     rdi, [r12 + HOTBAR_SLOTS*4] ; hotbar -> main [9, 36)
+    mov     esi, INV_SLOTS - HOTBAR_SLOTS
     cmp     r13d, HOTBAR_SLOTS
     jb      .sh_go
-    xor     ecx, ecx                    ; main -> hotbar [0, 9)
-    mov     r8d, HOTBAR_SLOTS
-    cmp     r13d, SLOTREF_GRID
-    jb      .sh_go
-    mov     r8d, INV_SLOTS              ; grid -> anywhere [0, 36)
+    mov     rdi, r12                    ; main -> hotbar [0, 9)
+    mov     esi, HOTBAR_SLOTS
 .sh_go:
-    call    add_range
+    call    add_cells
     movzx   ecx, byte [rbx + 1]
     cmp     eax, ecx
     je      .none                       ; nothing moved
@@ -626,12 +864,12 @@ inv_click:
     movzx   ecx, byte [r12 + RESULT_COUNT]
     cmp     eax, ecx
     jb      .rs_done
-    movzx   edi, byte [r12 + INVENTORY.result]
-    movzx   esi, byte [r12 + RESULT_COUNT]
-    xor     edx, edx
-    xor     ecx, ecx
-    mov     r8d, INV_SLOTS
-    call    add_range
+    mov     rdi, r12                    ; add_cells(inv, 36, result id, count, 0)
+    mov     esi, INV_SLOTS
+    movzx   edx, byte [r12 + INVENTORY.result]
+    movzx   ecx, byte [r12 + RESULT_COUNT]
+    xor     r8d, r8d
+    call    add_cells
     call    craft_consume
     mov     r14d, 1
     jmp     .rs_loop
@@ -648,8 +886,9 @@ inv_click:
     mov     eax, 1
     jmp     .out
 .changed:
-    cmp     r13d, SLOTREF_GRID
-    jb      .one
+    lea     eax, [r13 - SLOTREF_GRID]
+    cmp     eax, 8
+    ja      .one
     call    craft_update                ; a grid cell changed
 .one:
     mov     eax, 1

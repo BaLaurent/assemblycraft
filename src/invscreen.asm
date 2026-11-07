@@ -1,15 +1,16 @@
-; invscreen.asm - the inventory screens: survival inventory with a 2x2 crafting grid,
-; the 3x3 crafting-table screen and the creative item palette. Immediate mode: every
-; frame draws the panel and its slots, turns presses on hovered slots into inv_click
-; calls, then draws the tooltip and the stack held on the cursor.
-; Slot references (inv_click): 0..35 slots, 36..44 grid cells, 45 result. All of them
-; address inv + ref*4 (slots, grid and result are contiguous in INVENTORY).
+; invscreen.asm - the inventory screens: survival inventory with armor and a 2x2
+; crafting grid, the 3x3 crafting-table screen, the furnace and chest screens and the
+; creative item palette. Immediate mode: every frame draws the panel and its slots,
+; turns presses on hovered slots into inv_click calls, then draws the tooltip and the
+; stack held on the cursor.
+; Slot references (inv_click): 0..35 slots, 36..44 grid cells, 45 result, 47..50 armor
+; (all at inv + ref*4), 51.. cells of the open container (inv_container).
 %include "common.inc"
 default rel
 
-global screen_inventory, screen_crafting
+global screen_inventory, screen_crafting, screen_furnace, screen_chest
 
-extern game_mode, frame_input, ui_input, inv, craft_size
+extern game_mode, frame_input, ui_input, inv, craft_size, inv_container
 extern app_goto, app_entered
 extern ui_w, ui_h, ui_mx, ui_my
 extern ui_rect, ui_frame, ui_text, ui_text_width, ui_slot, ui_item_icon, ui_tooltip
@@ -21,16 +22,33 @@ extern item_names, item_max_stack, i32_to_str
 %define LABEL_COL   RGBA(220, 220, 220, 255)
 %define PANEL_COL   RGBA(62, 62, 68, 235)
 %define EDGE_COL    RGBA(255, 255, 255, 70)
-%define PALETTE_N   23
+%define PALETTE_N   70
+%define PAL_ROWS    8                   ; ceil(PALETTE_N / 9)
+%define PAL_VISIBLE 6
+%define PAL_TRACK   (PAL_VISIBLE * 18)
+
+%define CLOSE_INVENTORY 0               ; do_close / check_close screen kinds
+%define CLOSE_CRAFTING  1
+%define CLOSE_CONTAINER 2
 
 section .rodata
-palette:      db 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
-              db 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42
+palette:      db 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21
+%assign i 32
+%rep NUM_ITEMS - 32
+              db i
+%assign i i + 1
+%endrep
+%if $ - palette != PALETTE_N
+%error palette size
+%endif
 s_inventory:  db "Inventory", 0
 s_crafting:   db "Crafting", 0
 s_creative:   db "Creative", 0
 s_hotbar:     db "Hotbar", 0
 s_arrow:      db "->", 0
+s_armor:      db "Armor", 0
+s_furnace:    db "Furnace", 0
+s_chest:      db "Chest", 0
 
 section .bss
 alignb 4
@@ -38,6 +56,7 @@ s_px:         resd 1                    ; panel origin in GUI units
 s_py:         resd 1
 show_counts:  resd 1                    ; draw stack counts on the slots
 hover_id:     resd 1                    ; item id under the mouse this frame, 0 = none
+pal_scroll:   resd 1                    ; creative palette: first visible row
 
 section .text
 
@@ -82,12 +101,13 @@ screen_begin:
     pop     rbp
     ret
 
-; do_close(edi crafting_screen): give grid/cursor items back and return to the game
+; do_close(edi kind): give grid/cursor items back and return to the game. The creative
+; inventory just drops the cursor; every other screen kind returns its items.
 do_close:
     push    rbp
     mov     rbp, rsp
-    test    edi, edi
-    jnz     .full
+    cmp     edi, CLOSE_INVENTORY
+    jne     .full
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .full
     mov     dword [inv + INVENTORY.cursor], 0
@@ -101,7 +121,7 @@ do_close:
     pop     rbp
     ret
 
-; check_close(edi crafting_screen) -> eax 1 if the screen closed. The first frame after
+; check_close(edi kind) -> eax 1 if the screen closed. The first frame after
 ; a state change only clears app_entered: the key edge that opened the screen is still
 ; set in that frame and must not close it again.
 check_close:
@@ -372,6 +392,52 @@ draw_grid:
     pop     rbp
     ret
 
+; container_cell(edi k, esi x, edx y): cell k of the open container, ref 51 + k
+container_cell:
+    mov     rax, [inv_container]
+    lea     rax, [rax + CONTAINER.slots + rdi*4]
+    lea     ecx, [rdi + SLOTREF_CONTAINER]
+    mov     rdi, rax
+    jmp     slot_cell
+
+; container_gone() -> eax 1 if the open container was destroyed (or none is open)
+container_gone:
+    mov     rcx, [inv_container]
+    test    rcx, rcx
+    jz      .gone
+    xor     eax, eax
+    cmp     byte [rcx + CONTAINER.kind], 0
+    sete    al
+    ret
+.gone:
+    mov     eax, 1
+    ret
+
+; container_begin() -> eax 1 if the screen closed: Escape/inventory key, or the block
+; behind it is gone. Otherwise draws the dimmer and the panel.
+container_begin:
+    push    rbp
+    mov     rbp, rsp
+    call    container_gone
+    test    eax, eax
+    jz      .open
+    mov     edi, CLOSE_CONTAINER
+    call    do_close
+    mov     eax, 1
+    pop     rbp
+    ret
+.open:
+    mov     edi, CLOSE_CONTAINER
+    call    check_close
+    test    eax, eax
+    jnz     .ret
+    mov     edi, 1
+    call    screen_begin
+    xor     eax, eax
+.ret:
+    pop     rbp
+    ret
+
 ; draw_overlay(): tooltip (empty cursor only) or the stack carried on the cursor
 draw_overlay:
     push    rbp
@@ -437,7 +503,11 @@ screen_inventory:
     push    r12
     push    r13
     push    r14
-    xor     edi, edi
+    cmp     dword [app_entered], 0
+    je      .entered
+    mov     dword [pal_scroll], 0
+.entered:
+    mov     edi, CLOSE_INVENTORY
     call    check_close
     test    eax, eax
     jnz     .ret
@@ -466,6 +536,21 @@ screen_inventory:
     lea     edx, [r13 + 28]
     mov     ecx, SLOTREF_RESULT
     call    slot_cell
+    lea     rdi, [s_armor]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    call    label
+    xor     ebx, ebx
+.armor:
+    lea     ecx, [rbx + SLOTREF_ARMOR]
+    lea     rdi, [inv + rcx*4]
+    imul    eax, ebx, 18
+    lea     esi, [r12 + rax + 8]
+    lea     edx, [r13 + 17]
+    call    slot_cell
+    inc     ebx
+    cmp     ebx, 4
+    jb      .armor
     mov     edi, r12d
     mov     esi, r13d
     call    draw_player_inv
@@ -475,9 +560,25 @@ screen_inventory:
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 6]
     call    label
-    xor     ebx, ebx
+    ; wheel up scrolls towards the first row
+    mov     eax, [pal_scroll]
+    sub     eax, [ui_input + UIINPUT.scroll]
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     ecx, PAL_ROWS - PAL_VISIBLE
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     [pal_scroll], eax
+    imul    ebx, eax, 9                 ; first visible palette index
+    lea     r14d, [rbx + PAL_VISIBLE * 9]
+    cmp     r14d, PALETTE_N
+    jbe     .pal
+    mov     r14d, PALETTE_N
 .pal:
+    imul    ecx, [pal_scroll], 9
     mov     eax, ebx
+    sub     eax, ecx                    ; index within the visible window
     xor     edx, edx
     mov     ecx, 9
     div     ecx                         ; eax = row, edx = column
@@ -489,8 +590,25 @@ screen_inventory:
     movzx   edx, byte [rcx + rbx]
     call    pal_cell
     inc     ebx
-    cmp     ebx, PALETTE_N
+    cmp     ebx, r14d
     jb      .pal
+    ; scrollbar: track and thumb
+    lea     edi, [r12 + 170]
+    lea     esi, [r13 + 18]
+    mov     edx, 2
+    mov     ecx, PAL_TRACK
+    mov     r8d, RGBA(255, 255, 255, 40)
+    call    ui_rect
+    imul    eax, [pal_scroll], PAL_TRACK
+    xor     edx, edx
+    mov     ecx, PAL_ROWS
+    div     ecx
+    lea     edi, [r12 + 170]
+    lea     esi, [r13 + rax + 18]
+    mov     edx, 2
+    mov     ecx, PAL_TRACK * PAL_VISIBLE / PAL_ROWS
+    mov     r8d, RGBA(255, 255, 255, 160)
+    call    ui_rect
     lea     rdi, [s_hotbar]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 130]
@@ -516,7 +634,7 @@ screen_crafting:
     push    r12
     push    r13
     push    r14
-    mov     edi, 1
+    mov     edi, CLOSE_CRAFTING
     call    check_close
     test    eax, eax
     jnz     .ret
@@ -541,6 +659,143 @@ screen_crafting:
     lea     edx, [r13 + 35]
     mov     ecx, SLOTREF_RESULT
     call    slot_cell
+    mov     edi, r12d
+    mov     esi, r13d
+    call    draw_player_inv
+    call    draw_overlay
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; screen_furnace(): input, fuel and output cells with the flame and progress gauges
+screen_furnace:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    call    container_begin
+    test    eax, eax
+    jnz     .ret
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    mov     rbx, [inv_container]
+    lea     rdi, [s_furnace]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    call    label
+    xor     edi, edi                    ; input
+    lea     esi, [r12 + 56]
+    lea     edx, [r13 + 17]
+    call    container_cell
+    ; flame: fuel left in the current item
+    lea     edi, [r12 + 57]
+    lea     esi, [r13 + 37]
+    mov     edx, 14
+    mov     ecx, 14
+    mov     r8d, RGBA(0, 0, 0, 90)
+    call    ui_rect
+    movzx   ecx, word [rbx + CONTAINER.burn_max]
+    test    ecx, ecx
+    jz      .no_flame
+    movzx   eax, word [rbx + CONTAINER.burn]
+    imul    eax, eax, 14
+    xor     edx, edx
+    div     ecx
+    test    eax, eax
+    jz      .no_flame
+    mov     ecx, 14
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     ecx, eax                    ; h
+    lea     edi, [r12 + 57]
+    lea     esi, [r13 + 51]
+    sub     esi, eax
+    mov     edx, 14
+    mov     r8d, RGBA(255, 140, 20, 255)
+    call    ui_rect
+.no_flame:
+    mov     edi, 1                      ; fuel
+    lea     esi, [r12 + 56]
+    lea     edx, [r13 + 53]
+    call    container_cell
+    ; progress arrow
+    lea     edi, [r12 + 80]
+    lea     esi, [r13 + 39]
+    mov     edx, 24
+    mov     ecx, 6
+    mov     r8d, RGBA(0, 0, 0, 90)
+    call    ui_rect
+    movzx   eax, word [rbx + CONTAINER.cook]
+    imul    eax, eax, 24
+    xor     edx, edx
+    mov     ecx, SMELT_STEPS
+    div     ecx
+    test    eax, eax
+    jz      .no_progress
+    mov     edx, 24
+    cmp     eax, edx
+    cmova   eax, edx
+    mov     edx, eax                    ; w
+    lea     edi, [r12 + 80]
+    lea     esi, [r13 + 39]
+    mov     ecx, 6
+    mov     r8d, RGBA(255, 255, 255, 200)
+    call    ui_rect
+.no_progress:
+    mov     edi, 2                      ; output
+    lea     esi, [r12 + 116]
+    lea     edx, [r13 + 35]
+    call    container_cell
+    mov     edi, r12d
+    mov     esi, r13d
+    call    draw_player_inv
+    call    draw_overlay
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; screen_chest(): 3 rows of 9 chest cells over the player inventory
+screen_chest:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    call    container_begin
+    test    eax, eax
+    jnz     .ret
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    lea     rdi, [s_chest]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    call    label
+    xor     ebx, ebx
+.cell:
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 9
+    div     ecx                         ; eax = row, edx = column
+    imul    edx, edx, 18
+    imul    eax, eax, 18
+    lea     esi, [r12 + rdx + 8]
+    lea     edx, [r13 + rax + 17]
+    mov     edi, ebx
+    call    container_cell
+    inc     ebx
+    cmp     ebx, 27
+    jb      .cell
     mov     edi, r12d
     mov     esi, r13d
     call    draw_player_inv
