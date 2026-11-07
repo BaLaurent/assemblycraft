@@ -5,7 +5,7 @@
 ; returns the NEW state). Pixel = base*m >> 8 per channel, alpha 255. Tiles 13, 14,
 ; the crack stages (256 draws first) and 64..70 continue the stream after tile 12;
 ; then, in this order, the ores 26..29, furnaces 30/31, chest 43/44, gravel 45, TNT
-; 46/47 and the mob tiles 71..79 follow tile 70; item icons (32..42, 80..118) and HUD
+; 46/47 and the mob tiles 71..79 follow tile 70; item icons (32..42, 80..128) and HUD
 ; icons (48..56) use no rng. The font is painted last (white glyph texels) at atlas
 ; rows FONT_Y..FONT_Y+47.
 ;
@@ -708,7 +708,7 @@ texgen_build:
     NOISE_PIXEL RGB(240,180,40), 220, 35
     TILE_END
 
-    ; ---- 80..118 item icons (no rng): materials, tools, bow and misc, armor ----
+    ; ---- 80..118 item icons (no rng): materials, tools, bow and misc, armor (119..128: firearms below) ----
     BMP     80, coal_bmp, pal_coal
     BMP     81, ingot_bmp, pal_ingot_iron
     BMP     82, ingot_bmp, pal_ingot_gold
@@ -748,6 +748,18 @@ texgen_build:
     BMP     116, chestplate_bmp, pal_armor_diamond
     BMP     117, leggings_bmp, pal_armor_diamond
     BMP     118, boots_bmp, pal_armor_diamond
+    ; ---- 119..128 firearm icons: pistol, musket, shotgun, kalashnikov, rocket launcher,
+    ;      then the pistol round, musket ball, shotgun shell, rifle round and rocket ----
+    BMP     119, pistol_bmp, pal_pistol
+    BMP     120, musket_bmp, pal_musket
+    BMP     121, shotgun_bmp, pal_shotgun
+    BMP     122, kalash_bmp, pal_kalash
+    BMP     123, launcher_bmp, pal_launcher
+    BMP     124, round_pistol_bmp, pal_brass
+    BMP     125, musket_ball_bmp, pal_ball
+    BMP     126, shell_bmp, pal_shell
+    BMP     127, round_rifle_bmp, pal_brass
+    BMP     128, rocket_bmp, pal_rocket
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -1878,6 +1890,250 @@ boots_bmp:
     db ".DLmmmD..DmmmmD."
     db ".DDDDDD..DDDDDD."
     db "................"
+    db "................"
+    db "................"
+
+; ---- firearm icons (tiles 119..128) ----
+pal_pistol:
+    PAL 'K', 22, 22, 24
+    PAL 'S', 205, 205, 212
+    PAL 's', 150, 150, 160
+    PAL 'd', 78, 78, 86
+    PAL 'g', 62, 44, 34
+    dq 0
+pal_musket:
+    PAL 'K', 36, 24, 14
+    PAL 'I', 205, 205, 212
+    PAL 'i', 140, 140, 150
+    PAL 'b', 200, 160, 50
+    PAL 'B', 140, 105, 25
+    PAL 'w', 170, 110, 50
+    PAL 'W', 110, 68, 28
+    dq 0
+pal_shotgun:
+    PAL 'K', 28, 24, 22
+    PAL 'I', 205, 205, 212
+    PAL 'i', 130, 130, 140
+    PAL 'w', 176, 116, 54
+    PAL 'W', 112, 70, 30
+    dq 0
+pal_kalash:
+    PAL 'K', 20, 20, 22
+    PAL 'B', 105, 105, 116
+    PAL 'b', 54, 54, 60
+    PAL 'o', 210, 124, 46
+    PAL 'O', 140, 78, 28
+    PAL 'w', 170, 112, 52
+    PAL 'W', 110, 70, 30
+    dq 0
+pal_launcher:
+    PAL 'K', 20, 30, 20
+    PAL 'G', 124, 174, 96
+    PAL 'g', 76, 120, 62
+    PAL 'd', 44, 78, 38
+    PAL 'k', 66, 50, 38
+    dq 0
+pal_brass:
+    PAL 'K', 54, 36, 10
+    PAL 'c', 196, 100, 52
+    PAL 'C', 232, 150, 90
+    PAL 'B', 255, 226, 130
+    PAL 'b', 224, 176, 62
+    PAL 'D', 150, 108, 28
+    dq 0
+pal_ball:
+    PAL 'K', 28, 28, 34
+    PAL 'L', 228, 228, 236
+    PAL 'm', 150, 150, 160
+    PAL 'D', 84, 84, 94
+    dq 0
+pal_shell:
+    PAL 'K', 50, 12, 10
+    PAL 'R', 245, 96, 76
+    PAL 'r', 205, 38, 32
+    PAL 'd', 134, 22, 22
+    PAL 'B', 255, 226, 130
+    PAL 'b', 224, 176, 62
+    PAL 'D', 150, 108, 28
+    dq 0
+pal_rocket:
+    PAL 'K', 30, 24, 24
+    PAL 'R', 250, 110, 86
+    PAL 'r', 212, 40, 32
+    PAL 'd', 138, 24, 22
+    PAL 'S', 222, 222, 230
+    PAL 's', 160, 160, 170
+    PAL 'e', 104, 104, 114
+    dq 0
+
+pistol_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db ".KKKKKKKKKKKKKK."
+    db ".KSSSSSSSSSSSsK."
+    db ".KsssssssssssdK."
+    db ".KsssdsssssssdK."
+    db ".KKKKKKKKKKKKKK."
+    db "..KgggKKKKK....."
+    db "..KgggK...K....."
+    db "..KgggKKKKK....."
+    db "..KgggK........."
+    db "..KgggK........."
+    db "..KKKKK........."
+    db "................"
+    db "................"
+musket_bmp:
+    db "............KKKK"
+    db "............KIiK"
+    db "...........KIiK."
+    db "..........KIiK.."
+    db ".........KIiK..."
+    db "........KbBK...."
+    db ".......KIiK....."
+    db "......KIiK......"
+    db ".....KwwWK......"
+    db "....KwwwWK......"
+    db "...KwwwWK......."
+    db "..KwwwWK........"
+    db ".KwwwWK........."
+    db "KwwwWK.........."
+    db "KKKKK..........."
+    db "................"
+shotgun_bmp:
+    db ".........KKKKKKK"
+    db ".........KIiKIiK"
+    db "........KIiKIiK."
+    db ".......KIiKIiK.."
+    db "......KIiKIiK..."
+    db ".....KIiKIiK...."
+    db "...KwwwwwwwK...."
+    db "..KWWWWWWWK....."
+    db "..KIiKIiK......."
+    db ".KwwwwwK........"
+    db "KwwWwwK........."
+    db "KwwWwK.........."
+    db "KKKKK..........."
+    db "................"
+    db "................"
+    db "................"
+kalash_bmp:
+    db "............KKKK"
+    db "............KBbK"
+    db "...........KBbK."
+    db "..........KBbK.."
+    db "........KwwWK..."
+    db ".......KwwWK...."
+    db "......KBbbK....."
+    db ".....KBbbbK....."
+    db "....KBbbbbK....."
+    db "...KwwwwKKoOK..."
+    db "..KwWwwK.KoOK..."
+    db ".KwWwwK...KoOK.."
+    db "KwWwwK.....KoOK."
+    db "KKKKKK.....KoOK."
+    db "...........KKKK."
+    db "................"
+launcher_bmp:
+    db "..........KKKKKK"
+    db ".........KGGggdK"
+    db "........KGGggdK."
+    db ".......KGGggdK.."
+    db "......KGGggdK..."
+    db ".....KGGggdK...."
+    db "....KGGggdK....."
+    db "...KGGggdK......"
+    db "..KGGggdK......."
+    db ".KGGggdKkkK....."
+    db ".KKKKKKKkkK....."
+    db ".......KkkK....."
+    db ".......KkkK....."
+    db ".......KKKK....."
+    db "................"
+    db "................"
+round_pistol_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "......KKKK......"
+    db ".....KcCccK....."
+    db ".....KcCccK....."
+    db ".....KBBbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db "....KBBbbbDK...."
+    db "....KKKKKKKK...."
+    db "................"
+    db "................"
+    db "................"
+musket_ball_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db ".....KKKKKK....."
+    db "...KKLLmmmmKK..."
+    db "...KLLLmmmmDK..."
+    db "...KLLmmmmmDK..."
+    db "...KLmmmmmmDK..."
+    db "...KmmmmmmDDK..."
+    db "...KmmmmmDDDK..."
+    db "...KKmmmDDDKK..."
+    db ".....KKKKKK....."
+    db "................"
+    db "................"
+    db "................"
+shell_bmp:
+    db "................"
+    db "................"
+    db "....KKKKKKKK...."
+    db "....KRrrrrdK...."
+    db "....KRrrrrdK...."
+    db "....KRrrrrdK...."
+    db "....KRrrrrdK...."
+    db "....KRrrrrdK...."
+    db "....KRrrrrdK...."
+    db "....KBbbbbDK...."
+    db "....KBbbbbDK...."
+    db "....KBbbbbDK...."
+    db "....KKKKKKKK...."
+    db "................"
+    db "................"
+    db "................"
+round_rifle_bmp:
+    db "................"
+    db ".......KK......."
+    db "......KccK......"
+    db "......KcCK......"
+    db "......KccK......"
+    db "......KccK......"
+    db "......KccK......"
+    db ".....KBBbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db ".....KBbbDK....."
+    db "....KBBbbbDK...."
+    db "....KKKKKKKK...."
+    db "................"
+rocket_bmp:
+    db "................"
+    db ".......KK......."
+    db "......KRrK......"
+    db ".....KRRrdK....."
+    db ".....KRrrdK....."
+    db ".....KRrrdK....."
+    db ".....KKKKKK....."
+    db ".....KSssdK....."
+    db ".....KSssdK....."
+    db ".....KSssdK....."
+    db ".....KSssdK....."
+    db "...KKKSssdKKK..."
+    db "..KssKSssdKssK.."
+    db "..KKKKKKKKKKKK.."
     db "................"
     db "................"
 

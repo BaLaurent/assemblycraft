@@ -1,6 +1,7 @@
 ; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, crosshair, hotbar,
-; hearts, armor and food, held-item name and the F3 debug lines. GUI units; hud_draw runs
-; after ui_begin. The hotbar sits at x0 = ui_w/2 - 91, y0 = ui_h - 22.
+; hearts, armor and food, held-item name, firearm ammunition and reload bar, and the F3
+; debug lines. GUI units; hud_draw runs after ui_begin. The hotbar sits at
+; x0 = ui_w/2 - 91, y0 = ui_h - 22.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -13,6 +14,7 @@ extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
 extern surv, inv, inv_sel, player, mob_count_kind, sky_brightness, world_get
 extern item_names, item_durability, armor_points
+extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
 extern str_append, i32_to_str, f32_to_str
 
 %define WHITE   0xFFFFFFFF
@@ -23,7 +25,7 @@ f_one:      dd 1.0
 f_two:      dd 2.0
 f_255:      dd 255.0
 f_100:      dd 100.0
-s_dbg_title: db "AssemblyCraft 0.3  ", 0
+s_dbg_title: db "AssemblyCraft 0.4  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -46,6 +48,10 @@ s_percent:  db "%", 0
 s_health:   db "Health ", 0
 s_food:     db "/20  Food ", 0
 s_sat:      db "/20  Sat ", 0
+s_slash:    db "/", 0
+s_ammo_l:   db "  [", 0
+s_ammo_r:   db "]", 0
+s_ammo_inf: db "  [inf]", 0
 
 section .data
 align 4
@@ -85,6 +91,9 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_held_name
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_gun
     cmp     dword [app_show_debug], 0
     je      .ret
     call    hud_debug
@@ -428,6 +437,101 @@ hud_held_name:
     mov     r8d, 1
     call    ui_text_centered
 .ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_gun(edi x0, esi y0): with a firearm held, "loaded/magazine  [rounds in the inventory]"
+; right of the hotbar (Creative: "[inf]"), and the reload progress under the crosshair
+hud_gun:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 40                     ; [rsp] text (32)
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     eax, [inv_sel]
+    lea     rbx, [inv + rax*4]
+    cmp     byte [rbx + ITEMSTACK.count], 0
+    je      .ret
+    movzx   edi, byte [rbx + ITEMSTACK.id]
+    call    gun_magazine
+    test    eax, eax
+    jz      .ret
+    mov     [rsp + 32], eax             ; magazine
+    movzx   edi, word [rbx + ITEMSTACK.dmg]
+    mov     rsi, rsp
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     edi, [rsp + 32]
+    mov     rsi, rax
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_ammo_inf]
+    cmp     dword [game_mode], MODE_CREATIVE
+    je      .tail
+    mov     [rsp + 32], rax             ; write cursor (the magazine is no longer needed)
+    movzx   edi, byte [rbx + ITEMSTACK.id]
+    call    gun_ammo
+    mov     edi, eax
+    call    inv_count
+    mov     ebx, eax
+    mov     rdi, [rsp + 32]
+    lea     rsi, [s_ammo_l]
+    call    str_append
+    mov     edi, ebx
+    mov     rsi, rax
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_ammo_r]
+.tail:
+    call    str_append
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    lea     esi, [r12 + 186]
+    lea     edx, [r13 + 7]
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text
+    mov     ecx, [gun_reload_total]
+    test    ecx, ecx
+    jz      .ret
+    cmp     dword [gun_reload], 0
+    je      .ret
+    mov     ebx, [ui_w]
+    shr     ebx, 1
+    sub     ebx, 20                     ; bar x
+    mov     r12d, [ui_h]
+    shr     r12d, 1
+    add     r12d, 10                    ; bar y
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 40
+    mov     ecx, 3
+    mov     r8d, RGBA(0, 0, 0, 140)
+    call    ui_rect
+    mov     ecx, [gun_reload_total]
+    mov     eax, ecx
+    sub     eax, [gun_reload]
+    imul    eax, eax, 40
+    xor     edx, edx
+    div     ecx                         ; filled = 40 * (total - left) / total
+    test    eax, eax
+    jz      .ret
+    mov     edx, eax
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     ecx, 3
+    mov     r8d, RGBA(255, 255, 255, 220)
+    call    ui_rect
+.ret:
+    add     rsp, 40
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

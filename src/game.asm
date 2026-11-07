@@ -24,6 +24,7 @@ extern audio_play, audio_play_at, rng_next, str_copy, input_captured
 extern drops_clear, drops_spawn, drops_step, hand_swing
 extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
 extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
+extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
 
 section .rodata
 align 4
@@ -92,7 +93,7 @@ reset_session:
     mov     [game_bow_charge], eax
     mov     [game_break_progress], eax
     mov     dword [brk_y], -1
-    ret
+    jmp     gun_reset                   ; and the firearm's cooldown, reload and recoil
 
 ; game_new(edi seed, esi mode, rdx name)
 game_new:
@@ -969,6 +970,34 @@ game_frame:
     call    audio_play
 .bow_reset:
     mov     dword [game_bow_charge], 0
+
+    ; 12. firearm: R reloads, RMB fires (held RMB keeps an automatic firing)
+    call    held_id
+    mov     ebx, eax
+    mov     edi, eax
+    call    gun_index
+    test    eax, eax
+    js      .ret
+    cmp     dword [game_open_screen], 0
+    jne     .ret
+    cmp     dword [input_captured], 1
+    jne     .ret
+    cmp     dword [frame_input + FRAMEINPUT.reload], 0
+    je      .trigger
+    call    gun_reload_start
+.trigger:
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    jne     .fire
+    cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    je      .ret
+    mov     edi, ebx
+    call    gun_automatic
+    test    eax, eax
+    jz      .ret
+.fire:
+    lea     rdi, [rsp + F_EYE]
+    lea     rsi, [rsp + F_DIR]
+    call    gun_fire
 .ret:
     add     rsp, F_SIZE
     pop     r12
@@ -1069,6 +1098,7 @@ sim_step:
     call    drops_step
     call    arrows_step
     call    tnt_step
+    call    gun_step
     call    conts_step
     inc     dword [game_time]
     add     rsp, 56

@@ -117,11 +117,11 @@ Same as the 0.3 spec (`2026-11-07-assemblycraft-content-design.md`, section Conv
     - rocket: moves to `t − 0.05`, then `explode_at(position, 3.0)`, then removed.
 - **When a rocket explodes:** `live` is set to 0 *before* `explode_at` is called.
 - **Rendering per kind** (all boxes point to −Z like the arrow):
-  - **Bullet:** a box from (−0.025,−0.025,−0.08) to (0.025,0.025,0.08), all tiles `TILE_GOLD_ORE`.
+  - **Bullet:** a box from (−0.025,−0.025,−0.08) to (0.025,0.025,0.08), all tiles `TILE_CHICKEN_LEG` (a solid brass yellow).
   - **Rocket:**
-    - body (−0.07,−0.07,−0.25) to (0.07,0.07,0.2), tiles 0 (stone grey);
+    - body (−0.07,−0.07,−0.25) to (0.07,0.07,0.2), tiles `TILE_SKELETON_BONE` (a solid light grey);
     - warhead (−0.08,−0.08,−0.38) to (0.08,0.08,−0.25), tiles `TILE_TNT_SIDE`;
-    - fins (−0.15,−0.02,0.12) to (0.15,0.02,0.25), tiles 0.
+    - fins (−0.15,−0.02,0.12) to (0.15,0.02,0.25), tiles `TILE_SKELETON_BONE`.
 
 ### Recipes (`items.asm`, records `w, h, out, count, cells`; I = IRON_INGOT)
 
@@ -191,7 +191,7 @@ Same as the 0.3 spec (`2026-11-07-assemblycraft-content-design.md`, section Conv
 
 ## Tests (new `src/test_guns.asm`, plus `test_items`/`test_settings` additions)
 
-- **`[craft_firearms]`:** all ten recipes produce their output and count. A shotgun shape missing one planks crafts nothing.
+- **Recipes, added as rows to the existing table-driven `[craft_advanced_recipes]`:** all ten recipes produce their output and count. A shotgun shape missing one planks crafts nothing.
 - **`[gun_reload_fills_magazine]`:**
   1. Survival; slot 0 = {PISTOL,1,0}, slot 1 = {PISTOL_ROUND,5}.
   2. `gun_reload_start` → 1, then 60 × `gun_step` → loaded 5 and the ammo is gone.
@@ -215,7 +215,7 @@ Same as the 0.3 spec (`2026-11-07-assemblycraft-content-design.md`, section Conv
   3. Check: (8,14,8) and (8,13,8) are AIR, and no projectile is live.
 - **`[settings_reload_key_default]`:** a settings file without `key_reload` loads with `keys[BIND_RELOAD] == 82`. After `key_reload=75`, it loads 75.
 
-Total after this work: 60 tests.
+Total after this work: 59 tests. The 0.3 suite had 53; this adds the settings test and the five firearm tests.
 
 ## Execution plan
 
@@ -231,7 +231,7 @@ Total after this work: 60 tests.
    - `guns.asm`;
    - the `game.asm`, `hud.asm` and `hand.asm` integration;
    - all tests.
-   - Then `make test` (60 pass), and commit.
+   - Then `make test` (59 pass), and commit.
 4. **Live box verification.**
    1. Patch a survival world with weapons and ammo; craft one weapon at a table.
    2. Fire each weapon at mobs and walls; reload with R; check the HUD counter and bar.

@@ -1,17 +1,17 @@
-; arrows.asm - arrows in flight and stuck in blocks: spawn, ballistic flight, hits on mobs and
-; the player, pickup of the player's own arrows, drawing. Arrows are not saved with the world.
+; arrows.asm - projectiles: arrows, bullets and rockets. Spawn, flight, hits on mobs and the
+; player, arrows sticking in blocks and the player picking his own back up, rockets
+; exploding on impact, drawing. Projectiles are not saved with the world.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_hurt
+extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, explode_at
 extern survival_damage, surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg
 
-%define ARROW_MAX_AGE   600             ; flying steps before an arrow vanishes
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
 %define STUCK_OWN_STEPS 1200            ; the player's arrow stays 20 s
 
@@ -33,7 +33,7 @@ extern render_box, atan2_deg
 section .rodata
 align 4
 c_dt:        dd 0.016666668
-c_gravity:   dd 0.33333334              ; 20 blocks/s^2 per step
+c_gravity:   dd 0.33333334              ; arrows: 20 blocks/s^2 per step
 c_tiny:      dd 0.000001
 c_hdir_min:  dd 0.0001
 c_one:       dd 1.0
@@ -48,6 +48,10 @@ c_kb:        dd 4.0                     ; knockback speed of an arrow hit on the
 c_half_w:    dd 0.3                     ; player box
 c_height:    dd 1.8
 f_one:       dd 1.0
+c_bullet_vol: dd 0.4
+c_rocket_r:  dd 3.0                     ; rocket blast radius
+; flying steps before a projectile is gone (a rocket explodes then), by kind
+max_age:     dd 600, 120, 300
 
 ; arrow model: shaft, tip, fletching (box lo xyz, hi xyz); the tip points to -Z
 arrow_shaft: dd -0.03, -0.03, -0.25,  0.03, 0.03, 0.25
@@ -58,6 +62,18 @@ tiles_tip:   db 0, 0, 0, 0, 0, 0, 0, 0
 tiles_fletch: db TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, TILE_CHICKEN_BODY
              db TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, 0, 0
 arrow_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8   ; +X -X +Y -Y +Z -Z
+
+; bullet: a short brass slug; rocket: body, red warhead, fins (all point to -Z)
+bullet_box:  dd -0.025, -0.025, -0.08,  0.025, 0.025, 0.08
+rocket_body: dd -0.07, -0.07, -0.25,  0.07, 0.07, 0.2
+rocket_head: dd -0.08, -0.08, -0.38,  0.08, 0.08, -0.25
+rocket_fins: dd -0.15, -0.02, 0.12,  0.15, 0.02, 0.25
+tiles_brass: times 6 db TILE_CHICKEN_LEG
+             db 0, 0
+tiles_steel: times 6 db TILE_SKELETON_BONE
+             db 0, 0
+tiles_head:  times 6 db TILE_TNT_SIDE
+             db 0, 0
 
 section .bss
 alignb 16
@@ -179,13 +195,19 @@ arrows_step:
     cmp     dword [rbx + ARROWENT.stuck], 0
     jne     .stuck
 
-    ; ---- flying: gravity, then the segment v / 60 --------------------------------
+    ; ---- flying: lifetime, gravity (arrows only), then the segment v / 60 ----------
     inc     dword [rbx + ARROWENT.age]
-    cmp     dword [rbx + ARROWENT.age], ARROW_MAX_AGE
-    ja      .remove
+    mov     eax, [rbx + ARROWENT.age]
+    mov     ecx, [rbx + ARROWENT.kind]
+    lea     rdx, [max_age]
+    cmp     eax, [rdx + rcx*4]
+    ja      .expired
+    cmp     ecx, PROJ_ARROW
+    jne     .no_gravity
     movss   xmm0, [rbx + ARROWENT.vy]
     subss   xmm0, [c_gravity]
     movss   [rbx + ARROWENT.vy], xmm0
+.no_gravity:
     movss   xmm4, [c_dt]
     movss   xmm0, [rbx + ARROWENT.vx]
     mulss   xmm0, xmm4
@@ -259,6 +281,8 @@ arrows_step:
     mov     [rsp + S_IDX], eax
     movss   [rsp + S_T], xmm0
     HIT_POINT
+    cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
+    je      .rocket_burst               ; a rocket goes off on the mob
     mov     edi, [rsp + S_IDX]
     mov     esi, [rbx + ARROWENT.damage]
     movss   xmm0, [rsp + S_H]
@@ -320,10 +344,16 @@ arrows_step:
     call    audio_play_at
     jmp     .remove
 
-    ; ---- no creature: the block holds the arrow, else it flies on -------------------
+    ; ---- no creature: the block holds an arrow, stops a bullet, sets off a rocket; else
+    ; the projectile flies on --------------------------------------------------------
 .settle:
     cmp     dword [rsp + S_BLK], 0
     je      .fly
+    mov     eax, [rbx + ARROWENT.kind]
+    cmp     eax, PROJ_BULLET
+    je      .bullet_block
+    cmp     eax, PROJ_ROCKET
+    je      .rocket_block
     mov     rdi, rbx
     lea     rsi, [rsp + S_DIR]
     movss   xmm0, [rsp + S_TMAX]
@@ -338,6 +368,40 @@ arrows_step:
     movss   xmm3, [c_stick_vol]
     call    audio_play_at
     jmp     .next
+.bullet_block:                          ; the bullet is spent on the surface
+    movss   xmm0, [rsp + S_TMAX]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+    mov     edi, SND_ARROW_HIT
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    movss   xmm3, [c_bullet_vol]
+    call    audio_play_at
+    jmp     .remove
+.rocket_block:                          ; just short of the surface it hit
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+.rocket_burst:                          ; S_HP = where it goes off; freed before the blast
+    mov     dword [rbx + ARROWENT.live], 0
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    movss   xmm3, [c_rocket_r]
+    call    explode_at
+    jmp     .next
+.expired:                               ; out of time: an arrow or bullet vanishes,
+    cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
+    jne     .remove
+    mov     eax, [rbx + ARROWENT.x]     ; a rocket goes off where it is
+    mov     [rsp + S_HP], eax
+    mov     eax, [rbx + ARROWENT.y]
+    mov     [rsp + S_HP + 4], eax
+    mov     eax, [rbx + ARROWENT.z]
+    mov     [rsp + S_HP + 8], eax
+    jmp     .rocket_burst
 .fly:
     movss   xmm0, [rbx + ARROWENT.x]
     addss   xmm0, [rsp + S_SEG]
@@ -407,8 +471,8 @@ arrows_step:
     pop     rbp
     ret
 
-; arrows_render(): every arrow, aimed along its velocity. Called inside the world pass
-; (atlas bound, alpha test on, night darkening active).
+; arrows_render(): every projectile, aimed along its velocity, with its kind's model.
+; Called inside the world pass (atlas bound, alpha test on, night darkening active).
 ; rbx = arrow, r12 = end of the table; [rsp] yaw/pitch scratch
 arrows_render:
     push    rbp
@@ -449,6 +513,11 @@ arrows_render:
     xorps   xmm2, xmm2
     xorps   xmm3, xmm3
     call    glRotatef                   ; glRotatef(pitch, 1, 0, 0)
+    mov     eax, [rbx + ARROWENT.kind]
+    cmp     eax, PROJ_BULLET
+    je      .bullet
+    cmp     eax, PROJ_ROCKET
+    je      .rocket
     lea     rdi, [arrow_shaft]
     lea     rsi, [tiles_shaft]
     call    draw_box
@@ -458,6 +527,23 @@ arrows_render:
     lea     rdi, [arrow_fletch]
     lea     rsi, [tiles_fletch]
     call    draw_box
+    jmp     .drawn
+.bullet:
+    lea     rdi, [bullet_box]
+    lea     rsi, [tiles_brass]
+    call    draw_box
+    jmp     .drawn
+.rocket:
+    lea     rdi, [rocket_body]
+    lea     rsi, [tiles_steel]
+    call    draw_box
+    lea     rdi, [rocket_head]
+    lea     rsi, [tiles_head]
+    call    draw_box
+    lea     rdi, [rocket_fins]
+    lea     rsi, [tiles_steel]
+    call    draw_box
+.drawn:
     call    glPopMatrix
 .next:
     add     rbx, ARROWENT_size

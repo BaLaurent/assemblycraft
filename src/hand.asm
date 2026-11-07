@@ -7,7 +7,7 @@ default rel
 
 global hand_render, hand_swing
 
-extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge
+extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge, gun_kick
 extern render_box, item_model_draw, tex_id
 
 section .rodata
@@ -31,6 +31,8 @@ f_sw_y:      dd 0.12
 f_sw_z:      dd -0.2
 f_sw_rot:    dd -55.0
 f_bow_pull:  dd 0.18                    ; how far a fully drawn bow comes back
+f_kick_back: dd 0.12                    ; firearm recoil at full kick: back and muzzle up
+f_kick_rot:  dd 12.0
 ; bare arm: a skin-coloured box reaching from below the screen corner
 arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
 arm_tiles:   times 6 db TILE_PLAYER_SKIN
@@ -228,6 +230,23 @@ hand_render:
     xorps   xmm1, xmm1
     call    glTranslatef
 .no_draw:
+    lea     eax, [rbx - PISTOL]         ; a firearm kicks back and up after a shot
+    cmp     eax, NUM_GUNS
+    jae     .no_kick
+    movss   xmm2, [gun_kick]
+    xorps   xmm0, xmm0
+    comiss  xmm2, xmm0
+    jbe     .no_kick
+    mulss   xmm2, [f_kick_back]
+    xorps   xmm1, xmm1
+    call    glTranslatef
+    movss   xmm0, [gun_kick]
+    mulss   xmm0, [f_kick_rot]
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    rot
+.no_kick:
     lea     rdi, [pose_arm]
     test    ebx, ebx
     jz      .pose
