@@ -6,7 +6,7 @@ global selftest_run
 
 extern sys_print, i32_to_str, str_append
 extern test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-extern test_world_load_v1_converts
+extern test_world_load_v1_converts, test_world_load_v2_converts
 extern test_worldgen_deterministic, test_worldgen_shape
 extern test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
 extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
@@ -36,6 +36,7 @@ tests:
     TEST world_set_marks_dirty
     TEST world_save_load
     TEST world_load_v1_converts
+    TEST world_load_v2_converts
     TEST worldgen_deterministic
     TEST worldgen_shape
     TEST mesh_single_block
@@ -79,6 +80,7 @@ section .rodata
     TESTNAME world_set_marks_dirty
     TESTNAME world_save_load
     TESTNAME world_load_v1_converts
+    TESTNAME world_load_v2_converts
     TESTNAME worldgen_deterministic
     TESTNAME worldgen_shape
     TESTNAME mesh_single_block

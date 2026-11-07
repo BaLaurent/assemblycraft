@@ -3,7 +3,7 @@
 default rel
 
 global test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-global test_world_load_v1_converts
+global test_world_load_v1_converts, test_world_load_v2_converts
 
 extern blocks, chunk_dirty, world_header
 extern world_get, world_set, world_is_solid, world_clear, world_save, world_load
@@ -12,9 +12,11 @@ extern file_write_atomic, file_unlink, fnv1a
 section .rodata
 save_path: db "/tmp/assemblycraft-selftest.acw", 0
 v1_path:   db "/tmp/assemblycraft-selftest-v1.acw", 0
+v2_path:   db "/tmp/assemblycraft-selftest-v2.acw", 0
 garbage:   db "garbage!!!"
 v1_magic:  db "ACRAFT01"
 v2_magic:  db "ACRAFT02"
+v3_magic:  db "ACRAFT03"
 v1_hotbar: db 1, 3, 2, 4, 5, 6, 7, 9, 10
 
 section .text
@@ -122,7 +124,7 @@ test_world_save_load:
     push    rbx
     sub     rsp, 8
     call    world_clear
-%if WORLDHDR_size != 1024
+%if WORLDHDR_size != 16384 || WORLDHDR.armor != 944 || WORLDHDR.containers != 1024 || CONTAINER_size != 128
     jmp     .fail
 %endif
 %if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.mobs != 304
@@ -186,7 +188,7 @@ test_world_save_load:
     pop     rbp
     ret
 
-; A 0.1 file (48-byte header + blocks) loads as a v2 Creative world.
+; A 0.1 file (48-byte header + blocks) loads as a v3 Creative world.
 test_world_load_v1_converts:
     push    rbp
     mov     rbp, rsp
@@ -222,7 +224,7 @@ test_world_load_v1_converts:
     lea     rdi, [v1_path]
     call    world_load
     EXPECT_EAX 0
-    mov     rax, [v2_magic]
+    mov     rax, [v3_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     cmp     dword [world_header + WORLDHDR.seed], 77
@@ -245,6 +247,75 @@ test_world_load_v1_converts:
     ret
 .fail:
     lea     rdi, [v1_path]
+    call    file_unlink
+    mov     eax, 1
+    pop     rbp
+    ret
+
+; A v2 file (1024-byte header + blocks) loads as v3 with the v3-only fields zeroed.
+test_world_load_v2_converts:
+    push    rbp
+    mov     rbp, rsp
+    call    world_clear
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    mov     ecx, BRICK
+    call    world_set
+    ; lands on containers record 0's .kind while the v2 image sits at world_header
+    mov     edi, 3
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, STONE
+    call    world_set
+    lea     rdi, [world_header]
+    mov     ecx, WORLD_BASE_HDR
+    xor     eax, eax
+    rep     stosb
+    mov     rax, [v2_magic]
+    mov     [world_header], rax
+    mov     dword [world_header + WORLDHDR.seed], 55
+    mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
+    mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
+    ; blocks forward to world_header+1024 (dest < src, so a forward copy is safe)
+    lea     rsi, [blocks]
+    lea     rdi, [world_header + WORLD_BASE_HDR]
+    mov     ecx, WORLD_VOLUME
+    rep     movsb
+    lea     rdi, [v2_path]
+    lea     rsi, [world_header]
+    mov     edx, WORLD_V2_SIZE
+    call    file_write_atomic
+    EXPECT_EAX 0
+    call    world_clear
+    lea     rdi, [v2_path]
+    call    world_load
+    EXPECT_EAX 0
+    mov     rax, [v3_magic]
+    cmp     [world_header + WORLDHDR.magic], rax
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.seed], 55
+    jne     .fail
+    cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
+    jne     .fail
+    cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
+    jne     .fail
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    call    world_get
+    EXPECT_EAX BRICK
+    cmp     byte [world_header + WORLDHDR.containers + CONTAINER.kind], 0
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.armor], 0
+    jne     .fail
+    lea     rdi, [v2_path]
+    call    file_unlink
+    xor     eax, eax
+    pop     rbp
+    ret
+.fail:
+    lea     rdi, [v2_path]
     call    file_unlink
     mov     eax, 1
     pop     rbp

@@ -27,6 +27,7 @@ s_min:      db " min ago", 0
 s_hour:     db " h ago", 0
 s_day:      db " day ago", 0
 s_days:     db " days ago", 0
+m_v3:       db "ACRAFT03"
 m_v2:       db "ACRAFT02"
 m_v1:       db "ACRAFT01"
 
@@ -41,7 +42,7 @@ alignb 8
 dents:         resb DENTS_SIZE
 path_buf:      resb 4200
 tmp_entry:     resb WORLDENTRY_size
-hdr_buf:       resb WORLD_HDR_SIZE
+hdr_buf:       resb WORLD_BASE_HDR
 name_buf:      resb 40
 
 section .text
@@ -256,13 +257,16 @@ add_entry:
     call    str_copy
     lea     rdi, [path_buf]
     lea     rsi, [hdr_buf]
-    mov     edx, WORLD_HDR_SIZE
+    mov     edx, WORLD_BASE_HDR
     call    file_read
-    cmp     rax, WORLD_HDR_SIZE
+    cmp     rax, WORLD_BASE_HDR
     jl      .try_v1
     mov     rdx, [hdr_buf]
+    cmp     rdx, [m_v3]
+    je      .v2v3
     cmp     rdx, [m_v2]
     jne     .try_v1
+.v2v3:
     mov     eax, [hdr_buf + WORLDHDR.mode]
     cmp     eax, MODE_CREATIVE
     ja      .insert                     ; garbage mode: unreadable

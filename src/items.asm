@@ -11,7 +11,7 @@ global inv_close_screen, craft_update
 global item_break_time, item_harvest_drop, item_attack_damage
 
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack
-extern block_hardness, block_tool, block_needs_tool, block_drop
+extern block_hardness, block_tool, block_harvest_level, block_drop
 extern audio_play, drops_toss
 
 %define CURSOR_COUNT (INVENTORY.cursor + 1)
@@ -22,9 +22,9 @@ align 4
 f_pop:    dd 0.5
 f_break:  dd 0.9
 f_inf:    dd 1.0e30
-f_one:    dd 1.0
-f_two:    dd 2.0
-f_four:   dd 4.0
+f_speed:  dd 1.0, 2.0, 4.0, 6.0, 8.0, 12.0 ; dig speed by tool tier (0 = no matching tool)
+tier_level: db 0, 1, 2, 3, 4, 1         ; harvest level reached by each tier
+align 4
 f_hand:   dd 1.5                        ; time factor when the drop is allowed
 f_slow:   dd 5.0                        ; time factor when the tool is required but wrong
 
@@ -683,11 +683,18 @@ harvest_info:
     movzx   edx, byte [rcx + rsi]
     mov     r8d, 1
 .nomatch:
-    lea     rcx, [block_needs_tool]
-    cmp     byte [rcx + rdi], 0
-    sete    al
-    movzx   eax, al
-    or      eax, r8d                    ; can = !needs_tool || match
+    lea     rcx, [block_harvest_level]
+    movzx   ecx, byte [rcx + rdi]
+    mov     eax, 1
+    test    ecx, ecx
+    jz      .ret                        ; can = level == 0 || (match && tier_level >= level)
+    xor     eax, eax
+    test    r8d, r8d
+    jz      .ret
+    lea     r9, [tier_level]
+    cmp     [r9 + rdx], cl
+    setae   al
+.ret:
     ret
 
 ; item_break_time(edi block, esi held_id) -> xmm0 seconds (1e30 = unbreakable)
@@ -702,15 +709,8 @@ item_break_time:
     comiss  xmm1, xmm2
     jb      .unbreakable
     call    harvest_info                ; keeps xmm1
-    movss   xmm0, [f_one]               ; speed
-    cmp     edx, TIER_WOOD
-    jne     .t2
-    movss   xmm0, [f_two]
-.t2:
-    cmp     edx, TIER_STONE
-    jne     .t3
-    movss   xmm0, [f_four]
-.t3:
+    lea     rcx, [f_speed]
+    movss   xmm0, [rcx + rdx*4]         ; speed
     movss   xmm2, [f_hand]
     test    eax, eax
     jnz     .calc
