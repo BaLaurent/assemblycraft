@@ -1,4 +1,4 @@
-; test_drops.asm - item entities: falling, landing, pickup, full inventory.
+; test_drops.asm - item entities: falling, landing, pickup, full inventory, overflow toss.
 %include "common.inc"
 default rel
 
@@ -6,7 +6,7 @@ global test_drops_fall_and_pickup
 
 extern drops, drops_clear, drops_spawn, drops_step
 extern player, body_init, rng_seed, world_clear, world_set
-extern inv, inv_clear, survival_reset
+extern inv, inv_clear, inv_close_screen, survival_reset
 
 section .rodata
 align 4
@@ -119,6 +119,18 @@ test_drops_fall_and_pickup:
     mov     edi, 60
     call    run
     cmp     byte [drops + DROP.id], COBBLE
+    jne     .fail
+
+    ; closing the crafting screen with a full inventory tosses the grid item
+    call    drops_clear
+    mov     byte [inv + INVENTORY.grid + ITEMSTACK.id], PORKCHOP
+    mov     byte [inv + INVENTORY.grid + ITEMSTACK.count], 1
+    call    inv_close_screen
+    cmp     byte [inv + INVENTORY.grid + ITEMSTACK.count], 0
+    jne     .fail
+    cmp     byte [drops + DROP.id], PORKCHOP
+    jne     .fail
+    cmp     byte [drops + DROP.count], 1
     jne     .fail
     xor     ebx, ebx
     jmp     .ret
