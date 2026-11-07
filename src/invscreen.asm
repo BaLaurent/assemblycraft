@@ -22,7 +22,7 @@ extern item_names, item_max_stack, i32_to_str
 %define LABEL_COL   RGBA(220, 220, 220, 255)
 %define PANEL_COL   RGBA(62, 62, 68, 235)
 %define EDGE_COL    RGBA(255, 255, 255, 70)
-%define PALETTE_N   80
+%define PALETTE_N   92
 %define PAL_ROWS    ((PALETTE_N + 8) / 9)
 %define PAL_VISIBLE 6
 %define PAL_TRACK   (PAL_VISIBLE * 18)
@@ -32,7 +32,7 @@ extern item_names, item_max_stack, i32_to_str
 %define CLOSE_CONTAINER 2
 
 section .rodata
-palette:      db 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21
+palette:      db 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 23, 24
 %assign i 32
 %rep NUM_ITEMS - 32
               db i

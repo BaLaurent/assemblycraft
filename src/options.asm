@@ -65,9 +65,15 @@ s_b_sprint:     db "Sprint", 0
 s_b_inventory:  db "Inventory", 0
 s_b_fly:        db "Toggle Fly (Creative)", 0
 s_b_reload:     db "Reload", 0
+s_b_dodge:      db "Dodge", 0
+s_b_ability1:   db "Ability 1", 0
+s_b_ability2:   db "Ability 2", 0
+s_b_ability3:   db "Ability 3", 0
+s_b_skills:     db "Skill Tree", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump
                 dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly, s_b_reload
+                dq s_b_dodge, s_b_ability1, s_b_ability2, s_b_ability3, s_b_skills
 
 ; Names of keys that glfwGetKeyName does not report: dw key, zstr; dw 0 ends it.
 %macro KEY 2

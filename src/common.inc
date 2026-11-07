@@ -41,9 +41,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define GRAVEL         20
 %define TNT            21
 %define FIRE           22               ; not solid, drawn by fire.asm, not an item
-%define NUM_BLOCKS     23
+%define STONE_BRICK    23
+%define MOSSY_STONE_BRICK 24
+%define NUM_BLOCKS     25
 
-; ---- item ids (23..31 unused) ---------------------------------------------
+; ---- item ids (25..31 unused) ---------------------------------------------
 %define STICK          32
 %define WOOD_PICKAXE   33
 %define WOOD_AXE       34
@@ -104,7 +106,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SHOTGUN_SHELL  89
 %define RIFLE_ROUND    90
 %define ROCKET         91
-%define NUM_ITEMS      92
+%define STAFF          92
+%define ARCHMAGE_STAFF 93
+%define IRON_DAGGER    94
+%define DIAMOND_DAGGER 95
+%define SHADOW_FANG    96
+%define KINGS_BLADE    97
+%define CELESTIAL_BOW  98
+%define HEALTH_POTION  99
+%define MANA_POTION    100
+%define GOLD_COIN      101
+%define NUM_ITEMS      102
 %define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER
 
 ; ---- tools ----------------------------------------------------------------
@@ -113,6 +125,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TOOL_AXE       2
 %define TOOL_SHOVEL    3
 %define TOOL_SWORD     4
+%define TOOL_DAGGER    5
 %define TIER_WOOD      1
 %define TIER_STONE     2
 %define TIER_IRON      3
@@ -161,6 +174,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_ARMOR_EMPTY   56
 %define TILE_FIRE0         57           ; two flame frames, transparent around the flames
 %define TILE_FIRE1         58
+%define TILE_STONE_BRICK   59
+%define TILE_MOSSY_BRICK   60
 %define TILE_ZOMBIE_SKIN   64
 %define TILE_ZOMBIE_FACE   65
 %define TILE_ZOMBIE_SHIRT  66
@@ -177,7 +192,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_CHICKEN_BODY  77
 %define TILE_CHICKEN_FACE  78
 %define TILE_CHICKEN_LEG   79
-%define TILE_ITEM0         80           ; icon of item id i >= 43 is TILE_ITEM0 + i - 43
+%define TILE_ITEM0         80           ; icon of item id i >= 43 is TILE_ITEM0 + i - 43 (80..138)
+%define TILE_ABILITY0      139          ; 139 + (class-1)*3 + slot
+%define TILE_CLASS0        151          ; 151..154, class-1
+%define TILE_STAT0         155          ; 155 + stat id
+%define TILE_VILLAGER_SKIN 173
+%define TILE_VILLAGER_FACE 174
+%define TILE_MERCHANT_ROBE 175
+%define TILE_ELDER_ROBE    176
+%define TILE_BOSS_ROBE     177
+%define TILE_BOSS_FACE     178
+%define TILE_BOSS_CROWN    179
 %define FONT_Y             192          ; glyph rows at atlas y 192..239, x 0..127
 
 ; ---- save file ------------------------------------------------------------
@@ -209,6 +234,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_EXPLOSION 6
 %define CAUSE_SPIDER    7
 %define CAUSE_FIRE      8
+%define CAUSE_BOSS      9
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -217,7 +243,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MOB_SKELETON    4
 %define MOB_SPIDER      5
 %define MOB_CHICKEN     6
-%define NUM_MOB_TYPES   6
+%define MOB_MERCHANT    7
+%define MOB_ELDER       8
+%define MOB_BOSS        9
+%define NUM_MOB_TYPES   9
+%define MOB_ELITE_BIT   0x100           ; MOBSAVE.type flag
 %define MAX_MOBS        32
 %define MAX_DROPS       64              ; item entities lying in the world
 %define MAX_ARROWS      96
@@ -225,12 +255,81 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define PROJ_ARROW      0               ; ARROWENT.kind
 %define PROJ_BULLET     1
 %define PROJ_ROCKET     2
+%define PROJ_BOLT       3
+%define PROJ_FIREBALL   4
+%define AF_CRIT         1               ; ARROWENT.flags
+%define AF_EXPLOSIVE    2
+%define AF_BIG          4
 %define MAX_PRIMED      32              ; primed TNT
 %define MAX_FIRES       1024
 %define MAX_PARTICLES   768
 %define FX_FIRE         1               ; PARTICLE.kind (0 = free)
 %define FX_SMOKE        2
 %define FX_DEBRIS       3
+%define FX_SPARK        4
+%define FX_MAGIC        5
+%define FX_GOLD         6
+
+; ---- RPG ------------------------------------------------------------------
+%define CLASS_NONE      0
+%define CLASS_WARRIOR   1
+%define CLASS_MAGE      2
+%define CLASS_ARCHER    3
+%define CLASS_ROGUE     4
+%define NUM_CLASSES     4
+%define MAX_LEVEL       30
+%define NUM_NODES       12              ; node = branch*4 + tier
+
+%define STAT_MAX_HEALTH    0
+%define STAT_MELEE_DMG     1
+%define STAT_RANGED_DMG    2
+%define STAT_SPELL_DMG     3
+%define STAT_CRIT_CHANCE   4
+%define STAT_CRIT_DMG      5
+%define STAT_MAX_MANA      6
+%define STAT_MANA_REGEN    7
+%define STAT_MAX_STAMINA   8
+%define STAT_STAMINA_REGEN 9
+%define STAT_ARMOR_BONUS   10
+%define STAT_MOVE_SPEED    11
+%define STAT_BACKSTAB      12
+%define STAT_PARRY_WINDOW  13
+%define STAT_LIFESTEAL     14
+%define STAT_COOLDOWN_RED  15
+%define STAT_ARROW_SAVE    16
+%define STAT_DODGE_COST    17
+%define NUM_STATS          18
+
+%define RES_STAMINA     0
+%define RES_MANA        1
+
+%define HIT_NONE        0               ; player_take_hit results
+%define HIT_TAKEN       1
+%define HIT_BLOCKED     2
+%define HIT_PARRIED     3
+
+%define HF_CRIT         1               ; combat_hit_flags bits
+%define HF_PLAYER       2
+
+%define TXT_PARRY       0               ; dmgnum_text ids
+%define TXT_BLOCKED     1
+%define TXT_DODGED      2
+%define TXT_STUNNED     3
+
+%define SITE_VILLAGE    1
+%define SITE_DUNGEON    2
+%define SITE_CRYPT      3
+%define MAX_SITES       9
+%define NUM_DUNGEONS    6
+%define DUNGEON_KILLS   8
+
+%define Q_KILL          1
+%define Q_BRING         2
+%define Q_CLEAR         3
+%define Q_ELITE         4
+%define Q_BOSS          5
+%define NUM_QUESTS      8
+%define NUM_TRADES      8
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
 %define SLOTREF_GRID    36              ; grid cell c = 36 + c (c 0..8, 3 wide)
@@ -260,6 +359,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_QUIT         12
 %define ST_FURNACE      13
 %define ST_CHEST        14
+%define ST_TRADE        15
+%define ST_DIALOG       16
+%define ST_CLASS        17
+%define ST_SKILLS       18
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -272,7 +375,12 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIND_INVENTORY  7
 %define BIND_FLY        8
 %define BIND_RELOAD     9
-%define NUM_BINDINGS    10
+%define BIND_DODGE      10
+%define BIND_ABILITY1   11
+%define BIND_ABILITY2   12
+%define BIND_ABILITY3   13
+%define BIND_SKILLS     14
+%define NUM_BINDINGS    15
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0
@@ -310,7 +418,25 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_LAUNCHER    32
 %define SND_RELOAD      33
 %define SND_DRY_FIRE    34
-%define NUM_SOUNDS      35
+%define SND_SWING       35
+%define SND_PARRY       36
+%define SND_BLOCK       37
+%define SND_DODGE       38
+%define SND_CRIT        39
+%define SND_LEVELUP     40
+%define SND_SPELL       41
+%define SND_FIREBALL    42
+%define SND_BLINK       43
+%define SND_WARCRY      44
+%define SND_WHIRL       45
+%define SND_SMOKE       46
+%define SND_COIN        47
+%define SND_QUEST       48
+%define SND_BOSS_ROAR   49
+%define SND_SLAM        50
+%define SND_VILLAGER    51
+%define SND_DRINK       52
+%define NUM_SOUNDS      53
 
 ; ---- colours: packed for glColor4ub as four bytes r,g,b,a -----------------
 %define RGBA(r,g,b,a) ((r)|((g)<<8)|((b)<<16)|((a)<<24))
@@ -363,6 +489,9 @@ struc FRAMEINPUT
     .debug:       resd 1                ; F3 edge
     .fullscreen:  resd 1                ; F11 edge
     .reload:      resd 1                ; edge of the Reload binding (every state)
+    .skills:      resd 1                ; edge of the Skill Tree binding (every state)
+    .dodge:       resd 1                ; edges below: only while the cursor is captured
+    .ability:     resd 3
 endstruc
 
 struc UIINPUT
@@ -452,6 +581,17 @@ struc MOB
     .fuse:     resd 1                   ; creeper fuse, steps
     .walk:     resd 1                   ; float, degrees of walk-cycle phase
     .input:    resb INPUT_size
+    .windup:   resd 1                   ; steps left in a telegraphed attack, 0 = none
+    .stun:     resd 1                   ; steps
+    .elite:    resd 1                   ; 0/1
+    .tagged:   resd 1                   ; steps; > 0 = a player hit counts for XP
+    .origin:   resd 1                   ; 0 none, 1..6 dungeon index + 1, 99 crypt boss
+    .bar:      resd 1                   ; steps the health bar stays visible
+    .max_health: resd 1
+    .timer_a:  resd 1                   ; boss timers, steps
+    .timer_b:  resd 1
+    .home_x:   resd 1                   ; floats, NPC home
+    .home_z:   resd 1
 endstruc
 
 struc MOBSAVE
@@ -475,6 +615,38 @@ struc CONTAINER
     .pad:      resb 10
 endstruc                                ; 128 bytes
 
+; RPG progression, stored in WORLDHDR.rpg; skill points are derived (level - sum of ranks)
+struc RPGSAVE
+    .class:          resb 1
+    .level:          resb 1             ; 1..30
+    .quest:          resb 1             ; next quest index 0..8 (8 = chain finished)
+    .quest_state:    resb 1             ; 0 not accepted, 1 accepted
+    .xp:             resd 1             ; into the current level
+    .ranks:          resb NUM_NODES     ; rank of node b*4 + t
+    .cleared:        resb 1             ; bit d = dungeon d cleared
+    .flags:          resb 1             ; bit0 = boss defeated
+    .quest_progress: resw 1
+    .pad:            resb 40
+endstruc
+%if RPGSAVE_size != 64
+%error "RPGSAVE must be 64 bytes"
+%endif
+
+; a generated site (village, dungeon, crypt); lo/hi = inclusive trigger box
+struc SITE
+    .kind:  resd 1
+    .index: resd 1
+    .x:     resd 1
+    .y:     resd 1                      ; ground level (village) or floor y (dungeon, crypt)
+    .z:     resd 1
+    .lo_x:  resd 1
+    .lo_y:  resd 1
+    .lo_z:  resd 1
+    .hi_x:  resd 1
+    .hi_y:  resd 1
+    .hi_z:  resd 1
+endstruc                                ; 44 bytes
+
 ; v3 world file header; offsets are load-bearing (save files, verification patches)
 struc WORLDHDR
     .magic:      resb 8                 ; "ACRAFT03"
@@ -496,7 +668,7 @@ struc WORLDHDR
     .mob_count:  resd 1                 ; @300
     .mobs:       resb MAX_MOBS * MOBSAVE_size ; @304
     .armor:      resb 16                ; @944
-    .pad:        resb 64                ; @960
+    .rpg:        resb RPGSAVE_size      ; @960
     .containers: resb MAX_CONTAINERS * CONTAINER_size ; @1024
     .pad2:       resb WORLD_HDR_SIZE - 1024 - MAX_CONTAINERS * CONTAINER_size
 endstruc                                ; 16384 bytes
@@ -597,8 +769,9 @@ struc ARROWENT
     .damage: resd 1
     .pickup: resd 1                     ; 0/1
     .live:   resd 1                     ; 0/1
-    .kind:   resd 1                     ; PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET
-endstruc                                ; 52 bytes
+    .kind:   resd 1                     ; PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET, PROJ_BOLT, PROJ_FIREBALL
+    .flags:  resd 1                     ; AF_CRIT, AF_EXPLOSIVE, AF_BIG
+endstruc                                ; 56 bytes
 
 ; a primed TNT block: a physics body (y = bottom of the 0.98 cube) burning down (not saved)
 struc PRIMED
@@ -626,7 +799,7 @@ struc PARTICLE
     .age:  resd 1                       ; steps
     .life: resd 1                       ; steps
     .size: resd 1                       ; float edge length
-    .kind: resd 1                       ; 0 free, FX_FIRE, FX_SMOKE, FX_DEBRIS
+    .kind: resd 1                       ; 0 free, FX_FIRE .. FX_GOLD
     .tile: resd 1                       ; atlas tile of a debris cube
 endstruc
 

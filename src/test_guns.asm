@@ -297,6 +297,7 @@ spawn_bullet:
     xor     edi, edi
     xor     edx, edx
     mov     ecx, PROJ_BULLET
+    xor     r8d, r8d
     call    arrows_spawn
     add     rsp, 8
     ret
@@ -423,6 +424,7 @@ test_rocket_explodes_on_impact:
     xor     esi, esi
     xor     edx, edx
     mov     ecx, PROJ_ROCKET
+    xor     r8d, r8d
     call    arrows_spawn
     mov     r12d, 120
 .fly:

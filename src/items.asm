@@ -81,6 +81,12 @@ recipes:
     db 1, 3, RIFLE_ROUND, 16, I, GUNPOWDER, GUNPOWDER, 0, 0, 0, 0, 0, 0
     db 1, 3, ROCKET, 1, I, TNT, GUNPOWDER, 0, 0, 0, 0, 0, 0
 %undef I
+    db 2, 2, STONE_BRICK, 4, STONE, STONE, STONE, STONE, 0, 0, 0, 0, 0
+    db 1, 2, IRON_DAGGER, 1, IRON_INGOT, STICK, 0, 0, 0, 0, 0, 0, 0
+    db 1, 2, DIAMOND_DAGGER, 1, DIAMOND, STICK, 0, 0, 0, 0, 0, 0, 0
+    db 3, 3, STAFF, 1, 0, 0, GOLD_INGOT, 0, STICK, 0, STICK, 0, 0
+    db 1, 2, HEALTH_POTION, 1, APPLE, GLASS, 0, 0, 0, 0, 0, 0, 0
+    db 1, 2, MANA_POTION, 1, GOLD_INGOT, GLASS, 0, 0, 0, 0, 0, 0, 0
 recipes_end:
 
 section .data

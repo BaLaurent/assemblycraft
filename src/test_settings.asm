@@ -19,6 +19,7 @@ align 4
 alt_img:
     dd 95, 250, 12, 30, 1, 1, 0, 1, 3
     dd 81, 82, 83, 84, 74, 259, 260, 261, 262, 263
+    dd 264, 265, 266, 267, 268
 
 section .text
 
@@ -211,6 +212,16 @@ test_settings_reload_key:
     cmp     dword [settings + SETTINGS.keys + 4 * BIND_FLY], 71
     jne     .fail
     cmp     dword [settings + SETTINGS.keys + 4 * BIND_RELOAD], 82
+    jne     .fail
+    cmp     dword [settings + SETTINGS.keys + 4 * BIND_DODGE], 67
+    jne     .fail
+    cmp     dword [settings + SETTINGS.keys + 4 * BIND_ABILITY1], 81
+    jne     .fail
+    cmp     dword [settings + SETTINGS.keys + 4 * BIND_ABILITY2], 71
+    jne     .fail
+    cmp     dword [settings + SETTINGS.keys + 4 * BIND_ABILITY3], 86
+    jne     .fail
+    cmp     dword [settings + SETTINGS.keys + 4 * BIND_SKILLS], 75
     jne     .fail
     lea     rdi, [new_cfg]
     call    load_text

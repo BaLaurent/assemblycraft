@@ -160,6 +160,7 @@ test_arrow_hits_mob:
     mov     esi, 5                      ; damage
     mov     edx, 1                      ; can be picked up again
     mov     ecx, PROJ_ARROW
+    xor     r8d, r8d
     call    arrows_spawn
     test    eax, eax
     jnz     .fail                       ; first slot

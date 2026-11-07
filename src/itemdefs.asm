@@ -1,5 +1,5 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..91 (NUM_ITEMS).
-; Ids 0..21 are the blocks, 22..31 are unused, 32..91 are tools/materials/food/armor/firearms.
+; itemdefs.asm - per-item data tables, indexed by item id 0..101 (NUM_ITEMS).
+; Ids 0..24 are the blocks, 25..31 are unused, 32..101 are tools/materials/food/armor/firearms/RPG gear.
 %include "common.inc"
 default rel
 
@@ -30,6 +30,8 @@ n_chest:    db "Chest", 0
 n_gravel:   db "Gravel", 0
 n_tnt:      db "TNT", 0
 n_fire:     db "Fire", 0
+n_sbrick:   db "Stone Bricks", 0
+n_mossy:    db "Mossy Stone Bricks", 0
 n_unused:   db "?", 0
 n_stick:    db "Stick", 0
 n_wpick:    db "Wooden Pickaxe", 0
@@ -91,14 +93,24 @@ n_mball:    db "Musket Ball", 0
 n_shell:    db "Shotgun Shell", 0
 n_rround:   db "Rifle Round", 0
 n_rocket:   db "Rocket", 0
+n_staff:    db "Staff", 0
+n_astaff:   db "Archmage Staff", 0
+n_idagger:  db "Iron Dagger", 0
+n_ddagger:  db "Diamond Dagger", 0
+n_fang:     db "Shadow Fang", 0
+n_kblade:   db "King's Blade", 0
+n_cbow:     db "Celestial Bow", 0
+n_hpotion:  db "Health Potion", 0
+n_mpotion:  db "Mana Potion", 0
+n_coin:     db "Gold Coin", 0
 
 align 8
 item_names:
     dq n_air, n_stone, n_grass, n_dirt, n_cobble, n_planks, n_log, n_leaves
     dq n_sand, n_glass, n_brick, n_bedrock, n_table
     dq n_coalore, n_ironore, n_goldore, n_diaore, n_furnace, n_furnace, n_chest, n_gravel, n_tnt
-    dq n_fire
-    times 9 dq n_unused                 ; 23..31
+    dq n_fire, n_sbrick, n_mossy
+    times 7 dq n_unused                 ; 25..31
     dq n_stick, n_wpick, n_waxe, n_wshovel, n_wsword
     dq n_spick, n_saxe, n_sshovel, n_ssword, n_apple, n_pork
     dq n_coal, n_iingot, n_gingot, n_diamond
@@ -112,13 +124,16 @@ item_names:
     dq n_dhelm, n_dchest, n_dlegs, n_dboots
     dq n_pistol, n_musket, n_shotgun, n_ak, n_launcher
     dq n_pround, n_mball, n_shell, n_rround, n_rocket
+    dq n_staff, n_astaff, n_idagger, n_ddagger, n_fang, n_kblade, n_cbow
+    dq n_hpotion, n_mpotion, n_coin
 
 ; atlas tile of the inventory icon: block side tile, the item id (32..42), or
 ; TILE_ITEM0 + id - 43
 item_icon:
     db 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
     db 26, 27, 28, 29, 30, 31, 44, 45, 46
-    times 10 db 0
+    db 0, TILE_STONE_BRICK, TILE_MOSSY_BRICK ; FIRE, stone bricks, mossy
+    times 7 db 0
     db 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42
 %assign i 43
 %rep NUM_ITEMS - 43
@@ -131,7 +146,9 @@ item_max_stack:
     times 17 db 64                      ; blocks 1..17
     db 0                                ; FURNACE_LIT
     times 3 db 64                       ; chest, gravel, tnt
-    times 10 db 0
+    db 0                                ; FIRE
+    db 64, 64                           ; stone bricks, mossy
+    times 7 db 0
     db 64                               ; stick
     times 8 db 1                        ; tools
     db 64, 64                           ; apple, porkchop
@@ -144,6 +161,9 @@ item_max_stack:
     times 12 db 1                       ; armor
     times 5 db 1                        ; firearms (dmg holds the rounds loaded)
     times 5 db 64                       ; ammunition
+    times 7 db 1                        ; staves, daggers, legendaries
+    db 16, 16                           ; potions
+    db 64                               ; gold coin
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD
 item_tool:
@@ -151,7 +171,9 @@ item_tool:
     db TOOLS4, TOOLS4                   ; wood, stone
     times 6 db 0                        ; apple .. diamond
     db TOOLS4, TOOLS4, TOOLS4           ; iron, gold, diamond
-    times NUM_ITEMS - 59 db 0
+    times IRON_DAGGER - 59 db 0
+    db TOOL_DAGGER, TOOL_DAGGER, TOOL_DAGGER, TOOL_SWORD ; daggers, King's Blade
+    times NUM_ITEMS - SHADOW_FANG - 2 db 0
 
 item_tier:
     times 33 db 0
@@ -161,7 +183,9 @@ item_tier:
     times 4 db TIER_IRON
     times 4 db TIER_GOLD
     times 4 db TIER_DIAMOND
-    times NUM_ITEMS - 59 db 0
+    times KINGS_BLADE - 59 db 0
+    db TIER_DIAMOND                     ; King's Blade
+    times NUM_ITEMS - KINGS_BLADE - 1 db 0
 
 item_food:
     times 41 db 0
@@ -170,6 +194,7 @@ item_food:
     db 4, 8, 0, 2, 6                    ; rotten flesh, cooked pork, feather, raw/cooked chicken
     times 12 db 0
     times 10 db 0                       ; firearms, ammunition
+    times 10 db 0                       ; RPG gear
 
 item_attack:
     times 33 db 1
@@ -179,7 +204,9 @@ item_attack:
     db 5, 6, 4, 7                       ; iron
     db 3, 4, 2, 5                       ; gold
     db 6, 7, 5, 8                       ; diamond
-    times NUM_ITEMS - 59 db 1
+    times STAFF - 59 db 1
+    db 2, 3, 5, 7, 9, 11                ; staff, archmage staff, daggers, Shadow Fang, King's Blade
+    times NUM_ITEMS - KINGS_BLADE - 1 db 1
 
 ; smelting result of an input item, or 0 (entries in ascending id order)
 %macro SMELT 2                          ; input id, result id
@@ -200,7 +227,7 @@ item_smelt:
 item_armor_slot:
     times 70 db 0
     db 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4
-    times 10 db 0
+    times NUM_ITEMS - 82 db 0
 
 ; armor points of a worn piece
 item_armor_points:
@@ -208,7 +235,7 @@ item_armor_points:
     db 2, 6, 5, 2                       ; iron
     db 2, 5, 3, 1                       ; gold
     db 3, 8, 6, 3                       ; diamond
-    times 10 db 0
+    times NUM_ITEMS - 82 db 0
 
 align 2
 item_durability:
@@ -227,6 +254,8 @@ item_durability:
     dw 77, 112, 105, 91                 ; gold armor
     dw 363, 528, 495, 429               ; diamond armor
     times 10 dw 0                       ; firearms never wear, ammunition
+    dw 300, 0, 200, 1200                ; staff, archmage staff, iron/diamond dagger
+    times NUM_ITEMS - DIAMOND_DAGGER - 1 dw 0 ; legendaries never wear
 
 ; fuel value in furnace steps, or 0 (entries in ascending id order)
 %macro BURN 2                           ; item id, steps
@@ -254,4 +283,4 @@ item_saturation:
     times 22 dd 0.0
     dd 0.8, 12.8, 0.0, 1.2, 7.2
     times 12 dd 0.0
-    times 10 dd 0.0
+    times NUM_ITEMS - 82 dd 0.0

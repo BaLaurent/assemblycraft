@@ -347,6 +347,7 @@ gun_fire:
     xor     edx, edx                    ; never picked up
     lea     rcx, [g_kind]
     movzx   ecx, byte [rcx + rbx]
+    xor     r8d, r8d
     call    arrows_spawn
     dec     r15d
     jnz     .pellet

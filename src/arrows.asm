@@ -7,7 +7,7 @@ default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_shot, explode_at
+extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_strike, explode_at
 extern survival_damage, surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg
@@ -91,35 +91,36 @@ arrows_clear:
     ret
 
 ; arrows_spawn(xmm0 x, xmm1 y, xmm2 z, xmm3 vx, xmm4 vy, xmm5 vz, edi owner, esi damage,
-;              edx pickup, ecx kind) -> eax slot index, or -1 when every slot is in use
-; owner: 0 player, 1 mob. kind: PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET. Velocities are
+;              edx pickup, ecx kind, r8d flags) -> eax slot index, or -1 when every slot is in use
+; owner: 0 player, 1 mob. kind: PROJ_ARROW .. PROJ_FIREBALL. flags: AF_*. Velocities are
 ; blocks per second.
 arrows_spawn:
-    lea     r8, [arrows]
+    lea     r9, [arrows]
     xor     eax, eax
 .find:
-    cmp     dword [r8 + ARROWENT.live], 0
+    cmp     dword [r9 + ARROWENT.live], 0
     je      .found
-    add     r8, ARROWENT_size
+    add     r9, ARROWENT_size
     inc     eax
     cmp     eax, MAX_ARROWS
     jb      .find
     mov     eax, -1
     ret
 .found:
-    movss   [r8 + ARROWENT.x], xmm0
-    movss   [r8 + ARROWENT.y], xmm1
-    movss   [r8 + ARROWENT.z], xmm2
-    movss   [r8 + ARROWENT.vx], xmm3
-    movss   [r8 + ARROWENT.vy], xmm4
-    movss   [r8 + ARROWENT.vz], xmm5
-    mov     dword [r8 + ARROWENT.age], 0
-    mov     dword [r8 + ARROWENT.stuck], 0
-    mov     [r8 + ARROWENT.owner], edi
-    mov     [r8 + ARROWENT.damage], esi
-    mov     [r8 + ARROWENT.pickup], edx
-    mov     [r8 + ARROWENT.kind], ecx
-    mov     dword [r8 + ARROWENT.live], 1
+    movss   [r9 + ARROWENT.x], xmm0
+    movss   [r9 + ARROWENT.y], xmm1
+    movss   [r9 + ARROWENT.z], xmm2
+    movss   [r9 + ARROWENT.vx], xmm3
+    movss   [r9 + ARROWENT.vy], xmm4
+    movss   [r9 + ARROWENT.vz], xmm5
+    mov     dword [r9 + ARROWENT.age], 0
+    mov     dword [r9 + ARROWENT.stuck], 0
+    mov     [r9 + ARROWENT.owner], edi
+    mov     [r9 + ARROWENT.damage], esi
+    mov     [r9 + ARROWENT.pickup], edx
+    mov     [r9 + ARROWENT.kind], ecx
+    mov     [r9 + ARROWENT.flags], r8d
+    mov     dword [r9 + ARROWENT.live], 1
     ret
 
 ; arrow_advance(rdi arrow, rsi dir[3], xmm0 t, rdx out[3]): out = arrow position + dir * t.
@@ -292,7 +293,7 @@ arrows_step:
     call    mob_hurt
     jmp     .impact
 .shot:
-    call    mob_shot                    ; every bullet counts, even in the hurt window
+    call    mob_strike                  ; every bullet counts, even in the hurt window
     jmp     .impact
 
 .player_arrow:

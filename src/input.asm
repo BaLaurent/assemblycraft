@@ -53,6 +53,10 @@ prev_f3:        resd 1
 prev_f11:       resd 1
 prev_fly:       resd 1
 prev_reload:    resd 1
+prev_skills:    resd 1
+prev_dodge:     resd 1
+prev_ability:   resd 3
+cap_edges:      resd 4                 ; dodge, ability 1..3 edges until the captured branch
 prev_num:       resd 9
 
 section .text
@@ -381,6 +385,9 @@ input_poll:
     BIND    BIND_RELOAD
     EDGE    prev_reload
     mov     [frame_input + FRAMEINPUT.reload], edx
+    BIND    BIND_SKILLS
+    EDGE    prev_skills
+    mov     [frame_input + FRAMEINPUT.skills], edx
 
     ; edges tracked always, reported only while captured
     BUTTON  MOUSE_MIDDLE
@@ -389,6 +396,18 @@ input_poll:
     BIND    BIND_FLY
     EDGE    prev_fly
     mov     [rsp + 4], edx
+    BIND    BIND_DODGE
+    EDGE    prev_dodge
+    mov     [cap_edges], edx
+    BIND    BIND_ABILITY1
+    EDGE    prev_ability
+    mov     [cap_edges + 4], edx
+    BIND    BIND_ABILITY2
+    EDGE    prev_ability + 4
+    mov     [cap_edges + 8], edx
+    BIND    BIND_ABILITY3
+    EDGE    prev_ability + 8
+    mov     [cap_edges + 12], edx
     xor     ecx, ecx
 .num:
     push    rcx
@@ -439,6 +458,14 @@ input_poll:
     mov     [frame_input + FRAMEINPUT.mmb_pressed], eax
     mov     eax, [rsp + 4]
     mov     [frame_input + FRAMEINPUT.toggle_fly], eax
+    mov     eax, [cap_edges]
+    mov     [frame_input + FRAMEINPUT.dodge], eax
+    mov     eax, [cap_edges + 4]
+    mov     [frame_input + FRAMEINPUT.ability], eax
+    mov     eax, [cap_edges + 8]
+    mov     [frame_input + FRAMEINPUT.ability + 4], eax
+    mov     eax, [cap_edges + 12]
+    mov     [frame_input + FRAMEINPUT.ability + 8], eax
     ; buttons, ignoring the click that captured the mouse until both are released
     cmp     dword [suppress], 0
     je      .buttons
