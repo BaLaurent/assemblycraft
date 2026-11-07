@@ -9,12 +9,10 @@ global settings_load, settings_save, settings_apply
 extern parse_u32, str_eq, str_append, i32_to_str
 extern file_read, file_write_atomic
 
-%define NUM_SETENT 18
-
 ; fov sensitivity render_dist volume difficulty invert vsync fullscreen gui_scale, then NUM_BINDINGS keys
 %macro SETTINGS_IMAGE 0
     dd 70, 100, 8, 100, 2, 0, 1, 0, 0
-    dd 87, 83, 65, 68, 32, 340, 341, 69, 70     ; W S A D Space LShift LCtrl E F
+    dd 87, 83, 65, 68, 32, 340, 341, 69, 70, 82 ; W S A D Space LShift LCtrl E F R
 %endmacro
 
 ; one table record = 32 bytes: name[16] NUL padded, field offset, min, max, flag
@@ -55,6 +53,7 @@ settings_table:
     SETENT "key_sprint",      SETTINGS.keys + 4 * BIND_SPRINT,    32, 348, 1
     SETENT "key_inventory",   SETTINGS.keys + 4 * BIND_INVENTORY, 32, 348, 1
     SETENT "key_fly",         SETTINGS.keys + 4 * BIND_FLY,       32, 348, 1
+    SETENT "key_reload",      SETTINGS.keys + 4 * BIND_RELOAD,    32, 348, 1
 settings_table_end:
 
 section .bss

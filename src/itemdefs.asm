@@ -1,5 +1,5 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..81 (NUM_ITEMS).
-; Ids 0..21 are the blocks, 22..31 are unused, 32..81 are tools/materials/food/armor.
+; itemdefs.asm - per-item data tables, indexed by item id 0..91 (NUM_ITEMS).
+; Ids 0..21 are the blocks, 22..31 are unused, 32..91 are tools/materials/food/armor/firearms.
 %include "common.inc"
 default rel
 
@@ -80,6 +80,16 @@ n_dhelm:    db "Diamond Helmet", 0
 n_dchest:   db "Diamond Chestplate", 0
 n_dlegs:    db "Diamond Leggings", 0
 n_dboots:   db "Diamond Boots", 0
+n_pistol:   db "Pistol", 0
+n_musket:   db "Musket", 0
+n_shotgun:  db "Shotgun", 0
+n_ak:       db "Kalashnikov", 0
+n_launcher: db "Rocket Launcher", 0
+n_pround:   db "Pistol Round", 0
+n_mball:    db "Musket Ball", 0
+n_shell:    db "Shotgun Shell", 0
+n_rround:   db "Rifle Round", 0
+n_rocket:   db "Rocket", 0
 
 align 8
 item_names:
@@ -98,6 +108,8 @@ item_names:
     dq n_ihelm, n_ichest, n_ilegs, n_iboots
     dq n_ghelm, n_gchest, n_glegs, n_gboots
     dq n_dhelm, n_dchest, n_dlegs, n_dboots
+    dq n_pistol, n_musket, n_shotgun, n_ak, n_launcher
+    dq n_pround, n_mball, n_shell, n_rround, n_rocket
 
 ; atlas tile of the inventory icon: block side tile, the item id (32..42), or
 ; TILE_ITEM0 + id - 43
@@ -128,6 +140,8 @@ item_max_stack:
     db 1                                ; flint and steel
     times 5 db 64                       ; foods, feather
     times 12 db 1                       ; armor
+    times 5 db 1                        ; firearms (dmg holds the rounds loaded)
+    times 5 db 64                       ; ammunition
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD
 item_tool:
@@ -153,6 +167,7 @@ item_food:
     times 22 db 0                       ; 43..64
     db 4, 8, 0, 2, 6                    ; rotten flesh, cooked pork, feather, raw/cooked chicken
     times 12 db 0
+    times 10 db 0                       ; firearms, ammunition
 
 item_attack:
     times 33 db 1
@@ -183,6 +198,7 @@ item_smelt:
 item_armor_slot:
     times 70 db 0
     db 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4
+    times 10 db 0
 
 ; armor points of a worn piece
 item_armor_points:
@@ -190,6 +206,7 @@ item_armor_points:
     db 2, 6, 5, 2                       ; iron
     db 2, 5, 3, 1                       ; gold
     db 3, 8, 6, 3                       ; diamond
+    times 10 db 0
 
 align 2
 item_durability:
@@ -207,6 +224,7 @@ item_durability:
     dw 165, 240, 225, 195               ; iron armor
     dw 77, 112, 105, 91                 ; gold armor
     dw 363, 528, 495, 429               ; diamond armor
+    times 10 dw 0                       ; firearms never wear, ammunition
 
 ; fuel value in furnace steps, or 0 (entries in ascending id order)
 %macro BURN 2                           ; item id, steps
@@ -234,3 +252,4 @@ item_saturation:
     times 22 dd 0.0
     dd 0.8, 12.8, 0.0, 1.2, 7.2
     times 12 dd 0.0
+    times 10 dd 0.0

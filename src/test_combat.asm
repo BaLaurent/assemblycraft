@@ -153,6 +153,7 @@ test_arrow_hits_mob:
     xor     edi, edi                    ; the player's
     mov     esi, 5                      ; damage
     mov     edx, 1                      ; can be picked up again
+    mov     ecx, PROJ_ARROW
     call    arrows_spawn
     test    eax, eax
     jnz     .fail                       ; first slot

@@ -570,6 +570,7 @@ ai_skeleton:
     mov     eax, [rsp + 76]
     mov     esi, [t_dmg + rax*4]
     xor     edx, edx                    ; cannot be picked up
+    mov     ecx, PROJ_ARROW
     call    arrows_spawn
     mov     edi, SND_BOW
     movss   xmm0, [rbx + BODY.x]

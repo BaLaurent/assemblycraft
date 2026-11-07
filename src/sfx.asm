@@ -1,4 +1,4 @@
-; sfx.asm - procedural sound effects: the 28 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural sound effects: the 35 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few layers (noise / square / saw through a one-pole filter and an
 ; envelope). sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
@@ -85,6 +85,27 @@ layers:
     LAYER SND_CHICKEN_SAY,   W_SQUARE, 1500.0, 1700.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.06, 0.3,  0.0,  0.0
     LAYER SND_CHICKEN_SAY,   W_SQUARE, 1700.0, 1300.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.1,  0.08, 0.3,  0.0,  0.0
     LAYER SND_CHICKEN_HURT,  W_SQUARE, 1900.0, 1000.0, 0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.15, 0.35, 0.0,  0.0
+    LAYER SND_PISTOL,        W_NOISE,  0.0,    0.0,    0.6,  1, E_EXP, 0.03,  0.0,  0.0,  0.25, 0.7,  0.0,  0.0
+    LAYER SND_PISTOL,        W_NOISE,  0.0,    0.0,    0.08, 0, E_EXP, 0.06,  0.0,  0.0,  0.2,  0.5,  0.0,  0.0
+    LAYER SND_PISTOL,        W_SQUARE, 150.0,  60.0,   0.2,  0, E_EXP, 0.05,  0.0,  0.0,  0.15, 0.3,  0.0,  0.0
+    LAYER SND_MUSKET,        W_NOISE,  0.0,    0.0,    0.1,  0, E_EXP, 0.2,   0.0,  0.0,  0.9,  0.9,  0.0,  0.0
+    LAYER SND_MUSKET,        W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.04,  0.0,  0.0,  0.3,  0.5,  0.0,  0.0
+    LAYER SND_MUSKET,        W_SAW,    90.0,   45.0,   0.1,  0, E_LIN, 0.0,   0.0,  0.0,  0.4,  0.3,  0.0,  0.0
+    LAYER SND_SHOTGUN,       W_NOISE,  0.0,    0.0,    0.3,  0, E_EXP, 0.12,  0.0,  0.0,  0.6,  0.9,  0.0,  0.0
+    LAYER SND_SHOTGUN,       W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.04,  0.0,  0.0,  0.25, 0.6,  0.0,  0.0
+    LAYER SND_SHOTGUN,       W_SQUARE, 100.0,  50.0,   0.15, 0, E_EXP, 0.08,  0.0,  0.0,  0.3,  0.3,  0.0,  0.0
+    LAYER SND_RIFLE,         W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.015, 0.0,  0.0,  0.15, 0.7,  0.0,  0.0
+    LAYER SND_RIFLE,         W_NOISE,  0.0,    0.0,    0.2,  0, E_EXP, 0.02,  0.0,  0.0,  0.08, 0.3,  0.0,  0.0
+    LAYER SND_LAUNCHER,      W_NOISE,  0.0,    0.0,    0.3,  1, E_LIN, 0.0,   0.15, 0.0,  0.7,  0.5,  0.0,  0.0
+    LAYER SND_LAUNCHER,      W_SAW,    150.0,  700.0,  0.15, 0, E_LIN, 0.0,   0.1,  0.0,  0.6,  0.25, 0.0,  0.0
+    LAYER SND_LAUNCHER,      W_SQUARE, 120.0,  50.0,   0.15, 0, E_EXP, 0.06,  0.0,  0.0,  0.25, 0.45, 0.0,  0.0
+    LAYER SND_LAUNCHER,      W_NOISE,  0.0,    0.0,    0.1,  0, E_EXP, 0.1,   0.0,  0.0,  0.3,  0.5,  0.0,  0.0
+    LAYER SND_RELOAD,        W_SQUARE, 2000.0, 1500.0, 1.0,  0, E_EXP, 0.015, 0.0,  0.0,  0.05, 0.25, 0.0,  0.0
+    LAYER SND_RELOAD,        W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.01,  0.0,  0.0,  0.03, 0.3,  0.0,  0.0
+    LAYER SND_RELOAD,        W_SQUARE, 1400.0, 1000.0, 1.0,  0, E_EXP, 0.015, 0.0,  0.12, 0.05, 0.25, 0.0,  0.0
+    LAYER SND_RELOAD,        W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.01,  0.0,  0.12, 0.03, 0.3,  0.0,  0.0
+    LAYER SND_DRY_FIRE,      W_SQUARE, 1800.0, 1200.0, 1.0,  0, E_EXP, 0.01,  0.0,  0.0,  0.04, 0.3,  0.0,  0.0
+    LAYER SND_DRY_FIRE,      W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.008, 0.0,  0.0,  0.03, 0.3,  0.0,  0.0
 layers_end:
 
 section .bss

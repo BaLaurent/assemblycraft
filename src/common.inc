@@ -93,7 +93,18 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define DIAMOND_CHESTPLATE 79
 %define DIAMOND_LEGGINGS 80
 %define DIAMOND_BOOTS  81
-%define NUM_ITEMS      82
+%define PISTOL         82
+%define MUSKET         83
+%define SHOTGUN        84
+%define KALASHNIKOV    85
+%define ROCKET_LAUNCHER 86
+%define PISTOL_ROUND   87
+%define MUSKET_BALL    88
+%define SHOTGUN_SHELL  89
+%define RIFLE_ROUND    90
+%define ROCKET         91
+%define NUM_ITEMS      92
+%define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER
 
 ; ---- tools ----------------------------------------------------------------
 %define TOOL_NONE      0
@@ -205,7 +216,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NUM_MOB_TYPES   6
 %define MAX_MOBS        32
 %define MAX_DROPS       64              ; item entities lying in the world
-%define MAX_ARROWS      48
+%define MAX_ARROWS      96
+
+%define PROJ_ARROW      0               ; ARROWENT.kind
+%define PROJ_BULLET     1
+%define PROJ_ROCKET     2
 %define MAX_PRIMED      32              ; primed TNT
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
@@ -247,7 +262,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIND_SPRINT     6
 %define BIND_INVENTORY  7
 %define BIND_FLY        8
-%define NUM_BINDINGS    9
+%define BIND_RELOAD     9
+%define NUM_BINDINGS    10
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0
@@ -278,7 +294,14 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_CREEPER_HURT 25
 %define SND_CHICKEN_SAY 26
 %define SND_CHICKEN_HURT 27
-%define NUM_SOUNDS      28
+%define SND_PISTOL      28
+%define SND_MUSKET      29
+%define SND_SHOTGUN     30
+%define SND_RIFLE       31
+%define SND_LAUNCHER    32
+%define SND_RELOAD      33
+%define SND_DRY_FIRE    34
+%define NUM_SOUNDS      35
 
 ; ---- colours: packed for glColor4ub as four bytes r,g,b,a -----------------
 %define RGBA(r,g,b,a) ((r)|((g)<<8)|((b)<<16)|((a)<<24))
@@ -330,6 +353,7 @@ struc FRAMEINPUT
     .inventory:   resd 1                ; edge of the inventory binding
     .debug:       resd 1                ; F3 edge
     .fullscreen:  resd 1                ; F11 edge
+    .reload:      resd 1                ; edge of the Reload binding (every state)
 endstruc
 
 struc UIINPUT
@@ -564,7 +588,8 @@ struc ARROWENT
     .damage: resd 1
     .pickup: resd 1                     ; 0/1
     .live:   resd 1                     ; 0/1
-endstruc                                ; 48 bytes
+    .kind:   resd 1                     ; PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET
+endstruc                                ; 52 bytes
 
 ; a primed TNT block (not saved with the world)
 struc PRIMED

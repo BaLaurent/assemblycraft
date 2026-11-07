@@ -75,33 +75,35 @@ arrows_clear:
     ret
 
 ; arrows_spawn(xmm0 x, xmm1 y, xmm2 z, xmm3 vx, xmm4 vy, xmm5 vz, edi owner, esi damage,
-;              edx pickup) -> eax slot index, or -1 when every slot is flying
-; owner: 0 player, 1 mob. Velocities are blocks per second.
+;              edx pickup, ecx kind) -> eax slot index, or -1 when every slot is in use
+; owner: 0 player, 1 mob. kind: PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET. Velocities are
+; blocks per second.
 arrows_spawn:
-    lea     rcx, [arrows]
+    lea     r8, [arrows]
     xor     eax, eax
 .find:
-    cmp     dword [rcx + ARROWENT.live], 0
+    cmp     dword [r8 + ARROWENT.live], 0
     je      .found
-    add     rcx, ARROWENT_size
+    add     r8, ARROWENT_size
     inc     eax
     cmp     eax, MAX_ARROWS
     jb      .find
     mov     eax, -1
     ret
 .found:
-    movss   [rcx + ARROWENT.x], xmm0
-    movss   [rcx + ARROWENT.y], xmm1
-    movss   [rcx + ARROWENT.z], xmm2
-    movss   [rcx + ARROWENT.vx], xmm3
-    movss   [rcx + ARROWENT.vy], xmm4
-    movss   [rcx + ARROWENT.vz], xmm5
-    mov     dword [rcx + ARROWENT.age], 0
-    mov     dword [rcx + ARROWENT.stuck], 0
-    mov     [rcx + ARROWENT.owner], edi
-    mov     [rcx + ARROWENT.damage], esi
-    mov     [rcx + ARROWENT.pickup], edx
-    mov     dword [rcx + ARROWENT.live], 1
+    movss   [r8 + ARROWENT.x], xmm0
+    movss   [r8 + ARROWENT.y], xmm1
+    movss   [r8 + ARROWENT.z], xmm2
+    movss   [r8 + ARROWENT.vx], xmm3
+    movss   [r8 + ARROWENT.vy], xmm4
+    movss   [r8 + ARROWENT.vz], xmm5
+    mov     dword [r8 + ARROWENT.age], 0
+    mov     dword [r8 + ARROWENT.stuck], 0
+    mov     [r8 + ARROWENT.owner], edi
+    mov     [r8 + ARROWENT.damage], esi
+    mov     [r8 + ARROWENT.pickup], edx
+    mov     [r8 + ARROWENT.kind], ecx
+    mov     dword [r8 + ARROWENT.live], 1
     ret
 
 ; arrow_advance(rdi arrow, rsi dir[3], xmm0 t, rdx out[3]): out = arrow position + dir * t.

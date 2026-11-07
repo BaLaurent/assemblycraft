@@ -19,7 +19,7 @@ extern test_fall_damage, test_exhaustion_drains, test_regen_when_fed
 extern test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
 extern test_armor_reduces_damage
 extern test_saves_sanitize_name, test_saves_scan_rename_delete
-extern test_settings_roundtrip, test_settings_clamps_bad_values
+extern test_settings_roundtrip, test_settings_clamps_bad_values, test_settings_reload_key
 extern test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 extern test_furnace_smelts, test_chest_spills_on_break
 extern test_mob_raycast_hits, test_mob_hurt_pig_drops_food, test_zombie_attacks_player
@@ -77,6 +77,7 @@ tests:
     TEST saves_scan_rename_delete
     TEST settings_roundtrip
     TEST settings_clamps_bad_values
+    TEST settings_reload_key
     TEST furnace_smelts
     TEST chest_spills_on_break
     TEST mob_raycast_hits
@@ -133,6 +134,7 @@ section .rodata
     TESTNAME saves_scan_rename_delete
     TESTNAME settings_roundtrip
     TESTNAME settings_clamps_bad_values
+    TESTNAME settings_reload_key
     TESTNAME furnace_smelts
     TESTNAME chest_spills_on_break
     TESTNAME mob_raycast_hits

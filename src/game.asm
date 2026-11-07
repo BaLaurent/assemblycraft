@@ -955,6 +955,7 @@ game_frame:
     mulss   xmm4, xmm6
     mulss   xmm5, xmm6
     xor     edi, edi                    ; owner: player
+    mov     ecx, PROJ_ARROW
     call    arrows_spawn
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .bow_sound

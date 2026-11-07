@@ -64,9 +64,10 @@ s_b_sneak:      db "Sneak / Fly Down", 0
 s_b_sprint:     db "Sprint", 0
 s_b_inventory:  db "Inventory", 0
 s_b_fly:        db "Toggle Fly (Creative)", 0
+s_b_reload:     db "Reload", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump
-                dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly
+                dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly, s_b_reload
 
 ; Names of keys that glfwGetKeyName does not report: dw key, zstr; dw 0 ends it.
 %macro KEY 2
@@ -336,9 +337,9 @@ screen_controls:
     mov     eax, [ui_h]
     sub     eax, 60
     cdq
-    mov     ecx, 9
+    mov     ecx, NUM_BINDINGS
     idiv    ecx
-    mov     r14d, 24                    ; pitch = min(24, (ui_h - 60) / 9)
+    mov     r14d, 24                    ; pitch = min(24, (ui_h - 60) / NUM_BINDINGS)
     cmp     eax, r14d
     cmovl   r14d, eax
     xor     ebx, ebx                    ; row

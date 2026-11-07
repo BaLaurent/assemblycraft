@@ -52,6 +52,7 @@ prev_inv:       resd 1
 prev_f3:        resd 1
 prev_f11:       resd 1
 prev_fly:       resd 1
+prev_reload:    resd 1
 prev_num:       resd 9
 
 section .text
@@ -377,6 +378,9 @@ input_poll:
     KEY     KEY_F11
     EDGE    prev_f11
     mov     [frame_input + FRAMEINPUT.fullscreen], edx
+    BIND    BIND_RELOAD
+    EDGE    prev_reload
+    mov     [frame_input + FRAMEINPUT.reload], edx
 
     ; edges tracked always, reported only while captured
     BUTTON  MOUSE_MIDDLE
