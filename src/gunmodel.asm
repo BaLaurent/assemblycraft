@@ -75,10 +75,10 @@ rifle:
     PART -0.008, 0.07, -0.66,  0.008, 0.1, -0.62,   C_DARK  ; front sight
     dd END
 launcher:
-    PART -0.08, -0.02, -0.55,  0.08, 0.14, 0.5,     C_GREEN
+    PART -0.065, -0.02, -0.55, 0.065, 0.11, 0.2,    C_GREEN
     PART -0.03, -0.18, -0.05,  0.03, -0.02, 0.03,   C_DARK
     PART -0.03, -0.16, -0.3,   0.03, -0.02, -0.24,  C_DARK  ; front grip
-    PART -0.06, 0.0, -0.68,    0.06, 0.12, -0.55,   C_RED
+    PART -0.05, 0.0, -0.66,    0.05, 0.09, -0.55,   C_RED
     dd END
 align 8
 models:      dq pistol, musket, shotgun, rifle, launcher
@@ -112,9 +112,9 @@ gun_model_draw:
     lea     rax, [models]
     mov     rbx, [rax + r13*8]
 .part:
-    mov     eax, [rbx + 24]
-    cmp     eax, END
+    cmp     dword [rbx], END            ; the list ends with a lone END word
     je      .flash
+    mov     eax, [rbx + 24]             ; colour
     cmp     eax, C_RED
     jne     .draw
     test    r12d, r12d

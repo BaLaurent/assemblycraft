@@ -23,7 +23,7 @@ extern fx_explosion, fx_debris
 %define X_TWOR  44                      ; float 2r
 %define X_K     48                      ; float r / 3
 %define X_CELL  52                      ; int cell being cleared [3]
-%define X_NDEB  64                      ; int blocks destroyed so far (every third: debris)
+%define X_NDEB  64                      ; int blocks destroyed so far (every second: debris)
 %define X_FRAME 72
 
 section .rodata
@@ -254,7 +254,7 @@ tnt_render:
 ;    (survival_damage decides whether it applies), and is thrown away from the blast;
 ; 3. every mob within 2r takes ceil(f * 24 * r / 3) and is knocked away;
 ; 4. every primed TNT within 2r is thrown away (14 f, plus 5 f upwards).
-; Effects: fx_explosion at the centre, fx_debris for every third destroyed block.
+; Effects: fx_explosion at the centre, fx_debris for every second destroyed block.
 ; r12d, r13d, r14d = x, y, z offsets of the cell from floor(centre) while sweeping blocks;
 ; r12d = mob index, rbx = mob while hurting mobs.
 explode_at:
@@ -359,10 +359,10 @@ explode_at:
     mov     edx, [rsp + X_CELL + 8]
     xor     ecx, ecx
     call    world_set
-    inc     dword [rsp + X_NDEB]        ; every third destroyed block flies off as debris
+    inc     dword [rsp + X_NDEB]        ; every second destroyed block flies off as debris
     mov     eax, [rsp + X_NDEB]
     xor     edx, edx
-    mov     ecx, 3
+    mov     ecx, 2
     div     ecx
     cmp     edx, 1
     jne     .no_debris

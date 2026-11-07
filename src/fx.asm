@@ -25,21 +25,22 @@ k_one:      dd 1.0
 k_neg_one:  dd -1.0
 k_eps:      dd 0.0001
 k_tiny:     dd 0.001
-k_12:       dd 12.0
 k_6:        dd 6.0
 k_3:        dd 3.0
 k_2:        dd 2.0
 k_third:    dd 0.33333334
-k_fire_lo:  dd 0.3
-k_fire_hi:  dd 0.6
-k_fire_v0:  dd 2.0                      ; fireball speed (2..6) * r / 3
-k_fire_v1:  dd 6.0
+k_fire_lo:  dd 0.45
+k_fire_hi:  dd 0.9
+k_fire_v0:  dd 3.0                      ; fireball speed (3..8) * r / 3
+k_fire_v1:  dd 8.0
+k_fire_n:   dd 18.0                     ; fireball particles per block of radius
+k_smoke_n:  dd 3.0                      ; smoke particles per block of radius
 k_smoke_vy0: dd 1.0
 k_smoke_vy1: dd 2.5
 k_smoke_h:  dd 0.7
 k_smoke_nh: dd -0.7
-k_smoke_s0: dd 0.4
-k_smoke_s1: dd 0.8
+k_smoke_s0: dd 0.25
+k_smoke_s1: dd 0.5
 k_deb_s0:   dd 0.15
 k_deb_s1:   dd 0.25
 k_deb_v0:   dd 4.0
@@ -49,11 +50,13 @@ k_deb_up1:  dd 7.0
 k_shk_k:    dd 1.5
 k_shk_cap:  dd 2.5
 k_flash_k:  dd 0.8
-k_fire_dv:  dd 0.86
+k_fire_dv:  dd 0.9
 k_fire_up:  dd 0.03
-k_fire_sz:  dd 0.97
+k_fire_sz:  dd 0.975
 k_smoke_dv: dd 0.98
-k_smoke_gr: dd 0.01
+k_smoke_gr: dd 0.006
+k_smoke_fd: dd 0.9                      ; size factor per step while fading
+%define SMOKE_FADE 25                   ; steps of fading before a smoke puff ends
 k_grav:     dd 0.4                      ; debris gravity, blocks/s per step
 k_bounce:   dd -0.35
 k_friction: dd 0.6
@@ -67,8 +70,8 @@ k_fire_b0:  dd 0.4
 k_fire_r1:  dd 0.8
 k_fire_g1:  dd 0.2
 k_fire_b1:  dd 0.05
-k_smoke_g0: dd 0.55
-k_smoke_g1: dd 0.25
+k_smoke_g0: dd 0.62
+k_smoke_g1: dd 0.35
 ; render_box face order +X -X +Y -Y +Z -Z
 shades_block: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
 shades_flat:  dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
@@ -202,9 +205,9 @@ fx_explosion:
     movss   [rsp + E_C + 8], xmm2
     movss   [rsp + E_R], xmm3
 
-    ; ---- fireball: random direction x (2..6) r / 3 b/s, size 0.3..0.6, life 14..26 --------
+    ; ---- fireball: random direction x (3..8) r / 3 b/s, size 0.45..0.9, life 20..38 ------
     movss   xmm0, [rsp + E_R]
-    mulss   xmm0, [k_12]
+    mulss   xmm0, [k_fire_n]
     cvttss2si r13d, xmm0
     xor     r12d, r12d
 .fire:
@@ -267,21 +270,21 @@ fx_explosion:
     movss   xmm1, [k_fire_hi]
     call    rnd_range
     movss   [rbx + PARTICLE.size], xmm0
-    mov     edi, 13
+    mov     edi, 19
     call    rnd_mod
-    add     eax, 14
+    add     eax, 20
     mov     [rbx + PARTICLE.life], eax
     mov     dword [rbx + PARTICLE.kind], FX_FIRE
     inc     r12d
     jmp     .fire
 .fire_done:
 
-    ; ---- smoke: within +-r/2 of the centre, rises 1..2.5 b/s, size 0.4..0.8, life 60..120 -----
+    ; ---- smoke: within +-r/2 of the centre, rises 1..2.5 b/s, size 0.25..0.5, life 110..200 -
     movss   xmm0, [rsp + E_R]
     mulss   xmm0, [k_half]
     movss   [rsp + E_HALF], xmm0
     movss   xmm0, [rsp + E_R]
-    mulss   xmm0, [k_6]
+    mulss   xmm0, [k_smoke_n]
     cvttss2si r13d, xmm0
     xor     r12d, r12d
 .smoke:
@@ -317,9 +320,9 @@ fx_explosion:
     movss   xmm1, [k_smoke_s1]
     call    rnd_range
     movss   [rbx + PARTICLE.size], xmm0
-    mov     edi, 61
+    mov     edi, 91
     call    rnd_mod
-    add     eax, 60
+    add     eax, 110
     mov     [rbx + PARTICLE.life], eax
     mov     dword [rbx + PARTICLE.kind], FX_SMOKE
     inc     r12d
@@ -568,7 +571,15 @@ fx_step:
 %assign i i + 4
 %endrep
     movss   xmm0, [rbx + PARTICLE.size]
-    addss   xmm0, [k_smoke_gr]
+    mov     eax, [rbx + PARTICLE.life]
+    sub     eax, [rbx + PARTICLE.age]
+    cmp     eax, SMOKE_FADE
+    jle     .smoke_fade
+    addss   xmm0, [k_smoke_gr]          ; billowing out...
+    jmp     .smoke_size
+.smoke_fade:
+    mulss   xmm0, [k_smoke_fd]          ; ...then thinning away over its last steps
+.smoke_size:
     movss   [rbx + PARTICLE.size], xmm0
     MOVE_POS
 .age:

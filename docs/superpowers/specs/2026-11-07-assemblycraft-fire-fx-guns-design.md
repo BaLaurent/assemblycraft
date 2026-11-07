@@ -91,16 +91,16 @@ Same as the 0.3/0.4 specs:
 
 **`fx_explosion`:**
 
-- **Fireball:** `12·r` FIRE particles at the centre with random direction × (2..6)·r/3 b/s. Size 0.3–0.6, life 14–26 steps.
-- **Smoke:** `6·r` SMOKE particles within ±r/2 of the centre. They rise at 1–2.5 b/s with ±0.7 b/s horizontal drift. Size 0.4–0.8, life 60–120 steps.
+- **Fireball:** `18·r` FIRE particles at the centre with random direction × (3..8)·r/3 b/s. Size 0.45–0.9, life 20–38 steps.
+- **Smoke:** `3·r` SMOKE particles within ±r/2 of the centre. They rise at 1–2.5 b/s with ±0.7 b/s horizontal drift. Size 0.25–0.5, life 110–200 steps.
 - **Shake and flash:** d = distance to `player_eye`.
   - `shake += max(0, 1.5·(1 − d/(6r)))`, capped at 2.5;
   - `flash = max(flash, 0.8·(1 − d/(3r)))`.
 
 **Per particle in `fx_step`:**
 
-- **FIRE:** velocity × 0.86, vy += 0.03, size × 0.97.
-- **SMOKE:** velocity × 0.98, size + 0.01.
+- **FIRE:** velocity × 0.9, vy += 0.03, size × 0.975.
+- **SMOKE:** velocity × 0.98, size + 0.006, then × 0.9 per step over its last 25 steps.
 - **DEBRIS:**
   - vy −= 0.4 (gravity), then move.
   - When the new cell is solid, restore the old position, then set `vy = −vy·0.35` and multiply vx, vz by 0.6.
@@ -123,9 +123,9 @@ When the table is full, new particles are dropped.
   - `body_init(&primed.body, 0.49, 0.98, 0)`;
   - position `(x+0.5, y, z+0.5)`;
   - a small hop: `vy = 2`, `kbx/kbz = ((rng%201)−100)/100`.
-- **`tnt_step`:** each live entry runs `body_step(&body, zero INPUT)`, then the fuse ticks down. At 0 it explodes at the body's centre.
+- **`tnt_step`:** each live entry runs `body_step(&body, zero INPUT)`. While airborne, the push (`kbx/kbz`) is restored after `body_step`, so there is no air drag; on the ground `body_step`'s decay acts as friction, and a wall hit zeroes it. Then the fuse ticks down. At 0 it explodes at the body's centre.
 - **`explode_at`:**
-  - **Effects:** calls `fx_explosion(c, r)`, and `fx_debris` for every 3rd destroyed block.
+  - **Effects:** calls `fx_explosion(c, r)`, and `fx_debris` for every 2nd destroyed block.
   - **Pushing primed TNT:** after the mobs, every live primed TNT within 2r of the centre (body centre) is pushed:
     - `f = 1 − d/2r`, `u = unit(centre_tnt − c)` (straight up when d < 0.01);
     - `kbx = u.x·14f`, `kbz = u.z·14f`, `vy = u.y·14f + 5f`.
@@ -143,7 +143,7 @@ When the table is full, new particles are dropped.
   - LMB `pressed` (or `held` for the automatic) → `gun_fire`. It never breaks or attacks.
   - RMB never uses or opens blocks and never places.
 - **`hand.asm`.** When a firearm is held, it is drawn by `gun_model_draw(id, light)`: boxes tinted on the near-white tile `TILE_CHICKEN_BODY`.
-  - **Pose:** hip `(0.30, −0.30, −0.55)`, aimed `(0.0, −0.16, −0.42)`, lerped by `game_aim`.
+  - **Pose:** hip `(0.30, −0.30, −0.55)`, aimed `(0.0, −0.105, −0.5)`, lerped by `game_aim`.
   - **Recoil:** `z += 0.09·kick`, `rotX(+10·kick)`.
   - **Reload:** with `p = 1 − reload/total` and `s = sin(180p)`: `y −= 0.12·s`, `rotZ(25·s)`, `rotX(−20·s)`.
   - **Muzzle flash:** a bright untextured yellow box at the muzzle while `kick > 0.6`.
@@ -170,9 +170,9 @@ When the table is full, new particles are dropped.
     - stock wood (−0.035,−0.08,0.15)…(0.035,0.04,0.45);
     - muzzle z −0.71.
   - **Rocket launcher:**
-    - tube green (−0.08,−0.02,−0.55)…(0.08,0.14,0.5);
+    - tube green (−0.065,−0.02,−0.55)…(0.065,0.11,0.2);
     - grip dark (−0.03,−0.18,−0.05)…(0.03,−0.02,0.03);
-    - when loaded (dmg > 0), a warhead red (−0.06,0.0,−0.68)…(0.06,0.12,−0.55);
+    - when loaded (dmg > 0), a warhead red (−0.05,0.0,−0.66)…(0.05,0.09,−0.55);
     - muzzle z −0.56.
 - **Flint and steel (`game.asm`):** RMB on TNT primes it, as now. RMB on any other block calls `fire_place(target.px, py, pz)`. On success: `audio_play(SND_FUSE, 0.5)`, a hand swing, and in survival `inv_damage_held(1)`.
 - **Clears:**

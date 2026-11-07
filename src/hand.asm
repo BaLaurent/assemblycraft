@@ -40,8 +40,8 @@ g_hip_x:     dd 0.30
 g_hip_y:     dd -0.30
 g_hip_z:     dd -0.55
 g_aim_x:     dd 0.0
-g_aim_y:     dd -0.16
-g_aim_z:     dd -0.42
+g_aim_y:     dd -0.105
+g_aim_z:     dd -0.5
 f_rel_dip:   dd 0.12                    ; reload: drop, roll and tip at mid-reload
 f_rel_roll:  dd 25.0
 f_rel_tip:   dd -20.0
