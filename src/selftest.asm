@@ -6,6 +6,12 @@ global selftest_run
 
 extern sys_print, i32_to_str, str_append
 extern test_world_bounds, test_world_set_marks_dirty, test_world_save_load
+extern test_worldgen_deterministic, test_worldgen_shape
+extern test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
+extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
+extern test_raycast_hit_forward, test_raycast_miss_beyond_reach, test_raycast_hit_from_above
+extern test_physics_land_on_floor, test_physics_wall_blocks
+extern test_physics_jump_clears_one_block, test_player_intersects_block
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -20,12 +26,40 @@ tests:
     TEST world_bounds
     TEST world_set_marks_dirty
     TEST world_save_load
+    TEST worldgen_deterministic
+    TEST worldgen_shape
+    TEST mesh_single_block
+    TEST mesh_adjacent_opaque
+    TEST mesh_adjacent_leaves
+    TEST mesh_adjacent_glass
+    TEST mesh_chunk_boundary
+    TEST raycast_hit_forward
+    TEST raycast_miss_beyond_reach
+    TEST raycast_hit_from_above
+    TEST physics_land_on_floor
+    TEST physics_wall_blocks
+    TEST physics_jump_clears_one_block
+    TEST player_intersects_block
     dq 0
 
 section .rodata
     TESTNAME world_bounds
     TESTNAME world_set_marks_dirty
     TESTNAME world_save_load
+    TESTNAME worldgen_deterministic
+    TESTNAME worldgen_shape
+    TESTNAME mesh_single_block
+    TESTNAME mesh_adjacent_opaque
+    TESTNAME mesh_adjacent_leaves
+    TESTNAME mesh_adjacent_glass
+    TESTNAME mesh_chunk_boundary
+    TESTNAME raycast_hit_forward
+    TESTNAME raycast_miss_beyond_reach
+    TESTNAME raycast_hit_from_above
+    TESTNAME physics_land_on_floor
+    TESTNAME physics_wall_blocks
+    TESTNAME physics_jump_clears_one_block
+    TESTNAME player_intersects_block
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0
