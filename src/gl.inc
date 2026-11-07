@@ -30,6 +30,9 @@ extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoor
 %define GLFW_WAYLAND_APP_ID    0x26001
 %define GLFW_X11_CLASS_NAME    0x24001
 
+%define GLFW_STICKY_KEYS          0x33002
+%define GLFW_STICKY_MOUSE_BUTTONS 0x33003
+
 %define KEY_SPACE         32
 %define KEY_1             49
 %define KEY_9             57

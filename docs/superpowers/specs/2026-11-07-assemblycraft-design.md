@@ -476,3 +476,8 @@ All commands run from the repo root.
 - **No GL context in the box.** If the Wayland window comes up black or `glfwCreateWindow` fails there, run `omabox log apps --grep -i egl` first. If the box is on NVIDIA and EGL fails, start a box on the Intel node: `OMABOX_RENDER_NODE=/dev/dri/renderD128 omabox up --new` (`omabox config gpu` lists the nodes), then repeat Verification 3 there.
 - **Linker warnings.** If `gcc -no-pie` warns about an executable stack, a file is missing the `common.inc` include. Fix the include; do not add linker flags.
 - **A selftest constant fails while the module looks right.** If a step-2 test's expected constant (e.g. 17.69 ≤ x ≤ 17.70) fails but the module matches this spec, first re-derive the expectation from the spec's formulas with `gdb` (`break test_physics_wall_blocks`). Change the test only if the spec arithmetic proves the expectation wrong; never loosen it to pass.
+
+## Implementation notes (deviations found during verification)
+
+- **Sticky keys and buttons.** `input_init` also enables `GLFW_STICKY_KEYS` (0x33002) and `GLFW_STICKY_MOUSE_BUTTONS` (0x33003). Without them, a key tapped and released between two polls reads as never pressed, so the edge detection drops it (observed in the box: a quick tap of `3` did not select slot 3).
+- **The recapture click does nothing.** After the left click that recaptures the mouse, `lmb_held` and `lmb_pressed` stay 0 until that button is released. Otherwise the held-repeat timer (zeroed while uncaptured) would break a block on the very next frame.
