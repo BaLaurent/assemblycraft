@@ -15,6 +15,8 @@ global mob_spawn, mob_spawn_elite, mob_is_hostile, mobs_raycast
 global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
+global make_elite, mob_scale, mob_blow, mob_blow_raw, mob_melee_hit, mob_arrow_flags, mob_index
+global knock_player, mob_reel, mob_stunned_text, folk_strike_mob, mob_coins, mob_drop, spawn_near_player
 
 extern body_init, body_step, body_in_water, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
@@ -31,6 +33,9 @@ extern structures_on_mob_killed, structures_on_boss_killed
 extern rpg_level, rpg_stats
 extern combat_player_status, combat_attacker, combat_kb_mult, status_speed_mult, explode_dmg_mult
 extern gear_drop_from_mob
+extern folk_ai, folk_hostile, folk_class_health, folk_base_speed, folk_is_fighter
+extern folk_on_player_hit, folk_on_death, folk_drops, folk_scare, folk_travel_tick
+extern status_apply
 
 %define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive
 %define PIG_CAP       10                ; pigs the spawner keeps alive
@@ -40,14 +45,10 @@ extern gear_drop_from_mob
 %define HIT_COOLDOWN  60                ; steps between zombie hits
 %define PANIC_STEPS   180               ; a hurt pig or chicken runs this long
 %define CREEPER_FUSE  90                ; steps from a lit fuse to the blast
-; what kind of ground spawn_at_ground looks for
-%define GROUND_HOSTILE 0                ; a solid, opaque block that is not bedrock or foliage
-%define GROUND_PASSIVE 1                ; grass
 %define ZOMBIE_WINDUP 20                ; steps a zombie's arm is up before the blow
 %define ZOMBIE_WINDUP_ELITE 16
 %define SPIDER_WINDUP 12                ; steps a spider rears up before the bite
 %define SPIDER_WINDUP_ELITE 10
-%define STUN_PARRIED  50                ; a parried zombie or spider is dazed this long
 %define BAR_STEPS     180               ; a hit mob's health bar stays up this long
 %define TAG_STEPS     200               ; a player hit counts for XP this long
 %define BOSS_WINDUP   36                ; the Fallen King's slam wind-up (phase 3: 24)
@@ -113,7 +114,7 @@ t_say:      db SND_ZOMBIE_SAY, SND_PIG_SAY, 0xFF, SND_SKELETON_SAY, SND_SPIDER_S
 t_hurt:     db SND_ZOMBIE_HURT, SND_PIG_HURT, SND_CREEPER_HURT, SND_SKELETON_HURT
             db SND_SPIDER_HURT, SND_CHICKEN_HURT, SND_SKELETON_HURT, SND_VILLAGER
 ; death drops, 8 bytes per type: two (item, base, range) entries, count = base + rng % range;
-; item 0 = unused entry. Folk and the boss have none here: mob_drops special-cases the boss.
+; item 0 = unused entry. Folk and the boss have none here: mob_drops special-cases them (folk_drops).
 t_drops:    db ROTTEN_FLESH, 0, 3, 0, 0, 0, 0, 0
             db PORKCHOP, 1, 3, 0, 0, 0, 0, 0
             db GUNPOWDER, 0, 3, 0, 0, 0, 0, 0
@@ -202,9 +203,6 @@ c_100:      dd 100.0
 c_strike2:  dd 3.6                      ; a raised arm still connects within 1.9 blocks, squared
 c_bite_end2: dd 2.45                    ; a rearing spider still bites within 1.56 blocks, squared
 c_over_head: dd 0.2                     ; floating numbers start this far above the head
-; folk
-c_home2:    dd 36.0                     ; they walk home from beyond 6 blocks
-c_talk2:    dd 16.0                     ; they turn to a player within 4
 ; the Fallen King
 c_boss_aggro2: dd 2304.0                ; he hunts within 48 blocks
 c_boss_stop2: dd 4.84                   ; he stops 2.2 blocks from the player (his fists reach 3.5)
@@ -335,13 +333,16 @@ mob_dmg_mult:
 ; mob_scale(rdi mob): max_health and health of the mob at rdi from its type, level, elite flag and
 ; affixes: round(base * (1 + MOB_HP_STEP * (level - 1)) * (elite ? 2.5 : 1) * (JUGGERNAUT ? 1.5 :
 ; 1)), single precision throughout and rounded once at the end. base is the type's health, the
-; Fallen King's by difficulty. Clobbers eax, ecx, edx, xmm0, xmm1.
+; Fallen King's by difficulty, a folk's its class's (folk_class_health). Clobbers eax, ecx, edx,
+; xmm0, xmm1.
 mob_scale:
     mov     ecx, [rdi + MOB.type]
     lea     eax, [rcx - 1]
     cmp     eax, NUM_MOB_TYPES - 1
     ja      .ret                        ; no such type
     cvtsi2ss xmm0, dword [t_health + rax*4]
+    cmp     ecx, MOB_FOLK
+    je      .folk
     cmp     ecx, MOB_BOSS
     jne     .scale
     mov     eax, [settings + SETTINGS.difficulty]   ; the Fallen King: 200 / 200 / 300 / 450 by difficulty
@@ -372,6 +373,12 @@ mob_scale:
     mov     [rdi + MOB.health], eax
 .ret:
     ret
+.folk:                                  ; a folk's health is its class's (20 for a non-fighter)
+    sub     rsp, 8
+    call    folk_class_health
+    add     rsp, 8
+    cvtsi2ss xmm0, eax
+    jmp     .scale
 
 ; mob_set_level(edi idx, esi level): the mob in slot idx becomes level `level` (1..255) and gets
 ; that level's health, full (mob_scale); an empty or bad slot is left alone. An elite raised to
@@ -419,11 +426,17 @@ mob_set_level:
 .ret:
     ret
 
-; elite_speed(rdi mob): BODY.speed of an elite: its type's walking speed x 1.15, a SWIFT one x 1.3
-; more. Clobbers ecx, xmm0.
+; elite_speed(rdi mob): BODY.speed of an elite: its type's walking speed (a folk's: its class's,
+; folk_base_speed) x 1.15, a SWIFT one x 1.3 more. Clobbers ecx, xmm0.
 elite_speed:
     mov     ecx, [rdi + MOB.type]
     movss   xmm0, [t_speed + rcx*4 - 4]
+    cmp     ecx, MOB_FOLK
+    jne     .scale
+    sub     rsp, 8
+    call    folk_base_speed
+    add     rsp, 8
+.scale:
     mulss   xmm0, [c_1_15]
     test    byte [rdi + MOB.affix], AFX_SWIFT
     jz      .set
@@ -461,8 +474,8 @@ mob_affix_name:
 
 ; mob_spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1 (bad type / no free slot).
 ; Every mob remembers its spawn point as its home (folk stroll around it). It starts at the
-; player's level (folk at 1) with the health of that level (mob_scale), the Fallen King's
-; also by difficulty; his two timers start. Folk are spawned through folk_spawn (folk.asm).
+; player's level with the health of that level (mob_scale), the Fallen King's also by difficulty;
+; his two timers start. Folk are spawned through folk_spawn (folk.asm), which gives them their class.
 mob_spawn:
     push    rbp
     mov     rbp, rsp
@@ -507,10 +520,7 @@ mob_spawn:
     mov     dword [r12 + MOB.timer_b], BOSS_VOLLEY_STEPS
 .level:
     xor     edi, edi
-    call    mob_level_for               ; the player's level; folk stay at 1
-    mov     ecx, 1
-    cmp     ebx, MOB_FOLK
-    cmove   eax, ecx
+    call    mob_level_for               ; the player's level
     mov     [r12 + MOB.level], eax
     mov     rdi, r12
     call    mob_scale                   ; max_health and health of that level
@@ -596,16 +606,20 @@ make_elite:
     ret
 
 ; mob_is_hostile(edi idx) -> eax 1 when slot idx holds a live hostile mob (zombie, creeper, skeleton,
-; spider, the boss), else 0 (empty slot, bad index, passive animal, folk)
+; spider, the boss, a folk fighter that counts as hostile to the player: folk_hostile), else 0 (empty
+; slot, bad index, passive animal, any other folk)
 mob_is_hostile:
     xor     eax, eax
     cmp     edi, MAX_MOBS
     jae     .ret
     imul    edi, edi, MOB_size
     lea     rcx, [mobs]
-    mov     edx, [rcx + rdi + MOB.type]
+    add     rdi, rcx
+    mov     edx, [rdi + MOB.type]
     test    edx, edx
     jz      .ret
+    cmp     edx, MOB_FOLK
+    je      folk_hostile
     movzx   eax, byte [t_hostile + rdx - 1]
 .ret:
     ret
@@ -633,8 +647,9 @@ yaw_from:
 ; living player within 24 blocks (Survival, difficulty > 0, not hidden in smoke) and, after raising
 ; an arm for 20 steps, hit through mob_melee_hit when he is still close; creepers, skeletons and
 ; spiders hunt within 16 blocks (ai_creeper, ai_skeleton, ai_spider); the Fallen King hunts within
-; 48 blocks and sees through smoke (ai_boss); folk stay within 6 blocks of home and turn to a
-; player within 4; a panicking pig or chicken runs along its heading; everything else wanders in
+; 48 blocks and sees through smoke (ai_boss); folk follow folk_ai (folk.asm: fighters hunt, patrol and
+; guard, the rest stroll around home, turn to a player within 4 or run when scared); a panicking pig
+; or chicken runs along its heading; everything else wanders in
 ; 1-4 s legs. At the end (.jump) a mob in water holds jump (it floats up and drifts); one that would
 ; step into water (WATER 0.7 blocks ahead at its feet or just below that) turns about when it
 ; wanders and stops when it is hunting or walking home; one that walks into an obstacle hops.
@@ -654,6 +669,8 @@ mob_ai:
     cmp     dword [rbx + MOB.stun], 0
     jg      .stunned
     mov     ecx, [rbx + MOB.type]
+    cmp     ecx, MOB_FOLK
+    je      .folk
     cmp     byte [t_hostile + rcx - 1], 0
     je      .passive
     cmp     dword [game_mode], MODE_SURVIVAL
@@ -787,8 +804,6 @@ mob_ai:
     jmp     .wander
 .passive:
     mov     eax, [rbx + MOB.type]
-    cmp     eax, MOB_FOLK
-    je      .npc
     cmp     dword [rbx + MOB.panic], 0
     jle     .wander
     mov     edx, [t_run + rax*4 - 4]    ; a hurt pig or chicken runs
@@ -799,43 +814,18 @@ mob_ai:
     mov     edx, [t_speed + rax*4 - 4]  ; panic over: back to the stroll speed
     mov     [rbx + BODY.speed], edx
     jmp     .jump
-.npc:                                   ; folk: walks home from beyond 6 blocks, faces a player within 4
-    movss   xmm0, [rbx + MOB.home_x]
-    subss   xmm0, [rbx + BODY.x]
-    movss   [rsp], xmm0
-    movss   xmm1, [rbx + MOB.home_z]
-    subss   xmm1, [rbx + BODY.z]
-    movss   [rsp + 4], xmm1
-    mulss   xmm0, xmm0
-    mulss   xmm1, xmm1
-    addss   xmm0, xmm1
-    comiss  xmm0, [c_home2]
-    jbe     .at_home
-    movss   xmm0, [rsp]
-    movss   xmm1, [rsp + 4]
-    call    yaw_from
-    movss   [rbx + BODY.yaw], xmm0
-    mov     dword [rsp + 12], 1         ; walking home: so is this one
-    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+.folk:                                  ; folk: folk_ai (folk.asm) decides this step's input and heading
+    mov     rdi, rbx
+    call    folk_ai                     ; 0 input set, 1 the heading is on purpose, 2 wander
+    cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .gone                       ; a traveller that outstayed its welcome is gone
+    cmp     eax, 2
+    je      .wander
+    mov     [rsp + 12], eax
     jmp     .jump
-.at_home:
-    movss   xmm0, [player + BODY.x]
-    subss   xmm0, [rbx + BODY.x]
-    movss   [rsp], xmm0
-    movss   xmm1, [player + BODY.z]
-    subss   xmm1, [rbx + BODY.z]
-    movss   [rsp + 4], xmm1
-    mulss   xmm0, xmm0
-    mulss   xmm1, xmm1
-    addss   xmm0, xmm1
-    comiss  xmm0, [c_talk2]
-    jae     .wander                     ; nobody close: the usual stroll
-    movss   xmm0, [rsp]
-    movss   xmm1, [rsp + 4]
-    call    yaw_from
-    movss   [rbx + BODY.yaw], xmm0
-    mov     dword [rbx + MOB.input + INPUT.fwd], 0
-    jmp     .jump
+.gone:
+    xor     eax, eax
+    jmp     .ret
 .wander:
     mov     eax, [rbx + MOB.ai_timer]
     dec     dword [rbx + MOB.ai_timer]
@@ -1065,6 +1055,126 @@ mob_blow:
     cmp     ecx, 4
     jb      .part
     add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; mob_blow_raw(rdi mob, esi base) -> eax the damage of one blow of that mob on another mob: base (an
+; elite's x 1.5, rounded) x mob_dmg_mult(level), rounded. Physical only: no affix parts, no armor.
+mob_blow_raw:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12d, esi
+    ELITE_DAMAGE r12d
+    mov     edi, [rbx + MOB.level]
+    call    mob_dmg_mult
+    cvtsi2ss xmm1, r12d
+    mulss   xmm0, xmm1
+    cvtss2si eax, xmm0
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; folk_strike_mob(rdi attacker, esi target_idx, edx base): one melee blow of the folk `attacker` on the
+; folk in slot target_idx, a rival: mob_blow_raw's damage along attacker -> target through mob_hurt. It
+; counts for no player: combat_hit_flags is cleared, so no tag, no provocation, no reputation. When the
+; attacker's weapon carries an element the target also takes that element's status, max(1, damage / 2),
+; and its burning is flagged as a folk's (FF_FOLKDOT: its kill is nobody's). A sleeping champion that is
+; struck wakes (no banner); a target that is no fighter runs (folk_scare); a fighter without a target
+; takes the attacker for one (target = slot + 2). An empty slot, a bad one or a target still inside its
+; hurt window changes nothing.
+; rbx = attacker, r12d = target slot, r13 = target MOB*, r14d = damage; frame: [rsp] dirx, [rsp+4] dirz
+folk_strike_mob:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16
+    mov     rbx, rdi
+    mov     r12d, esi
+    cmp     esi, MAX_MOBS
+    jae     .ret
+    imul    eax, esi, MOB_size
+    lea     r13, [mobs]
+    add     r13, rax
+    cmp     dword [r13 + MOB.type], MOB_NONE
+    je      .ret
+    mov     esi, edx
+    mov     rdi, rbx
+    call    mob_blow_raw
+    mov     r14d, eax
+    movss   xmm0, [r13 + BODY.x]
+    subss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [r13 + BODY.z]
+    subss   xmm1, [rbx + BODY.z]
+    movaps  xmm2, xmm0
+    mulss   xmm2, xmm2
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm3
+    addss   xmm2, xmm3
+    sqrtss  xmm2, xmm2
+    comiss  xmm2, [c_tiny]
+    jb      .still
+    divss   xmm0, xmm2                  ; the unit vector from the attacker to the target
+    divss   xmm1, xmm2
+    jmp     .hurt
+.still:
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+.hurt:
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    mov     byte [combat_hit_flags], 0
+    mov     edi, r12d
+    mov     esi, r14d
+    call    mob_hurt
+    test    eax, eax
+    jz      .ret                        ; still inside its hurt window
+    cmp     dword [r13 + MOB.type], MOB_FOLK
+    jne     .ret                        ; it fell
+    mov     rdi, rbx
+    call    mob_arrow_flags             ; the element of the attacker's first elemental affix, at AF_ELEM_SHIFT
+    shr     eax, AF_ELEM_SHIFT
+    jz      .react
+    lea     esi, [rax - 1]              ; ELEM_* - 1 = STS_*
+    mov     eax, r14d
+    shr     eax, 1
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    cvtsi2ss xmm0, eax
+    mov     edi, r12d
+    call    status_apply
+    or      byte [r13 + MOB.fflags], FF_FOLKDOT
+.react:
+    and     byte [r13 + MOB.fflags], ~FF_ASLEEP
+    mov     rdi, r13
+    call    folk_is_fighter
+    test    eax, eax
+    jz      .scared
+    cmp     dword [r13 + MOB.target], 0
+    jne     .ret
+    mov     rdi, rbx
+    call    mob_index
+    add     eax, 2
+    mov     [r13 + MOB.target], eax     ; it hits back at whoever hit it
+    jmp     .ret
+.scared:
+    mov     rdi, r13
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    call    folk_scare
+.ret:
+    add     rsp, 16
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -1396,7 +1506,7 @@ ai_skeleton:
     mov     rdi, rbx                    ; an elemental elite's arrow carries its element
     call    mob_arrow_flags
     mov     r8d, eax
-    mov     edi, 1                      ; fired by a mob
+    mov     edi, OWNER_MONSTER          ; fired by a mob
     mov     esi, [rsp + 72]
     xor     edx, edx                    ; cannot be picked up
     mov     ecx, PROJ_ARROW
@@ -1816,7 +1926,7 @@ boss_volley:
     mulss   xmm2, [c_volley_muzzle]
     addss   xmm2, [rsp + 8]
     mov     esi, [rsp + 64]
-    mov     edi, 1                      ; fired by a mob
+    mov     edi, OWNER_MONSTER          ; fired by a mob
     xor     edx, edx                    ; cannot be picked up
     mov     ecx, PROJ_ARROW
     xor     r8d, r8d
@@ -2364,6 +2474,7 @@ mobs_step:
     cmp     rbx, r12
     jb      .loop
     call    mobs_spawn_tick
+    call    folk_travel_tick            ; the travelling trader
     pop     r12
     pop     rbx
     pop     rbp
@@ -2582,7 +2693,7 @@ mob_coins:
 ; table entries (item, base, range) drops base + rng % range. A hostile mob also rolls its gear
 ; (gear_drop_from_mob) and drops gold coins (mob_coins): every other time 1 + level / 10; an elite
 ; 3 + rng % 3 + level / 5 and a health potion with 30 % chance; the Fallen King 30 + level coins
-; and 4 diamonds.
+; and 4 diamonds. A folk's loot is its own (folk_drops): it rolls none of this.
 mob_drops:
     push    rbp
     mov     rbp, rsp
@@ -2592,6 +2703,8 @@ mob_drops:
     sub     rsp, 8
     mov     rbx, rdi
     mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_FOLK
+    je      .folk
     lea     r12, [t_drops + rax*8 - 8]
     mov     r13d, 2
 .entry:
@@ -2671,6 +2784,10 @@ mob_drops:
     pop     rbx
     pop     rbp
     ret
+.folk:                                  ; folk drop their own loot: no table, no hostile gear
+    mov     rdi, rbx
+    call    folk_drops
+    jmp     .done
 
 ; boss_death(rdi mob): the Fallen King falls (his loot comes from mob_drops): the crypt he was born
 ; in (MOB.origin) is recorded as cleared (structures_on_boss_killed), 500 XP + 25 per level of his,
@@ -2706,7 +2823,7 @@ boss_death:
     pop     rbp
     ret
 
-; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, folk, or
+; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, or
 ; still in its hurt window). Knocks the mob along (dirx, dirz) -- not a JUGGERNAUT elite, which
 ; stands firm; a passive mob panics and flees that way, a dead mob drops its loot (mob_drops).
 ; mob_strike(...): the same, but it lands even inside the hurt window, so rapid fire, shotgun
@@ -2719,6 +2836,9 @@ boss_death:
 ; (structures_on_mob_killed, MOB.origin = site state index + 1) and, for the Fallen King, to boss_death.
 ; The Fallen King barely budges
 ; when hit and roars when he drops to a third of his health.
+; A folk answers a player's blow (HF_PLAYER, no HF_DOT) with folk_on_player_hit instead of bolting like
+; an animal, and its death with folk_on_death before its loot; burning that another folk's weapon set
+; (FF_FOLKDOT) does not tag it as the player's.
 ; Frame: [rsp] dirx, [rsp+4] dirz, [rsp+8] health before the hit.
 mob_strike:
     mov     r8d, 1
@@ -2739,8 +2859,6 @@ mob_damage:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .no
-    cmp     eax, MOB_FOLK               ; folk cannot be hurt
-    je      .no
     test    r8d, r8d
     jnz     .apply
     cmp     dword [rbx + MOB.hurt], 0
@@ -2755,6 +2873,13 @@ mob_damage:
     mov     dword [rbx + MOB.bar], BAR_STEPS
     test    byte [combat_hit_flags], HF_PLAYER
     jz      .tag_done
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .tag
+    test    byte [combat_hit_flags], HF_DOT
+    jz      .tag
+    test    byte [rbx + MOB.fflags], FF_FOLKDOT
+    jnz     .tag_done                   ; the tick of a burn another folk set is no blow of the player's
+.tag:
     mov     dword [rbx + MOB.tagged], TAG_STEPS
 .tag_done:
     test    byte [combat_hit_flags], HF_DOT
@@ -2800,6 +2925,8 @@ mob_damage:
     test    byte [combat_hit_flags], HF_DOT
     jnz     .check_dead                 ; a burning animal does not bolt either
     mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_FOLK
+    je      .folk_hit
     cmp     byte [t_hostile + rax - 1], 0
     jne     .check_dead                 ; hostile mobs stand and fight
     mov     dword [rbx + MOB.panic], PANIC_STEPS
@@ -2807,6 +2934,12 @@ mob_damage:
     movss   xmm1, [rsp + 4]
     call    yaw_from                    ; passive mobs run away from the attacker
     movss   [rbx + BODY.yaw], xmm0
+    jmp     .check_dead
+.folk_hit:                              ; folk answer a player's blow: provoked, woken or scared
+    test    byte [combat_hit_flags], HF_PLAYER
+    jz      .check_dead
+    mov     rdi, rbx
+    call    folk_on_player_hit
 .check_dead:
     cmp     dword [rbx + MOB.health], 0
     jg      .alive
@@ -2822,7 +2955,10 @@ mob_damage:
     jz      .loot                       ; not born at a site
     call    structures_on_mob_killed
 .loot:
-    cmp     dword [rbx + MOB.type], MOB_BOSS
+    mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_FOLK
+    je      .folk_dead
+    cmp     eax, MOB_BOSS
     jne     .drops
     mov     rdi, rbx
     call    boss_death
@@ -2831,6 +2967,10 @@ mob_damage:
     call    mob_drops
     mov     dword [rbx + MOB.type], MOB_NONE
     jmp     .yes
+.folk_dead:                             ; its faction pays for it when the player did it
+    mov     rdi, rbx
+    call    folk_on_death
+    jmp     .drops
 .alive:
     cmp     dword [rbx + MOB.type], MOB_BOSS
     jne     .yes
@@ -3060,7 +3200,7 @@ mobs_load:
     ret
 
 ; mobs_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every mob's local x and z, and
-; its home, drop by that much (exact: dx and dz are multiples of 512)
+; its home, drop by that much (exact: dx and dz are multiples of 512); so does the dest of a patrol
 mobs_shift:
     cvtsi2ss xmm0, edi
     cvtsi2ss xmm1, esi
@@ -3081,6 +3221,14 @@ mobs_shift:
     movss   xmm2, [rax + MOB.home_z]
     subss   xmm2, xmm1
     movss   [rax + MOB.home_z], xmm2
+    cmp     dword [rax + MOB.patrol], 0
+    je      .next
+    movss   xmm2, [rax + MOB.dest_x]
+    subss   xmm2, xmm0
+    movss   [rax + MOB.dest_x], xmm2
+    movss   xmm2, [rax + MOB.dest_z]
+    subss   xmm2, xmm1
+    movss   [rax + MOB.dest_z], xmm2
 .next:
     add     rax, MOB_size
     cmp     rax, rcx

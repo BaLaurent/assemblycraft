@@ -105,7 +105,7 @@ f_zero:         dd 0.0
 
 t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
-t_version:      db "AssemblyCraft 0.9", 0
+t_version:      db "AssemblyCraft 0.10", 0
 t_singleplayer: db "Singleplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
@@ -159,6 +159,11 @@ c_fire:         db "You burned to death", 0
 c_boss:         db "You were crushed by the Fallen King", 0
 c_poison:       db "You succumbed to poison", 0
 c_drown:        db "Drowned", 0
+c_f_vil:        db "Slain by the Villagers", 0      ; CAUSE_FOLK + faction
+c_f_ban:        db "Slain by Bandits", 0
+c_f_cult:       db "Slain by the Ashen Cult", 0
+c_f_beast:      db "Slain by Beastfolk", 0
+c_f_stone:      db "Slain by Stonekin", 0
 
 m_rename_fail:  db "Could not rename the world", 0
 m_delete_fail:  db "Could not delete the world", 0
@@ -166,7 +171,12 @@ m_delete_fail:  db "Could not delete the world", 0
 align 8
 death_causes:   dq c_none, c_fall, c_zombie, c_starve, c_suffocate
                 dq c_skeleton, c_explosion, c_spider, c_fire, c_boss
-                dq c_poison, c_drown
+                dq c_poison, c_drown, c_f_vil, c_f_ban, c_f_cult
+                dq c_f_beast, c_f_stone
+death_causes_end:
+%if death_causes_end - death_causes != 8 * (CAUSE_LAST + 1)
+%error "death_causes has one row per cause 0..CAUSE_LAST"
+%endif
 
 section .bss
 alignb 8
@@ -889,7 +899,7 @@ screen_death:
     TXTC    t_died, r12, 0, r14, 0, WHITE, 2
     mov     eax, [surv + SURVIVAL.death_cause]
     xor ecx, ecx
-    cmp     eax, CAUSE_DROWN            ; unknown causes show no line
+    cmp     eax, CAUSE_LAST             ; unknown causes show no line
     cmova   eax, ecx
     lea     rdx, [death_causes]
     mov     rdi, [rdx + rax*8]

@@ -38,7 +38,7 @@ extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_fr
 extern test_rpg_save_load_validates, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
 extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
 extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
-extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_immune_and_not_saved
+extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_hurt_and_not_saved
 extern test_boss_phases_slam_and_summons, test_mob_kill_awards_xp_and_coins
 extern test_structure_sites_deterministic, test_dungeon_built_with_chests
 extern test_village_built_with_npcs, test_dungeon_clears_after_kills, test_crypt_spawns_boss_once
@@ -67,6 +67,12 @@ extern test_swim_physics, test_breath_and_drowning, test_bed_place_and_break
 extern test_sleep_rules, test_bed_respawn, test_boats
 extern test_new_blocks_tables, test_shapes_new
 extern test_game_rebase_trigger, test_saves_old_world_incompatible
+extern test_faction_tiers_and_caps, test_faction_kill_and_rivals, test_shrine_tribute, test_trade_tables
+extern test_folk_spawn_and_weapons, test_folk_targets_and_standing, test_folk_rivals_fight
+extern test_folk_kill_reputation_and_drops, test_folk_projectiles, test_folk_interact_gates
+extern test_folk_travellers, test_camp_built_with_slots, test_camp_npcs_recreated
+extern test_roads_stamped, test_patrol_spawns_on_road, test_faction_save_load
+extern test_shrine_and_folk_dispatch, test_shrine_block_tables
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -163,7 +169,7 @@ tests:
     TEST stamina_mana_regen_and_max_health
     TEST zombie_windup_can_be_parried
     TEST elite_saved_and_tougher
-    TEST npc_immune_and_not_saved
+    TEST npc_hurt_and_not_saved
     TEST boss_phases_slam_and_summons
     TEST mob_kill_awards_xp_and_coins
     TEST structure_sites_deterministic
@@ -232,6 +238,24 @@ tests:
     TEST shapes_new
     TEST game_rebase_trigger
     TEST saves_old_world_incompatible
+    TEST faction_tiers_and_caps
+    TEST faction_kill_and_rivals
+    TEST shrine_tribute
+    TEST trade_tables
+    TEST folk_spawn_and_weapons
+    TEST folk_targets_and_standing
+    TEST folk_rivals_fight
+    TEST folk_kill_reputation_and_drops
+    TEST folk_projectiles
+    TEST folk_interact_gates
+    TEST folk_travellers
+    TEST camp_built_with_slots
+    TEST camp_npcs_recreated
+    TEST roads_stamped
+    TEST patrol_spawns_on_road
+    TEST faction_save_load
+    TEST shrine_and_folk_dispatch
+    TEST shrine_block_tables
     dq 0
 
 section .rodata
@@ -320,7 +344,7 @@ section .rodata
     TESTNAME stamina_mana_regen_and_max_health
     TESTNAME zombie_windup_can_be_parried
     TESTNAME elite_saved_and_tougher
-    TESTNAME npc_immune_and_not_saved
+    TESTNAME npc_hurt_and_not_saved
     TESTNAME boss_phases_slam_and_summons
     TESTNAME mob_kill_awards_xp_and_coins
     TESTNAME structure_sites_deterministic
@@ -389,6 +413,24 @@ section .rodata
     TESTNAME shapes_new
     TESTNAME game_rebase_trigger
     TESTNAME saves_old_world_incompatible
+    TESTNAME faction_tiers_and_caps
+    TESTNAME faction_kill_and_rivals
+    TESTNAME shrine_tribute
+    TESTNAME trade_tables
+    TESTNAME folk_spawn_and_weapons
+    TESTNAME folk_targets_and_standing
+    TESTNAME folk_rivals_fight
+    TESTNAME folk_kill_reputation_and_drops
+    TESTNAME folk_projectiles
+    TESTNAME folk_interact_gates
+    TESTNAME folk_travellers
+    TESTNAME camp_built_with_slots
+    TESTNAME camp_npcs_recreated
+    TESTNAME roads_stamped
+    TESTNAME patrol_spawns_on_road
+    TESTNAME faction_save_load
+    TESTNAME shrine_and_folk_dispatch
+    TESTNAME shrine_block_tables
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

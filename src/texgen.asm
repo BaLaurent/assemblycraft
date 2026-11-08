@@ -19,6 +19,9 @@
 ; The 0.9 art (the 20 tiles 192..199, 208..215, 224..227 the font left free when it moved to
 ; FONT_Y) follows the 0.8 icons and precedes the font, in tile order: noise tiles take one draw
 ; per pixel (NFUNC / NFUNCA), the bitmaps (tall grass, bed and boat icons, bubbles) take none.
+; The 0.10 art (shrine tiles 228, 229 and the faction skins 304..323, past the font) follows the 0.9
+; art and precedes the font, in tile order: the shrine tiles are draw-free bitmaps, the skins are
+; 16x16 bitmaps shaded by one draw per pixel (305 is the 0.9 npc face again).
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -1036,6 +1039,33 @@ texgen_build:
     BMP     225, icon_boat_bmp, pal_icon_boat
     HUD     226, bubble_bmp, pal_bubble, pal_bubble, 0
     HUD     227, bubble_pop_bmp, pal_bubble, pal_bubble, 0
+
+    ; ---- 0.10 art (after the 0.9 art, before the font; the atlas outside these 22 tiles is
+    ;      untouched). 228, 229 shrine top and side: draw-free bitmaps (every char is in the
+    ;      palette: block tiles must be opaque). 304..323 faction skins (head, face, tunic, pants
+    ;      per faction): bitmaps over the light noise, one draw per pixel, in tile order. ----
+    BMP     228, shrine_top_bmp, pal_shrine_top
+    BMP     229, shrine_side_bmp, pal_shrine_side
+    NBMP    304, fk_vil_head_bmp, pal_fk_vil_head, 224, 31
+    NBMP    305, npc_face_bmp, pal_npc_face, 224, 31
+    NBMP    306, fk_vil_tunic_bmp, pal_fk_vil_tunic, 224, 31
+    NBMP    307, fk_vil_pants_bmp, pal_fk_vil_pants, 224, 31
+    NBMP    308, fk_ban_head_bmp, pal_fk_ban_head, 224, 31
+    NBMP    309, fk_ban_face_bmp, pal_fk_ban_face, 224, 31
+    NBMP    310, fk_ban_tunic_bmp, pal_fk_ban_tunic, 224, 31
+    NBMP    311, fk_ban_pants_bmp, pal_fk_ban_pants, 224, 31
+    NBMP    312, fk_cul_head_bmp, pal_fk_cul_head, 224, 31
+    NBMP    313, fk_cul_face_bmp, pal_fk_cul_face, 224, 31
+    NBMP    314, fk_cul_tunic_bmp, pal_fk_cul_tunic, 224, 31
+    NBMP    315, fk_cul_pants_bmp, pal_fk_cul_pants, 224, 31
+    NBMP    316, fk_bst_head_bmp, pal_fk_bst_head, 224, 31
+    NBMP    317, fk_bst_face_bmp, pal_fk_bst_face, 224, 31
+    NBMP    318, fk_bst_tunic_bmp, pal_fk_bst_tunic, 224, 31
+    NBMP    319, fk_bst_pants_bmp, pal_fk_bst_pants, 224, 31
+    NBMP    320, fk_stk_head_bmp, pal_fk_stk_head, 224, 31
+    NBMP    321, fk_stk_face_bmp, pal_fk_stk_face, 224, 31
+    NBMP    322, fk_stk_tunic_bmp, pal_fk_stk_tunic, 224, 31
+    NBMP    323, fk_stk_pants_bmp, pal_fk_stk_pants, 224, 31
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -5076,5 +5106,517 @@ bubble_pop_bmp:
     db ".bb...BB."
     db ".bB...BB."
     db "........."
+
+; 0.10 shrine top: a gold rune ring on grey stone (every char is in the palette)
+pal_shrine_top:
+    PAL '#', 88, 88, 96
+    PAL '.', 122, 122, 128
+    PAL ',', 110, 110, 117
+    PAL 'o', 240, 196, 64
+    PAL 'r', 200, 150, 40
+    dq 0
+shrine_top_bmp:
+    db "################"
+    db "#.,............#"
+    db "#....oooooo....#"
+    db "#...ooo..ooo...#"
+    db "#..oo..,...oo..#"
+    db "#.oo........oo.#"
+    db "#.oo...rr...oo.#"
+    db "#.o...rrrr...o.#"
+    db "#.o...rrrr...o.#"
+    db "#.oo...rr...oo.#"
+    db "#.oo.,......oo.#"
+    db "#..oo......oo..#"
+    db "#...ooo..ooo...#"
+    db "#....oooooo....#"
+    db "#.............,#"
+    db "################"
+; 0.10 shrine side: stone brick with a glowing amber rune (algiz) and its halo
+pal_shrine_side:
+    PAL 'b', 118, 118, 124
+    PAL 'B', 132, 132, 138
+    PAL 'm', 78, 78, 86
+    PAL 'a', 140, 92, 36
+    PAL 'A', 255, 176, 48
+    dq 0
+shrine_side_bmp:
+    db "bbbbbbbmbbbbbbbm"
+    db "bbBbbabmbbabbbbm"
+    db "bbbbaAambaAabbbm"
+    db "mmmmmaAaaAammmmm"
+    db "bbbmbbaAAabmbbbb"
+    db "bbbmbbaAAabmbBbb"
+    db "bbbmbbaAAabmbbbb"
+    db "mmmmmmaAAammmmmm"
+    db "bbbbbbaAAabbbbbm"
+    db "bbbBbbaAAabbbbbm"
+    db "bbbbbbaAAabbbbbm"
+    db "mmmmmmaAAammmmmm"
+    db "bbbmbaAAAAambbbb"
+    db "bbbmbbaaaabmbbbb"
+    db "bbbmbbbbBbbmbbbb"
+    db "mmmmmmmmmmmmmmmm"
+
+; 0.10 faction skins: per faction head (sides and top), face (front), tunic (body, arms), pants (legs)
+; Villagers: the 0.9 npc face (305) is shared; brown hair, green tunic with a belt, brown trousers
+pal_fk_vil_head:
+    PAL '.', 225, 180, 140
+    PAL 'B', 96, 62, 36
+    PAL 'h', 74, 46, 26
+    PAL 's', 210, 166, 128
+    dq 0
+fk_vil_head_bmp:
+    db "BBBBBBBBBBBBBBBB"
+    db "BBhBBBBBhBBBBBBB"
+    db "BBBBBhBBBBBhBBBB"
+    db "BBBBBBBBBBBBBBBB"
+    db "BB.BBBBBBBBBB.BB"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "...s............"
+    db "................"
+    db "................"
+    db "..............s."
+    db "................"
+    db "................"
+    db "................"
+pal_fk_vil_tunic:
+    PAL '.', 90, 140, 60
+    PAL 'g', 72, 116, 48
+    PAL 'l', 108, 160, 76
+    PAL 'b', 110, 80, 50
+    PAL 'Y', 210, 180, 70
+    dq 0
+fk_vil_tunic_bmp:
+    db "................"
+    db "..l.........g..."
+    db "................"
+    db "....g.......l..."
+    db "................"
+    db ".l.........g...."
+    db "................"
+    db "......g.....l..."
+    db "................"
+    db "..g.........l..."
+    db "................"
+    db "...l.....g......"
+    db "bbbbbbbYYbbbbbbb"
+    db "bbbbbbbYYbbbbbbb"
+    db "................"
+    db "gggggggggggggggg"
+pal_fk_vil_pants:
+    PAL '.', 110, 80, 50
+    PAL 'd', 88, 62, 38
+    PAL 'l', 128, 96, 62
+    PAL 'k', 62, 44, 28
+    dq 0
+fk_vil_pants_bmp:
+    db "................"
+    db "..d.........l..."
+    db "................"
+    db "......l.....d..."
+    db "................"
+    db ".d.........l...."
+    db "................"
+    db "......d....l...."
+    db "................"
+    db "...l.....d......"
+    db "................"
+    db "................"
+    db "dddddddddddddddd"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+; Bandits: red bandana over tan skin, black cloth mask on the lower face, dark leather with a strap
+pal_fk_ban_head:
+    PAL '.', 200, 150, 110
+    PAL 'R', 150, 30, 30
+    PAL 'r', 116, 22, 22
+    PAL 's', 186, 138, 100
+    dq 0
+fk_ban_head_bmp:
+    db "RRRRRRRRRRRRRRRR"
+    db "RrRRRRRRRrRRRRRR"
+    db "RRRRRrRRRRRRrRRR"
+    db "RRRRRRRRRRRRRRRR"
+    db "rrrrrrrrrrrrrrrr"
+    db "................"
+    db "................"
+    db "..........s....."
+    db "................"
+    db "...s............"
+    db "................"
+    db "..............s."
+    db "................"
+    db "................"
+    db ".....s.........."
+    db "................"
+pal_fk_ban_face:
+    PAL '.', 200, 150, 110
+    PAL 'R', 150, 30, 30
+    PAL 'r', 116, 22, 22
+    PAL 'K', 34, 32, 36
+    PAL 'm', 56, 52, 60
+    PAL 'W', 235, 235, 235
+    PAL 'k', 30, 24, 20
+    PAL 'b', 70, 44, 30
+    PAL 's', 170, 100, 90
+    dq 0
+fk_ban_face_bmp:
+    db "RRRRRRRRRRRRRRRR"
+    db "RRRRRrRRRRRrRRRR"
+    db "RRRRRRRRRRRRRRRR"
+    db "rrrrrrrrrrrrrrrr"
+    db "................"
+    db "..bbbb....bbbb.."
+    db "...WWk....kWW..."
+    db "...WWk....kWW..."
+    db "............s..."
+    db "KKKKKKKKKKKKKKKK"
+    db "KmKKKKKKKKKKKKmK"
+    db "KKKKKmKKKKmKKKKK"
+    db "KKKKKKKKKKKKKKKK"
+    db "mKKKKKKKKKKKKKKm"
+    db "KKKKKKKKKKKKKKKK"
+    db "KKKKKKKKKKKKKKKK"
+pal_fk_ban_tunic:
+    PAL '.', 80, 55, 35
+    PAL 'S', 48, 32, 20
+    PAL 'l', 96, 68, 44
+    PAL 'Y', 190, 160, 70
+    dq 0
+fk_ban_tunic_bmp:
+    db "SS.............."
+    db ".SS............."
+    db "..SS............"
+    db "...SS.....l....."
+    db "....SS.........."
+    db ".....SS........."
+    db "......SS...l...."
+    db ".......SS......."
+    db "........SS......"
+    db ".........SS....."
+    db "..l.......SS...."
+    db "...........SS..."
+    db "SSSSSSSSYYSSSSSS"
+    db "SSSSSSSSSSSSSSSS"
+    db "................"
+    db "l..l..l..l..l..."
+pal_fk_ban_pants:
+    PAL '.', 60, 60, 60
+    PAL 'd', 42, 42, 44
+    PAL 'p', 84, 74, 52
+    PAL 'l', 74, 74, 76
+    PAL 'k', 30, 30, 32
+    dq 0
+fk_ban_pants_bmp:
+    db "................"
+    db "..l.........l..."
+    db "................"
+    db "......l........."
+    db "................"
+    db "...pppp...l....."
+    db "...pppp........."
+    db "................"
+    db ".l.........d...."
+    db "................"
+    db "......d........."
+    db "................"
+    db "dddddddddddddddd"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+; Ashen Cult: pale skin in an ash hood, red glowing eyes and ash smudges, charcoal robe with red trim
+pal_fk_cul_head:
+    PAL '.', 190, 185, 180
+    PAL 'H', 70, 65, 70
+    PAL 'h', 52, 48, 52
+    PAL 's', 170, 165, 160
+    dq 0
+fk_cul_head_bmp:
+    db "HHHHHHHHHHHHHHHH"
+    db "HHhHHHHHHHhHHHHH"
+    db "HHHHHhHHHHHHHhHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "................"
+    db "..s............."
+    db "................"
+    db "...........s...."
+    db "................"
+    db "................"
+    db ".s.............."
+    db "................"
+    db "...........s...."
+    db "................"
+    db "................"
+pal_fk_cul_face:
+    PAL '.', 190, 185, 180
+    PAL 'H', 70, 65, 70
+    PAL 'h', 52, 48, 52
+    PAL 'R', 230, 40, 30
+    PAL 'r', 255, 150, 100
+    PAL 'a', 120, 115, 112
+    PAL 'm', 96, 64, 64
+    dq 0
+fk_cul_face_bmp:
+    db "HHHHHHHHHHHHHHHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "HHHhHHHHHHhHHHHH"
+    db "HH............HH"
+    db "HH............HH"
+    db "HH..rRR..RRr..HH"
+    db "HH...RR..RR...HH"
+    db "HH............HH"
+    db "HH.a........a.HH"
+    db "HH.aa......aa.HH"
+    db "Hh............hH"
+    db "HH.....mmmm...HH"
+    db "HH............HH"
+    db "HHH..........HHH"
+    db "HHHHHHHHHHHHHHHH"
+pal_fk_cul_tunic:
+    PAL '.', 50, 45, 50
+    PAL 'd', 36, 32, 36
+    PAL 'R', 140, 30, 30
+    PAL 'l', 66, 60, 66
+    dq 0
+fk_cul_tunic_bmp:
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "...d...RR...d..."
+    db ".l.....RR.....l."
+    db "dddddddddddddddd"
+    db "RRRRRRRRRRRRRRRR"
+pal_fk_cul_pants:
+    PAL '.', 45, 40, 45
+    PAL 'd', 32, 28, 32
+    PAL 'l', 58, 52, 58
+    PAL 'k', 30, 26, 30
+    dq 0
+fk_cul_pants_bmp:
+    db "................"
+    db "..d.........l..."
+    db "................"
+    db "......l.....d..."
+    db "................"
+    db ".d.........l...."
+    db "................"
+    db "......d....l...."
+    db "................"
+    db "...l.....d......"
+    db "................"
+    db "................"
+    db "dddddddddddddddd"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+; Beastfolk: brown-grey fur with a dark mane, white war paint and fangs, crossed straps over fur
+pal_fk_bst_head:
+    PAL '.', 130, 110, 90
+    PAL 'F', 92, 74, 56
+    PAL 'f', 105, 88, 70
+    PAL 'l', 155, 135, 112
+    dq 0
+fk_bst_head_bmp:
+    db "FFFFFFFFFFFFFFFF"
+    db "FfFFFfFFFFfFFFFF"
+    db "FFFfFFFFFFFFfFFF"
+    db "FfFFFFFfFFFFFFFf"
+    db "f.f.ff.f..f.ff.f"
+    db "................"
+    db "...l............"
+    db "................"
+    db ".........f......"
+    db "................"
+    db "..............l."
+    db "................"
+    db "....f..........."
+    db "................"
+    db ".........l......"
+    db "................"
+pal_fk_bst_face:
+    PAL '.', 130, 110, 90
+    PAL 'F', 92, 74, 56
+    PAL 'f', 105, 88, 70
+    PAL 'W', 236, 236, 230
+    PAL 'k', 28, 22, 18
+    PAL 'A', 230, 170, 40
+    PAL 'm', 40, 24, 20
+    dq 0
+fk_bst_face_bmp:
+    db "FFFFFFFFFFFFFFFF"
+    db "FfFFFfFFFFfFFFFF"
+    db "FFFfFFFFFFFFfFFF"
+    db "fFf.f.ff.f.ff.fF"
+    db "................"
+    db "..WWWWWWWWWWWW.."
+    db "...kAk....kAk..."
+    db "...kkk....kkk..."
+    db "................"
+    db "..W..W....W..W.."
+    db "..W..W....W..W.."
+    db "..W..W....W..W.."
+    db "....mmmmmmmm...."
+    db ".....W....W....."
+    db ".....W....W....."
+    db "................"
+pal_fk_bst_tunic:
+    PAL '.', 150, 130, 100
+    PAL 'f', 126, 106, 80
+    PAL 'l', 172, 150, 118
+    PAL 'S', 80, 55, 35
+    dq 0
+fk_bst_tunic_bmp:
+    db "SS............SS"
+    db ".SS..........SS."
+    db "..SS...l....SS.."
+    db "...SS......SS..."
+    db "....SS.l..SS...."
+    db ".....SS..SS....."
+    db "......SSSS......"
+    db "......SSSS......"
+    db ".....SS..SS....."
+    db "....SS....SS...."
+    db "...SS...f..SS..."
+    db "..SS........SS.."
+    db ".SS..........SS."
+    db "SS............SS"
+    db "f.f..f..f.f.f..f"
+    db "ffffffffffffffff"
+pal_fk_bst_pants:
+    PAL '.', 90, 75, 60
+    PAL 'f', 70, 58, 46
+    PAL 'l', 110, 92, 72
+    PAL 'S', 80, 55, 35
+    PAL 'k', 54, 44, 34
+    dq 0
+fk_bst_pants_bmp:
+    db "................"
+    db "..f.........l..."
+    db "................"
+    db "......l.....f..."
+    db "................"
+    db ".f.........l...."
+    db "................"
+    db "......f....l...."
+    db "................"
+    db "...l.....f......"
+    db "................"
+    db "................"
+    db "SSSSSSSSSSSSSSSS"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+; Stonekin: grey-brown skin under brown hair, a braided amber beard, chain mail, brown trousers
+pal_fk_stk_head:
+    PAL '.', 150, 130, 115
+    PAL 'H', 95, 70, 50
+    PAL 'h', 74, 54, 38
+    PAL 's', 136, 118, 104
+    dq 0
+fk_stk_head_bmp:
+    db "HHHHHHHHHHHHHHHH"
+    db "HhHHHHHhHHHHHHHH"
+    db "HHHHhHHHHHHhHHHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "HH.HHHHHHHHHH.HH"
+    db "................"
+    db "...s............"
+    db "................"
+    db "..........s....."
+    db "................"
+    db "................"
+    db ".s.............."
+    db "................"
+    db "..........s....."
+    db "................"
+    db "................"
+pal_fk_stk_face:
+    PAL '.', 150, 130, 115
+    PAL 'H', 95, 70, 50
+    PAL 'h', 74, 54, 38
+    PAL 'W', 235, 235, 235
+    PAL 'k', 30, 24, 20
+    PAL 'B', 170, 120, 70
+    PAL 'b', 132, 88, 48
+    dq 0
+fk_stk_face_bmp:
+    db "HHHHHHHHHHHHHHHH"
+    db "HhHHHHHhHHHHHHHH"
+    db "HHHHhHHHHHHhHHHH"
+    db "HHHHHHHHHHHHHHHH"
+    db "................"
+    db "..HHHHH..HHHHH.."
+    db "...WkW....WkW..."
+    db "................"
+    db "..BB........BB.."
+    db "..BBBBBBBBBBBB.."
+    db "..BBBbBBBBbBBB.."
+    db "..BBBBBBBBBBBB.."
+    db "..BbBBbBBbBBbB.."
+    db "..BbBBbBBbBBbB.."
+    db "...bBbBbBbBbB..."
+    db "....bbbbbbbb...."
+pal_fk_stk_tunic:
+    PAL '.', 140, 140, 150
+    PAL 'c', 172, 172, 184
+    PAL 'd', 104, 104, 116
+    PAL 'B', 84, 62, 44
+    dq 0
+fk_stk_tunic_bmp:
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+    db "BBBBBBBBccBBBBBB"
+    db "BBBBBBBBBBBBBBBB"
+    db ".c.c.c.c.c.c.c.c"
+    db "d.d.d.d.d.d.d.d."
+pal_fk_stk_pants:
+    PAL '.', 80, 60, 45
+    PAL 'd', 60, 44, 32
+    PAL 'k', 45, 34, 26
+    PAL 'l', 96, 74, 56
+    dq 0
+fk_stk_pants_bmp:
+    db "................"
+    db "..d.........l..."
+    db "................"
+    db "......l.....d..."
+    db "................"
+    db ".d.........l...."
+    db "................"
+    db "......d....l...."
+    db "................"
+    db "...l.....d......"
+    db "................"
+    db "................"
+    db "dddddddddddddddd"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
+    db "kkkkkkkkkkkkkkkk"
 
 section .text

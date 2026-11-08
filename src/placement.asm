@@ -745,7 +745,7 @@ block_removed:
     jmp     .above
 
 ; block_is_usable(edi id) -> eax 1 when a right click on the block does something (it is
-; not placed against): crafting table, furnace (lit or not), chest, door, trapdoor, bed
+; not placed against): crafting table, furnace (lit or not), chest, door, trapdoor, bed, shrine
 block_is_usable:
     mov     edi, edi
     mov     eax, 1
@@ -757,6 +757,9 @@ block_is_usable:
     je      .ret
     cmp     edi, CHEST
     je      .ret
+    lea     ecx, [rdi - SHRINE]
+    cmp     ecx, 4                      ; SHRINE .. SHRINE + 4: one per faction
+    jbe     .ret
     xor     eax, eax
     cmp     edi, NUM_BLOCKS
     jae     .ret

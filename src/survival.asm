@@ -55,10 +55,11 @@ survival_reset:
     ret
 
 ; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
-; armor bonus, at most 20) reduces damage from mobs and explosions; environmental damage (a fall,
-; fire, hunger, suffocation, drowning) is given for a 20-health character and scales with the maximum
-; health (env_scale). A hit that lands starts 30 steps of invulnerability and wakes a sleeper
-; (sleep_cancel). A blow that would kill may be undone by the Phoenix ring (lower_health).
+; armor bonus, at most 20) reduces damage from mobs (a faction's folk: CAUSE_FOLK..CAUSE_LAST)
+; and explosions; environmental damage (a fall, fire, hunger, suffocation, drowning) is given for
+; a 20-health character and scales with the maximum health (env_scale). A hit that lands starts
+; 30 steps of invulnerability and wakes a sleeper (sleep_cancel). A blow that would kill may be
+; undone by the Phoenix ring (lower_health).
 survival_damage:
     push    rbp
     mov     rbp, rsp
@@ -76,6 +77,9 @@ survival_damage:
     je      .armored
     cmp     r12d, CAUSE_BOSS
     je      .armored
+    lea     eax, [r12 - CAUSE_FOLK]     ; a faction's folk: CAUSE_FOLK .. CAUSE_LAST
+    cmp     eax, CAUSE_LAST - CAUSE_FOLK
+    jbe     .armored
     cmp     r12d, CAUSE_SKELETON
     jb      .environment
     cmp     r12d, CAUSE_SPIDER

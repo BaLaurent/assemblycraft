@@ -1045,7 +1045,7 @@ combat_calc:
 ; combat_hit_mob(edi mob, esi src, edx flags, xmm0 base, xmm1 dirx, xmm2 dirz) -> eax damage dealt
 ; Every hit the player lands on a mob goes through here (guns, fire and blasts of TNT, creepers and
 ; rockets excepted). The damage is calc_parts' total, rounded, at least 1. Nothing happens and 0
-; comes back for a villager, a free slot, a hit inside the hurt window (HITF_HURTWIN: mob_hurt
+; comes back for a free slot, a hit inside the hurt window (HITF_HURTWIN: mob_hurt
 ; instead of mob_strike) and a total under 0.01 (every part resisted away: "IMMUNE"). HITF_EXECUTE
 ; raises the damage to the mob's remaining health. The mob learns whose hit it is and its element
 ; (combat_hit_flags). Then, unless it died or HITF_NOSTATUS:
@@ -1076,8 +1076,6 @@ combat_hit_mob:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .refused
-    cmp     eax, MOB_FOLK
-    je      .refused
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx

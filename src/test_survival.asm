@@ -367,6 +367,24 @@ test_armor_reduces_damage:
     call    survival_damage
     cmp     dword [surv + SURVIVAL.health], 10
     jne     .fail
+    mov     dword [surv + SURVIVAL.invuln], 0       ; a faction's folk is armoured like a mob: 10 -> 4
+    mov     edi, 10
+    mov     esi, CAUSE_FOLK + FAC_BANDITS
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 6
+    jne     .fail
+    mov     dword [surv + SURVIVAL.invuln], 0       ; ... up to CAUSE_LAST: 5 -> 2
+    mov     edi, 5
+    mov     esi, CAUSE_LAST
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 4
+    jne     .fail
+    mov     dword [surv + SURVIVAL.invuln], 0       ; the cause after it is environmental again: 2 -> 2
+    mov     edi, 2
+    mov     esi, CAUSE_LAST + 1
+    call    survival_damage
+    cmp     dword [surv + SURVIVAL.health], 2
+    jne     .fail
     call    inv_clear
     xor     eax, eax
     jmp     .ret

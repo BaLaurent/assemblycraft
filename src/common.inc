@@ -448,6 +448,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NUM_FCLASSES    5
 %define FF_ASLEEP       1               ; MOB.fflags
 %define FF_RAGE         2
+%define FF_FOLKDOT      4               ; the burn or poison it suffers came from a folk: nobody's kill
 %define TIER_HATED      0               ; faction_tier
 %define TIER_HOSTILE    1
 %define TIER_NEUTRAL    2
@@ -473,6 +474,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define AFX_ARMORED     128
 %define NUM_AFFIX_KINDS 8
 %define MAX_MOBS        64
+%define GROUND_HOSTILE  0               ; spawn_at_ground / spawn_near_player: solid, opaque, not bedrock or foliage
+%define GROUND_PASSIVE  1               ; ...grass
+%define STUN_PARRIED    50              ; a parried zombie, spider or folk is dazed this long
 %define MAX_DROPS       64              ; item entities lying in the world
 %define MAX_ARROWS      96
 
@@ -697,7 +701,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define Q_ELITE         4
 %define Q_BOSS          5
 %define NUM_QUESTS      8
-%define NUM_TRADES      10
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
 %define SLOTREF_GRID    36              ; grid cell c = 36 + c (c 0..8, 3 wide)
@@ -1211,7 +1214,7 @@ struc GENCHEST
     .x:     resd 1                      ; absolute cell
     .y:     resd 1
     .z:     resd 1
-    .table: resd 1                      ; 0 dungeon, 1 crypt
+    .table: resd 1                      ; 0 dungeon, 1 crypt, 2 camp
 endstruc                                ; 16 bytes
 
 ; a column being generated (worker thread) or decoded from a region file

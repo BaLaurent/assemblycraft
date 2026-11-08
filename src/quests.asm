@@ -1,14 +1,16 @@
-; quests.asm - the quest chain every elder hands out, and the merchant's trades.
+; quests.asm - the quest chain every elder hands out, and the traders' offers.
 ; The chain position lives in rpg_state (quest, quest_state, quest_progress) and is saved with
 ; the character. Rewards are XP and coins, sometimes an item; what does not fit in the
-; inventory is dropped at the player's feet. A gear item the merchant sells (the jewelry rows) is
-; rolled when it is bought: a magic-or-better piece of the tier of the player's level.
+; inventory is dropped at the player's feet. Each faction's trader sells from its own table
+; (trade_open picks it); a gear item an offer sells (jewelry, weapons, armour) is rolled when it
+; is bought: a magic-or-better piece of the tier of the player's level.
 %include "common.inc"
 default rel
 
 global quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 global quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
-global trade_offer, trade_can, trade_execute
+global trade_offer, trade_can, trade_execute, trade_open
+global trade_cur, trade_count, trade_title
 
 extern rpg_state, rpg_add_xp, rpg_give_item
 extern inv_count, inv_remove_one, inv_add_dmg, drops_spawn, player, audio_play, hud_banner
@@ -44,7 +46,8 @@ quest_tab:
     QUEST Q_ELITE, 0,            5, 200, 30, 0,             0, "Champions of Darkness", "Elite fiends guard the deep.",    "Slay 5 elite monsters."
     QUEST Q_BOSS,  0,            1, 500, 60, 0,             0, "The Fallen King",       "A dead king stirs in his crypt.", "End his reign."
 
-trade_tab:                              ; give -> get
+; one trade table per faction: give, give_n, get, get_n rows between the two labels
+trade_villagers:
     dd GOLD_COIN, 6, HEALTH_POTION, 1
     dd GOLD_COIN, 6, MANA_POTION, 1
     dd GOLD_COIN, 4, ARROW, 16
@@ -55,7 +58,64 @@ trade_tab:                              ; give -> get
     dd DIAMOND, 1, GOLD_COIN, 15
     dd GOLD_COIN, 30, RING, 1
     dd GOLD_COIN, 30, AMULET, 1
+trade_villagers_end:
+trade_bandits:
+    dd GOLD_COIN, 12, IRON_DAGGER, 1
+    dd GOLD_COIN, 20, BOW, 1
+    dd GOLD_COIN, 4, ARROW, 16
+    dd GOLD_COIN, 6, FLINT_AND_STEEL, 1
+    dd GOLD_INGOT, 3, GOLD_COIN, 12
+    dd GOLD_COIN, 8, HEALTH_POTION, 1
+    dd GOLD_COIN, 40, RING, 1
+trade_bandits_end:
+trade_cult:
+    dd GOLD_COIN, 15, STAFF, 1
+    dd GOLD_COIN, 6, MANA_POTION, 1
+    dd ROTTEN_FLESH, 16, GOLD_COIN, 3
+    dd GOLD_COIN, 40, AMULET, 1
+    dd GOLD_COIN, 10, TNT, 2
+trade_cult_end:
+trade_beastfolk:
+    dd GOLD_COIN, 3, COOKED_PORKCHOP, 4
+    dd GOLD_COIN, 25, IRON_HAMMER, 1
+    dd GOLD_COIN, 18, IRON_SPEAR, 1
+    dd PORKCHOP, 6, GOLD_COIN, 2
+    dd FEATHER, 8, ARROW, 8
+    dd GOLD_COIN, 30, IRON_HELMET, 1
+trade_beastfolk_end:
+trade_stonekin:
+    dd GOLD_COIN, 20, IRON_PICKAXE, 1
+    dd DIAMOND, 1, GOLD_COIN, 18
+    dd IRON_INGOT, 4, GOLD_COIN, 6
+    dd GOLD_COIN, 35, IRON_CHESTPLATE, 1
+    dd GOLD_COIN, 60, DIAMOND_PICKAXE, 1
+    dd GOLD_COIN, 12, TORCH, 16
+    dd GOLD_COIN, 25, DIAMOND, 1
+trade_stonekin_end:
 
+%macro TRADEROW 2                       ; table label stem, trader title
+section .rodata.str
+%%t: db %2, 0
+section .rodata
+    dq trade_%1, (trade_%1_end - trade_%1) / TRADEOFFER_size, %%t
+%endmacro
+
+align 8
+trade_index:                            ; per FAC_*: table, row count, title
+    TRADEROW villagers, "Merchant"
+    TRADEROW bandits, "Bandit Trader"
+    TRADEROW cult, "Cult Trader"
+    TRADEROW beastfolk, "Beastkin Trader"
+    TRADEROW stonekin, "Stonekin Trader"
+
+section .data
+align 8
+trade_cur:   dq trade_villagers         ; the TRADEOFFER table the trade screen is showing
+trade_title: dq s_merchant              ; its title
+trade_count: dd 10                      ; its row count
+
+section .rodata.str
+s_merchant: db "Merchant", 0
 section .text
 
 ; ---- quests ------------------------------------------------------------------
@@ -261,15 +321,29 @@ quests_on_boss_killed:
 
 ; ---- trades ----------------------------------------------------------------------
 
-; trade_offer(edi i) -> rax TRADEOFFER* {give, give_n, get, get_n}, 0 for i >= NUM_TRADES
+; trade_open(edi faction): the trader of that faction is the one the trade screen shows from now
+; on: sets trade_cur, trade_count and trade_title
+trade_open:
+    lea     rcx, [trade_index]
+    lea     eax, [rdi + rdi * 2]        ; 24-byte records
+    lea     rcx, [rcx + rax * 8]
+    mov     rax, [rcx]
+    mov     [trade_cur], rax
+    mov     rax, [rcx + 8]
+    mov     [trade_count], eax
+    mov     rax, [rcx + 16]
+    mov     [trade_title], rax
+    ret
+
+; trade_offer(edi i) -> rax TRADEOFFER* {give, give_n, get, get_n} of the open table, 0 for
+; i >= trade_count
 trade_offer:
     xor     eax, eax
-    cmp     edi, NUM_TRADES
+    cmp     edi, [trade_count]
     jae     .ret
     mov     eax, edi
-    shl     eax, 4                      ; TRADEOFFER_size
-    lea     rcx, [trade_tab]
-    add     rax, rcx
+    shl     rax, 4                      ; TRADEOFFER_size
+    add     rax, [trade_cur]
 .ret:
     ret
 

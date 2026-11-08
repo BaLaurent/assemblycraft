@@ -1037,9 +1037,10 @@ percent:
 ; gear_drop_from_mob(rdi MOB*)
 ; The gear a dead hostile mob drops, popped out at mid-body height; its tier follows the mob's
 ; level. A plain mob drops one LOOT_MOB roll 6 % of the time. An elite always drops one LOOT_ELITE
-; roll and, 30 % of the time, a second. The Fallen King drops his class's legendary (made
-; RAR_RARE), 3 LOOT_BOSS rolls and, 25 % of the time, one of the four legendary jewels. A rare or
-; epic find plays SND_LOOT_RARE, a legendary one SND_LEGENDARY (one sound per death, the loudest).
+; roll and, 30 % of the time, a second. The Fallen King, and a faction's champion (a MOB_FOLK with role
+; ROLE_CHAMPION), drop their class's legendary (made RAR_RARE), 3 LOOT_BOSS rolls and, 25 % of the
+; time, one of the four legendary jewels. A rare or epic find plays SND_LOOT_RARE, a legendary one
+; SND_LEGENDARY (one sound per death, the loudest).
 ; Frame: [rsp] x, +4 y, +8 z, +12 loudest rank so far.
 gear_drop_from_mob:
     push    rbp
@@ -1067,6 +1068,11 @@ gear_drop_from_mob:
     mov     r13d, eax                   ; class
     cmp     dword [rbx + MOB.type], MOB_BOSS
     je      .boss
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .mob
+    cmp     byte [rbx + MOB.role], ROLE_CHAMPION
+    je      .boss                       ; a champion drops like the Fallen King
+.mob:
     cmp     dword [rbx + MOB.elite], 0
     jne     .elite
     mov     edi, 6

@@ -10,6 +10,7 @@ default rel
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift
 
 extern player, raycast, ray_aabb, mobs_raycast, mob_strike, explode_at, explode_magic
+extern mobs, folk_hit_by, faction_enemies
 extern surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg, fx_burst
@@ -112,9 +113,9 @@ arrows_clear:
 
 ; arrows_spawn(xmm0 x, xmm1 y, xmm2 z, xmm3 vx, xmm4 vy, xmm5 vz, edi owner, esi damage,
 ;              edx pickup, ecx kind, r8d flags) -> eax slot index, or -1 when every slot is in use
-; owner: 0 player, 1 mob. kind: PROJ_ARROW .. PROJ_KNIFE. flags: AF_* (a player's weapon projectile
-; carries its element in bits AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED). Velocities are
-; blocks per second.
+; owner: OWNER_PLAYER, OWNER_MONSTER or OWNER_FOLK + the faction of the folk that shot. kind:
+; PROJ_ARROW .. PROJ_KNIFE. flags: AF_* (a player's weapon projectile carries its element in bits
+; AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED). Velocities are blocks per second.
 arrows_spawn:
     lea     r9, [arrows]
     xor     eax, eax
@@ -202,8 +203,10 @@ arrow_hdir:
 ; the first block, the first mob (the player's projectiles) or the player (a mob's arrows) on that
 ; segment ends the flight: a creature is hurt and the arrow vanishes, a block holds it (a knife,
 ; bullet or bolt just vanishes). Everything a player's projectile does to a mob goes through
-; combat_hit_mob; an elemental mob arrow also afflicts the player. Stuck arrows time out; the
-; player walks over its own to pick it up again.
+; combat_hit_mob; an elemental mob arrow also afflicts the player. A folk's shot (owner >= OWNER_FOLK)
+; also meets the folk of a rival faction nearer than the block (folk_hit_by); friends and monsters let
+; it pass, and the player takes the rest with a death cause of its faction (CAUSE_FOLK + faction).
+; Stuck arrows time out; the player walks over its own to pick it up again.
 ; rbx = arrow, r12 = end of the table
 arrows_step:
     push    rbp
@@ -273,8 +276,9 @@ arrows_step:
 
     ; ---- a creature nearer than the block ----------------------------------------
 .creature:
-    cmp     dword [rbx + ARROWENT.owner], 0
-    jne     .player_arrow
+    mov     eax, [rbx + ARROWENT.owner]
+    test    eax, eax
+    jnz     .mob_shot
     mov     rdi, rbx
     lea     rsi, [rsp + S_DIR]
     movss   xmm0, [rsp + S_TMAX]
@@ -341,6 +345,38 @@ arrows_step:
     call    mob_strike                  ; every bullet counts, even in the hurt window
     mov     byte [combat_hit_flags], 0
     jmp     .impact
+.mob_shot:
+    cmp     eax, OWNER_FOLK
+    jb      .player_arrow               ; a monster's shot: only the player is in its way
+    mov     rdi, rbx                    ; a folk's: a rival folk before the block takes it
+    lea     rsi, [rsp + S_DIR]
+    movss   xmm0, [rsp + S_TMAX]
+    call    mobs_raycast
+    test    eax, eax
+    js      .player_arrow
+    mov     [rsp + S_IDX], eax
+    movss   [rsp + S_T], xmm0
+    imul    ecx, eax, MOB_size
+    lea     rdx, [mobs]
+    add     rdx, rcx                    ; the nearest mob
+    cmp     dword [rdx + MOB.type], MOB_FOLK
+    jne     .player_arrow
+    mov     edi, [rbx + ARROWENT.owner]
+    sub     edi, OWNER_FOLK             ; the shooter's faction
+    movzx   esi, byte [rdx + MOB.faction]
+    call    faction_enemies
+    test    eax, eax
+    jz      .player_arrow               ; a friend: the shot flies on
+    HIT_POINT
+    mov     edi, [rsp + S_IDX]
+    mov     esi, [rbx + ARROWENT.damage]
+    mov     edx, [rbx + ARROWENT.flags]
+    shr     edx, AF_ELEM_SHIFT
+    and     edx, HITF_ELEM_MASK         ; its element
+    movss   xmm0, [rsp + S_H]
+    movss   xmm1, [rsp + S_H + 4]
+    call    folk_hit_by
+    jmp     .impact
 
 .player_arrow:
     cmp     dword [game_mode], MODE_SURVIVAL
@@ -386,7 +422,11 @@ arrows_step:
     movaps  xmm0, xmm3
     movaps  xmm1, xmm4
     mov     edi, [rbx + ARROWENT.damage]
-    mov     esi, CAUSE_SKELETON
+    mov     esi, [rbx + ARROWENT.owner]
+    add     esi, CAUSE_FOLK - OWNER_FOLK ; a folk's shot names its faction in the death cause...
+    cmp     dword [rbx + ARROWENT.owner], OWNER_FOLK
+    mov     eax, CAUSE_SKELETON
+    cmovb   esi, eax                    ; ...a monster's is a skeleton's
     call    player_take_hit
     cmp     eax, HIT_TAKEN
     jne     .impact                     ; parried, blocked, dodged or invulnerable: spent anyway

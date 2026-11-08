@@ -17,7 +17,7 @@ default rel
 global worldgen_set_seed, gen_column, gen_height, gen_biome, gen_carved, gen_find_spawn
 
 extern hash32, noise2, noise3, fbm2, gen_seed
-extern structures_stamp
+extern structures_stamp, roads_prepare, road_mask
 
 ; the terrain of one block column (terrain_cell's output)
 struc TCELL
@@ -842,7 +842,7 @@ gen_find_spawn:
 ; Generates the column (buf.cx, buf.cz) into buf.blocks (every byte is written), buf.biome and buf.top, and
 ; sets buf.nchests to what structures_stamp adds (the stamping is its own step) and buf.nconts to 0. Leaves
 ; .state and .session alone. Worker thread (or selftest) only. Order: materials and water, caves, ores and
-; gravel, trees and plants, sites.
+; gravel, the roads' mask, trees and plants, sites.
 gen_column:
     push    rbx
     mov     rbx, rdi
@@ -866,6 +866,8 @@ gen_column:
     call    gen_caves
     call    gen_ores
     call    gen_gravel
+    mov     rdi, rbx
+    call    roads_prepare
     call    gen_vegetation
     mov     rdi, rbx
     call    structures_stamp
@@ -1739,7 +1741,8 @@ grass_chance:
 ; and plants what veg_kind decides, unless a cave opens the top cell: trees and cacti stamp themselves
 ; clipped to the column, so a tree rooted in a neighbouring column leaves its leaves here and the
 ; neighbour's own generation leaves the same ones there. Tall grass goes on the GRASS tops of the column
-; itself that got no tree, into AIR only (hash32(x, z, 98) & 255 below grass_chance).
+; itself that got no tree, into AIR only (hash32(x, z, 98) & 255 below grass_chance). A cell with a
+; non-zero road_mask (roads_prepare: on a road or within 4 of it) gets neither.
 gen_vegetation:
     push    rbp
     mov     rbp, rsp
@@ -1757,6 +1760,9 @@ gen_vegetation:
     imul    eax, eax, TC_W
     lea     ecx, [r13 + 3]
     add     eax, ecx
+    lea     rcx, [road_mask]
+    cmp     byte [rcx + rax], 0
+    jne     .next                       ; no tree and no tall grass on or beside a road
     imul    eax, eax, TCELL_size
     lea     r14, [g_tc]
     add     r14, rax                    ; the cell's TCELL

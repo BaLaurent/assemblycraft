@@ -8,7 +8,7 @@
 %include "gl.inc"
 default rel
 
-global hud_draw, hud_dt, hud_banner, hud_heart_level, hud_ability_pos
+global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
 global hud_bubble_tiles, banner_text
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
@@ -27,6 +27,7 @@ extern abilities_cd, abilities_cd_total, structures_nearest
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
 extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_attr_points
 extern mob_affix_name
+extern folk_name, faction_tier_color, faction_standing, faction_names, faction_short
 extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
 
 %define WHITE   0xFFFFFFFF
@@ -41,7 +42,7 @@ f_200:      dd 200.0
 f_100:      dd 100.0
 f_25:       dd 25.0                     ; the stamina bar turns red below this
 f_24sq:     dd 576.0                    ; health bars: hostile mobs within 24 blocks
-f_10sq:     dd 100.0                    ; name tags: villagers within 10 blocks
+f_10sq:     dd 100.0                    ; name plates: folk within 10 blocks
 f_48sq:     dd 2304.0                   ; boss bar: a boss within 48 blocks
 f_bar_up:   dd 0.35                     ; a mob's health bar floats this far over its head
 f_tag_up:   dd 0.5                      ; and its name tag this far
@@ -60,7 +61,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.9  ", 0
+s_dbg_title: db "AssemblyCraft 0.10  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -102,8 +103,6 @@ s_ammo_r:   db "]", 0
 s_ammo_inf: db "  [inf]", 0
 s_quest:    db "Quest: ", 0
 s_metres:   db "m", 0
-s_merchant: db "Merchant", 0
-s_elder:    db "Elder", 0
 s_boss:     db "The Fallen King", 0
 headings:   db "N", 0, 0, "NE", 0, "E", 0, 0, "SE", 0, "S", 0, 0, "SW", 0, "W", 0, 0, "NW", 0   ; 3 bytes each
 s_biome:    db "Biome: ", 0
@@ -114,6 +113,8 @@ s_col_pend: db " pending ", 0
 s_col_pool: db " pool ", 0
 s_col_max:  db "/24576", 0
 s_camp:     db "Camp: ", 0
+s_asleep:   db " (asleep)", 0
+s_standing: db "Standing:", 0
 s_b_ocean:  db "Ocean", 0
 s_b_plains: db "Plains", 0
 s_b_forest: db "Forest", 0
@@ -122,14 +123,8 @@ s_b_snow:   db "Snow", 0
 s_b_swamp:  db "Swamp", 0
 s_b_mount:  db "Mountains", 0
 s_b_river:  db "River", 0
-s_f_vill:   db "Villagers", 0
-s_f_bandit: db "Bandits", 0
-s_f_cult:   db "Ashen Cult", 0
-s_f_beast:  db "Beastfolk", 0
-s_f_stone:  db "Stonekin", 0
 align 8
 biome_names:   dq s_b_ocean, s_b_plains, s_b_forest, s_b_desert, s_b_snow, s_b_swamp, s_b_mount, s_b_river
-faction_names: dq s_f_vill, s_f_bandit, s_f_cult, s_f_beast, s_f_stone
 
 section .data
 align 4
@@ -145,6 +140,7 @@ banner_rgba: resd 1
 banner_text: resb 48
 dbg_buf:    resb 128
 quest_buf:  resb 128
+plate_buf:  resb 48                     ; a folk's name plate text
 
 section .text
 
@@ -222,7 +218,7 @@ hud_draw:
 .tracker_y:
     cmp     dword [app_show_debug], 0
     je      .tracker
-    mov     edi, 132                    ; or under the F3 lines
+    mov     edi, 142                    ; or under the F3 lines
 .tracker:
     call    hud_quest
     call    hud_banner_draw
@@ -1339,12 +1335,31 @@ hud_stealth:
     call    world_to_ui
 %endmacro
 
-; hud_mobs(): things pinned to mobs with world_to_ui: over every hostile mob that was hurt lately
-; (MOB.bar) or is elite, within 24 blocks, a health bar (elites get a gold frame, a marked mob a red
-; one around it), "Lv N" over the bar, an elite's affix names over that, and a 3 x 3 pip under the bar
-; for each status; the name of the villagers within 10 blocks
-; rbx = mob, r12d = index, r13d = type, r14d = bar fill / bit / pips; [rsp] anchor, [rsp+16] out x, y,
-; [rsp+24] pip index / affix cursor, [rsp+32] "Lv N" text (16), [rsp+48] affix text (80)
+; mob_dist_sq(rdi MOB*) -> xmm0 the squared distance from the player to that mob (leaf)
+mob_dist_sq:
+    movss   xmm0, [rdi + BODY.x]
+    subss   xmm0, [player + BODY.x]
+    movss   xmm1, [rdi + BODY.y]
+    subss   xmm1, [player + BODY.y]
+    movss   xmm2, [rdi + BODY.z]
+    subss   xmm2, [player + BODY.z]
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    mulss   xmm2, xmm2
+    addss   xmm0, xmm1
+    addss   xmm0, xmm2
+    ret
+
+; hud_mobs(): things pinned to mobs with world_to_ui: over every hostile mob (a folk fighter that
+; counts as hostile too: mob_is_hostile) that was hurt lately (MOB.bar) or is elite, within 24
+; blocks, a health bar (elites get a gold frame, a marked mob a red one around it), "Lv N" over the
+; bar, an elite's affix names over that, and a 3 x 3 pip under the bar for each status; and over
+; every folk within 10 blocks its name plate (folk_name in the colour of its faction's tier, a
+; champion's in gold, " (asleep)" after it while it sleeps), over its bar and the lines above it
+; when it has one
+; rbx = mob, r12d = index, r13d = type, r14d = bar fill / bit / pips / the plate's height over its
+; anchor; [rsp] anchor, [rsp+16] out x, y, [rsp+24] pip index / affix cursor, [rsp+32] "Lv N" text
+; (16), [rsp+48] affix text (80), [rsp+128] how far over the bar's anchor the plate goes (0: no bar)
 hud_mobs:
     push    rbp
     mov     rbp, rsp
@@ -1352,26 +1367,16 @@ hud_mobs:
     push    r12
     push    r13
     push    r14
-    sub     rsp, 128
+    sub     rsp, 144
     lea     rbx, [mobs]
     xor     r12d, r12d
 .mob:
     mov     r13d, [rbx + MOB.type]
     test    r13d, r13d
     jz      .next
-    movss   xmm0, [rbx + BODY.x]
-    subss   xmm0, [player + BODY.x]
-    movss   xmm1, [rbx + BODY.y]
-    subss   xmm1, [player + BODY.y]
-    movss   xmm2, [rbx + BODY.z]
-    subss   xmm2, [player + BODY.z]
-    mulss   xmm0, xmm0
-    mulss   xmm1, xmm1
-    mulss   xmm2, xmm2
-    addss   xmm0, xmm1
-    addss   xmm0, xmm2                  ; squared distance to the player
-    cmp     r13d, MOB_FOLK
-    je      .villager
+    mov     dword [rsp + 128], 0        ; no bar drawn yet
+    mov     rdi, rbx
+    call    mob_dist_sq                 ; xmm0 = squared distance to the player
     cmp     dword [rbx + MOB.bar], 0
     jg      .bar
     cmp     dword [rbx + MOB.elite], 0
@@ -1450,6 +1455,7 @@ hud_mobs:
     sub     edx, 11                     ; 9 above the top of the bar
     mov     r8d, 1
     call    ui_text_centered
+    mov     dword [rsp + 128], 20       ; a plate goes over the level line
     cmp     dword [rbx + MOB.elite], 0
     je      .pips
     cmp     dword [rbx + MOB.affix], 0
@@ -1485,6 +1491,7 @@ hud_mobs:
     mov     ecx, RGBA(255, 140, 60, 255)
     mov     r8d, 1
     call    ui_text_centered
+    mov     dword [rsp + 128], 29       ; ... or over the affix line
 .pips:
     xor     r14d, r14d                  ; pips drawn
     mov     dword [rsp + 24], 0         ; pip_tab row
@@ -1510,29 +1517,48 @@ hud_mobs:
 .pip_next:
     inc     dword [rsp + 24]
     jmp     .pip
-.villager:
+.next:
+    cmp     r13d, MOB_FOLK              ; a folk's name plate
+    jne     .advance
+    mov     rdi, rbx
+    call    mob_dist_sq
     comiss  xmm0, [f_10sq]
-    ja      .next
+    ja      .advance
+    mov     r14d, [rsp + 128]           ; over the bar's lines (its anchor is still in [rsp+16]) ...
+    test    r14d, r14d
+    jnz     .plate
+    mov     r14d, 8                     ; ... or on a name tag's anchor
     ANCHOR  f_tag_up
     test    eax, eax
-    jz      .next
-    lea     r14, [s_merchant]
-    lea     rax, [s_elder]
-    cmp     byte [rbx + MOB.role], ROLE_LEADER
-    cmove   r14, rax
-    mov     rdi, r14
+    jz      .advance
+.plate:
+    mov     rdi, rbx
+    lea     rsi, [plate_buf]
+    call    folk_name                   ; rax = the end of the name
+    test    byte [rbx + MOB.fflags], FF_ASLEEP
+    jz      .named
+    mov     rdi, rax
+    lea     rsi, [s_asleep]
+    call    str_append
+.named:
+    mov     byte [rax], 0
+    movzx   edi, byte [rbx + MOB.faction]
+    call    faction_tier_color
+    mov     ecx, RGBA(255, 215, 60, 255) ; a champion's name is gold whatever the standing
+    cmp     byte [rbx + MOB.role], ROLE_CHAMPION
+    cmovne  ecx, eax
+    lea     rdi, [plate_buf]
     mov     esi, [rsp + 16]
     mov     edx, [rsp + 20]
-    sub     edx, 8                      ; the name sits on the anchor
-    mov     ecx, RGBA(255, 255, 180, 255)
+    sub     edx, r14d
     mov     r8d, 1
     call    ui_text_centered
-.next:
+.advance:
     add     rbx, MOB_size
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
-    add     rsp, 128
+    add     rsp, 144
     pop     r14
     pop     r13
     pop     r12
@@ -1731,19 +1757,33 @@ hud_banner:
     add     rsp, 8
     ret
 
-; hud_banner_draw(): the banner at (ui_w/2, ui_h/2 - 50), scale 2 or the largest smaller scale whose
-; text fits in ui_w - 16 (never below 1); hud_dt counts it down
-; ebx = alpha and colour, r12d = scale
+; hud_banner_draw(): count the banner down (hud_dt) and paint it in the middle of the screen,
+; ui_h/2 - 50
 hud_banner_draw:
-    push    rbx
-    push    r12
-    sub     rsp, 8
     movss   xmm0, [banner_timer]
     xorps   xmm1, xmm1
     comiss  xmm0, xmm1
     jbe     .ret
     subss   xmm0, [hud_dt]
     movss   [banner_timer], xmm0
+    mov     edi, [ui_h]
+    shr     edi, 1
+    sub     edi, 50
+    jmp     hud_banner_paint
+.ret:
+    ret
+
+; hud_banner_paint(edi y): the banner, while one is up, centred on ui_w/2 at height y, at scale 2
+; or the largest smaller scale whose text fits in ui_w - 16 (never below 1). It does not count
+; down: a screen that hides the banner's usual place paints it again where it shows.
+; ebx = alpha and colour, r12d = scale, r13d = y
+hud_banner_paint:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r13d, edi
+    movss   xmm0, [banner_timer]
+    xorps   xmm1, xmm1
     comiss  xmm0, xmm1
     jbe     .ret
     mulss   xmm0, [f_two]               ; timer / 0.5
@@ -1774,14 +1814,12 @@ hud_banner_draw:
     lea     rdi, [banner_text]
     mov     esi, [ui_w]
     shr     esi, 1
-    mov     edx, [ui_h]
-    shr     edx, 1
-    sub     edx, 50
+    mov     edx, r13d
     mov     ecx, ebx
     mov     r8d, r12d
     call    ui_text_centered
 .ret:
-    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     ret
@@ -2141,6 +2179,24 @@ hud_debug:
     add     eax, [world_origin_z]
     APPEND_EAX
 .camp_done:
+    EMIT
+
+    APPEND_STR s_standing
+    xor     r13d, r13d
+.standing:
+    APPEND_STR s_space
+    lea     rcx, [faction_short]
+    mov     rsi, [rcx + r13*8]
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_space
+    mov     edi, r13d
+    call    faction_standing
+    APPEND_EAX
+    inc     r13d
+    cmp     r13d, NUM_FACTIONS
+    jb      .standing
     EMIT
     add     rsp, 40
     pop     r13

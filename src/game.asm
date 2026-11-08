@@ -48,6 +48,7 @@ extern sleep_use_bed, sleep_step, sleep_cancel, sleep_respawn_target, sleep_plac
 extern app_state, app_goto
 extern surv_max_health
 extern place_block, block_use, block_removed, block_is_usable, block_base
+extern faction_reset, faction_validate, screen_faction
 
 section .rodata
 align 4
@@ -105,8 +106,8 @@ alignb 8
 game_open_cont:  resq 1                 ; CONTAINER* of the furnace/chest to open
 game_target:     resb RAYHIT_size
 game_has_target: resd 1
-game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE, ST_CHEST, ST_TRADE, ST_DIALOG
-game_open_npc:   resd 1                 ; mob index of the merchant/elder whose screen opens
+game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE, ST_CHEST, ST_TRADE, ST_DIALOG, ST_SHRINE, ST_LEADER
+game_open_npc:   resd 1                 ; mob index of the folk whose screen opens
 game_bow_charge: resd 1                 ; float seconds drawn, 0 = not drawing
 step_accum:      resd 1
 break_timer:     resd 1                 ; creative repeat timer
@@ -207,9 +208,10 @@ player_place:
     ret
 
 ; game_new(edi seed, esi mode, rdx name, rcx dir or 0)
-; A new world: header, character and session reset. The spawn comes from the generator; the terrain
-; streams in afterwards (app_wait_area), then game_on_area_ready stands the player on the surface and
-; populates the world. dir is where its regions are saved (0: nowhere).
+; A new world: header (with the starting faction standings), character and session reset. The
+; spawn comes from the generator; the terrain streams in afterwards (app_wait_area), then
+; game_on_area_ready stands the player on the surface and populates the world. dir is where its
+; regions are saved (0: nowhere).
 game_new:
     push    rbp
     mov     rbp, rsp
@@ -235,6 +237,7 @@ game_new:
     mov     rsi, r13
     mov     edx, 32
     call    str_copy
+    call    faction_reset               ; the starting standings (the zeroed header holds none)
     mov     edi, ebx                    ; the new session first: it drops the old world and sets
     mov     rsi, r14                    ; the seed the spawn search needs
     call    stream_begin
@@ -297,9 +300,10 @@ game_new:
 ; game_load(rdi dir) -> eax 0 ok / 1 missing / 2 invalid / 3 I/O error
 ; Reads <dir>/world.hdr (exactly WORLD_HDR_SIZE bytes, magic "ACRAFT06"); nothing changes unless it is
 ; good. Then the streaming session of the world starts and the character, the origin, the mobs and the
-; boats are restored (bed, sites and spawn stay in the header image world_header). A player who is
-; dead or has no usable position respawns at the bed or the world spawn. The terrain streams in
-; afterwards (app_wait_area, then game_on_area_ready).
+; boats are restored (bed, sites, faction standings and spawn stay in the header image
+; world_header; faction_validate keeps its standings and champion bits within their limits). A
+; player who is dead or has no usable position respawns at the bed or the world spawn. The
+; terrain streams in afterwards (app_wait_area, then game_on_area_ready).
 game_load:
     push    rbp
     mov     rbp, rsp
@@ -490,7 +494,7 @@ game_load:
     call    rpg_on_death                ; died, then quit from the death screen: same XP loss
     mov     r13d, 1                     ; ... and back at the bed or the spawn
 .alive:
-    cmp     dword [rbx + WORLDHDR.bed_set], 1   ; header state that must be sane: bed flag, site count
+    cmp     dword [rbx + WORLDHDR.bed_set], 1   ; header state that must be sane: bed flag, site count,
     jbe     .bed_ok
     mov     dword [rbx + WORLDHDR.bed_set], 0
 .bed_ok:
@@ -498,6 +502,7 @@ game_load:
     jbe     .sites_ok
     mov     dword [rbx + WORLDHDR.site_count], 0
 .sites_ok:
+    call    faction_validate            ; ... and the standings and champion bits
     mov     rdi, rbx
     call    mobs_load
     call    drops_clear
@@ -759,8 +764,8 @@ game_shift_origin:
     ret
 
 ; game_unload_box(edi x0, esi z0, edx x1, ecx z1): a column is going away (local cell box, inclusive).
-; An open merchant or elder screen whose NPC stands in it closes first; then the mobs, drops, primed
-; TNT and fires inside the box are removed.
+; An open trade, dialog or leader screen whose folk stands in it closes first; then the mobs, drops,
+; primed TNT and fires inside the box are removed.
 game_unload_box:
     push    rbp
     mov     rbp, rsp
@@ -776,6 +781,8 @@ game_unload_box:
     cmp     eax, ST_TRADE
     je      .talking
     cmp     eax, ST_DIALOG
+    je      .talking
+    cmp     eax, ST_LEADER
     jne     .remove
 .talking:
     mov     eax, [game_open_npc]
@@ -1047,9 +1054,20 @@ try_potion:
     pop     rbp
     ret
 
+; mob_type_at(edi mob index or -1) -> eax its MOB.type (MOB_NONE for -1); clobbers rcx, rdi (leaf)
+mob_type_at:
+    xor     eax, eax
+    test    edi, edi
+    js      .ret
+    imul    edi, edi, MOB_size
+    lea     rcx, [mobs]
+    mov     eax, [rcx + rdi + MOB.type]
+.ret:
+    ret
+
 ; want_guard(edi targeted mob or -1) -> eax 1 when the player raises the guard this frame:
-; RMB held with a sword, axe or dagger, unless this frame's RMB press talks to a merchant or
-; elder or uses a block (crafting table, furnace, chest, door, trapdoor)
+; RMB held with a sword, axe or dagger, unless this frame's RMB press talks to a folk or uses a
+; block (crafting table, furnace, chest, door, trapdoor, shrine)
 want_guard:
     push    rbp
     mov     rbp, rsp
@@ -1075,14 +1093,11 @@ want_guard:
     mov     eax, 1
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
     je      .ret
-    test    ebx, ebx
-    js      .block
-    imul    ecx, ebx, MOB_size
-    lea     rdx, [mobs]
-    mov     ecx, [rdx + rcx + MOB.type]
-    cmp     ecx, MOB_FOLK
-    je      .no
-.block:
+    mov     edi, ebx
+    call    mob_type_at
+    cmp     eax, MOB_FOLK
+    je      .no                         ; the press talks to it
+    mov     eax, 1                      ; (the call spent eax: the guard is up unless a block says otherwise)
     cmp     dword [boat_hit], 0
     jl      .at_block
     cmp     dword [boat_riding], 0
@@ -1478,31 +1493,24 @@ game_frame:
     call    combat_set_guard
 .combat_done:
 
-    ; 6. buttons, in ownership order: a folk (talk), a held firearm (section 12), a mage's
-    ; staff (bolts), then melee on the targeted mob. The first three never punch, dig, use or
-    ; place.
-    mov     eax, [rsp + F_MOB]
-    test    eax, eax
-    js      .not_npc
-    imul    eax, eax, MOB_size
-    lea     rcx, [mobs]
-    cmp     dword [rcx + rax + MOB.type], MOB_FOLK
-    jne     .not_npc
-    mov     dword [game_heavy_s], __float32__(-1.0)     ; no heavy attack on folk
-    mov     dword [game_break_progress], 0
-    mov     dword [break_cooldown], 0
-    mov     dword [brk_y], -1
+    ; 6. buttons. A right click aimed at a folk talks to it (a screen may open) and is spent on
+    ; that: section 9 never uses or places for it. The left button hits a folk like any other mob.
+    ; In ownership order: a held firearm (section 12), a mage's staff (bolts), then melee on the
+    ; targeted mob; the first two never punch, dig, use or place.
+    mov     edi, [rsp + F_MOB]
+    call    mob_type_at
+    cmp     eax, MOB_FOLK
+    jne     .not_folk
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
-    je      .pick
+    je      .not_folk
     mov     edi, [rsp + F_MOB]
     call    folk_interact
     test    eax, eax
-    jz      .pick
+    jz      .not_folk
     mov     [game_open_screen], eax
     mov     eax, [rsp + F_MOB]
     mov     [game_open_npc], eax
-    jmp     .pick
-.not_npc:
+.not_folk:
     call    held_id
     mov     edi, eax
     call    gun_index
@@ -1607,9 +1615,10 @@ game_frame:
     cmp     dword [game_has_target], 0
     je      .place
     call    target_block
-    cmp     eax, BEDROCK
-    je      .place
     mov     r12d, eax
+    xorps   xmm0, xmm0
+    comiss  xmm0, [block_hardness + r12*4]
+    ja      .place                      ; unbreakable (bedrock, shrines)
     call    remove_target_block
     mov     edi, r12d
     lea     rsi, [block_dig_sound]
@@ -1761,6 +1770,10 @@ game_frame:
 .place:
     cmp     dword [combat_guard_t], 0
     jge     .pick
+    mov     edi, [rsp + F_MOB]          ; a click aimed at a folk talked in section 6: no use, no placing
+    call    mob_type_at
+    cmp     eax, MOB_FOLK
+    je      .pick
     mov     edi, [frame_input + FRAMEINPUT.rmb_held]
     mov     esi, [frame_input + FRAMEINPUT.rmb_pressed]
     lea     rdx, [place_timer]
@@ -1829,6 +1842,14 @@ game_frame:
     mov     dword [game_open_screen], ST_CRAFTING
     jmp     .pick
 .not_table:
+    movzx   eax, byte [block_base + rbx]    ; a shrine: the right click opens its tribute screen
+    cmp     eax, SHRINE
+    jne     .not_shrine
+    lea     eax, [rbx - SHRINE]             ; its faction
+    mov     [screen_faction], eax
+    mov     dword [game_open_screen], ST_SHRINE
+    jmp     .pick
+.not_shrine:
     mov     r12d, CONT_FURNACE
     mov     dword [rsp + F_SCR], ST_FURNACE
     cmp     ebx, FURNACE

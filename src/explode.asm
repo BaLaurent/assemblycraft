@@ -13,7 +13,7 @@ extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_ne
 extern block_removed, light_bind_at, light_bind_index
 extern audio_play_at, player, settings, survival_damage, surv_max_health
 extern mobs, mob_hurt, item_model_draw, body_init, body_step
-extern combat_hit_mob, combat_kb_mult, rpg_stats
+extern combat_hit_mob, combat_kb_mult, rpg_stats, mob_is_hostile, block_hardness
 extern fx_explosion, fx_debris
 
 ; explode_at frame (rsp-relative)
@@ -285,8 +285,9 @@ tnt_render:
     ret
 
 ; explode_at(xmm0 x, xmm1 y, xmm2 z, xmm3 radius)
-; 1. every block whose centre lies within the radius is destroyed (bedrock stays, TNT is primed
-;    with a 10..29 step fuse, 3 in 10 blocks drop their item, containers spill);
+; 1. every block whose centre lies within the radius is destroyed (an unbreakable one, hardness < 0:
+;    bedrock, a shrine, water, stays; TNT is primed with a 10..29 step fuse, 3 in 10 blocks drop
+;    their item, containers spill);
 ; 2. the player within 2r takes ceil(f * base * r / 3), f = 1 - d / 2r, d measured to his chest
 ;    (survival_damage decides whether it applies), and is thrown away from the blast;
 ; 3. every mob within 2r takes ceil(f * 24 * r / 3) and is knocked away;
@@ -382,8 +383,10 @@ explode_at:
     call    world_get
     test    eax, eax
     jz      .cell_next                  ; air (or outside the world)
-    cmp     eax, BEDROCK
-    je      .cell_next
+    lea     rcx, [block_hardness]
+    xorps   xmm0, xmm0
+    comiss  xmm0, [rcx + rax*4]
+    ja      .cell_next                  ; unbreakable: bedrock, shrines (and water) stay
     cmp     eax, TNT
     je      .prime
     mov     ebx, eax                    ; block id
@@ -655,8 +658,8 @@ explode_at:
 
 ; explode_magic(xmm0 x, xmm1 y, xmm2 z, xmm3 radius, edi damage, esi src, edx flags): a magic blast of
 ; radius * (1 + AREA / 100). Draws the explosion at 0.7 r and plays its sound; then every live mob
-; that is not a villager (merchant, elder) and whose body middle lies within r of the centre takes
-; combat_hit_mob(src, flags, damage * (1 - 0.5 d / r)) and is pushed 1.5 away along
+; whose body middle lies within r of the centre (a folk only while it is hostile: mob_is_hostile)
+; takes combat_hit_mob(src, flags, damage * (1 - 0.5 d / r)) and is pushed 1.5 away along
 ; (mob - centre).xz. Blocks, TNT and the player are never touched.
 ; rbx = mob, r12d = mob index.
 explode_magic:
@@ -691,7 +694,12 @@ explode_magic:
     test    eax, eax
     jz      .next
     cmp     eax, MOB_FOLK
-    je      .next
+    jne     .reach
+    mov     edi, r12d
+    call    mob_is_hostile              ; a blast touches only the folk that are in the fight
+    test    eax, eax
+    jz      .next
+.reach:
     movss   xmm0, [rbx + BODY.x]
     subss   xmm0, [rsp + M_C]
     movss   [rsp + M_DX], xmm0

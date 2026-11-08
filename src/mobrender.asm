@@ -3,30 +3,31 @@
 ; atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog,
 ; alpha test, face culling.
 ; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
-; is doing and suffering (hit red, wind-up red flicker, frozen and chilled blue, burning orange
-; flicker, poisoned green, stun yellow flicker, elite gold; first one wins) and sized by what it is
-; (elite 1.2 x, wind-up surge 1.05 x, creeper swell).
+; is doing and suffering (hit red, wind-up red flicker, a raging folk red, frozen and chilled blue,
+; burning orange flicker, poisoned green, stun yellow flicker, a champion its faction colour, a
+; captive grey, elite gold; first one wins) and sized by what it is (elite 1.2 x, wind-up surge
+; 1.05 x, creeper swell). A folk wears its faction's skin plus one more part for its role.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global mobs_render
 
-extern mobs, render_box, sincos_deg, light_bind_at, light_bind_index
+extern mobs, render_box16, sincos_deg, light_bind_at, light_bind_index
 
-; part record: box (lo xyz, hi xyz), tile per face (+X -X +Y -Y +Z -Z), pivot y, pivot z,
-; swing factor (limb angle = factor * walk swing; 0 = rigid)
-%define PART_SIZE 44
+; part record: box (lo xyz, hi xyz), tile per face (+X -X +Y -Y +Z -Z, 16-bit atlas ids), pivot y,
+; pivot z, swing factor (limb angle = factor * walk swing; 0 = rigid)
+%define PART_SIZE 48
 %define P_BOX     0
 %define P_TILES   24
-%define P_PIVOT_Y 32
-%define P_PIVOT_Z 36
-%define P_SWING   40
+%define P_PIVOT_Y 36
+%define P_PIVOT_Z 40
+%define P_SWING   44
 
 ; PART x0, y0, z0, x1, y1, z1, tile, front tile (-Z face), pivot y, pivot z, swing
 %macro PART 11
     dd %1, %2, %3, %4, %5, %6
-    db %7, %7, %7, %7, %7, %8, 0, 0
+    dw %7, %7, %7, %7, %7, %8
     dd %9, %10, %11
 %endmacro
 
@@ -52,6 +53,13 @@ f_chill_r:  dd 0.7                      ; chilled tint (0.7, 0.85, 1)
 f_chill_g:  dd 0.85
 f_frozen_r: dd 0.5                      ; frozen tint (0.5, 0.7, 1)
 f_frozen_g: dd 0.7
+f_p6:       dd 0.6                      ; captive grey (0.6, 0.6, 0.6); raging folk (1, 0.6, 0.6)
+champion_tint:                          ; per faction, in place of the elite gold
+    dd 1.0, 0.95, 0.6                   ; Villagers
+    dd 1.0, 0.6, 0.6                    ; Bandits
+    dd 0.75, 0.6, 0.85                  ; Ashen Cult
+    dd 1.0, 0.85, 0.5                   ; Beastfolk
+    dd 0.7, 0.85, 1.0                   ; Stonekin
 
 zombie_parts:
     PART -0.25, 0.0, -0.125,  0.0, 0.75, 0.125,   TILE_ZOMBIE_PANTS, TILE_ZOMBIE_PANTS, 0.75, 0.0,  1.0    ; left leg
@@ -127,6 +135,47 @@ elder_parts:
     VILLAGER TILE_ELDER_ROBE
 %define VILLAGER_PARTS 6
 
+; the folk share one model, only the skin differs: legs, body, arms, head
+%macro FOLK 4
+    PART -0.22, 0.0, -0.11,  0.0,  0.75, 0.11,  %4, %4, 0.75, 0.0,  1.0                 ; left leg
+    PART  0.0,  0.0, -0.11,  0.22, 0.75, 0.11,  %4, %4, 0.75, 0.0, -1.0                 ; right leg
+    PART -0.25, 0.75, -0.15, 0.25, 1.45, 0.15,  %3, %3, 0.0, 0.0, 0.0                   ; body
+    PART -0.38, 0.75, -0.1, -0.25, 1.45, 0.1,   %3, %3, 1.4, 0.0, -1.0                  ; left arm
+    PART  0.25, 0.75, -0.1,  0.38, 1.45, 0.1,   %3, %3, 1.4, 0.0,  1.0                  ; right arm
+    PART -0.2,  1.45, -0.2,  0.2,  1.95, 0.2,   %1, %2, 0.0, 0.0, 0.0                   ; head
+%endmacro
+; FOLK_SKIN f: the skin tiles 304 + 4f .. 304 + 4f + 3 of faction f
+%macro FOLK_SKIN 1
+    FOLK TILE_FOLK0 + 4 * %1 + TILE_FOLK_HEAD, TILE_FOLK0 + 4 * %1 + TILE_FOLK_FACE, TILE_FOLK0 + 4 * %1 + TILE_FOLK_TUNIC, TILE_FOLK0 + 4 * %1 + TILE_FOLK_PANTS
+%endmacro
+%define FOLK_PARTS 6
+folk_parts_villagers:
+    FOLK_SKIN FAC_VILLAGERS
+folk_parts_bandits:
+    FOLK_SKIN FAC_BANDITS
+folk_parts_cult:
+    FOLK_SKIN FAC_CULT
+folk_parts_beastfolk:
+    FOLK_SKIN FAC_BEASTFOLK
+folk_parts_stonekin:
+    FOLK_SKIN FAC_STONEKIN
+
+; role extras: one more rigid part on top of the model
+extra_hat:                              ; non-Villagers leader
+    PART -0.22, 1.85, -0.22,  0.22, 2.0, 0.22,  TILE_GOLD_BLOCK, TILE_GOLD_BLOCK, 0.0, 0.0, 0.0
+extra_helmet:                           ; guard and patrol, except acolytes
+    PART -0.22, 1.7, -0.22,  0.22, 2.0, 0.22,  TILE_IRON_BLOCK, TILE_IRON_BLOCK, 0.0, 0.0, 0.0
+extra_pack:                             ; non-Villagers trader and any traveller
+    PART -0.2, 0.85, 0.15,  0.2, 1.35, 0.35,  TILE_CHEST_SIDE, TILE_CHEST_SIDE, 0.0, 0.0, 0.0
+extra_crown:                            ; champion
+    PART -0.23, 1.95, -0.23,  0.23, 2.15, 0.23,  TILE_BOSS_CROWN, TILE_BOSS_CROWN, 0.0, 0.0, 0.0
+extra_hoods:                            ; acolyte, one per faction in the faction's tunic tile
+%assign hood_f 0
+%rep 5
+    PART -0.22, 1.7, -0.22,  0.22, 2.02, 0.22,  TILE_FOLK0 + 4 * hood_f + TILE_FOLK_TUNIC, TILE_FOLK0 + 4 * hood_f + TILE_FOLK_TUNIC, 0.0, 0.0, 0.0
+%assign hood_f hood_f + 1
+%endrep
+
 boss_parts:                             ; the Fallen King, 3.3 blocks tall
     PART -0.35, 0.0, -0.12, -0.1,  1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0,  1.0   ; left leg
     PART  0.1,  0.0, -0.12,  0.35, 1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0, -1.0   ; right leg
@@ -146,11 +195,16 @@ models:                                 ; indexed by type - 1: parts, part count
     dq spider_parts, SPIDER_PARTS
     dq chicken_parts, CHICKEN_PARTS
     dq boss_parts, BOSS_PARTS
-    dq merchant_parts, VILLAGER_PARTS   ; folk; a leader wears elder_parts
+    dq folk_parts_villagers, FOLK_PARTS  ; folk: folk_model picks the table
+
+align 8
+folk_tables:                            ; folk skins by faction
+    dq folk_parts_villagers, folk_parts_bandits, folk_parts_cult, folk_parts_beastfolk
+    dq folk_parts_stonekin
 
 section .text
 
-; DRAW_PART: render_box of the part at r14, tinted by the mob's hurt colour at [rsp + 4..12]
+; DRAW_PART: render_box16 of the part at r14, tinted by the mob's hurt colour at [rsp + 4..12]
 %macro DRAW_PART 0
     lea     rdi, [r14 + P_BOX]
     lea     rsi, [r14 + P_TILES]
@@ -158,13 +212,67 @@ section .text
     movss   xmm0, [rsp + 4]
     movss   xmm1, [rsp + 8]
     movss   xmm2, [rsp + 12]
-    call    render_box
+    call    render_box16
 %endmacro
+
+; folk_model(rdi mob) -> rax = its 6-part table, rdx = its role extra part or 0
+; The Villagers' leader wears elder_parts and their trader merchant_parts; every other folk its
+; faction's skin. The extra: a champion's crown; else a hat for a leader of another faction; else
+; a hood for an acolyte guard or patrol, a helmet for any other; else a pack for a traveller and a
+; trader of another faction.
+folk_model:
+    movzx   ecx, byte [rdi + MOB.faction]
+    movzx   r8d, byte [rdi + MOB.role]
+    lea     rax, [folk_tables]
+    mov     rax, [rax + rcx * 8]
+    test    ecx, ecx
+    jnz     .extra
+    lea     rsi, [elder_parts]
+    cmp     r8d, ROLE_LEADER
+    cmove   rax, rsi
+    lea     rsi, [merchant_parts]
+    cmp     r8d, ROLE_TRADER
+    cmove   rax, rsi
+.extra:
+    lea     rdx, [extra_crown]
+    cmp     r8d, ROLE_CHAMPION
+    je      .done
+    cmp     r8d, ROLE_LEADER
+    jne     .not_leader
+    lea     rdx, [extra_hat]
+    test    ecx, ecx
+    jnz     .done
+    jmp     .none
+.not_leader:
+    cmp     r8d, ROLE_GUARD
+    je      .fighter
+    cmp     r8d, ROLE_PATROL
+    jne     .not_fighter
+.fighter:
+    lea     rdx, [extra_helmet]
+    cmp     byte [rdi + MOB.fclass], FCLASS_ACOLYTE
+    jne     .done
+    imul    ecx, ecx, PART_SIZE
+    lea     rdx, [extra_hoods]
+    add     rdx, rcx
+    ret
+.not_fighter:
+    lea     rdx, [extra_pack]
+    cmp     r8d, ROLE_TRAVELLER
+    je      .done
+    cmp     r8d, ROLE_TRADER
+    jne     .none
+    test    ecx, ecx
+    jnz     .done
+.none:
+    xor     edx, edx
+.done:
+    ret
 
 ; mobs_render(): draw every live mob.
 ; rbx = mob, r12 = end of the table, r13d = model index, r14 = part, r15d = parts left
 ; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] limb angle, [rsp+20] flash flag,
-; [rsp+24] size factor
+; [rsp+24] size factor, [rsp+32] the folk's role extra part (0 once drawn)
 mobs_render:
     push    rbp
     mov     rbp, rsp
@@ -193,6 +301,25 @@ mobs_render:
     movss   xmm1, [f_elite_g]
     movss   xmm2, [f_elite_b]
 .not_elite:
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .tint_status
+    movzx   eax, byte [rbx + MOB.role]
+    cmp     eax, ROLE_CAPTIVE
+    jne     .not_captive
+    movss   xmm0, [f_p6]                ; a captive is grey
+    movaps  xmm1, xmm0
+    movaps  xmm2, xmm0
+    jmp     .tint_status
+.not_captive:
+    cmp     eax, ROLE_CHAMPION
+    jne     .tint_status
+    movzx   eax, byte [rbx + MOB.faction]
+    lea     rax, [rax + rax * 2]
+    lea     rcx, [champion_tint]
+    movss   xmm0, [rcx + rax * 4]       ; a champion wears its faction's colour, not the elite gold
+    movss   xmm1, [rcx + rax * 4 + 4]
+    movss   xmm2, [rcx + rax * 4 + 8]
+.tint_status:
     mov     eax, [rbx + MOB.stun]
     test    eax, eax
     jle     .not_stunned
@@ -230,6 +357,14 @@ mobs_render:
     movss   xmm1, [f_frozen_g]
     movss   xmm2, [f_one]
 .not_frozen:
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .not_raging
+    test    byte [rbx + MOB.fflags], FF_RAGE
+    jz      .not_raging
+    movss   xmm0, [f_one]               ; a raging berserker is red under the flickers
+    movss   xmm1, [f_p6]
+    movss   xmm2, [f_p6]
+.not_raging:
     mov     eax, [rbx + MOB.windup]
     test    eax, eax
     jle     .not_winding
@@ -314,11 +449,13 @@ mobs_render:
     lea     rax, [models]
     mov     r14, [rax + r13]
     mov     r15d, [rax + r13 + 8]
+    mov     qword [rsp + 32], 0         ; no role extra part
     cmp     dword [rbx + MOB.type], MOB_FOLK
     jne     .part
-    cmp     byte [rbx + MOB.role], ROLE_LEADER
-    jne     .part
-    lea     r14, [elder_parts]
+    mov     rdi, rbx
+    call    folk_model
+    mov     r14, rax
+    mov     [rsp + 32], rdx
 .part:
     movss   xmm0, [r14 + P_SWING]
     xorps   xmm1, xmm1
@@ -351,6 +488,13 @@ mobs_render:
     add     r14, PART_SIZE
     dec     r15d
     jnz     .part
+    mov     r14, [rsp + 32]             ; then the role extra part, if any
+    test    r14, r14
+    jz      .parts_done
+    mov     qword [rsp + 32], 0
+    mov     r15d, 1
+    jmp     .part
+.parts_done:
     cmp     dword [rsp + 20], 0
     je      .unflash
     mov     edi, GL_TEXTURE_2D

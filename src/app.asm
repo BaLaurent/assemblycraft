@@ -26,6 +26,7 @@ extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim, game_heavy_s
 extern screen_trade, screen_dialog, screen_class, screen_skills, screen_character
+extern screen_shrine, screen_leader
 extern rpg_class, rpg_reset, combat_reset, dmgnum_clear, light_update
 extern boats_clear
 extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
@@ -72,6 +73,7 @@ screens:
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
     dq screen_trade, screen_dialog, screen_class, screen_skills, screen_character
+    dq screen_shrine, screen_leader
 
 section .data
 align 4
@@ -718,6 +720,10 @@ update_state:
     je      .screen
     cmp     eax, ST_CHARACTER
     je      .screen
+    cmp     eax, ST_SHRINE
+    je      .screen
+    cmp     eax, ST_LEADER
+    je      .screen
     jmp     .ret                        ; paused, death, settings, class choice: nothing simulates
 
 .playing:
@@ -768,9 +774,13 @@ update_state:
     mov     dword [craft_size], 3
     jmp     .open
 .not_table:
-    cmp     edi, ST_TRADE               ; merchant and elder screens hold no container
+    cmp     edi, ST_TRADE               ; the screens of the folk and the shrines hold no container
     je      .open
     cmp     edi, ST_DIALOG
+    je      .open
+    cmp     edi, ST_SHRINE
+    je      .open
+    cmp     edi, ST_LEADER
     je      .open
 .container:
     mov     rax, [game_open_cont]
@@ -850,6 +860,10 @@ draw_frame:
     cmp     eax, ST_SKILLS
     je      .in_view
     cmp     eax, ST_CHARACTER
+    je      .in_view
+    cmp     eax, ST_SHRINE
+    je      .in_view
+    cmp     eax, ST_LEADER
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -866,7 +880,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_CHARACTER
+    cmp     eax, ST_LEADER
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax

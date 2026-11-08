@@ -13,7 +13,7 @@
 default rel
 
 global render_init, render_update_chunks, render_column_freed, render_world
-global render_box, render_box_px, frustum_setup, frustum_test, tex_id, atlas
+global render_box, render_box16, render_box_px, frustum_setup, frustum_test, tex_id, atlas
 
 extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
@@ -942,7 +942,15 @@ draw_chunks:
 ; The whole-tile mapping is render_box_px with the box of a whole cube.
 render_box:
     lea     rcx, [px_full]
-    jmp     render_box_px
+    xor     eax, eax
+    jmp     box_draw
+
+; render_box16(rdi box float[6]; rsi tiles word[6]; rdx shades float[6]; xmm0 r, xmm1 g, xmm2 b)
+; render_box with 16-bit atlas tile ids (the faction skins live at tiles 304..323).
+render_box16:
+    lea     rcx, [px_full]
+    mov     eax, 1
+    jmp     box_draw
 
 ; render_box_px(rdi box float[6] = lo xyz, hi xyz; rsi tiles byte[6]; rdx shades float[6];
 ;               xmm0 r, xmm1 g, xmm2 b; rcx px byte[6])
@@ -951,6 +959,12 @@ render_box:
 ; tile where mesh_face_uv puts that cell-relative point, so a slab shows the lower half of its
 ; side tiles and a thin box a thin strip. Colour as render_box.
 render_box_px:
+    xor     eax, eax
+    ; fall through
+
+; box_draw: the body of render_box, render_box_px and render_box16. In: the register arguments
+; of render_box_px; eax = 0 for byte tile ids, 1 for word tile ids.
+box_draw:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -958,10 +972,11 @@ render_box_px:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 24                     ; [rsp] r, g, b; +16 px
+    sub     rsp, 24                     ; [rsp] r, g, b; +12 wide tile ids; +16 px
     mov     rbx, rdi
     mov     r12, rsi
     mov     r13, rdx
+    mov     [rsp + 12], eax
     mov     [rsp + 16], rcx
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
@@ -995,7 +1010,13 @@ render_box_px:
     movzx   ecx, byte [r8 + rcx]        ; z
     mov     edi, r14d
     call    mesh_face_uv                ; eax = u, edx = v inside the tile
+    cmp     dword [rsp + 12], 0
+    jne     .wide_tile
     movzx   ecx, byte [r12 + r14]       ; atlas tile of this face
+    jmp     .tile_loaded
+.wide_tile:
+    movzx   ecx, word [r12 + r14*2]
+.tile_loaded:
     mov     esi, ecx
     and     ecx, 15
     shl     ecx, 8

@@ -1,26 +1,28 @@
-; rpgscreens.asm - the RPG screens: class selection, skill tree, character sheet, merchant trade
-; and the elder's quest dialog. Immediate mode like invscreen.asm / menus.asm: every screen_*()
-; runs once per frame after ui_begin (app.asm draw_frame), reads ui_input / frame_input and
-; changes state with app_goto. A screen that acts returns at once, so one click never reaches two
-; widgets.
-;  - ST_SKILLS, ST_CHARACTER, ST_TRADE and ST_DIALOG close (back to ST_PLAYING) on Escape, the
-;    inventory key or the skills key. The first frame after a state change only clears
-;    app_entered: the key edge that opened the screen is still set in that frame and must not
-;    close it. Tab switches between the skill tree and the character sheet.
+; rpgscreens.asm - the RPG screens: class selection, skill tree, character sheet, a trader's
+; offers, the elder's quest dialog, a faction leader's word and a shrine's tribute. Immediate mode
+; like invscreen.asm / menus.asm: every screen_*() runs once per frame after ui_begin (app.asm
+; draw_frame), reads ui_input / frame_input and changes state with app_goto. A screen that acts
+; returns at once, so one click never reaches two widgets.
+;  - ST_SKILLS, ST_CHARACTER, ST_TRADE, ST_DIALOG, ST_SHRINE and ST_LEADER close (back to
+;    ST_PLAYING) on Escape, the inventory key or the skills key. The first frame after a state
+;    change only clears app_entered: the key edge that opened the screen is still set in that
+;    frame and must not close it. Tab switches between the skill tree and the character sheet.
 ;  - ST_CLASS cannot be closed: Escape saves and quits to the title, a card's button picks
 ;    the class (rpg_set_class) and starts playing.
 ; All progression data (class cards, node texts, branch names, stats, attributes, quests, trades)
-; comes from rpg.asm / quests.asm (Module API); the only text owned here is the UI wording.
+; comes from rpg.asm / quests.asm and all faction data (names, standings, rivals, champions,
+; tribute) from factions.asm (Module API); the only text owned here is the UI wording.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global screen_class, screen_skills, screen_character, screen_trade, screen_dialog
+global screen_shrine, screen_leader
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
 extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_centered
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
-extern app_goto, app_quit_to_title, key_name
+extern app_goto, app_quit_to_title, key_name, hud_banner_paint
 extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_points
 extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_class, rpg_level, rpg_points, rpg_xp_need, rpg_rank
@@ -29,7 +31,10 @@ extern rpg_branch_name, rpg_stat_info, rpg_format_stat, rpg_recompute
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
 extern rpg_respec_cost, rpg_respec, rpg_ability_tile
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
-extern trade_offer, trade_can, trade_execute
+extern trade_offer, trade_can, trade_execute, trade_count, trade_title
+extern screen_faction, faction_names, faction_standing, faction_tier, faction_tier_color
+extern faction_rivals, faction_champion_defeated, faction_tribute, faction_wanted
+extern tier_names, champion_names
 
 ; ---- colours ------------------------------------------------------------------------------
 %define WHITE       0xFFFFFFFF
@@ -75,10 +80,15 @@ extern trade_offer, trade_can, trade_execute
 %define SH_UTILITY  0xF2
 %define SH_END      0xFF
 
-%define TR_W        220                 ; merchant panel
-%define TR_H        236
-%define DL_W        260                 ; elder panel
+%define TR_W        220                 ; trade panel: TR_BASE + TR_ROW per offer high (236 for 10)
+%define TR_BASE     26
+%define TR_ROW      21
+%define DL_W        260                 ; elder and faction leader panel
 %define DL_H        144
+%define TB_W        260                 ; shrine panel
+%define TB_H        150
+%define TB_BTN_W    116                 ; its tribute buttons, in two columns
+%define TB_ROW_SIZE 24                  ; one tribute_rows entry
 
 %define TIP_MAXW    320                 ; skill tooltip wraps here
 %define HINT_COL    RGBA(255, 150, 110, 255)
@@ -140,7 +150,6 @@ s_per_s:        db "/s", 0
 s_plus:         db "+", 0
 s_empty:        db 0
 
-s_merchant:     db "Merchant", 0
 s_coins:        db "Coins: ", 0
 s_trade:        db "Trade", 0
 s_arrow:        db "->", 0
@@ -156,22 +165,55 @@ s_leave:        db "Leave", 0
 s_complete:     db "Complete", 0
 s_reset:        db "Reset skills: ", 0
 s_coins_sfx:    db " coins", 0
+s_leader_sfx:   db " Leader", 0
+s_shrine_sfx:   db " Shrine", 0
+s_standing:     db "Standing: ", 0
+s_open_paren:   db " (", 0
+s_close_paren:  db ")", 0
+s_greet_neutral: db "Prove yourself to us.", 0
+s_greet_friendly: db "You are welcome at our fires.", 0
+s_greet_allied: db "You are one of us now.", 0
+s_rivals:       db "Rivals: ", 0
+s_comma_sp:     db ", ", 0
+s_champion:     db "Champion: ", 0
+s_fallen:       db " (fallen)", 0
+s_wanted:       db "Wanted: ", 0
+s_tr_c5:        db "5 coins: +1", 0
+s_tr_c50:       db "50 coins: +10", 0
+s_tr_i1:        db "1 item: +1", 0
+s_tr_i10:       db "10 items: +10", 0
+s_pack_coins:   db "Coins ", 0
+s_pack_items:   db ", items ", 0
+
+align 8
+leader_greetings: dq s_greet_neutral, s_greet_friendly, s_greet_allied    ; by tier from Neutral up
+; the shrine's four tribute buttons: label, x, y (panel relative), kind (0 coins, 1 the wanted
+; item) and the units paid (faction_tribute's kind and units)
+tribute_rows:
+    dq s_tr_c5
+    dd 10, 60, 0, 5
+    dq s_tr_c50
+    dd 134, 60, 0, 50
+    dq s_tr_i1
+    dd 10, 84, 1, 1
+    dq s_tr_i10
+    dd 134, 84, 1, 10
 
 section .bss
 alignb 8
 s_px:           resd 1                  ; panel origin of the screen being drawn
 s_py:           resd 1
 sheet_scroll:   resd 1                  ; first listed row of the character sheet's stat list
-hdr_buf:        resb 64                 ; "<class> - Level N"
+hdr_buf:        resb 64                 ; "<class> - Level N" / "<Faction> Leader" / "Wanted: <item>"
 pts_buf:        resb 32                 ; "Points: N" / "Attribute points: N"
-coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / counts / summary lines
+coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / "Standing: N (Tier)" / counts / summary lines
 rank_buf:       resb 16                 ; "r/m" on a skill node
 fmt_buf:        resb 48                 ; one formatted stat
 sheet_rows:     resb 64                 ; the stat list's visible rows (sheet_build)
 tip_buf:        resb 256                ; skill tooltip text
 tip_hint:       resb 64                 ; ... and its requirement hint
 tip_row:        resb 128                ; one wrapped tooltip row
-row_buf:        resb 128                ; one wrapped class-card row
+row_buf:        resb 128                ; one wrapped class-card row / "Rivals: ..." / "Champion: ..."
 
 ; ---- macros ----------------------------------------------------------------------------------
 %macro ENTER_FRAME 1                    ; frame with %1 bytes of locals (%1 = 8 mod 16)
@@ -1471,10 +1513,12 @@ screen_character:
 .ret:
     LEAVE_FRAME 40
 
-; ---- merchant ------------------------------------------------------------------------------------
+; ---- traders -------------------------------------------------------------------------------------
 
-; screen_trade(): the 10 trade offers as "give -> get" rows with a Trade button each (enabled
-; while trade_can); hovering an icon names the item, or for a gear offer says what it rolls.
+; screen_trade(): the current trader's trade_count offers (trade_open picked the table) as
+; "give -> get" rows with a Trade button each (enabled while trade_can), under its trade_title;
+; the panel is as high as its rows. Hovering an icon names the item, or for a gear offer says
+; what it rolls.
 ; Locals: [rsp] item id under the mouse (0 = none), [rsp+4] trade_can of the row, [rsp+8] 1 when
 ; that icon is the "get" side
 screen_trade:
@@ -1483,12 +1527,18 @@ screen_trade:
     test    eax, eax
     jnz     .ret
     mov     edi, TR_W
-    mov     esi, TR_H
+    imul    esi, [trade_count], TR_ROW
+    add     esi, TR_BASE
     call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
     mov     dword [rsp], 0
-    TXTL    s_merchant, r12, 8, r13, 6, GOLD
+    mov     rdi, [trade_title]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    mov     ecx, GOLD
+    mov     r8d, 1
+    call    ui_text
     lea     r15, [coin_buf]
     APPZ    s_coins
     mov     edi, GOLD_COIN
@@ -1507,7 +1557,7 @@ screen_trade:
     call    ui_text
     xor     ebx, ebx
 .row:
-    imul    eax, ebx, 21
+    imul    eax, ebx, TR_ROW
     lea     r14d, [rax + r13 + 22]      ; row y
     mov     edi, ebx
     call    trade_offer
@@ -1589,7 +1639,7 @@ screen_trade:
     call    trade_execute
 .next:
     inc     ebx
-    cmp     ebx, NUM_TRADES
+    cmp     ebx, [trade_count]
     jb      .row
     mov     eax, [rsp]                  ; item tooltip, like the inventory screens
     test    eax, eax
@@ -1748,5 +1798,265 @@ screen_dialog:
     test    eax, eax
     jz      .ret
     call    rpg_respec
+.ret:
+    LEAVE_FRAME 24
+
+; ---- factions ----------------------------------------------------------------------------------
+
+; draw_standing(edi faction, esi x, edx y): "Standing: N (Tier)" at (x, y) in the colour of the
+; faction's tier. ebx = faction, r12d = x, r13d = y, r15 = write cursor into coin_buf
+draw_standing:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r15
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    lea     r15, [coin_buf]
+    APPZ    s_standing
+    mov     edi, ebx
+    call    faction_standing
+    APPN    eax
+    APPZ    s_open_paren
+    mov     edi, ebx
+    call    faction_tier
+    mov     ecx, eax
+    lea     rdx, [tier_names]
+    APPP    [rdx + rcx*8]
+    APPZ    s_close_paren
+    mov     byte [r15], 0
+    mov     edi, ebx
+    call    faction_tier_color
+    mov     ecx, eax
+    lea     rdi, [coin_buf]
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     r8d, 1
+    call    ui_text
+    pop     r15
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; screen_leader(): ST_LEADER, what the leader of screen_faction says: "<Faction> Leader", the
+; standing in its tier colour, a greeting by tier (a tier under Neutral reads as Neutral), the
+; rivals and the champion (fallen or not), and Leave. Informational: leader quests and rewards
+; belong to the faction arcs.
+; r12d, r13d = panel origin, r14d = faction, ebx = rivals still to name (a bit per faction),
+; r15 = write cursor. Frame: [rsp] where the first rival's name starts, [rsp+8] the rival being
+; named
+screen_leader:
+    ENTER_FRAME 24
+    call    close_check
+    test    eax, eax
+    jnz     .ret
+    mov     edi, DL_W
+    mov     esi, DL_H
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    mov     r14d, [screen_faction]
+    lea     r15, [hdr_buf]              ; "<Faction> Leader"
+    lea     rax, [faction_names]
+    APPP    [rax + r14*8]
+    APPZ    s_leader_sfx
+    mov     byte [r15], 0
+    lea     rdi, [hdr_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    mov     ecx, GOLD
+    mov     r8d, 1
+    call    ui_text
+    mov     edi, r14d
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 24]
+    call    draw_standing
+    mov     edi, r14d                   ; the greeting: Neutral, Friendly or Allied
+    call    faction_tier
+    xor     ecx, ecx
+    sub     eax, TIER_NEUTRAL
+    cmovs   eax, ecx
+    lea     rdx, [leader_greetings]
+    mov     rdi, [rdx + rax*8]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 40]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    lea     rdx, [faction_rivals]       ; "Rivals: A, B"
+    movzx   ebx, byte [rdx + r14]
+    lea     r15, [row_buf]
+    APPZ    s_rivals
+    mov     [rsp], r15
+.rival:
+    bsf     eax, ebx                    ; the next rival still to name
+    jz      .rivals_done
+    btr     ebx, eax
+    mov     [rsp + 8], eax
+    cmp     r15, [rsp]
+    je      .first_rival
+    APPZ    s_comma_sp
+.first_rival:
+    mov     eax, [rsp + 8]
+    lea     rdx, [faction_names]
+    APPP    [rdx + rax*8]
+    jmp     .rival
+.rivals_done:
+    mov     byte [r15], 0
+    lea     rdi, [row_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 64]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    lea     r15, [row_buf]              ; "Champion: <name>", with " (fallen)" once defeated
+    APPZ    s_champion
+    lea     rdx, [champion_names]
+    APPP    [rdx + r14*8]
+    mov     edi, r14d
+    call    faction_champion_defeated
+    test    eax, eax
+    jz      .champion_up
+    APPZ    s_fallen
+.champion_up:
+    mov     byte [r15], 0
+    lea     rdi, [row_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 78]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    BTN     s_leave, r12, (DL_W - 100) / 2, r13, 118, 100
+    test    eax, eax
+    jz      .ret
+    mov     edi, ST_PLAYING
+    call    app_goto
+.ret:
+    LEAVE_FRAME 24
+
+; screen_shrine(): ST_SHRINE, the tribute screen of the shrine of screen_faction: "<Faction>
+; Shrine", the standing, the item it wants, four buttons (5 or 50 coins, 1 or 10 of the item) that
+; call faction_tribute, what the pack holds and Leave. A button is enabled while the pack holds
+; its payment and the standing is below the faction's cap (CULT_MAX for the Ashen Cult). The
+; banner of a tier change (faction_add) is painted again above the panel, which covers the place
+; hud_draw gave it.
+; r12d, r13d = panel origin, r14d = faction, ebx = tribute row, r15 = its tribute_rows entry (then
+; the write cursor). Frame: [rsp] coins in the pack, [rsp+4] the wanted item's count, [rsp+8] 1
+; below the cap, [rsp+12] the wanted item
+screen_shrine:
+    ENTER_FRAME 24
+    call    close_check
+    test    eax, eax
+    jnz     .ret
+    mov     edi, TB_W
+    mov     esi, TB_H
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    mov     r14d, [screen_faction]
+    lea     r15, [hdr_buf]              ; "<Faction> Shrine"
+    lea     rax, [faction_names]
+    APPP    [rax + r14*8]
+    APPZ    s_shrine_sfx
+    mov     byte [r15], 0
+    lea     rdi, [hdr_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 6]
+    mov     ecx, GOLD
+    mov     r8d, 1
+    call    ui_text
+    mov     edi, r14d
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 24]
+    call    draw_standing
+    lea     rax, [faction_wanted]       ; "Wanted: <item>"
+    movzx   eax, byte [rax + r14]
+    mov     [rsp + 12], eax
+    lea     r15, [hdr_buf]
+    APPZ    s_wanted
+    mov     eax, [rsp + 12]
+    lea     rdx, [item_names]
+    APPP    [rdx + rax*8]
+    mov     byte [r15], 0
+    lea     rdi, [hdr_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 40]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    mov     edi, GOLD_COIN              ; what the pack holds
+    call    inv_count
+    mov     [rsp], eax
+    mov     edi, [rsp + 12]
+    call    inv_count
+    mov     [rsp + 4], eax
+    mov     edi, r14d                   ; is the standing below the faction's cap?
+    call    faction_standing
+    mov     ecx, STANDING_MAX
+    mov     edx, CULT_MAX
+    cmp     r14d, FAC_CULT
+    cmove   ecx, edx
+    xor     edx, edx
+    cmp     eax, ecx
+    setl    dl
+    mov     [rsp + 8], edx
+    xor     ebx, ebx
+.row:
+    imul    eax, ebx, TB_ROW_SIZE
+    lea     r15, [tribute_rows]
+    add     r15, rax
+    mov     eax, [r15 + 16]             ; kind: 0 pays in coins, 1 in the wanted item
+    mov     ecx, [rsp + rax*4]          ; ... so that is the count the pack holds of it
+    xor     edx, edx
+    cmp     ecx, [r15 + 20]
+    setae   dl
+    and     edx, [rsp + 8]
+    mov     r8d, edx                    ; enabled: payable and below the cap
+    mov     rdi, [r15]
+    mov     esi, [r15 + 8]
+    add     esi, r12d
+    mov     edx, [r15 + 12]
+    add     edx, r13d
+    mov     ecx, TB_BTN_W
+    call    ui_button
+    test    eax, eax
+    jz      .next
+    mov     edi, r14d
+    mov     esi, [r15 + 16]
+    mov     edx, [r15 + 20]
+    call    faction_tribute
+.next:
+    inc     ebx
+    cmp     ebx, 4
+    jb      .row
+    lea     r15, [coin_buf]             ; "Coins N, items M"
+    APPZ    s_pack_coins
+    APPN    dword [rsp]
+    APPZ    s_pack_items
+    APPN    dword [rsp + 4]
+    mov     byte [r15], 0
+    lea     rdi, [coin_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 108]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    BTN     s_leave, r12, (TB_W - 100) / 2, r13, 126, 100
+    test    eax, eax
+    jz      .banner
+    mov     edi, ST_PLAYING
+    call    app_goto
+    jmp     .ret
+.banner:
+    lea     edi, [r13 - 18]             ; a tier change shows its banner (faction_add), which this
+    mov     eax, 2                      ; panel covers in the middle of the screen: above the panel
+    cmp     edi, eax
+    cmovl   edi, eax
+    call    hud_banner_paint
 .ret:
     LEAVE_FRAME 24

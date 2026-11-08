@@ -6,7 +6,7 @@ global test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_l
 global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
-global test_new_blocks_tables
+global test_new_blocks_tables, test_shrine_block_tables
 
 extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
@@ -16,7 +16,7 @@ extern item_break_time, item_harvest_drop
 extern world_clear, world_set, world_header, conts
 extern cont_create, cont_fill_from_inv
 extern block_flags, block_shape, block_tiles, block_hardness, block_tool, block_drop, block_base
-extern item_max_stack, item_icon, item_names
+extern item_max_stack, item_icon, item_names, block_light, block_is_usable, texgen_build
 
 section .rodata
 align 16
@@ -1256,6 +1256,131 @@ test_new_blocks_tables:
     lea     rax, [name_rows_end]
     cmp     rbx, rax
     jb      .name
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+section .rodata
+; the 22 tiles 0.10 draws: shrine top and side, then the faction skins 304..323
+art_tiles:
+    dw TILE_SHRINE_TOP, TILE_SHRINE_SIDE
+%assign art_i 0
+%rep 20
+    dw TILE_FOLK0 + art_i
+%assign art_i art_i + 1
+%endrep
+art_tiles_end:
+nm_shrine:  db "Shrine", 0
+t_minus_one: dd -1.0
+
+section .bss
+align 16
+art_atlas: resb ATLAS_W * ATLAS_H * 4
+
+section .text
+
+; test_shrine_block_tables() -> eax 0 pass
+;   SHRINE .. SHRINE + 4: flags solid + opaque, tiles (TILE_SHRINE_TOP, TILE_SHRINE_SIDE,
+;   TILE_STONE_BRICK), hardness -1, no drop, variant base SHRINE, light 10, no item form (stack 0,
+;   icon 0), the name "Shrine", right-clickable; SHRINE + 5 is not a block. The atlas draws the 22
+;   0.10 tiles (228, 229, 304..323) fully opaque with no black pixel (a bitmap char missing from
+;   its palette would leave a transparent or black one).
+test_shrine_block_tables:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    TEST_INIT
+    mov     ebx, SHRINE
+.block:
+    lea     rdx, [block_flags]
+    movzx   eax, byte [rdx + rbx]
+    cmp     eax, FLAG_SOLID | FLAG_OPAQUE
+    jne     .fail
+    lea     rdx, [block_tiles]
+    lea     rsi, [rbx + rbx*2]
+    movzx   eax, byte [rdx + rsi]
+    cmp     eax, TILE_SHRINE_TOP
+    jne     .fail
+    movzx   eax, byte [rdx + rsi + 1]
+    cmp     eax, TILE_SHRINE_SIDE
+    jne     .fail
+    movzx   eax, byte [rdx + rsi + 2]
+    cmp     eax, TILE_STONE_BRICK
+    jne     .fail
+    lea     rdx, [block_hardness]
+    movss   xmm0, [rdx + rbx*4]
+    ucomiss xmm0, [t_minus_one]
+    jne     .fail
+    jp      .fail
+    cmp     byte [block_drop + rbx], 0
+    jne     .fail
+    movzx   eax, byte [block_base + rbx]
+    cmp     eax, SHRINE
+    jne     .fail
+    cmp     byte [block_light + rbx], 10
+    jne     .fail
+    cmp     byte [item_max_stack + rbx], 0
+    jne     .fail
+    cmp     byte [item_icon + rbx], 0
+    jne     .fail
+    lea     rdx, [item_names]
+    mov     rdi, [rdx + rbx*8]
+    lea     rsi, [nm_shrine]
+    call    nb_streq
+    test    eax, eax
+    jz      .fail
+    mov     edi, ebx
+    call    block_is_usable
+    cmp     eax, 1
+    jne     .fail
+    inc     ebx
+    cmp     ebx, SHRINE + 5
+    jb      .block
+    mov     edi, SHRINE + 5                 ; past the group: not a block, not usable
+    call    block_is_usable
+    test    eax, eax
+    jnz     .fail
+    ; the atlas: every pixel of the new tiles is opaque and not black
+    lea     rdi, [art_atlas]
+    call    texgen_build
+    lea     rbx, [art_tiles]
+.tile:
+    movzx   eax, word [rbx]
+    mov     ecx, eax
+    shr     ecx, 4
+    shl     ecx, 12                         ; row * 16 px * 256 px per row
+    and     eax, 15
+    shl     eax, 4
+    add     eax, ecx                        ; the tile's first pixel
+    lea     r12, [art_atlas]
+    lea     r12, [r12 + rax*4]
+    xor     ecx, ecx                        ; py
+.py:
+    xor     edx, edx                        ; px
+.px:
+    mov     eax, ecx
+    shl     eax, 8
+    add     eax, edx
+    mov     eax, [r12 + rax*4]
+    cmp     eax, 0xFF000000
+    jbe     .fail                           ; alpha < 255 or rgb == 0
+    inc     edx
+    cmp     edx, 16
+    jb      .px
+    inc     ecx
+    cmp     ecx, 16
+    jb      .py
+    add     rbx, 2
+    lea     rax, [art_tiles_end]
+    cmp     rbx, rax
+    jb      .tile
     xor     eax, eax
     jmp     .out
 .fail:

@@ -89,9 +89,9 @@ cap_tab:
     CAPROW STAT_POISON_DMG,    -90, NOHI
 cap_tab_end:
 
-; XP for a kill the player earned at level 1, by mob type 0..8 (the boss and folk give none
-; here)
-kill_xp:    db 0, 10, 2, 15, 12, 10, 2, 0, 0
+; XP for a kill the player earned at level 1, by mob type 0..8 (the boss gives none here; folk
+; 12)
+kill_xp:    db 0, 10, 2, 15, 12, 10, 2, 0, 12
 ; XP for mining an ore: block id, XP; ended by a 0 id
 ore_xp:     db COAL_ORE, 2, IRON_ORE, 5, GOLD_ORE, 8, DIAMOND_ORE, 20, 0, 0
 

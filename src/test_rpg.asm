@@ -21,7 +21,7 @@ extern rpg_respec_cost, rpg_respec, rpg_keystone
 extern rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 extern quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
-extern trade_offer, trade_can, trade_execute
+extern trade_offer, trade_can, trade_execute, trade_open, trade_count
 
 %define R_CLASS   rpg_state + RPGSAVE.class
 %define R_LEVEL   rpg_state + RPGSAVE.level
@@ -256,8 +256,8 @@ exp_caps:
 exp_caps_end:
 
 kill_xp_tab:                            ; plain XP of a kill by mob type 1..8
-    db 10, 2, 15, 12, 10, 2, 0, 0
-trade_tab:                              ; give, give_n, get, get_n
+    db 10, 2, 15, 12, 10, 2, 0, 12
+t_trades:                              ; give, give_n, get, get_n
     dd GOLD_COIN, 6, HEALTH_POTION, 1
     dd GOLD_COIN, 6, MANA_POTION, 1
     dd GOLD_COIN, 4, ARROW, 16
@@ -2127,6 +2127,8 @@ rolled_ok:
 test_trade_exchanges_items:
     TEST_BEGIN
     call    reset_all
+    mov     edi, FAC_VILLAGERS              ; the Merchant's table, whatever an earlier test opened
+    call    trade_open
     ; the offer table
     xor     r12d, r12d
 .offers:
@@ -2136,7 +2138,7 @@ test_trade_exchanges_items:
     jz      .fail
     mov     rcx, r12
     shl     rcx, 4
-    lea     rdx, [trade_tab]
+    lea     rdx, [t_trades]
     add     rdx, rcx
     mov     ecx, [rdx]
     cmp     [rax], ecx
@@ -2151,11 +2153,20 @@ test_trade_exchanges_items:
     cmp     [rax + 12], ecx
     jne     .fail
     inc     r12d
-    cmp     r12d, NUM_TRADES
+    cmp     r12d, [trade_count]
     jb      .offers
-    CALL1   trade_offer, NUM_TRADES, 0
-    CALL1   trade_can, NUM_TRADES, 0
-    CALL1   trade_execute, NUM_TRADES, 0
+    mov     edi, [trade_count]              ; one past the last row
+    call    trade_offer
+    test    rax, rax
+    jnz     .fail
+    mov     edi, [trade_count]
+    call    trade_can
+    test    eax, eax
+    jnz     .fail
+    mov     edi, [trade_count]
+    call    trade_execute
+    test    eax, eax
+    jnz     .fail
     ; 5 coins are one short of a potion
     ADD     GOLD_COIN, 5
     CALL1   trade_can, 0, 0

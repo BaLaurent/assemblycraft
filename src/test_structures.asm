@@ -1,30 +1,46 @@
-; test_structures.asm - the region plans, the built dungeons, villages and crypts (through gen_column),
-; the loot of generated chests, the village NPCs, the per-site state (dungeon kills, cleared dungeons,
-; the crypt's boss) and the sites cached around the player. Written as properties of the plan's
-; rules, so they hold for any terrain: a site is looked up by planning regions, not by coordinates.
+; test_structures.asm - the region plans, the built dungeons, villages, crypts and faction camps (through
+; gen_column), the loot of generated chests, the folk of villages and camps, the roads between camps and
+; the patrols on them, the per-site state (dungeon kills, cleared dungeons, the crypt's boss, a camp's
+; freed captive) and the sites cached around the player. Written as properties of the plan's rules, so
+; they hold for any terrain: a site is looked up by planning regions, not by coordinates.
 %include "common.inc"
 default rel
 
 global test_structure_sites_deterministic, test_dungeon_built_with_chests
 global test_village_built_with_npcs, test_dungeon_clears_after_kills
 global test_crypt_spawns_boss_once, test_sitestate_eviction, test_region_plan_camps
+global test_camp_built_with_slots, test_camp_npcs_recreated, test_roads_stamped
+global test_patrol_spawns_on_road
 
-extern world_clear, world_header, worldgen_set_seed
-extern region_plan, structures_fill_chest, structures_refresh, structures_shift
+extern world_clear, world_header, worldgen_set_seed, world_set, world_column_claim
+extern region_plan, camp_plan, structures_fill_chest, structures_refresh, structures_shift
 extern sites, site_count, site_state, structures_reset, structures_step, structures_nearest
-extern structures_on_mob_killed, structures_on_boss_killed
-extern gen_column, gen_height, gen_biome
+extern structures_on_mob_killed, structures_on_boss_killed, structures_mark_freed
+extern roads_edges, roads_in_rect, road_mask, road_mark, camp_main, patrol_point, patrol_consider
+extern gen_column, gen_height, gen_biome, structures_stamp
 extern world_origin_x, world_origin_z
 extern mobs, mobs_clear, mob_spawn, mob_count_type
 extern rpg_state, rpg_reset, rpg_xp_need
 extern fx_clear, survival_reset, combat_reset
-extern game_mode, settings, player
+extern game_mode, game_time, settings, player
 extern item_gear
 
 %define TG_W 8                          ; the grid of generated columns: 8 x 4 (TG_W is a shift of 3 below)
 %define TG_H 4
 %define T_REGIONS 9
 %define EXIT_SWEEP 6                    ; check_site_exits looks at the regions -6 .. 6
+
+; SETF dst, value: a float constant into memory
+%macro SETF 2
+    mov     dword %1, __float32__(%2)
+%endmacro
+
+; PLAYER_AT x, z: the player stands at that (float) x, z of the arena, feet at y 11
+%macro PLAYER_AT 2
+    SETF    [player + BODY.x], %1
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], %2
+%endmacro
 
 section .rodata
 align 4
@@ -46,6 +62,16 @@ k_m100_5: dd -100.5
 k_512:   dd 512.0
 k_106_5: dd 106.5
 k_94_5:  dd 94.5
+k_150_5: dd 150.5
+k_209:   dd 209.0
+k_210_5: dd 210.5
+k_212:   dd 212.0
+k_250_5: dd 250.5
+k_50_5:  dd 50.5
+k_m21_5: dd -21.5
+k_849_5: dd 849.5
+k_156_5: dd 156.5
+k_196_5: dd 196.5
 
 ; the plan's trigger boxes relative to a site's (x, y, z): lo dx, dy, dz, hi dx, dy, dz, by kind - 1
 t_box:
@@ -66,6 +92,51 @@ t_regions:
 ; the centres of a dungeon's three rooms relative to its site: (dx, dz)
 room_cx:
     dd 0, 0,  14, 0,  14, 14
+; what a camp is built of by faction, 4 bytes: wall, roof, floor, post
+t_mats:
+    db 0, 0, 0, 0
+    db LOG,               PLANKS,       COBBLE,              FENCE
+    db MOSSY_COBBLESTONE, COAL_BLOCK,   CRACKED_STONE_BRICK, FENCE
+    db PINE_LOG,          WOOL,         PLANKS,              FENCE
+    db STONE_BRICK,       SMOOTH_STONE, COBBLE,              COBBLE
+; what a site's builder can touch relative to its x, z: lo dx, lo dz, hi dx, hi dz, by kind - 1
+t_foot:
+    dd -16, -16, 16, 16
+    dd -66,  -6, 20, 20
+    dd -69,  -9,  9,  9
+    dd -11, -11, 11, 11
+; the super-regions roads are looked for first: (sx, sz) pairs
+t_super:
+    dd 0, 0,  -1, 0,  0, -1,  -1, -1
+; where on a road the surface is checked, in percent of its length from A
+t_pct:
+    db 20, 35, 50, 65, 80
+; the items a camp's chest holds
+t_camp_items:
+    db GOLD_COIN, ARROW, COOKED_PORKCHOP, IRON_INGOT, HEALTH_POTION
+; the folk of a camp by faction beyond its leader, trader and two workers, 8 bytes: guards, their classes in
+; the order of the guard homes, the champion's class, the faction of the captive (0xFF: none), a pad
+t_camp_folk:
+    db 0, 0, 0, 0, 0, 0, 0xFF, 0
+    db 4, FCLASS_ARCHER,     FCLASS_BERSERKER, FCLASS_BRUTE,  FCLASS_ARCHER, FCLASS_BERSERKER, FAC_VILLAGERS, 0
+    db 3, FCLASS_ACOLYTE,    FCLASS_ACOLYTE,   FCLASS_BRUTE,  0,             FCLASS_ACOLYTE,   FAC_BEASTFOLK, 0
+    db 3, FCLASS_BERSERKER,  FCLASS_BERSERKER, FCLASS_ARCHER, 0,             FCLASS_BERSERKER, 0xFF,          0
+    db 2, FCLASS_BRUTE,      FCLASS_ARCHER,    0,             0,             FCLASS_BRUTE,     FAC_BANDITS,   0
+; the guard homes of a camp, (dx, dz) in order
+t_guard_homes:
+    db 0, -9,  9, 0,  -9, 0,  3, 9
+; the classes of the three members of a road's patrol by the faction of its start camp, in the order of
+; their places across the road (0, -1.5, +1.5)
+t_patrol_classes:
+    db 0, 0, 0
+    db FCLASS_ARCHER,    FCLASS_BERSERKER, FCLASS_BRUTE
+    db FCLASS_ACOLYTE,   FCLASS_ACOLYTE,   FCLASS_BRUTE
+    db FCLASS_BERSERKER, FCLASS_BERSERKER, FCLASS_ARCHER
+    db FCLASS_BRUTE,     FCLASS_ARCHER,    FCLASS_BRUTE
+align 4
+; the cells (dx, dz) of a camp none of its buildings stands on (nor any palisade): its clearing shows
+t_free_cells:
+    dd -9, -9,  9, -9,  -9, 9,  9, 9,  -5, 0,  5, 0,  0, -5,  -6, 4,  8, 5
 
 section .bss
 alignb 64
@@ -85,6 +156,8 @@ snap_nb: resd 4
 fsite:   resb 3 * SITE_size                     ; fabricated sites
 alignb 64
 tg_spare: resb GENBUF_size                     ; a GENBUF outside the grid
+mask_a:  resb 22 * 22                           ; a copy of road_mask
+road_buf: resb 3 * ROADEDGE_size               ; roads_edges' output
 
 section .text
 
@@ -1721,12 +1794,131 @@ count_role:
     jnz     .mob
     ret
 
-; the first village the plans have, built through gen_column: the well's glass at its middle, the
-; first house with its cobble floor, plank roof, closed wooden door (west wall, facing the well), wall
-; torch inside and plank wall opposite the door, gravel paths where the merchant and the elder stand.
-; Then a village in sites[] (any mode): its merchant and elder appear at their homes when its column
-; is loaded, once, and again a check later when removed; none while the player is 96 or more blocks away
-; Frame: [rsp .. +56) the site, [rsp+56] saved game_mode.
+; steps(edi n): structures_step n times
+steps:
+    push    rbx
+    mov     ebx, edi
+.l:
+    test    ebx, ebx
+    jz      .ret
+    call    structures_step
+    dec     ebx
+    jmp     .l
+.ret:
+    pop     rbx
+    ret
+
+; count_folk() -> eax the live MOB_FOLK mobs (leaf)
+count_folk:
+    xor     eax, eax
+    lea     rcx, [mobs]
+    mov     edx, MAX_MOBS
+.mob:
+    cmp     dword [rcx + MOB.type], MOB_FOLK
+    jne     .next
+    inc     eax
+.next:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .mob
+    ret
+
+; folk_at(edi role, esi x, edx z) -> rax the live folk of that role whose home is the middle of the cell
+; (x, z), else 0 (leaf)
+folk_at:
+    cvtsi2ss xmm0, esi
+    addss   xmm0, [k_half]
+    cvtsi2ss xmm1, edx
+    addss   xmm1, [k_half]
+    lea     rax, [mobs]
+    mov     ecx, MAX_MOBS
+.mob:
+    cmp     dword [rax + MOB.type], MOB_FOLK
+    jne     .next
+    movzx   edx, byte [rax + MOB.role]
+    cmp     edx, edi
+    jne     .next
+    ucomiss xmm0, [rax + MOB.home_x]
+    jne     .next
+    jp      .next
+    ucomiss xmm1, [rax + MOB.home_z]
+    jne     .next
+    jp      .next
+    ret
+.next:
+    add     rax, MOB_size
+    dec     ecx
+    jnz     .mob
+    xor     eax, eax
+    ret
+
+; EXPECT_FOLK role, dx, dz, faction, class: a live folk of that role has its home at the fabricated site
+; (100, 100) + (dx, dz), is of that faction and class (rax: that folk)
+%macro EXPECT_FOLK 5
+    mov     edi, %1
+    mov     esi, 100 + (%2)
+    mov     edx, 100 + (%3)
+    call    folk_at
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax + MOB.faction], %4
+    jne     .fail
+    cmp     byte [rax + MOB.fclass], %5
+    jne     .fail
+%endmacro
+
+; check_village_folk(edi champion) -> eax 0 when the fabricated village at (100, 60, 100) holds exactly its
+; Villagers: leader (-6, 0), trader (6, 0), guards ARCHER (-12, -12) and BRUTE (12, 12), workers (-4, 4)
+; and (4, -4) and, when champion is 1, the champion BRUTE (-12, 12), elite and asleep; all with their feet
+; at the village's ground + 1; nobody else
+check_village_folk:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     [rsp], edi
+    EXPECT_FOLK ROLE_LEADER, -6, 0, FAC_VILLAGERS, FCLASS_NONE
+    EXPECT_FOLK ROLE_TRADER, 6, 0, FAC_VILLAGERS, FCLASS_NONE
+    EXPECT_FOLK ROLE_GUARD, -12, -12, FAC_VILLAGERS, FCLASS_ARCHER
+    EXPECT_FOLK ROLE_GUARD, 12, 12, FAC_VILLAGERS, FCLASS_BRUTE
+    EXPECT_FOLK ROLE_WORKER, -4, 4, FAC_VILLAGERS, FCLASS_NONE
+    EXPECT_FOLK ROLE_WORKER, 4, -4, FAC_VILLAGERS, FCLASS_NONE
+    movss   xmm0, [rax + BODY.y]
+    comiss  xmm0, [k_61]
+    jne     .fail
+    jp      .fail
+    cmp     dword [rsp], 0
+    je      .count
+    EXPECT_FOLK ROLE_CHAMPION, -12, 12, FAC_VILLAGERS, FCLASS_BRUTE
+    cmp     dword [rax + MOB.elite], 1
+    jne     .fail
+    test    byte [rax + MOB.fflags], FF_ASLEEP
+    jz      .fail
+.count:
+    call    count_folk
+    mov     ecx, 6
+    add     ecx, [rsp]
+    cmp     eax, ecx
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; the first village the plans have, built through gen_column: the well's glass at its middle, the first
+; house with its cobble floor, plank roof, closed wooden door (west wall, facing the well), wall torch
+; inside and plank wall opposite the door, the Villagers' shrine at (4, 1, 4), gravel paths where the trader
+; and the leader stand. Then a village in sites[] (any mode): the first time it is seen, the player at
+; its centre, its seven Villagers (check_village_folk; the champion asleep) appear at their homes, once;
+; removed, they stay away while the player stands within 32 blocks of the centre and are back within 60
+; steps when he is 32 .. 96 away; none are created when he is farther; with the Villagers' champion
+; defeated six come
+; Frame: [rsp .. +56) the site, [rsp+56] saved game_mode, [rsp+60] champion bits, [rsp+64] player x, y, z.
 test_village_built_with_npcs:
     push    rbp
     mov     rbp, rsp
@@ -1735,12 +1927,21 @@ test_village_built_with_npcs:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 72
+    sub     rsp, 88
     mov     eax, [game_mode]
     mov     [rsp + 56], eax
+    movzx   eax, byte [world_header + WORLDHDR.champions]
+    mov     [rsp + 60], eax
+    mov     eax, [player + BODY.x]
+    mov     [rsp + 64], eax
+    mov     eax, [player + BODY.y]
+    mov     [rsp + 68], eax
+    mov     eax, [player + BODY.z]
+    mov     [rsp + 72], eax
     call    world_clear
     call    mobs_clear
     call    structures_reset
+    mov     byte [world_header + WORLDHDR.champions], 0
     mov     edi, 42
     call    worldgen_set_seed
     mov     edi, SITE_VILLAGE
@@ -1763,13 +1964,14 @@ test_village_built_with_npcs:
     EXPECT_ID 7, 2, 0, WOOD_DOOR + DIR_W * 4 + 1
     EXPECT_ID 10, 2, 1, TORCH_WALL + DIR_E      ; the wall torch inside, leaning on the east wall
     EXPECT_ID 11, 1, 0, PLANKS
-    EXPECT_ID 6, 0, 0, GRAVEL           ; the merchant's cell and the elder's stand on the paths
+    EXPECT_ID 4, 1, 4, SHRINE + FAC_VILLAGERS   ; the shrine
+    EXPECT_ID 6, 0, 0, GRAVEL           ; the trader's cell and the leader's stand on the paths
     EXPECT_ID -6, 0, 0, GRAVEL
     mov     rdi, rbx                    ; the whole 31 x 31 area is flattened
     call    check_village_area
     test    eax, eax
     jnz     .fail
-    ; ---- the NPCs
+    ; ---- the folk
     lea     rdi, [sites]
     mov     esi, SITE_VILLAGE
     mov     edx, 100
@@ -1778,100 +1980,53 @@ test_village_built_with_npcs:
     xor     r9d, r9d
     call    fab_site
     mov     dword [site_count], 1
-    mov     dword [game_mode], MODE_CREATIVE    ; villagers do not depend on the mode
-    movss   xmm0, [k_100_5]
-    movss   [player + BODY.x], xmm0
-    movss   [player + BODY.z], xmm0
-    movss   xmm0, [k_41]
-    movss   [player + BODY.y], xmm0
+    mov     dword [game_mode], MODE_CREATIVE    ; the folk of a village do not depend on the mode
+    PLAYER_AT 100.5, 100.5              ; at its centre: a world loaded there is populated at once
     call    structures_step
-    mov     edi, ROLE_TRADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
-    mov     edi, ROLE_LEADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
-    lea     rax, [mobs]                 ; their homes: (x + 6.5, z + 0.5) and (x - 5.5, z + 0.5)
-    mov     ecx, MAX_MOBS
-.homes:
-    cmp     dword [rax + MOB.type], MOB_FOLK
-    jne     .home_next
-    cmp     byte [rax + MOB.role], ROLE_TRADER
-    jne     .elder
-    movss   xmm0, [rax + MOB.home_x]
-    comiss  xmm0, [k_106_5]
-    jne     .fail
-    jp      .fail
-    jmp     .home_z
-.elder:
-    cmp     byte [rax + MOB.role], ROLE_LEADER
-    jne     .home_next
-    movss   xmm0, [rax + MOB.home_x]
-    comiss  xmm0, [k_94_5]
-    jne     .fail
-    jp      .fail
-.home_z:
-    movss   xmm0, [rax + MOB.home_z]
-    comiss  xmm0, [k_100_5]
-    jne     .fail
-    jp      .fail
-    movss   xmm0, [rax + BODY.y]        ; feet on the village's ground + 1
-    comiss  xmm0, [k_61]
-    jne     .fail
-    jp      .fail
-.home_next:
-    add     rax, MOB_size
-    dec     ecx
-    jnz     .homes
-    mov     r12d, 60                    ; the next check, 60 steps on, finds them: no duplicates
-.dup:
-    call    structures_step
-    dec     r12d
-    jnz     .dup
-    mov     edi, ROLE_TRADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
-    mov     edi, ROLE_LEADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
-    call    mobs_clear                  ; removed: the next check is due 60 steps after the last
-    mov     r12d, 59
-.wait:
-    call    structures_step
-    dec     r12d
-    jnz     .wait
-    mov     edi, ROLE_TRADER
-    call    count_role
+    mov     edi, 1
+    call    check_village_folk
     test    eax, eax
     jnz     .fail
-    call    structures_step             ; the 60th: they are back
-    mov     edi, ROLE_TRADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
-    mov     edi, ROLE_LEADER
-    call    count_role
-    cmp     eax, 1
-    jne     .fail
+    PLAYER_AT 150.5, 100.5              ; 50 blocks: the next check, 60 steps on, finds them: no duplicates
+    mov     edi, 60
+    call    steps
+    mov     edi, 1
+    call    check_village_folk
+    test    eax, eax
+    jnz     .fail
+    PLAYER_AT 100.5, 100.5              ; removed with the player inside the 32 blocks: they stay away
+    call    mobs_clear
+    mov     edi, 120
+    call    steps
+    call    count_folk
+    test    eax, eax
+    jnz     .fail
+    PLAYER_AT 120.5, 100.5              ; 20 blocks from the centre: still none
+    mov     edi, 120
+    call    steps
+    call    count_folk
+    test    eax, eax
+    jnz     .fail
+    PLAYER_AT 150.5, 100.5              ; 50 blocks: back with the next check
+    mov     edi, 60
+    call    steps
+    mov     edi, 1
+    call    check_village_folk
+    test    eax, eax
+    jnz     .fail
     call    mobs_clear                  ; the player far away: nobody is created
-    movss   xmm0, [k_270_5]
-    movss   [player + BODY.x], xmm0
-    movss   [player + BODY.z], xmm0
-    mov     r12d, 61
-.far:
-    call    structures_step
-    dec     r12d
-    jnz     .far
-    mov     edi, ROLE_TRADER
-    call    count_role
+    PLAYER_AT 270.5, 270.5
+    mov     edi, 61
+    call    steps
+    call    count_folk
     test    eax, eax
     jnz     .fail
-    mov     edi, ROLE_LEADER
-    call    count_role
+    or      byte [world_header + WORLDHDR.champions], 1 << FAC_VILLAGERS
+    PLAYER_AT 150.5, 100.5              ; the champion slain for good: the other six come back
+    mov     edi, 60
+    call    steps
+    xor     edi, edi
+    call    check_village_folk
     test    eax, eax
     jnz     .fail
     xor     eax, eax
@@ -1885,8 +2040,16 @@ test_village_built_with_npcs:
     call    world_clear
     mov     eax, [rsp + 56]
     mov     [game_mode], eax
+    mov     eax, [rsp + 60]
+    mov     [world_header + WORLDHDR.champions], al
+    mov     eax, [rsp + 64]
+    mov     [player + BODY.x], eax
+    mov     eax, [rsp + 68]
+    mov     [player + BODY.y], eax
+    mov     eax, [rsp + 72]
+    mov     [player + BODY.z], eax
     mov     eax, ebx
-    add     rsp, 72
+    add     rsp, 88
     pop     r15
     pop     r14
     pop     r13
@@ -2565,8 +2728,8 @@ check_site_exits:
 
 ; check_camp_clearing() -> eax 0 when the first camp the plans have (regions -3..3) is built through
 ; gen_column as a clearing: one top block (grass, sand, stone or snow block) over the cells within 10 of
-; its centre at its ground height, something solid under it, air above up to 12 blocks, and a fence
-; post with a torch on it in the middle
+; its centre at its ground height, something solid under it and air above up to 12 blocks, at the nine
+; cells of t_free_cells that none of the camp's buildings stands on
 ; Frame: [rsp .. +56) the site, [rsp+56] the top block.
 check_camp_clearing:
     push    rbp
@@ -2633,48 +2796,34 @@ check_camp_clearing:
     cmp     eax, SNOW_BLOCK
     jne     .bad
 .top_ok:
-    mov     r14d, -10                   ; dz
-.dz:
-    mov     r15d, -10                   ; dx
-.dx:
+    xor     r14d, r14d                  ; cell i of t_free
+.cell:
+    lea     rax, [t_free_cells]
+    mov     r15d, [rax + r14*8]         ; dx
+    mov     r13d, [rax + r14*8 + 4]     ; dz
     mov     rdi, rbx                    ; the top block, the same all over the clearing
     mov     esi, r15d
     xor     edx, edx
-    mov     ecx, r14d
+    mov     ecx, r13d
     call    block_at
     cmp     eax, [rsp + 56]
     jne     .bad
     mov     rdi, rbx                    ; something solid under it
     mov     esi, r15d
     mov     edx, -3
-    mov     ecx, r14d
+    mov     ecx, r13d
     call    block_at
     test    eax, eax
     jz      .bad
-    mov     r12d, 1                     ; dy 1, 2, 3 and 12 above it: air, but for the post
+    mov     r12d, 1                     ; dy 1, 2, 3 and 12 above it: air
 .dy:
     mov     rdi, rbx
     mov     esi, r15d
     mov     edx, r12d
-    mov     ecx, r14d
+    mov     ecx, r13d
     call    block_at
-    mov     ecx, r15d
-    or      ecx, r14d
-    jnz     .air                        ; not the middle: air
-    mov     edx, AIR
-    cmp     r12d, 1
-    jne     .not_post
-    mov     edx, FENCE
-.not_post:
-    cmp     r12d, 2
-    jne     .check
-    mov     edx, TORCH
-    jmp     .check
-.air:
-    xor     edx, edx
-.check:
-    cmp     eax, edx
-    jne     .bad
+    test    eax, eax
+    jnz     .bad
     inc     r12d
     cmp     r12d, 4
     jne     .dy_more
@@ -2683,12 +2832,9 @@ check_camp_clearing:
 .dy_more:
     cmp     r12d, 13
     jne     .dy
-    add     r15d, 5
-    cmp     r15d, 10
-    jle     .dx
-    add     r14d, 5
-    cmp     r14d, 10
-    jle     .dz
+    inc     r14d
+    cmp     r14d, 9
+    jb      .cell
     xor     eax, eax
     jmp     .ret
 .bad:
@@ -2933,4 +3079,1891 @@ test_sitestate_eviction:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; ---- test 8: a camp's buildings, chest and folk -------------------------------------------------------
+
+; first_camp(rdi SITE* dst) -> eax 1 when one of the super-regions (0, 0), (-1, 0), (0, -1), (-1, -1), in
+; that order, has a camp: the first camp of its camp_plan (absolute) is copied to dst
+; Frame: [rsp .. +280) the camps.
+first_camp:
+    push    rbx
+    push    r12
+    sub     rsp, 280
+    mov     r12, rdi
+    xor     ebx, ebx
+.sr:
+    lea     rax, [t_super]
+    mov     edi, [rax + rbx*8]
+    mov     esi, [rax + rbx*8 + 4]
+    lea     rdx, [rsp]
+    call    camp_plan
+    test    eax, eax
+    jnz     .found
+    inc     ebx
+    cmp     ebx, 4
+    jb      .sr
+    xor     eax, eax
+    jmp     .ret
+.found:
+    lea     rsi, [rsp]
+    mov     rdi, r12
+    mov     ecx, SITE_size / 8
+    rep movsq
+    mov     eax, 1
+.ret:
+    add     rsp, 280
+    pop     r12
+    pop     rbx
+    ret
+
+; camp_of_faction(edi faction, rsi SITE* dst) -> eax 1 when one of the super-regions -2 .. 1 (rows of
+; constant sz first) has a camp of that faction: the first one is copied to dst
+; Frame: [rsp .. +280) the camps.
+camp_of_faction:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 296
+    mov     r12d, edi
+    mov     r13, rsi
+    mov     r14d, -2                    ; sz
+.sz:
+    mov     ebx, -2                     ; sx
+.sx:
+    mov     edi, ebx
+    mov     esi, r14d
+    lea     rdx, [rsp]
+    call    camp_plan
+    mov     r15d, eax
+    lea     rax, [rsp]
+.camp:
+    test    r15d, r15d
+    jz      .next_sx
+    cmp     [rax + SITE.index], r12d
+    je      .found
+    add     rax, SITE_size
+    dec     r15d
+    jmp     .camp
+.next_sx:
+    inc     ebx
+    cmp     ebx, 1
+    jle     .sx
+    inc     r14d
+    cmp     r14d, 1
+    jle     .sz
+    xor     eax, eax
+    jmp     .ret
+.found:
+    mov     rsi, rax
+    mov     rdi, r13
+    mov     ecx, SITE_size / 8
+    rep movsq
+    mov     eax, 1
+.ret:
+    add     rsp, 296
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_camps_dry() -> eax 0 when every camp of the 16 super-regions -2 .. 1 (rows of constant sz first) is of
+; a faction that has camps (not the villagers) and stands on ground at least 97 high at its centre (its SITE.y)
+; Frame: [rsp .. +280) the camps.
+check_camps_dry:
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 288
+    xor     ebx, ebx
+.sr:
+    mov     edi, ebx
+    and     edi, 3
+    sub     edi, 2                      ; sx
+    mov     esi, ebx
+    shr     esi, 2
+    sub     esi, 2                      ; sz
+    lea     rdx, [rsp]
+    call    camp_plan
+    mov     r12d, eax
+    lea     r13, [rsp]
+.camp:
+    test    r12d, r12d
+    jz      .next_sr
+    cmp     dword [r13 + SITE.index], FAC_VILLAGERS
+    je      .bad
+    cmp     dword [r13 + SITE.index], NUM_FACTIONS
+    jae     .bad
+    mov     edi, [r13 + SITE.x]
+    mov     esi, [r13 + SITE.z]
+    call    gen_height
+    cmp     eax, SEA_LEVEL + 1
+    jl      .bad
+    cmp     eax, [r13 + SITE.y]
+    jne     .bad
+    add     r13, SITE_size
+    dec     r12d
+    jmp     .camp
+.next_sr:
+    inc     ebx
+    cmp     ebx, 16
+    jb      .sr
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    add     rsp, 288
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; EXPECT_SHRINE dx, dy, dz: the generated block at that offset from the camp in rbx is the shrine of its faction
+%macro EXPECT_SHRINE 3
+    mov     rdi, rbx
+    mov     esi, %1
+    mov     edx, %2
+    mov     ecx, %3
+    call    block_at
+    mov     ecx, [rbx + SITE.index]
+    add     ecx, SHRINE
+    cmp     eax, ecx
+    jne     .fail
+%endmacro
+
+; EXPECT_MAT dx, dy, dz, col: the generated block there is the camp's material number col of t_mats (0 wall,
+; 1 roof, 2 floor, 3 post)
+%macro EXPECT_MAT 4
+    mov     rdi, rbx
+    mov     esi, %1
+    mov     edx, %2
+    mov     ecx, %3
+    call    block_at
+    mov     ecx, [rbx + SITE.index]
+    lea     rdx, [t_mats]
+    movzx   ecx, byte [rdx + rcx*4 + %4]
+    cmp     eax, ecx
+    jne     .fail
+%endmacro
+
+; check_camp_chest(rdi GENCHEST*) -> eax 0 when structures_fill_chest makes that chest a camp's: no gear
+; and exactly 3 stacks, each of an item of the camp loot (gold coins, arrows, cooked porkchops, iron
+; ingots, health potions)
+check_camp_chest:
+    push    rbx
+    xor     esi, esi
+    xor     edx, edx
+    xor     ecx, ecx
+    call    chest_ok
+    test    eax, eax
+    jnz     .ret
+    xor     ebx, ebx                    ; stacks found
+    xor     ecx, ecx                    ; cell
+.cell:
+    movzx   eax, byte [tcont + CONTAINER.slots + rcx*4 + ITEMSTACK.id]
+    test    eax, eax
+    jz      .next
+    inc     ebx
+    mov     r8d, 5
+    lea     r9, [t_camp_items]
+.item:
+    cmp     al, [r9]
+    je      .next
+    inc     r9
+    dec     r8d
+    jnz     .item
+    mov     eax, 1                      ; an item no camp chest holds
+    jmp     .ret
+.next:
+    inc     ecx
+    cmp     ecx, 27
+    jb      .cell
+    xor     eax, eax
+    cmp     ebx, 3
+    setne   al
+.ret:
+    pop     rbx
+    ret
+
+; check_camp_built(rdi SITE*) -> eax 0 when that camp (absolute) is built through gen_column as camp_boxes
+; says, in its faction's materials (t_mats): the shrine between its two posts and torches, the palisade with
+; its four gates and corner torches, the leader's hut (floor, walls, roof, empty inside, door, wall torch)
+; with the camp's chest (loot table 2) in it, the champion's hut, the trader's stall and the captive's pen
+check_camp_built:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     edi, [rbx + SITE.x]
+    sub     edi, 11
+    sar     edi, 4
+    mov     esi, [rbx + SITE.z]
+    sub     esi, 11
+    sar     esi, 4
+    call    tg_reset
+    EXPECT_SHRINE 0, 1, 0               ; the shrine, a post and a torch on each side
+    EXPECT_AIR 0, 2, 0
+    EXPECT_MAT -2, 1, 0, 3
+    EXPECT_ID -2, 2, 0, TORCH
+    EXPECT_MAT 2, 1, 0, 3
+    EXPECT_ID 2, 2, 0, TORCH
+    EXPECT_MAT -10, 1, -10, 3           ; the palisade: posts, a gate in the middle of each side, torches
+    EXPECT_MAT 10, 2, 10, 3
+    EXPECT_MAT 10, 1, 5, 3
+    EXPECT_MAT 5, 2, -10, 3
+    EXPECT_AIR 10, 1, 0
+    EXPECT_AIR 10, 2, 1
+    EXPECT_AIR -10, 1, -1
+    EXPECT_AIR 0, 1, -10
+    EXPECT_AIR 1, 2, 10
+    EXPECT_ID -10, 3, -10, TORCH
+    EXPECT_ID 10, 3, 10, TORCH
+    EXPECT_MAT -5, 0, -6, 2             ; the leader's hut
+    EXPECT_MAT -7, 2, -6, 0
+    EXPECT_MAT -5, 4, -6, 1
+    EXPECT_AIR -5, 1, -6
+    EXPECT_AIR -5, 3, -6
+    EXPECT_AIR -5, 1, -4
+    EXPECT_AIR -5, 2, -4
+    EXPECT_ID -6, 2, -6, TORCH_WALL + DIR_W
+    EXPECT_ID -5, 1, -7, CHEST          ; its chest
+    EXPECT_MAT 0, 0, 6, 2               ; the champion's hut
+    EXPECT_MAT 2, 2, 6, 0
+    EXPECT_MAT 0, 4, 6, 1
+    EXPECT_AIR 0, 1, 6
+    EXPECT_AIR 0, 1, 4
+    EXPECT_AIR 0, 2, 4
+    EXPECT_ID 1, 2, 6, TORCH_WALL + DIR_E
+    EXPECT_MAT 3, 1, -8, 3              ; the trader's stall
+    EXPECT_MAT 7, 2, -4, 3
+    EXPECT_MAT 5, 3, -6, 1
+    EXPECT_AIR 5, 1, -6
+    EXPECT_MAT 5, 1, 4, 3               ; the captive's pen: posts around one empty cell
+    EXPECT_MAT 7, 2, 6, 3
+    EXPECT_AIR 6, 1, 5
+    EXPECT_AIR 6, 2, 5
+    EXPECT_AIR 6, 3, 5
+    mov     edi, [rbx + SITE.x]         ; the chest the generator recorded: loot table 2
+    sub     edi, 5
+    mov     esi, [rbx + SITE.y]
+    inc     esi
+    mov     edx, [rbx + SITE.z]
+    sub     edx, 7
+    call    tg_chest
+    test    rax, rax
+    jz      .fail
+    cmp     dword [rax + GENCHEST.table], 2
+    jne     .fail
+    mov     rdi, rax
+    call    check_camp_chest
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; seed 42: every camp of the super-regions (0, 0), (-1, 0), (0, -1), (-1, -1) stands on ground at least 97
+; high and is no Villagers' camp; the first camp camp_plan gives over them, and the first camp of each of
+; the four factions over the super-regions -2 .. 1, are built through gen_column as check_camp_built says
+; Frame: [rsp .. +56) a camp.
+test_camp_built_with_slots:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 72
+    call    world_clear
+    mov     edi, 42
+    call    worldgen_set_seed
+    call    check_camps_dry
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [rsp]
+    call    first_camp
+    test    eax, eax
+    jz      .fail
+    lea     rdi, [rsp]
+    call    check_camp_built
+    test    eax, eax
+    jnz     .fail
+    mov     r12d, FAC_BANDITS
+.faction:
+    mov     edi, r12d
+    lea     rsi, [rsp]
+    call    camp_of_faction
+    test    eax, eax
+    jz      .fail
+    lea     rdi, [rsp]
+    call    check_camp_built
+    test    eax, eax
+    jnz     .fail
+    inc     r12d
+    cmp     r12d, NUM_FACTIONS
+    jb      .faction
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    world_clear
+    mov     eax, ebx
+    add     rsp, 72
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_camp_folk(edi captive, esi champion) -> eax 0 when the fabricated Bandits camp at (100, 60, 100) holds
+; exactly its folk: leader (-5, -6), trader (5, -6), guards ARCHER (0, -9), BERSERKER (9, 0), BRUTE (-9, 0)
+; and ARCHER (3, 9), workers (-3, 2) and (3, 2), when captive is 1 the Villagers' captive (6, 5) held by
+; the Bandits and when champion is 1 the champion BERSERKER (0, 6), elite and asleep; all with their feet
+; at the camp's ground + 1; nobody else
+check_camp_folk:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     [rsp], edi
+    mov     [rsp + 4], esi
+    EXPECT_FOLK ROLE_LEADER, -5, -6, FAC_BANDITS, FCLASS_NONE
+    EXPECT_FOLK ROLE_TRADER, 5, -6, FAC_BANDITS, FCLASS_NONE
+    EXPECT_FOLK ROLE_GUARD, 0, -9, FAC_BANDITS, FCLASS_ARCHER
+    EXPECT_FOLK ROLE_GUARD, 9, 0, FAC_BANDITS, FCLASS_BERSERKER
+    EXPECT_FOLK ROLE_GUARD, -9, 0, FAC_BANDITS, FCLASS_BRUTE
+    EXPECT_FOLK ROLE_GUARD, 3, 9, FAC_BANDITS, FCLASS_ARCHER
+    EXPECT_FOLK ROLE_WORKER, -3, 2, FAC_BANDITS, FCLASS_NONE
+    EXPECT_FOLK ROLE_WORKER, 3, 2, FAC_BANDITS, FCLASS_NONE
+    movss   xmm0, [rax + BODY.y]
+    comiss  xmm0, [k_61]
+    jne     .fail
+    jp      .fail
+    cmp     dword [rsp], 0
+    je      .champion
+    EXPECT_FOLK ROLE_CAPTIVE, 6, 5, FAC_VILLAGERS, FCLASS_NONE
+    cmp     byte [rax + MOB.captor], FAC_BANDITS
+    jne     .fail
+.champion:
+    cmp     dword [rsp + 4], 0
+    je      .count
+    EXPECT_FOLK ROLE_CHAMPION, 0, 6, FAC_BANDITS, FCLASS_BERSERKER
+    cmp     dword [rax + MOB.elite], 1
+    jne     .fail
+    test    byte [rax + MOB.fflags], FF_ASLEEP
+    jz      .fail
+.count:
+    call    count_folk
+    mov     ecx, 8
+    add     ecx, [rsp]
+    add     ecx, [rsp + 4]
+    cmp     eax, ecx
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; expect_folk(edi role, esi dx, edx dz, ecx faction, r8d class) -> rax the live folk of that role whose home is the
+; fabricated site's (100, 100) + (dx, dz), when it is of that faction and class, else 0
+expect_folk:
+    sub     rsp, 8
+    add     esi, 100
+    add     edx, 100
+    mov     r9d, ecx
+    mov     r10d, r8d
+    call    folk_at
+    test    rax, rax
+    jz      .none
+    cmp     [rax + MOB.faction], r9b
+    jne     .none
+    cmp     [rax + MOB.fclass], r10b
+    jne     .none
+    add     rsp, 8
+    ret
+.none:
+    xor     eax, eax
+    add     rsp, 8
+    ret
+
+; check_camp_faction(edi faction) -> eax 0 when a fabricated camp of that faction (1 .. 4) at (100, 60, 100), the
+; player 50 blocks off, has after 60 steps exactly the folk t_camp_folk says: a leader (-5, -6), a trader
+; (5, -6), workers (-3, 2) and (3, 2), the guards of its row at the guard homes in order with their classes,
+; the champion of its class at (0, 6) and the captive of its row at (6, 5) held by the camp's faction, all of
+; the camp's faction but the captive; nobody else
+check_camp_faction:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     r12d, edi
+    call    mobs_clear
+    call    structures_reset
+    call    zero_sites
+    lea     rdi, [sites]
+    mov     esi, SITE_CAMP
+    mov     edx, 100
+    mov     ecx, 60
+    mov     r8d, 100
+    xor     r9d, r9d
+    call    fab_site
+    mov     [sites + SITE.index], r12d
+    mov     dword [site_count], 1
+    PLAYER_AT 150.5, 100.5
+    mov     edi, 60
+    call    steps
+    lea     rbx, [t_camp_folk]
+    lea     rbx, [rbx + r12*8]
+    movzx   r13d, byte [rbx]            ; guards
+    mov     edi, ROLE_LEADER
+    mov     esi, -5
+    mov     edx, -6
+    mov     ecx, r12d
+    xor     r8d, r8d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    mov     edi, ROLE_TRADER
+    mov     esi, 5
+    mov     edx, -6
+    mov     ecx, r12d
+    xor     r8d, r8d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    mov     edi, ROLE_WORKER
+    mov     esi, -3
+    mov     edx, 2
+    mov     ecx, r12d
+    xor     r8d, r8d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    mov     edi, ROLE_WORKER
+    mov     esi, 3
+    mov     edx, 2
+    mov     ecx, r12d
+    xor     r8d, r8d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    xor     r14d, r14d                  ; guard i
+.guard:
+    cmp     r14d, r13d
+    jae     .champion
+    lea     rax, [t_guard_homes]
+    movsx   esi, byte [rax + r14*2]
+    movsx   edx, byte [rax + r14*2 + 1]
+    movzx   r8d, byte [rbx + 1 + r14]
+    mov     edi, ROLE_GUARD
+    mov     ecx, r12d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    inc     r14d
+    jmp     .guard
+.champion:
+    mov     edi, ROLE_CHAMPION
+    xor     esi, esi
+    mov     edx, 6
+    mov     ecx, r12d
+    movzx   r8d, byte [rbx + 5]
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    lea     r14d, [r13 + 5]             ; folk so far: 4, the guards and the champion
+    movzx   ecx, byte [rbx + 6]
+    cmp     ecx, 0xFF
+    je      .count
+    mov     edi, ROLE_CAPTIVE
+    mov     esi, 6
+    mov     edx, 5
+    xor     r8d, r8d
+    call    expect_folk
+    test    rax, rax
+    jz      .bad
+    cmp     [rax + MOB.captor], r12b
+    jne     .bad
+    inc     r14d
+.count:
+    call    count_folk
+    cmp     eax, r14d
+    jne     .bad
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; a fabricated Bandits camp in sites[] (Survival, any mode counts): with the player 50 blocks away, 60 steps
+; give it its folk at their homes (check_camp_folk); another 60 add none; removed with the player 20 blocks
+; from its centre nobody comes back in 120 steps, 50 blocks away all do in 60; once the captive is freed
+; (structures_mark_freed inside the camp, not outside it) none comes back, nor does a champion whose
+; faction's champion is defeated; a fabricated camp of each of the four factions gets the guards, champion
+; and captive of its row of t_camp_folk (check_camp_faction); a fabricated village gets its seven Villagers
+; Frame: [rsp] game_mode, [rsp+4] difficulty, [rsp+8] champion bits, [rsp+12] player x, y, z.
+test_camp_npcs_recreated:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 72
+    mov     eax, [game_mode]
+    mov     [rsp], eax
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     [rsp + 4], eax
+    movzx   eax, byte [world_header + WORLDHDR.champions]
+    mov     [rsp + 8], eax
+    mov     eax, [player + BODY.x]
+    mov     [rsp + 12], eax
+    mov     eax, [player + BODY.y]
+    mov     [rsp + 16], eax
+    mov     eax, [player + BODY.z]
+    mov     [rsp + 20], eax
+    call    world_clear
+    call    rpg_reset
+    call    mobs_clear
+    call    structures_reset
+    call    zero_sites
+    mov     byte [world_header + WORLDHDR.champions], 0
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
+    lea     rdi, [sites]
+    mov     esi, SITE_CAMP
+    mov     edx, 100
+    mov     ecx, 60
+    mov     r8d, 100
+    xor     r9d, r9d
+    call    fab_site
+    mov     dword [sites + SITE.index], FAC_BANDITS
+    mov     dword [site_count], 1
+    PLAYER_AT 150.5, 100.5              ; 50 blocks east of the camp's centre
+    mov     edi, 60
+    call    steps
+    mov     edi, 1
+    mov     esi, 1
+    call    check_camp_folk
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 60                     ; the next check finds them all: no duplicates
+    call    steps
+    mov     edi, 1
+    mov     esi, 1
+    call    check_camp_folk
+    test    eax, eax
+    jnz     .fail
+    call    mobs_clear                  ; removed, the player 20 blocks from the centre: nobody comes
+    PLAYER_AT 120.5, 100.5
+    mov     edi, 120
+    call    steps
+    call    count_folk
+    test    eax, eax
+    jnz     .fail
+    PLAYER_AT 150.5, 100.5              ; 50 blocks away again: everybody
+    mov     edi, 60
+    call    steps
+    mov     edi, 1
+    mov     esi, 1
+    call    check_camp_folk
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 300                    ; no camp there: nothing freed
+    mov     esi, 300
+    call    structures_mark_freed
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 106                    ; the captive's cell is in the camp: freed
+    mov     esi, 105
+    call    structures_mark_freed
+    cmp     eax, 1
+    jne     .fail
+    call    mobs_clear
+    mov     edi, 60
+    call    steps
+    xor     edi, edi                    ; no captive any more
+    mov     esi, 1
+    call    check_camp_folk
+    test    eax, eax
+    jnz     .fail
+    or      byte [world_header + WORLDHDR.champions], 1 << FAC_BANDITS
+    call    mobs_clear                  ; and the Bandits' champion is dead for good
+    mov     edi, 60
+    call    steps
+    xor     edi, edi
+    xor     esi, esi
+    call    check_camp_folk
+    test    eax, eax
+    jnz     .fail
+    mov     byte [world_header + WORLDHDR.champions], 0
+    mov     r12d, FAC_BANDITS           ; every faction's camp: its guards, champion and captive
+.factions:
+    mov     edi, r12d
+    call    check_camp_faction
+    test    eax, eax
+    jnz     .fail
+    inc     r12d
+    cmp     r12d, NUM_FACTIONS
+    jb      .factions
+    call    mobs_clear                  ; a village in its place, the player at its centre: a first visit
+    call    structures_reset
+    call    zero_sites
+    mov     byte [world_header + WORLDHDR.champions], 0
+    lea     rdi, [sites]
+    mov     esi, SITE_VILLAGE
+    mov     edx, 100
+    mov     ecx, 60
+    mov     r8d, 100
+    xor     r9d, r9d
+    call    fab_site
+    mov     dword [site_count], 1
+    PLAYER_AT 100.5, 100.5
+    mov     edi, 60
+    call    steps
+    mov     edi, 1
+    call    check_village_folk
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    mobs_clear
+    call    structures_reset
+    call    zero_sites
+    call    world_clear
+    mov     eax, [rsp]
+    mov     [game_mode], eax
+    mov     eax, [rsp + 4]
+    mov     [settings + SETTINGS.difficulty], eax
+    mov     eax, [rsp + 8]
+    mov     [world_header + WORLDHDR.champions], al
+    mov     eax, [rsp + 12]
+    mov     [player + BODY.x], eax
+    mov     eax, [rsp + 16]
+    mov     [player + BODY.y], eax
+    mov     eax, [rsp + 20]
+    mov     [player + BODY.z], eax
+    mov     eax, ebx
+    add     rsp, 72
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- test 9: the roads --------------------------------------------------------------------------------
+
+; first_road(rdi ROADEDGE* dst) -> eax 1 when roads_edges gives a road over the super-regions (0, 0), (-1, 0),
+; (0, -1), (-1, -1) in that order, else over sx, sz -3 .. 3 in rows of constant sz: the first one is
+; copied to dst; 0 when there is none
+; Frame: [rsp .. +72) roads_edges' output.
+first_road:
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 80
+    mov     r12, rdi
+    xor     ebx, ebx
+.first:
+    lea     rax, [t_super]
+    mov     edi, [rax + rbx*8]
+    mov     esi, [rax + rbx*8 + 4]
+    lea     rdx, [rsp]
+    call    roads_edges
+    test    eax, eax
+    jnz     .found
+    inc     ebx
+    cmp     ebx, 4
+    jb      .first
+    mov     r13d, -3                    ; sz
+.sz:
+    mov     ebx, -3                     ; sx
+.sx:
+    mov     edi, ebx
+    mov     esi, r13d
+    lea     rdx, [rsp]
+    call    roads_edges
+    test    eax, eax
+    jnz     .found
+    inc     ebx
+    cmp     ebx, 3
+    jle     .sx
+    inc     r13d
+    cmp     r13d, 3
+    jle     .sz
+    xor     eax, eax
+    jmp     .ret
+.found:
+    lea     rsi, [rsp]
+    mov     rdi, r12
+    mov     ecx, ROADEDGE_size / 4
+    rep movsd
+    mov     eax, 1
+.ret:
+    add     rsp, 80
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; road_point(rdi ROADEDGE* road, esi num, edx den) -> eax x, edx z: the cell A + (B - A) * num / den of the
+; road, the fraction cut towards A, absolute (leaf)
+road_point:
+    mov     r8d, esi
+    mov     r9d, edx
+    mov     eax, [rdi + ROADEDGE.bx]
+    sub     eax, [rdi + ROADEDGE.ax]
+    imul    eax, r8d
+    cdq
+    idiv    r9d
+    add     eax, [rdi + ROADEDGE.ax]
+    mov     r10d, eax
+    mov     eax, [rdi + ROADEDGE.bz]
+    sub     eax, [rdi + ROADEDGE.az]
+    imul    eax, r8d
+    cdq
+    idiv    r9d
+    add     eax, [rdi + ROADEDGE.az]
+    mov     edx, eax
+    mov     eax, r10d
+    ret
+
+; clear_of_sites(edi x, esi z) -> eax 1 when no site planned in the 3 x 3 regions around the one holding the
+; absolute cell (x, z) has it in the footprint of its builder (t_foot)
+; Frame: [rsp] dz, [rsp+4] dx of the region around.
+clear_of_sites:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     dword [rsp], -1
+.rz:
+    mov     dword [rsp + 4], -1
+.rx:
+    mov     edi, ebx
+    sar     edi, 9
+    add     edi, [rsp + 4]
+    mov     esi, r12d
+    sar     esi, 9
+    add     esi, [rsp]
+    lea     rdx, [plan_a]
+    call    region_plan
+    mov     r14d, eax
+    lea     r13, [plan_a]
+.site:
+    test    r14d, r14d
+    jz      .next_region
+    mov     eax, [r13 + SITE.kind]
+    dec     eax
+    shl     eax, 4
+    lea     rcx, [t_foot]
+    add     rcx, rax
+    mov     eax, ebx
+    sub     eax, [r13 + SITE.x]
+    cmp     eax, [rcx]
+    jl      .next_site
+    cmp     eax, [rcx + 8]
+    jg      .next_site
+    mov     eax, r12d
+    sub     eax, [r13 + SITE.z]
+    cmp     eax, [rcx + 4]
+    jl      .next_site
+    cmp     eax, [rcx + 12]
+    jg      .next_site
+    xor     eax, eax                    ; inside a footprint
+    jmp     .ret
+.next_site:
+    add     r13, SITE_size
+    dec     r14d
+    jmp     .site
+.next_region:
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], 1
+    jle     .rx
+    inc     dword [rsp]
+    cmp     dword [rsp], 1
+    jle     .rz
+    mov     eax, 1
+.ret:
+    add     rsp, 16
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; gen_spare(edi x, esi z): gen_column of the column holding the absolute cell (x, z) into tg_spare
+gen_spare:
+    sar     edi, 4
+    sar     esi, 4
+    mov     [tg_spare + GENBUF.cx], edi
+    mov     [tg_spare + GENBUF.cz], esi
+    lea     rdi, [tg_spare]
+    jmp     gen_column
+
+; spare_block(edi x, esi y, edx z) -> eax the block of tg_spare at that absolute cell, whose column is
+; the one generated into it (leaf)
+spare_block:
+    and     edi, 15
+    and     edx, 15
+    shl     edx, 4
+    or      edx, edi
+    shl     esi, 8
+    or      edx, esi
+    lea     rax, [tg_spare + GENBUF.blocks]
+    movzx   eax, byte [rax + rdx]
+    ret
+
+; spare_set(edi x, esi y, edx z, ecx id): the block of tg_spare at that absolute cell, whose column is the one
+; generated into it, becomes id (leaf)
+spare_set:
+    and     edi, 15
+    and     edx, 15
+    shl     edx, 4
+    or      edx, edi
+    shl     esi, 8
+    or      edx, esi
+    lea     rax, [tg_spare + GENBUF.blocks]
+    mov     [rax + rdx], cl
+    ret
+
+; road_class(edi x, esi z) -> eax road_mask of the absolute cell (x, z) in the window of the column last
+; generated (leaf)
+road_class:
+    and     edi, 15
+    and     esi, 15
+    add     esi, 3
+    imul    esi, esi, 22
+    lea     eax, [rsi + rdi + 3]
+    lea     rcx, [road_mask]
+    movzx   eax, byte [rcx + rax]
+    ret
+
+; check_no_growth() -> eax 0 when no cell of the column last generated into tg_spare whose road_mask is not
+; 0 holds a LOG, PINE_LOG, BIRCH_LOG or TALL_GRASS anywhere in its block column (leaf)
+check_no_growth:
+    xor     r8d, r8d                    ; lz
+.lz:
+    xor     r9d, r9d                    ; lx
+.lx:
+    lea     eax, [r8 + 3]
+    imul    eax, eax, 22
+    lea     eax, [rax + r9 + 3]
+    lea     rcx, [road_mask]
+    cmp     byte [rcx + rax], 0
+    je      .next
+    mov     eax, r8d
+    shl     eax, 4
+    add     eax, r9d
+    lea     rdx, [tg_spare + GENBUF.blocks]
+    add     rdx, rax
+    mov     ecx, 256                    ; y 0 .. 255, 256 bytes apart
+.y:
+    movzx   eax, byte [rdx]
+    cmp     eax, LOG
+    je      .bad
+    cmp     eax, PINE_LOG
+    je      .bad
+    cmp     eax, BIRCH_LOG
+    je      .bad
+    cmp     eax, TALL_GRASS
+    je      .bad
+    add     rdx, 256
+    dec     ecx
+    jnz     .y
+.next:
+    inc     r9d
+    cmp     r9d, 16
+    jb      .lx
+    inc     r8d
+    cmp     r8d, 16
+    jb      .lz
+    xor     eax, eax
+    ret
+.bad:
+    mov     eax, 1
+    ret
+
+; check_mask_agree(edi x, esi z) -> eax 0 when the road_mask windows of the column holding the absolute cell
+; (x, z) and of its east and south neighbours agree on the cells they share (6 columns of cells, 6 rows)
+; Frame: [rsp] x, [rsp+4] z.
+check_mask_agree:
+    push    rbx
+    sub     rsp, 16
+    mov     [rsp], edi
+    mov     [rsp + 4], esi
+    call    gen_spare
+    lea     rsi, [road_mask]
+    lea     rdi, [mask_a]
+    mov     ecx, 22 * 22 / 4
+    rep     movsd
+    mov     edi, [rsp]
+    add     edi, 16
+    mov     esi, [rsp + 4]
+    call    gen_spare                   ; the east neighbour: its cells -3 .. 2 are ours 13 .. 18
+    xor     ecx, ecx                    ; row
+.er:
+    imul    eax, ecx, 22
+    xor     edx, edx                    ; cell
+.ec:
+    lea     r8, [mask_a]
+    lea     r9, [road_mask]
+    lea     r10, [rax + rdx]
+    movzx   r11d, byte [r8 + r10 + 16]
+    cmp     r11b, [r9 + r10]
+    jne     .bad
+    inc     edx
+    cmp     edx, 6
+    jb      .ec
+    inc     ecx
+    cmp     ecx, 22
+    jb      .er
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    add     esi, 16
+    call    gen_spare                   ; the south neighbour: its rows -3 .. 2 are ours 13 .. 18
+    xor     ecx, ecx                    ; row
+.sr:
+    lea     eax, [rcx + 16]
+    imul    eax, eax, 22
+    imul    edx, ecx, 22
+    lea     r9, [mask_a]
+    add     r9, rax
+    lea     r10, [road_mask]
+    add     r10, rdx
+    xor     r8d, r8d                    ; cell
+.sc:
+    movzx   r11d, byte [r9 + r8]
+    cmp     r11b, [r10 + r8]
+    jne     .bad
+    inc     r8d
+    cmp     r8d, 22
+    jb      .sc
+    inc     ecx
+    cmp     ecx, 6
+    jb      .sr
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    add     rsp, 16
+    pop     rbx
+    ret
+
+; check_rect_union() -> eax 0 when roads_in_rect on camp_main over the rectangle (-50, -50) .. (50, 50), which
+; touches four super-regions, gives the roads of (-1, -1), (0, -1), (-1, 0) and (0, 0), in that order, each as
+; roads_edges gives them, and at least one road
+; Frame: [rsp .. +288) the rectangle's roads, [rsp+288 .. +360) one super-region's.
+check_rect_union:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 368
+    lea     rdi, [camp_main]
+    mov     esi, -50
+    mov     edx, -50
+    mov     ecx, 50
+    mov     r8d, 50
+    lea     r9, [rsp]
+    call    roads_in_rect
+    mov     r12d, eax                   ; roads in all
+    xor     r13d, r13d                  ; roads compared
+    xor     ebx, ebx                    ; super-region 0 .. 3: sx = (ebx & 1) - 1, sz = (ebx >> 1) - 1
+.sr:
+    mov     edi, ebx
+    and     edi, 1
+    dec     edi
+    mov     esi, ebx
+    shr     esi, 1
+    dec     esi
+    lea     rdx, [rsp + 288]
+    call    roads_edges
+    mov     r14d, eax
+    xor     r15d, r15d
+.rec:
+    cmp     r15d, r14d
+    jae     .sr_done
+    lea     eax, [r13 + r15]
+    cmp     eax, r12d
+    jae     .bad                        ; the rectangle's roads run out early
+    imul    eax, eax, ROADEDGE_size
+    lea     rsi, [rsp + rax]
+    imul    eax, r15d, ROADEDGE_size
+    lea     rdi, [rsp + 288 + rax]
+    mov     ecx, ROADEDGE_size / 4
+    repe cmpsd
+    jne     .bad
+    inc     r15d
+    jmp     .rec
+.sr_done:
+    add     r13d, r14d
+    inc     ebx
+    cmp     ebx, 4
+    jb      .sr
+    test    r13d, r13d
+    jz      .bad                        ; (no road at all: nothing was compared)
+    cmp     r13d, r12d
+    jne     .bad                        ; and no road more
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    add     rsp, 368
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; check_road_window(edi x0, esi z0, edx diagonal) -> eax 0 when road_mark classes the 22 x 22 cells from
+; (x0, z0) as the distance rule says for the fabricated road in road_buf: along the x axis from (0, 0) to
+; (100, 0) with d^2 = z^2 (+ x^2 behind the start, + (x - 100)^2 beyond the end), class 2 for d^2 <= 2 (d <= 1.5),
+; 1 for d^2 <= 16; or, when diagonal is 1, from (0, 0) to (100, 100) with class 2 for |x - z| <= 2, 1 for
+; |x - z| <= 5 (d = |x - z| / sqrt 2)
+check_road_window:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    lea     rdi, [road_mask]
+    mov     ecx, 22 * 22 / 4
+    xor     eax, eax
+    rep     stosd
+    lea     rdi, [road_buf]
+    mov     esi, r12d
+    mov     edx, r13d
+    call    road_mark
+    xor     r15d, r15d                  ; cell
+.cell:
+    mov     eax, r15d
+    xor     edx, edx
+    mov     ecx, 22
+    div     ecx
+    add     eax, r13d                   ; z
+    add     edx, r12d                   ; x
+    test    r14d, r14d
+    jnz     .diag
+    mov     ecx, eax
+    imul    ecx, ecx                    ; z^2
+    test    edx, edx
+    jg      .not_a
+    imul    edx, edx
+    add     ecx, edx                    ; behind the start
+    jmp     .classify
+.not_a:
+    sub     edx, 100
+    jle     .classify                   ; beside the road
+    imul    edx, edx
+    add     ecx, edx                    ; beyond the end
+.classify:
+    xor     eax, eax
+    cmp     ecx, 16
+    jg      .compare
+    mov     eax, 1
+    cmp     ecx, 2
+    jg      .compare
+    mov     eax, 2
+    jmp     .compare
+.diag:
+    sub     edx, eax
+    mov     ecx, edx
+    sar     ecx, 31
+    xor     edx, ecx
+    sub     edx, ecx                    ; |x - z|
+    xor     eax, eax
+    cmp     edx, 5
+    jg      .compare
+    mov     eax, 1
+    cmp     edx, 2
+    jg      .compare
+    mov     eax, 2
+.compare:
+    lea     rcx, [road_mask]
+    cmp     al, [rcx + r15]
+    jne     .bad
+    inc     r15d
+    cmp     r15d, 22 * 22
+    jb      .cell
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; road_mark's distance rule on fabricated roads (check_road_window: beside, behind the start and beyond
+; the end of an axis road, beside a diagonal one). Then seed 42: on the first road (first_road) the cells at
+; 20, 35, 50, 65 and 80 percent of its length that lie above the sea outside every site's footprint (at least
+; 3 of them) are gravel with 2 cells of air over them once generated, and their road_mask is 2; along the
+; whole road, at 39 points, no cell with a non-zero road_mask has a trunk or tall grass in its column and the
+; point's own cell has road_mask 2; the masks of neighbouring columns agree on the cells they share
+; Frame: [rsp .. +24) the road, [rsp+24] points checked, [rsp+28] x, [rsp+32] z, [rsp+36] ground.
+test_roads_stamped:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56
+    call    world_clear
+    mov     edi, 42
+    call    worldgen_set_seed
+    lea     rdi, [road_buf]
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, 100
+    xor     r8d, r8d
+    mov     r9d, 1
+    call    fab_edge
+    mov     edi, 40                     ; beside an axis road: 3 wide, then 4 either side of its line
+    mov     esi, -11
+    xor     edx, edx
+    call    check_road_window
+    test    eax, eax
+    jnz     .fail
+    mov     edi, -11                    ; round its start
+    mov     esi, -11
+    xor     edx, edx
+    call    check_road_window
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 90                     ; round its end
+    mov     esi, -11
+    xor     edx, edx
+    call    check_road_window
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [road_buf]             ; a diagonal one
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, 100
+    mov     r8d, 100
+    mov     r9d, 1
+    call    fab_edge
+    mov     edi, 40
+    mov     esi, 40
+    mov     edx, 1
+    call    check_road_window
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [rsp]
+    call    first_road
+    test    eax, eax
+    jz      .fail
+    mov     dword [rsp + 24], 0
+    xor     r12d, r12d
+.point:
+    lea     rdi, [rsp]
+    lea     rax, [t_pct]
+    movzx   esi, byte [rax + r12]
+    mov     edx, 100
+    call    road_point
+    mov     [rsp + 28], eax
+    mov     [rsp + 32], edx
+    mov     edi, eax
+    mov     esi, edx
+    call    gen_height
+    mov     [rsp + 36], eax
+    cmp     eax, SEA_LEVEL
+    jle     .next_point                 ; no road under water
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 32]
+    call    clear_of_sites
+    test    eax, eax
+    jz      .next_point                 ; a site's builder owns the cell
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 32]
+    call    gen_spare
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    mov     edx, [rsp + 32]
+    call    spare_block
+    cmp     eax, GRAVEL
+    jne     .fail
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    inc     esi
+    mov     edx, [rsp + 32]
+    call    spare_block
+    test    eax, eax
+    jnz     .fail
+    mov     edi, [rsp + 28]             ; stone for the surface, a plant and a leaf over it: stamping the
+    mov     esi, [rsp + 36]             ; column again (its road_mask is still this one's) restores the road
+    mov     edx, [rsp + 32]
+    mov     ecx, STONE
+    call    spare_set
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    inc     esi
+    mov     edx, [rsp + 32]
+    mov     ecx, TALL_GRASS
+    call    spare_set
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    add     esi, 2
+    mov     edx, [rsp + 32]
+    mov     ecx, LEAVES
+    call    spare_set
+    lea     rdi, [tg_spare]
+    call    structures_stamp
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    mov     edx, [rsp + 32]
+    call    spare_block
+    cmp     eax, GRAVEL
+    jne     .fail
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    inc     esi
+    mov     edx, [rsp + 32]
+    call    spare_block
+    test    eax, eax
+    jnz     .fail
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    add     esi, 2
+    mov     edx, [rsp + 32]
+    call    spare_block
+    test    eax, eax
+    jnz     .fail
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 32]
+    call    road_class
+    cmp     eax, 2
+    jne     .fail
+    inc     dword [rsp + 24]
+.next_point:
+    inc     r12d
+    cmp     r12d, 5
+    jb      .point
+    cmp     dword [rsp + 24], 3
+    jb      .fail
+    mov     dword [rsp + 40], 0         ; points checked under water
+    mov     dword [rsp + 44], 0         ; and on dry ground
+    mov     r12d, 1
+.dense:
+    lea     rdi, [rsp]
+    mov     esi, r12d
+    mov     edx, 40
+    call    road_point
+    mov     [rsp + 28], eax
+    mov     [rsp + 32], edx
+    mov     edi, eax
+    mov     esi, edx
+    call    gen_spare
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 32]
+    call    road_class
+    cmp     eax, 2
+    jne     .fail
+    call    check_no_growth
+    test    eax, eax
+    jnz     .fail
+    mov     edi, [rsp + 28]             ; the ground there, and whether a site's builder owns the cell
+    mov     esi, [rsp + 32]
+    call    gen_height
+    mov     [rsp + 36], eax
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 32]
+    call    clear_of_sites
+    test    eax, eax
+    jz      .dense_next
+    mov     eax, [rsp + 36]
+    cmp     eax, SEA_LEVEL
+    jg      .dry
+    cmp     eax, SEA_LEVEL - 2
+    jg      .dense_next                 ; a shore: no claim
+    mov     edi, [rsp + 28]             ; under water: no road, the sea stays over the floor
+    mov     esi, [rsp + 36]
+    inc     esi
+    mov     edx, [rsp + 32]
+    call    spare_block
+    cmp     eax, WATER
+    jne     .fail
+    inc     dword [rsp + 40]
+    jmp     .dense_next
+.dry:
+    mov     edi, [rsp + 28]             ; above the sea: gravel with air over it
+    mov     esi, [rsp + 36]
+    mov     edx, [rsp + 32]
+    call    spare_block
+    cmp     eax, GRAVEL
+    jne     .fail
+    mov     edi, [rsp + 28]
+    mov     esi, [rsp + 36]
+    inc     esi
+    mov     edx, [rsp + 32]
+    call    spare_block
+    test    eax, eax
+    jnz     .fail
+    inc     dword [rsp + 44]
+.dense_next:
+    inc     r12d
+    cmp     r12d, 39
+    jbe     .dense
+    cmp     dword [rsp + 40], 2
+    jb      .fail                       ; the road crosses water (seed 42's first one does)
+    cmp     dword [rsp + 44], 8
+    jb      .fail
+    lea     rdi, [rsp]
+    mov     esi, 1
+    mov     edx, 2
+    call    road_point
+    mov     edi, eax
+    mov     esi, edx
+    call    check_mask_agree
+    test    eax, eax
+    jnz     .fail
+    call    check_rect_union
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    world_clear
+    mov     eax, ebx
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- test 10: the patrols ----------------------------------------------------------------------------
+
+; claim_lit(edi acx, esi acz): a lit empty column at those absolute chunk coordinates, as world_clear
+; makes them (the columns are keyed by absolute chunk, so a moved world origin needs its own)
+claim_lit:
+    sub     rsp, 8
+    call    world_column_claim
+    mov     dword [rax + COLUMN.state], COL_LIT
+    add     rsp, 8
+    ret
+
+; fab_edge(rdi ROADEDGE* dst, esi ax, edx az, ecx bx, r8d bz, r9d key): a Bandits' road (leaf)
+fab_edge:
+    mov     [rdi + ROADEDGE.ax], esi
+    mov     [rdi + ROADEDGE.az], edx
+    mov     [rdi + ROADEDGE.bx], ecx
+    mov     [rdi + ROADEDGE.bz], r8d
+    mov     dword [rdi + ROADEDGE.faction], FAC_BANDITS
+    mov     [rdi + ROADEDGE.key], r9d
+    ret
+
+; POINT_IS time, x, z, heading: patrol_point of the road at [rsp] (into [rsp + 24]) at that step is the cell
+; (x, z), heading to B (1) or to A (0)
+%macro POINT_IS 4
+    lea     rdi, [rsp]
+    mov     esi, %1
+    lea     rdx, [rsp + 24]
+    call    patrol_point
+    cmp     dword [rsp + 24], %2
+    jne     .fail
+    cmp     dword [rsp + 28], %3
+    jne     .fail
+    cmp     dword [rsp + 32], %4
+    jne     .fail
+%endmacro
+
+; patrol_at(xmm0 x, xmm1 z) -> rax the live ROLE_PATROL folk standing exactly at (x, z), else 0 (leaf)
+patrol_at:
+    lea     rax, [mobs]
+    mov     ecx, MAX_MOBS
+.mob:
+    cmp     dword [rax + MOB.type], MOB_FOLK
+    jne     .next
+    cmp     byte [rax + MOB.role], ROLE_PATROL
+    jne     .next
+    ucomiss xmm0, [rax + BODY.x]
+    jne     .next
+    jp      .next
+    ucomiss xmm1, [rax + BODY.z]
+    jne     .next
+    jp      .next
+    ret
+.next:
+    add     rax, MOB_size
+    dec     ecx
+    jnz     .mob
+    xor     eax, eax
+    ret
+
+; check_patrol_classes(edi faction) -> eax 0 when the patrol members standing at (210.5, 150.5), (212, 150.5)
+; and (209, 150.5) are of that faction and of the three classes of its row of t_patrol_classes, in that order
+check_patrol_classes:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     r12d, edi
+    lea     rbx, [t_patrol_classes]
+    lea     eax, [r12 + r12*2]
+    add     rbx, rax
+    movss   xmm0, [k_210_5]
+    movss   xmm1, [k_150_5]
+    call    patrol_at
+    test    rax, rax
+    jz      .bad
+    cmp     [rax + MOB.faction], r12b
+    jne     .bad
+    movzx   ecx, byte [rbx]
+    cmp     [rax + MOB.fclass], cl
+    jne     .bad
+    movss   xmm0, [k_212]
+    movss   xmm1, [k_150_5]
+    call    patrol_at
+    test    rax, rax
+    jz      .bad
+    cmp     [rax + MOB.faction], r12b
+    jne     .bad
+    movzx   ecx, byte [rbx + 1]
+    cmp     [rax + MOB.fclass], cl
+    jne     .bad
+    movss   xmm0, [k_209]
+    movss   xmm1, [k_150_5]
+    call    patrol_at
+    test    rax, rax
+    jz      .bad
+    cmp     [rax + MOB.faction], r12b
+    jne     .bad
+    movzx   ecx, byte [rbx + 2]
+    cmp     [rax + MOB.fclass], cl
+    jne     .bad
+    xor     eax, eax
+    jmp     .ret
+.bad:
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; EXPECT_PATROL x, class: a patrol member of the Bandits of that class stands at (x, 11, 150.5) (float
+; constants), on the road with the key in r14d, heading for (210.5, 250.5) with (210.5, 50.5) as its home
+%macro EXPECT_PATROL 2
+    movss   xmm0, [%1]
+    movss   xmm1, [k_150_5]
+    call    patrol_at
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax + MOB.faction], FAC_BANDITS
+    jne     .fail
+    cmp     byte [rax + MOB.fclass], %2
+    jne     .fail
+    cmp     [rax + MOB.patrol], r14d
+    jne     .fail
+    movss   xmm0, [rax + BODY.y]
+    ucomiss xmm0, [k_11]
+    jne     .fail
+    jp      .fail
+    movss   xmm0, [rax + MOB.dest_x]
+    ucomiss xmm0, [k_210_5]
+    jne     .fail
+    jp      .fail
+    movss   xmm0, [rax + MOB.dest_z]
+    ucomiss xmm0, [k_250_5]
+    jne     .fail
+    jp      .fail
+    movss   xmm0, [rax + MOB.home_x]
+    ucomiss xmm0, [k_210_5]
+    jne     .fail
+    jp      .fail
+    movss   xmm0, [rax + MOB.home_z]
+    ucomiss xmm0, [k_50_5]
+    jne     .fail
+    jp      .fail
+%endmacro
+
+; PATROL_CONSIDER want: patrol_consider of the road at [rsp] returns `want`
+%macro PATROL_CONSIDER 1
+    lea     rdi, [rsp]
+    call    patrol_consider
+    cmp     eax, %1
+    jne     .fail
+%endmacro
+
+; patrol_point walks a road at 2 blocks a second end to end and back (a road from (0, 0) to (300, 0), a slanted
+; one of length 5, one to the south west). In the arena a road from (210, 50) to (210, 250) at step 3000 has
+; its patrol at (210, 150): nothing happens without a solid top block there (no ground, water), or with the
+; player 30, 47, 97 or 100 blocks from it; 60 blocks away patrol_consider puts three ROLE_PATROL Bandits there
+; (ARCHER, BERSERKER, BRUTE) side by side across the road on the stone, with the road's key, heading for B
+; with A as their home; while they live, or for 36000 steps after a removal, it adds none, then it adds
+; them again. On seed 42's first road, with the world origin moved onto it, structures_step does the same
+; for the road's real patrol in Survival and in Creative.
+; Frame: [rsp .. +24) the road, [rsp+24] patrol_point's out[3], [rsp+36] saved game_time, [rsp+40] game_mode,
+; [rsp+44] difficulty, [rsp+48] player x, y, z.
+test_patrol_spawns_on_road:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 72
+    mov     eax, [game_time]
+    mov     [rsp + 36], eax
+    mov     eax, [game_mode]
+    mov     [rsp + 40], eax
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     [rsp + 44], eax
+    mov     eax, [player + BODY.x]
+    mov     [rsp + 48], eax
+    mov     eax, [player + BODY.y]
+    mov     [rsp + 52], eax
+    mov     eax, [player + BODY.z]
+    mov     [rsp + 56], eax
+    call    world_clear
+    call    rpg_reset
+    call    mobs_clear
+    call    structures_reset
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
+    lea     rdi, [rsp]                  ; ---- where the patrol is
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, 300
+    xor     r8d, r8d
+    mov     r9d, 0x1235
+    call    fab_edge
+    POINT_IS 0, 0, 0, 1
+    POINT_IS 29, 0, 0, 1
+    POINT_IS 30, 1, 0, 1
+    POINT_IS 4500, 150, 0, 1
+    POINT_IS 9000, 300, 0, 0
+    POINT_IS 13500, 150, 0, 0
+    POINT_IS 18000, 0, 0, 1
+    lea     rdi, [rsp]
+    mov     esi, 10
+    mov     edx, 20
+    mov     ecx, 13
+    mov     r8d, 24
+    mov     r9d, 0x1235
+    call    fab_edge
+    POINT_IS 60, 11, 22, 1
+    POINT_IS 210, 12, 22, 0
+    POINT_IS 300, 10, 20, 1
+    lea     rdi, [rsp]
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, -300
+    mov     r8d, -400
+    mov     r9d, 0x1235
+    call    fab_edge
+    POINT_IS 7500, -150, -200, 1
+    lea     rdi, [rsp]                  ; a road of length 2.83, which is 3 blocks
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, 2
+    mov     r8d, 2
+    mov     r9d, 0x1235
+    call    fab_edge
+    POINT_IS 60, 1, 1, 1
+    lea     rdi, [rsp]                  ; ---- the arena
+    mov     esi, 210
+    mov     edx, 50
+    mov     ecx, 210
+    mov     r8d, 250
+    mov     r9d, 0xABCDEF
+    call    fab_edge
+    mov     r14d, 0xABCDEF
+    mov     dword [game_time], 3000
+    PLAYER_AT 150.5, 150.5              ; 60 blocks west of (210, 150)
+    PATROL_CONSIDER 0                   ; nothing there to stand on
+    mov     edi, 210
+    mov     esi, 10
+    mov     edx, 150
+    mov     ecx, WATER
+    call    world_set
+    PATROL_CONSIDER 0                   ; water is no ground
+    mov     edi, 210
+    mov     esi, 10
+    mov     edx, 150
+    mov     ecx, TALL_GRASS
+    call    world_set
+    PATROL_CONSIDER 0                   ; nor is a plant
+    mov     ebx, 145
+.floor:
+    mov     edi, 210
+    mov     esi, 10
+    mov     edx, ebx
+    mov     ecx, STONE
+    call    world_set
+    inc     ebx
+    cmp     ebx, 155
+    jbe     .floor
+    PLAYER_AT 180.5, 150.5              ; 30 blocks: too near
+    PATROL_CONSIDER 0
+    PLAYER_AT 163.5, 150.5              ; 47
+    PATROL_CONSIDER 0
+    PLAYER_AT 113.5, 150.5              ; 97
+    PATROL_CONSIDER 0
+    PLAYER_AT 110.5, 150.5              ; 100: too far
+    PATROL_CONSIDER 0
+    call    count_folk
+    test    eax, eax
+    jnz     .fail
+    PLAYER_AT 150.5, 150.5              ; 60 blocks, but only two free mob slots: nobody comes
+    mov     r12d, MAX_MOBS - 2
+.crowd:
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [k_8_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_8_5]
+    call    mob_spawn
+    dec     r12d
+    jnz     .crowd
+    PATROL_CONSIDER 0
+    call    mobs_clear
+    PLAYER_AT 150.5, 150.5              ; 60 blocks: the patrol steps out
+    PATROL_CONSIDER 1
+    mov     edi, ROLE_PATROL
+    call    count_role
+    cmp     eax, 3
+    jne     .fail
+    call    count_folk
+    cmp     eax, 3
+    jne     .fail
+    EXPECT_PATROL k_210_5, FCLASS_ARCHER
+    EXPECT_PATROL k_212, FCLASS_BERSERKER
+    EXPECT_PATROL k_209, FCLASS_BRUTE
+    PATROL_CONSIDER 0                   ; out already
+    mov     dword [game_time], 39000
+    PATROL_CONSIDER 0                   ; (the cooldown is over, but they still walk)
+    call    mobs_clear
+    mov     dword [game_time], 38999
+    PATROL_CONSIDER 0                   ; removed: the cooldown runs 36000 steps from the first
+    mov     dword [game_time], 39000
+    PATROL_CONSIDER 1                   ; and then they are back
+    mov     edi, ROLE_PATROL
+    call    count_role
+    cmp     eax, 3
+    jne     .fail
+    mov     r12d, FAC_BANDITS           ; every faction's patrol: its classes in order
+.factions:
+    call    mobs_clear
+    call    structures_reset
+    mov     [rsp + ROADEDGE.faction], r12d
+    PATROL_CONSIDER 1
+    mov     edi, r12d
+    call    check_patrol_classes
+    test    eax, eax
+    jnz     .fail
+    inc     r12d
+    cmp     r12d, NUM_FACTIONS
+    jb      .factions
+    call    mobs_clear                  ; ---- seed 42's first road, real
+    call    structures_reset
+    mov     edi, 42
+    call    worldgen_set_seed
+    call    world_clear
+    mov     dword [world_origin_x], 1280
+    mov     dword [world_origin_z], 0
+    mov     edi, 89                     ; the column of its first end: absolute chunk (89, 12)
+    mov     esi, 12
+    call    claim_lit
+    mov     edi, 156                    ; stone under its first end (1436, 196), local (156, 196)
+    mov     esi, 10
+    mov     edx, 196
+    mov     ecx, STONE
+    call    world_set
+    lea     rdi, [rsp]
+    call    first_road
+    test    eax, eax
+    jz      .fail
+    cmp     dword [rsp + ROADEDGE.ax], 1436
+    jne     .fail
+    cmp     dword [rsp + ROADEDGE.az], 196
+    jne     .fail
+    mov     r14d, [rsp + ROADEDGE.key]
+    mov     dword [game_time], 0        ; at step 0 the patrol stands on the first end
+    PLAYER_AT 96.5, 196.5               ; 60 blocks west of it
+    mov     r12d, 2
+.mode:
+    mov     edi, 60
+    call    steps
+    mov     edi, ROLE_PATROL
+    call    count_role
+    cmp     eax, 3
+    jne     .fail
+    call    count_folk
+    cmp     eax, 3
+    jne     .fail
+    mov     edi, r14d
+    call    check_real_patrol
+    test    eax, eax
+    jnz     .fail
+    call    mobs_clear
+    call    structures_reset
+    mov     dword [game_mode], MODE_CREATIVE
+    dec     r12d
+    jnz     .mode
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    mobs_clear
+    call    structures_reset
+    call    world_clear
+    mov     edi, 42
+    call    worldgen_set_seed
+    mov     eax, [rsp + 36]
+    mov     [game_time], eax
+    mov     eax, [rsp + 40]
+    mov     [game_mode], eax
+    mov     eax, [rsp + 44]
+    mov     [settings + SETTINGS.difficulty], eax
+    mov     eax, [rsp + 48]
+    mov     [player + BODY.x], eax
+    mov     eax, [rsp + 52]
+    mov     [player + BODY.y], eax
+    mov     eax, [rsp + 56]
+    mov     [player + BODY.z], eax
+    mov     eax, ebx
+    add     rsp, 72
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_real_patrol(edi key) -> eax 0 when every live folk is a ROLE_PATROL of the Bandits with that road key
+; heading for the second camp, (-21.5, 849.5) local, with the first, (156.5, 196.5), as its home, its feet on
+; y 11; and the classes are one ARCHER, one BERSERKER and one BRUTE (leaf)
+check_real_patrol:
+    xor     r8d, r8d                    ; archers
+    xor     r9d, r9d                    ; berserkers
+    xor     r10d, r10d                  ; brutes
+    lea     rax, [mobs]
+    mov     ecx, MAX_MOBS
+.mob:
+    cmp     dword [rax + MOB.type], MOB_NONE
+    je      .next
+    cmp     dword [rax + MOB.type], MOB_FOLK
+    jne     .bad
+    cmp     byte [rax + MOB.role], ROLE_PATROL
+    jne     .bad
+    cmp     byte [rax + MOB.faction], FAC_BANDITS
+    jne     .bad
+    cmp     [rax + MOB.patrol], edi
+    jne     .bad
+    movss   xmm0, [rax + BODY.y]
+    ucomiss xmm0, [k_11]
+    jne     .bad
+    jp      .bad
+    movss   xmm0, [rax + MOB.dest_x]
+    ucomiss xmm0, [k_m21_5]
+    jne     .bad
+    jp      .bad
+    movss   xmm0, [rax + MOB.dest_z]
+    ucomiss xmm0, [k_849_5]
+    jne     .bad
+    jp      .bad
+    movss   xmm0, [rax + MOB.home_x]
+    ucomiss xmm0, [k_156_5]
+    jne     .bad
+    jp      .bad
+    movss   xmm0, [rax + MOB.home_z]
+    ucomiss xmm0, [k_196_5]
+    jne     .bad
+    jp      .bad
+    movzx   edx, byte [rax + MOB.fclass]
+    cmp     edx, FCLASS_ARCHER
+    jne     .not_archer
+    inc     r8d
+    jmp     .next
+.not_archer:
+    cmp     edx, FCLASS_BERSERKER
+    jne     .not_berserker
+    inc     r9d
+    jmp     .next
+.not_berserker:
+    cmp     edx, FCLASS_BRUTE
+    jne     .bad
+    inc     r10d
+.next:
+    add     rax, MOB_size
+    dec     ecx
+    jnz     .mob
+    cmp     r8d, 1
+    jne     .bad
+    cmp     r9d, 1
+    jne     .bad
+    cmp     r10d, 1
+    jne     .bad
+    xor     eax, eax
+    ret
+.bad:
+    mov     eax, 1
     ret

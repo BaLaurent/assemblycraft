@@ -1153,10 +1153,10 @@ test_damage_pipeline:
     test    eax, eax
     jnz     .fail
     FRESH   MOB_FOLK
-    HM      0, SRC_MELEE, 0, f3                        ; folk cannot be hurt
-    test    eax, eax
-    jnz     .fail
-    CHK     [rbx + MOB.health], 100
+    HM      0, SRC_MELEE, 0, f3                        ; folk can be hurt like any mob
+    cmp     eax, 3
+    jne     .fail
+    CHK     [rbx + MOB.health], 97
     ; ---- 11. the Storm band: a crit arcs half of its damage as shock to 3 other hostile mobs nearby --
     FRESH   MOB_ZOMBIE
     mov     edi, MOB_PIG                               ; slot 1: not hostile, skipped

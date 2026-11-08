@@ -6,7 +6,7 @@ default rel
 
 global test_mob_raycast_hits, test_mob_hurt_pig_drops_food
 global test_zombie_attacks_player, test_mob_spawn_rules
-global test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_immune_and_not_saved
+global test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_hurt_and_not_saved
 global test_boss_phases_slam_and_summons, test_mob_kill_awards_xp_and_coins
 global test_mob_levels_and_scaling, test_elite_affixes
 global test_entities_rebase, test_entities_remove_box, test_mob_water_ai
@@ -1010,10 +1010,11 @@ test_elite_saved_and_tougher:
     pop     rbp
     ret
 
-; Villagers cannot be hurt, are not saved, stroll back toward their home when they stray beyond
-; 6 blocks and turn to a player within 4. mob_is_hostile tells hostile mobs from the rest.
+; Villagers are hurt by a blow of the player's (it tags them, sets them running and provokes them),
+; not by a plain hit inside the hurt window, are not saved, stroll back toward their home when they
+; stray beyond 6 blocks and turn to a player within 4. mob_is_hostile tells hostile mobs from the rest.
 ; Frame: slots [rsp] merchant, [rsp+4] elder, [rsp+8] pig, [rsp+12] zombie, [rsp+16] boss.
-test_npc_immune_and_not_saved:
+test_npc_hurt_and_not_saved:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -1059,24 +1060,32 @@ test_npc_immune_and_not_saved:
     mov     byte [combat_hit_flags], HF_PLAYER
     mov     edi, [rsp]
     mov     esi, 5
-    call    strike                      ; a villager shrugs it off
-    test    eax, eax
-    jnz     .fail
+    call    strike                      ; a blow of the player's hurts a villager...
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [r12 + MOB.health], 15
+    jne     .fail
+    cmp     dword [r12 + MOB.hurt], 0
+    jle     .fail
+    cmp     dword [r12 + MOB.tagged], 0
+    jle     .fail                       ; ...tags it...
+    cmp     dword [r12 + MOB.panic], 0
+    jle     .fail                       ; ...sends it running from him...
+    cmp     dword [r12 + MOB.provoked], 0
+    jle     .fail                       ; ...and provokes its faction
+    cmp     byte [combat_hit_flags], 0  ; the flags are consumed
+    jne     .fail
     mov     edi, [rsp]
     mov     esi, 5
     xorps   xmm0, xmm0
     movss   xmm1, [k_one]
-    call    mob_hurt
+    call    mob_hurt                    ; a plain hit inside the hurt window is refused
     test    eax, eax
     jnz     .fail
-    cmp     dword [r12 + MOB.health], 20
+    cmp     dword [r12 + MOB.health], 15
     jne     .fail
-    cmp     dword [r12 + MOB.hurt], 0
-    jne     .fail
-    cmp     dword [r12 + MOB.tagged], 0
-    jne     .fail
-    cmp     byte [combat_hit_flags], 0  ; the flags are consumed either way
-    jne     .fail
+    mov     dword [r12 + MOB.panic], 0  ; calm again, for the walk home below
+    mov     dword [r12 + MOB.target], 0
     cmp     dword [r12 + MOB.type], MOB_FOLK
     jne     .fail
     mov     edi, [rsp]
@@ -1907,7 +1916,7 @@ night_census:
     mov     ecx, r8d
     ret
 
-; A mob starts at the player's level (a villager at 1; a dungeon's mobs two above, the crypt boss
+; A mob starts at the player's level (a folk too; a dungeon's mobs two above, the crypt boss
 ; three above and at least 20) with the health of that level: a level-10 zombie 20 * (1 + 0.15 * 9)
 ; = 47, level 12 53, an elite of level 10 round(117.5) = 118, the Fallen King at 20 300 * 3.85 =
 ; 1155; mob_set_level heals it fully. A level-10 zombie's blow on the unarmored Normal player is
@@ -2018,8 +2027,8 @@ test_mob_levels_and_scaling:
     mov     esi, 30
     call    mob_set_level
     call    mobs_clear
-    mov     edi, FAC_VILLAGERS          ; folk stay at level 1 with 20 health
-    mov     esi, ROLE_TRADER
+    mov     edi, FAC_VILLAGERS          ; folk take the player's level (10) and their class's health
+    mov     esi, ROLE_TRADER            ; a non-fighter's base 20 -> 47...
     xor     edx, edx
     movss   xmm0, [k_16_5]
     movss   xmm1, [k_11]
@@ -2029,9 +2038,27 @@ test_mob_levels_and_scaling:
     js      .fail
     mov     edi, eax
     call    mob_ptr
-    cmp     dword [rax + MOB.level], 1
+    cmp     dword [rax + MOB.level], 10
     jne     .fail
-    cmp     dword [rax + MOB.max_health], 20
+    cmp     dword [rax + MOB.max_health], 47
+    jne     .fail
+    call    mobs_clear
+    mov     edi, FAC_BANDITS            ; ...a brute guard's base 32 -> round(75.2) = 75
+    mov     esi, ROLE_GUARD
+    mov     edx, FCLASS_BRUTE
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_16_5]
+    call    folk_spawn
+    test    eax, eax
+    js      .fail
+    mov     edi, eax
+    call    mob_ptr
+    cmp     dword [rax + MOB.level], 10
+    jne     .fail
+    cmp     dword [rax + MOB.max_health], 75
+    jne     .fail
+    cmp     dword [rax + MOB.health], 75
     jne     .fail
     call    mobs_clear
     mov     edi, MOB_ZOMBIE             ; an elite of level 10, its affix pinned to a plain one
@@ -2558,9 +2585,9 @@ clear_entities:
     add     rsp, 8
     ret
 
-; Every module that keeps a local position follows a rebase by (512, -512), exactly: a mob and its home,
-; a drop, an arrow, a primed TNT, a fire cell, a particle, a floating number and the targets of the meteor
-; storm and the arrow rain. Free slots are left alone.
+; Every module that keeps a local position follows a rebase by (512, -512), exactly: a mob and its home
+; (a patrol also its dest), a drop, an arrow, a primed TNT, a fire cell, a particle, a floating number
+; and the targets of the meteor storm and the arrow rain. Free slots are left alone.
 test_entities_rebase:
     push    rbp
     mov     rbp, rsp
@@ -2579,6 +2606,11 @@ test_entities_rebase:
     js      .fail
     SETF    [mobs + MOB.home_x], 1001.0
     SETF    [mobs + MOB.home_z], -999.0
+    mov     dword [mobs + 2 * MOB_size + MOB.type], MOB_FOLK    ; a patrol (slot 2, by hand): its dest...
+    mov     dword [mobs + 2 * MOB_size + MOB.patrol], 1
+    SETF    [mobs + 2 * MOB_size + MOB.dest_x], 1001.0
+    SETF    [mobs + 2 * MOB_size + MOB.dest_z], -999.0
+    mov     dword [mobs + 3 * MOB_size + MOB.type], MOB_FOLK    ; ...and a folk without a road: no dest to shift
     SETF    [mobs + MOB_size + BODY.x], 7.0     ; a free slot with a stale x
     mov     edi, DIRT
     mov     esi, 1
@@ -2643,6 +2675,12 @@ test_entities_rebase:
     EXPECT_F [mobs + MOB.home_x], k_489
     EXPECT_F [mobs + MOB.home_z], k_m487
     EXPECT_F [mobs + MOB_size + BODY.x], k_7
+    EXPECT_F [mobs + 2 * MOB_size + MOB.dest_x], k_489
+    EXPECT_F [mobs + 2 * MOB_size + MOB.dest_z], k_m487
+    cmp     dword [mobs + 3 * MOB_size + MOB.dest_x], 0
+    jne     .fail
+    cmp     dword [mobs + 3 * MOB_size + MOB.dest_z], 0
+    jne     .fail
     EXPECT_F [drops + DROP.x], k_488_5
     EXPECT_F [drops + DROP.y], k_20
     EXPECT_F [drops + DROP.z], k_m488_5

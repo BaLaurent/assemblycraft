@@ -188,8 +188,8 @@ test_arrow_hits_mob:
     pop     rbp
     ret
 
-; a radius 3 blast at the middle of a stone cube: a sphere of air, bedrock stays, TNT is set
-; off, the player 3 blocks away loses 11 health at Normal difficulty
+; a radius 3 blast at the middle of a stone cube: a sphere of air, bedrock and a shrine (unbreakable) stay,
+; TNT is set off, the player 3 blocks away loses 11 health at Normal difficulty
 test_explosion_breaks_blocks:
     push    rbp
     mov     rbp, rsp
@@ -234,6 +234,11 @@ test_explosion_breaks_blocks:
     mov     edx, 11
     mov     ecx, TNT
     call    world_set
+    mov     edi, 9                      ; a shrine one block east of the centre: unbreakable
+    mov     esi, 8
+    mov     edx, 8
+    mov     ecx, SHRINE + 1
+    call    world_set
     call    reset_player                ; the player stands 3 blocks east of the blast
     SETF    [player + BODY.x], 11.5
     SETF    [player + BODY.y], 7.6
@@ -248,6 +253,7 @@ test_explosion_breaks_blocks:
     movss   xmm3, [k_three]
     call    explode_at
     EXPECT_BLOCK 8, 8, 8, BEDROCK
+    EXPECT_BLOCK 9, 8, 8, SHRINE + 1    ; inside the blast, and still there
     EXPECT_BLOCK 8, 8, 5, AIR           ; exactly 3 blocks away: inside
     EXPECT_BLOCK 8, 8, 4, STONE
     EXPECT_BLOCK 10, 10, 8, AIR
