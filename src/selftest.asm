@@ -33,6 +33,17 @@ extern test_aimed_shotgun_has_no_spread, test_tnt_thrown_by_blast, test_tnt_fall
 extern test_fire_spreads_and_burns_wood, test_fire_ignites_tnt
 extern test_fire_dies_on_stone, test_fire_hurts_player
 extern test_fx_explosion_spawns_and_expires, test_fx_debris_falls_and_bounces
+extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_class_and_ranks
+extern test_rpg_save_load_validates, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
+extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
+extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
+extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_immune_and_not_saved
+extern test_boss_phases_slam_and_summons, test_mob_kill_awards_xp_and_coins
+extern test_structure_sites_deterministic, test_dungeon_built_with_chests
+extern test_village_built_with_npcs, test_dungeon_clears_after_kills, test_crypt_spawns_boss_once
+extern test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
+extern test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
+extern test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -113,6 +124,32 @@ tests:
     TEST fx_debris_falls_and_bounces
     TEST game_save_load_roundtrip
     TEST drops_fall_and_pickup
+    TEST rpg_levels_and_points
+    TEST rpg_skill_spend_rules
+    TEST rpg_stats_from_class_and_ranks
+    TEST rpg_save_load_validates
+    TEST quest_chain_progress_and_rewards
+    TEST trade_exchanges_items
+    TEST guard_blocks_and_parries
+    TEST dodge_iframes_and_stamina
+    TEST melee_combo_crit_backstab
+    TEST stamina_mana_regen_and_max_health
+    TEST zombie_windup_can_be_parried
+    TEST elite_saved_and_tougher
+    TEST npc_immune_and_not_saved
+    TEST boss_phases_slam_and_summons
+    TEST mob_kill_awards_xp_and_coins
+    TEST structure_sites_deterministic
+    TEST dungeon_built_with_chests
+    TEST village_built_with_npcs
+    TEST dungeon_clears_after_kills
+    TEST crypt_spawns_boss_once
+    TEST world_to_ui_centres_forward
+    TEST dmgnum_rises_and_expires
+    TEST ability_cost_cooldown_and_unlock
+    TEST fireball_explodes_without_breaking
+    TEST blink_stops_before_wall
+    TEST volley_and_arrow_rain_spawn
     dq 0
 
 section .rodata
@@ -185,6 +222,32 @@ section .rodata
     TESTNAME fx_debris_falls_and_bounces
     TESTNAME game_save_load_roundtrip
     TESTNAME drops_fall_and_pickup
+    TESTNAME rpg_levels_and_points
+    TESTNAME rpg_skill_spend_rules
+    TESTNAME rpg_stats_from_class_and_ranks
+    TESTNAME rpg_save_load_validates
+    TESTNAME quest_chain_progress_and_rewards
+    TESTNAME trade_exchanges_items
+    TESTNAME guard_blocks_and_parries
+    TESTNAME dodge_iframes_and_stamina
+    TESTNAME melee_combo_crit_backstab
+    TESTNAME stamina_mana_regen_and_max_health
+    TESTNAME zombie_windup_can_be_parried
+    TESTNAME elite_saved_and_tougher
+    TESTNAME npc_immune_and_not_saved
+    TESTNAME boss_phases_slam_and_summons
+    TESTNAME mob_kill_awards_xp_and_coins
+    TESTNAME structure_sites_deterministic
+    TESTNAME dungeon_built_with_chests
+    TESTNAME village_built_with_npcs
+    TESTNAME dungeon_clears_after_kills
+    TESTNAME crypt_spawns_boss_once
+    TESTNAME world_to_ui_centres_forward
+    TESTNAME dmgnum_rises_and_expires
+    TESTNAME ability_cost_cooldown_and_unlock
+    TESTNAME fireball_explodes_without_breaking
+    TESTNAME blink_stops_before_wall
+    TESTNAME volley_and_arrow_rain_spawn
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

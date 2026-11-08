@@ -13,7 +13,7 @@ c_dt:        dd 0.016666668             ; one fixed step, seconds
 c_gravity:   dd 32.0
 c_jump:      dd 9.0
 c_fall_min:  dd -50.0                   ; terminal fall velocity (lower bound of vy)
-c_sprint:    dd 5.612
+c_sprint:    dd 1.3                     ; sprint speed = walk speed * this
 c_fly_h:     dd 10.89
 c_fly_v:     dd 7.5
 c_eps:       dd 0.001
@@ -355,7 +355,7 @@ body_step:
     movss   xmm5, [rbx + BODY.speed]
     cmp     dword [r12 + INPUT.sprint], 0
     je      .have_speed
-    movss   xmm5, [c_sprint]
+    mulss   xmm5, [c_sprint]            ; sprinting is 30% faster than the current walk speed
 .have_speed:
     mulss   xmm4, xmm5
     mulss   xmm3, xmm5

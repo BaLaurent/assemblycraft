@@ -1,15 +1,16 @@
-; explode.asm - explosions (creepers, TNT, rockets) and primed TNT. Primed TNT is a physics
-; body: it hops when lit, falls, is thrown by blasts, and flashes white while it burns. It is
-; not saved with the world.
+; explode.asm - explosions (creepers, TNT, rockets), magic blasts (fireballs, meteors, explosive
+; arrows) and primed TNT. Primed TNT is a physics body: it hops when lit, falls, is thrown by
+; blasts, and flashes white while it burns. It is not saved with the world.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global explode_at, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
+global explode_at, explode_magic, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
 extern audio_play_at, player, settings, survival_damage
-extern mobs, mob_hurt, item_model_draw, body_init, body_step
+extern mobs, mob_hurt, mob_strike, item_model_draw, body_init, body_step
+extern combat_hit_flags
 extern fx_explosion, fx_debris
 
 ; explode_at frame (rsp-relative)
@@ -25,6 +26,14 @@ extern fx_explosion, fx_debris
 %define X_CELL  52                      ; int cell being cleared [3]
 %define X_NDEB  64                      ; int blocks destroyed so far (every second: debris)
 %define X_FRAME 72
+
+; explode_magic frame (rsp-relative)
+%define M_C     0                       ; float blast centre[3]
+%define M_R     12                      ; float radius
+%define M_DMG   16                      ; int damage at the centre
+%define M_DX    20                      ; float mob offset from the centre (x, z)
+%define M_DZ    24
+%define M_FRAME 32
 
 section .rodata
 align 4
@@ -44,6 +53,9 @@ c_hundred:   dd 100.0
 c_throw:     dd 14.0                    ; blast push on primed TNT at full strength
 c_lift:      dd 5.0                     ; and the extra upward kick
 f_one:       dd 1.0
+c_magic_fx:  dd 0.7                     ; magic blast: fireball radius / blast radius
+c_magic_vol: dd 0.6
+c_magic_kb:  dd 1.5                     ; push on a mob: along unit(mob - centre).xz
 base_dmg:    dd 8, 12, 22, 33           ; player damage at full strength for r = 3, by difficulty
 
 section .bss
@@ -594,6 +606,101 @@ explode_at:
     pop     r15
     pop     r14
     pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; explode_magic(xmm0 x, xmm1 y, xmm2 z, xmm3 radius, edi damage): a magic blast. Draws the
+; explosion at 0.7 r and plays its sound; then every live mob that is not a villager (merchant,
+; elder) and whose body middle lies within r of the centre is struck as the player's
+; (combat_hit_flags = HF_PLAYER) for ceil(damage * (1 - 0.5 d / r)) and pushed 1.5 away along
+; (mob - centre).xz. Blocks, TNT and the player are never touched.
+; rbx = mob, r12d = mob index.
+explode_magic:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, M_FRAME
+    movss   [rsp + M_C], xmm0
+    movss   [rsp + M_C + 4], xmm1
+    movss   [rsp + M_C + 8], xmm2
+    movss   [rsp + M_R], xmm3
+    mov     [rsp + M_DMG], edi
+    mulss   xmm3, [c_magic_fx]
+    call    fx_explosion                ; xmm0..2 are still the centre
+    mov     edi, SND_EXPLODE
+    movss   xmm0, [rsp + M_C]
+    movss   xmm1, [rsp + M_C + 4]
+    movss   xmm2, [rsp + M_C + 8]
+    movss   xmm3, [c_magic_vol]
+    call    audio_play_at
+    lea     rbx, [mobs]
+    xor     r12d, r12d
+.mob:
+    mov     eax, [rbx + MOB.type]
+    test    eax, eax
+    jz      .next
+    cmp     eax, MOB_MERCHANT
+    je      .next
+    cmp     eax, MOB_ELDER
+    je      .next
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [rsp + M_C]
+    movss   [rsp + M_DX], xmm0
+    movss   xmm1, [rbx + BODY.height]
+    mulss   xmm1, [c_half]
+    addss   xmm1, [rbx + BODY.y]
+    subss   xmm1, [rsp + M_C + 4]       ; from the middle of the body
+    movss   xmm2, [rbx + BODY.z]
+    subss   xmm2, [rsp + M_C + 8]
+    movss   [rsp + M_DZ], xmm2
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    mulss   xmm2, xmm2
+    addss   xmm0, xmm1
+    addss   xmm0, xmm2
+    sqrtss  xmm0, xmm0                  ; d
+    comiss  xmm0, [rsp + M_R]
+    jae     .next                       ; out of range (also every mob when r = 0)
+    divss   xmm0, [rsp + M_R]
+    mulss   xmm0, [c_half]
+    movss   xmm1, [c_one]
+    subss   xmm1, xmm0                  ; 1 - 0.5 d / r
+    cvtsi2ss xmm0, dword [rsp + M_DMG]
+    mulss   xmm0, xmm1
+    roundss xmm0, xmm0, 10              ; ceil
+    cvttss2si esi, xmm0
+    movss   xmm0, [rsp + M_DX]
+    movss   xmm1, [rsp + M_DZ]
+    movaps  xmm2, xmm0
+    mulss   xmm2, xmm2
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm3
+    addss   xmm2, xmm3
+    sqrtss  xmm2, xmm2                  ; horizontal distance
+    comiss  xmm2, [c_tiny]
+    jb      .still                      ; straight above or below the blast
+    divss   xmm0, xmm2
+    divss   xmm1, xmm2
+    mulss   xmm0, [c_magic_kb]
+    mulss   xmm1, [c_magic_kb]
+    jmp     .strike
+.still:
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+.strike:
+    mov     byte [combat_hit_flags], HF_PLAYER
+    mov     edi, r12d
+    call    mob_strike
+.next:
+    add     rbx, MOB_size
+    inc     r12d
+    cmp     r12d, MAX_MOBS
+    jb      .mob
+    mov     byte [combat_hit_flags], 0  ; no flag outlives the blast
+    add     rsp, M_FRAME
     pop     r12
     pop     rbx
     pop     rbp

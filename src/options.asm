@@ -17,6 +17,14 @@ extern str_append, i32_to_str
 %define WHITE   0xFFFFFFFF
 %define RED     RGBA(255, 85, 85, 255)
 
+; Controls layout (GUI units): two columns of 8 rows when they fit, else one column of 15.
+; wide (ui_w >= 470): the 465-unit layout, labels 125 wide, 100-wide key buttons
+; compact (ui_w >= 408): 401 units, labels 112 wide, 84-wide key buttons (the 426-wide GUI
+;   of the default 1280x720 window)
+%define CTRL_WIDE_W     470
+%define CTRL_COMPACT_W  408
+%define CTRL_ROWS       8
+
 section .rodata
 s_empty:        db 0
 s_settings:     db "Settings", 0
@@ -63,7 +71,7 @@ s_b_jump:       db "Jump / Fly Up", 0
 s_b_sneak:      db "Sneak / Fly Down", 0
 s_b_sprint:     db "Sprint", 0
 s_b_inventory:  db "Inventory", 0
-s_b_fly:        db "Toggle Fly (Creative)", 0
+s_b_fly:        db "Toggle Fly", 0
 s_b_reload:     db "Reload", 0
 s_b_dodge:      db "Dodge", 0
 s_b_ability1:   db "Ability 1", 0
@@ -311,7 +319,7 @@ screen_controls:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 40                     ; [rsp] key label (32)
+    sub     rsp, 72                     ; [rsp] key label (32), [rsp+32] capture state, [rsp+36] layout
     cmp     dword [app_entered], 0
     je      .entered
     mov     dword [capturing], -1
@@ -340,30 +348,69 @@ screen_controls:
     mov     ecx, WHITE
     mov     r8d, 1
     call    ui_text_centered
+    ; layout: [rsp+36] rows per column, [rsp+40] column step, [rsp+44] label x of column 0,
+    ; [rsp+48] button offset from the label, [rsp+52] button width, [rsp+56] label x of the row
+    mov     eax, [ui_w]
+    cmp     eax, CTRL_WIDE_W
+    jae     .wide
+    cmp     eax, CTRL_COMPACT_W
+    jae     .compact
+    mov     dword [rsp + 36], NUM_BINDINGS
+    mov     dword [rsp + 40], 0
+    lea     eax, [r12 - 150]
+    mov     [rsp + 44], eax
+    mov     dword [rsp + 48], 160
+    mov     dword [rsp + 52], 120
+    jmp     .pitch
+.wide:
+    mov     dword [rsp + 36], CTRL_ROWS
+    mov     dword [rsp + 40], 240
+    lea     eax, [r12 - 235]
+    mov     [rsp + 44], eax
+    mov     dword [rsp + 48], 125
+    mov     dword [rsp + 52], 100
+    jmp     .pitch
+.compact:
+    mov     dword [rsp + 36], CTRL_ROWS
+    mov     dword [rsp + 40], 205
+    lea     eax, [r12 - 200]
+    mov     [rsp + 44], eax
+    mov     dword [rsp + 48], 112
+    mov     dword [rsp + 52], 84
+.pitch:
     mov     eax, [ui_h]
     sub     eax, 60
     cdq
-    mov     ecx, NUM_BINDINGS
-    idiv    ecx
-    mov     r14d, 24                    ; pitch = min(24, (ui_h - 60) / NUM_BINDINGS)
+    idiv    dword [rsp + 36]
+    mov     r14d, 24                    ; pitch = min(24, (ui_h - 60) / rows), at least 14
     cmp     eax, r14d
+    cmovl   r14d, eax
+    mov     eax, 14
+    cmp     r14d, eax
     cmovl   r14d, eax
     xor     ebx, ebx                    ; row
 .row:
+    mov     eax, ebx
+    xor     edx, edx
+    div     dword [rsp + 36]            ; eax = column, edx = row within the column
+    imul    eax, [rsp + 40]
+    add     eax, [rsp + 44]
+    mov     [rsp + 56], eax
     mov     r13d, r14d
-    imul    r13d, ebx
+    imul    r13d, edx
     add     r13d, 28                    ; y
     mov     rax, [bind_labels + rbx*8]
     mov     rdi, rax
-    lea     esi, [r12 - 150]
+    mov     esi, [rsp + 56]
     lea     edx, [r13 + 6]
     mov     ecx, WHITE
     mov     r8d, 1
     call    ui_text
     lea     rdi, [s_empty]
-    lea     esi, [r12 + 10]
+    mov     esi, [rsp + 56]
+    add     esi, [rsp + 48]
     mov     edx, r13d
-    mov     ecx, 120
+    mov     ecx, [rsp + 52]
     mov     r8d, 1
     call    ui_button
     test    eax, eax
@@ -389,7 +436,10 @@ screen_controls:
     mov     ecx, r15d
     mov     rdi, rsp
 .draw:
-    lea     esi, [r12 + 70]
+    mov     esi, [rsp + 52]
+    shr     esi, 1
+    add     esi, [rsp + 48]
+    add     esi, [rsp + 56]             ; centre of the key button
     lea     edx, [r13 + 6]
     mov     r8d, 1
     call    ui_text_centered
@@ -427,7 +477,7 @@ screen_controls:
     mov     edi, ST_SETTINGS
     call    app_goto
 .ret:
-    add     rsp, 40
+    add     rsp, 72
     pop     r15
     pop     r14
     pop     r13

@@ -9,7 +9,7 @@ global hand_render, hand_swing
 
 extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge, gun_kick
 extern render_box, item_model_draw, tex_id, gun_model_draw, game_aim
-extern gun_reload, gun_reload_total
+extern gun_reload, gun_reload_total, item_tool, combat_guard_t, combat_dodge_t
 
 section .rodata
 align 8
@@ -45,6 +45,13 @@ g_aim_z:     dd -0.5
 f_rel_dip:   dd 0.12                    ; reload: drop, roll and tip at mid-reload
 f_rel_roll:  dd 25.0
 f_rel_tip:   dd -20.0
+; guard: the weapon comes across the body, blade up; a dodge roll dips the view
+f_guard_x:   dd -0.15
+f_guard_y:   dd 0.12
+f_guard_z:   dd 0.05
+f_guard_rz:  dd 70.0
+f_guard_rx:  dd -10.0
+f_dodge_dip: dd 0.12
 ; bare arm: a skin-coloured box reaching from below the screen corner
 arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
 arm_tiles:   times 6 db TILE_PLAYER_SKIN
@@ -228,10 +235,39 @@ hand_render:
     movss   xmm1, [sw_s3]
     mulss   xmm1, [f_sw_y]
     addss   xmm1, xmm3
+    cmp     dword [combat_dodge_t], 0
+    jle     .no_dip
+    subss   xmm1, [f_dodge_dip]
+.no_dip:
     movss   xmm2, [sw_s2]
     mulss   xmm2, [f_sw_z]
     addss   xmm2, [f_base_z]
     call    glTranslatef
+    cmp     dword [combat_guard_t], 0   ; guarding with a melee weapon
+    jl      .no_guard
+    movzx   eax, byte [item_tool + rbx]
+    cmp     eax, TOOL_SWORD
+    je      .guard
+    cmp     eax, TOOL_AXE
+    je      .guard
+    cmp     eax, TOOL_DAGGER
+    jne     .no_guard
+.guard:
+    movss   xmm0, [f_guard_x]
+    movss   xmm1, [f_guard_y]
+    movss   xmm2, [f_guard_z]
+    call    glTranslatef
+    movss   xmm0, [f_guard_rz]
+    xorps   xmm1, xmm1
+    xorps   xmm2, xmm2
+    movss   xmm3, [f_one]
+    call    rot
+    movss   xmm0, [f_guard_rx]
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    rot
+.no_guard:
     movss   xmm0, [sw_s2]
     mulss   xmm0, [f_sw_rot]
     movss   xmm1, [f_one]
@@ -241,7 +277,10 @@ hand_render:
 
 .kind:
     cmp     ebx, BOW                    ; a drawn bow comes back towards the eye
+    je      .bow_pull
+    cmp     ebx, CELESTIAL_BOW
     jne     .no_draw
+.bow_pull:
     movss   xmm2, [game_bow_charge]
     xorps   xmm0, xmm0
     comiss  xmm2, xmm0

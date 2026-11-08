@@ -1,19 +1,22 @@
-; arrows.asm - projectiles: arrows, bullets and rockets. Spawn, flight, hits on mobs and the
-; player, arrows sticking in blocks and the player picking his own back up, rockets
-; exploding on impact, drawing. Projectiles are not saved with the world.
+; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts and fireballs. Spawn, flight, hits
+; on mobs and the player, arrows sticking in blocks and the player picking his own back up,
+; rockets and fireballs exploding on impact, drawing. Projectiles are not saved with the world.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_strike, explode_at
-extern survival_damage, surv, game_mode, inv_add
+extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_strike, explode_at, explode_magic
+extern surv, game_mode, inv_add
 extern audio_play, audio_play_at
-extern render_box, atan2_deg
+extern render_box, atan2_deg, fx_burst
+extern player_take_hit, combat_hit_flags, combat_heal, rpg_stat
+extern glIsEnabled
 
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
 %define STUCK_OWN_STEPS 1200            ; the player's arrow stays 20 s
+%define TRAIL_DELAY     3               ; steps of flight before a bolt or fireball leaves a trail
 
 ; arrows_step frame (rsp-relative)
 %define S_SEG   0                       ; float seg[3]: this step's displacement
@@ -50,8 +53,13 @@ c_height:    dd 1.8
 f_one:       dd 1.0
 c_bullet_vol: dd 0.4
 c_rocket_r:  dd 3.0                     ; rocket blast radius
-; flying steps before a projectile is gone (a rocket explodes then), by kind
-max_age:     dd 600, 120, 300
+c_magic_r:   dd 2.5                     ; fireball and explosive arrow blast radius
+c_magic_big: dd 3.0                     ; AF_BIG fireballs (meteors)
+c_src_t:     dd 0.1                     ; a mob's arrow "comes from" 0.1 s back along its path
+c_trail_v:   dd 0.3                     ; speed of a trail particle
+c_burst_v:   dd 1.0                     ; speed of the sparks where a bolt ends
+; flying steps before a projectile is gone (a rocket or fireball explodes then), by kind
+max_age:     dd 600, 120, 300, 90, 120  ; ARROW, BULLET, ROCKET, BOLT, FIREBALL
 
 ; arrow model: shaft, tip, fletching (box lo xyz, hi xyz); the tip points to -Z
 arrow_shaft: dd -0.03, -0.03, -0.25,  0.03, 0.03, 0.25
@@ -74,6 +82,14 @@ tiles_steel: times 6 db TILE_SKELETON_BONE
              db 0, 0
 tiles_head:  times 6 db TILE_TNT_SIDE
              db 0, 0
+align 4
+zero_tiles:  db 0, 0, 0, 0, 0, 0, 0, 0
+shades_flat: dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+; magic projectiles: half edge of the cube and its colour
+c_bolt_half: dd 0.09                    ; 0.18 cube
+c_bolt_col:  dd 0.75, 0.4, 1.0
+c_fire_half: dd 0.15                    ; 0.3 cube
+c_fire_col:  dd 1.0, 0.55, 0.15
 
 section .bss
 alignb 16
@@ -282,18 +298,44 @@ arrows_step:
     mov     [rsp + S_IDX], eax
     movss   [rsp + S_T], xmm0
     HIT_POINT
-    cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
+    mov     eax, [rbx + ARROWENT.kind]
+    cmp     eax, PROJ_ROCKET
     je      .rocket_burst               ; a rocket goes off on the mob
+    cmp     eax, PROJ_FIREBALL
+    je      .magic_burst                ; so does a fireball...
+    test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
+    jnz     .magic_burst                ; ...and an explosive arrow
+    mov     ecx, HF_PLAYER              ; the player's hit: the mob learns whose it is, and a crit
+    mov     edx, HF_PLAYER | HF_CRIT
+    test    dword [rbx + ARROWENT.flags], AF_CRIT
+    cmovnz  ecx, edx
+    mov     [combat_hit_flags], cl
     mov     edi, [rsp + S_IDX]
     mov     esi, [rbx + ARROWENT.damage]
     movss   xmm0, [rsp + S_H]
     movss   xmm1, [rsp + S_H + 4]
-    cmp     dword [rbx + ARROWENT.kind], PROJ_BULLET
-    je      .shot
-    call    mob_hurt
+    cmp     eax, PROJ_ARROW
+    je      .arrow_hit
+    call    mob_strike                  ; every bullet and bolt counts, even in the hurt window
+    mov     byte [combat_hit_flags], 0
+    cmp     dword [rbx + ARROWENT.kind], PROJ_BOLT
+    jne     .impact
+    test    eax, eax
+    jz      .impact                     ; nothing landed: nothing to steal
+    mov     edi, STAT_LIFESTEAL         ; a bolt heals floor(damage * LIFESTEAL / 100)
+    call    rpg_stat
+    imul    eax, [rbx + ARROWENT.damage]
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    test    eax, eax
+    jz      .impact
+    mov     edi, eax
+    call    combat_heal
     jmp     .impact
-.shot:
-    call    mob_strike                  ; every bullet counts, even in the hurt window
+.arrow_hit:
+    call    mob_hurt
+    mov     byte [combat_hit_flags], 0
     jmp     .impact
 
 .player_arrow:
@@ -328,11 +370,22 @@ arrows_step:
     jz      .settle
     movss   [rsp + S_T], xmm0
     HIT_POINT
+    movss   xmm2, [c_src_t]             ; the shot's source: 0.1 s back along its path
+    movss   xmm0, [rbx + ARROWENT.vx]
+    mulss   xmm0, xmm2
+    movss   xmm3, [rbx + ARROWENT.x]
+    subss   xmm3, xmm0
+    movss   xmm1, [rbx + ARROWENT.vz]
+    mulss   xmm1, xmm2
+    movss   xmm4, [rbx + ARROWENT.z]
+    subss   xmm4, xmm1
+    movaps  xmm0, xmm3
+    movaps  xmm1, xmm4
     mov     edi, [rbx + ARROWENT.damage]
     mov     esi, CAUSE_SKELETON
-    call    survival_damage
-    test    eax, eax
-    jz      .impact                     ; invulnerable: the arrow is spent anyway
+    call    player_take_hit
+    cmp     eax, HIT_TAKEN
+    jne     .impact                     ; parried, blocked, dodged or invulnerable: spent anyway
     movss   xmm0, [rsp + S_H]           ; shoved along the arrow's heading
     mulss   xmm0, [c_kb]
     movss   [player + BODY.kbx], xmm0
@@ -360,6 +413,12 @@ arrows_step:
     je      .bullet_block
     cmp     eax, PROJ_ROCKET
     je      .rocket_block
+    cmp     eax, PROJ_FIREBALL
+    je      .magic_block
+    cmp     eax, PROJ_BOLT
+    je      .bolt_block
+    test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
+    jnz     .magic_block                ; an explosive arrow never sticks
     mov     rdi, rbx
     lea     rsi, [rsp + S_DIR]
     movss   xmm0, [rsp + S_TMAX]
@@ -398,16 +457,53 @@ arrows_step:
     movss   xmm3, [c_rocket_r]
     call    explode_at
     jmp     .next
-.expired:                               ; out of time: an arrow or bullet vanishes,
-    cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
+.magic_block:                           ; a fireball or explosive arrow: just short of the surface
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+.magic_burst:                           ; S_HP = where it goes off; freed before the blast
+    mov     dword [rbx + ARROWENT.live], 0
+    mov     edi, [rbx + ARROWENT.damage]
+    movss   xmm3, [c_magic_r]
+    test    dword [rbx + ARROWENT.flags], AF_BIG
+    jz      .magic_go
+    movss   xmm3, [c_magic_big]
+.magic_go:
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    call    explode_magic
+    jmp     .next
+.bolt_block:                            ; a bolt bursts into sparks just short of the surface
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    movss   xmm3, [c_burst_v]
+    mov     edi, FX_MAGIC
+    mov     esi, 6
+    call    fx_burst
+    jmp     .remove
+.expired:                               ; out of time: an arrow, bullet or bolt vanishes,
+    mov     eax, [rbx + ARROWENT.kind]
+    cmp     eax, PROJ_ROCKET
+    je      .go_off
+    cmp     eax, PROJ_FIREBALL
     jne     .remove
-    mov     eax, [rbx + ARROWENT.x]     ; a rocket goes off where it is
+.go_off:                                ; a rocket or fireball goes off where it is
+    mov     eax, [rbx + ARROWENT.x]
     mov     [rsp + S_HP], eax
     mov     eax, [rbx + ARROWENT.y]
     mov     [rsp + S_HP + 4], eax
     mov     eax, [rbx + ARROWENT.z]
     mov     [rsp + S_HP + 8], eax
-    jmp     .rocket_burst
+    cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
+    je      .rocket_burst
+    jmp     .magic_burst
 .fly:
     movss   xmm0, [rbx + ARROWENT.x]
     addss   xmm0, [rsp + S_SEG]
@@ -421,6 +517,22 @@ arrows_step:
     movss   xmm0, [rbx + ARROWENT.z]
     addss   xmm0, [rsp + S_SEG + 8]
     movss   [rbx + ARROWENT.z], xmm0
+    mov     eax, [rbx + ARROWENT.kind]  ; magic leaves a trail: one mote or ember per step, from
+    cmp     dword [rbx + ARROWENT.age], TRAIL_DELAY ; a few steps out so none hangs before the eye
+    jbe     .next
+    mov     edi, FX_MAGIC
+    cmp     eax, PROJ_BOLT
+    je      .trail
+    mov     edi, FX_FIRE
+    cmp     eax, PROJ_FIREBALL
+    jne     .next
+.trail:
+    movss   xmm0, [rbx + ARROWENT.x]
+    movss   xmm1, [rbx + ARROWENT.y]
+    movss   xmm2, [rbx + ARROWENT.z]
+    movss   xmm3, [c_trail_v]
+    mov     esi, 1
+    call    fx_burst
     jmp     .next
 
     ; ---- stuck in a block -----------------------------------------------------------
@@ -477,20 +589,31 @@ arrows_step:
     pop     rbp
     ret
 
-; arrows_render(): every projectile, aimed along its velocity, with its kind's model.
-; Called inside the world pass (atlas bound, alpha test on, night darkening active).
-; rbx = arrow, r12 = end of the table; [rsp] yaw/pitch scratch
+; arrows_render(): every projectile, aimed along its velocity, with its kind's model. Arrows,
+; bullets and rockets are textured; bolts and fireballs are untextured cubes drawn in a second
+; pass with texturing off on unit 0 and on unit 1, so they glow regardless of the hour (the
+; texture state is restored). Called inside the world pass (atlas bound, alpha test on, night
+; darkening active).
+; rbx = arrow, r12 = end of the table, r13d = magic projectiles seen;
+; [rsp] unit 0 was textured, [rsp + 4] unit 1 was, [rsp + 8] the cube's box float[6]
 arrows_render:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 16
+    push    r13
+    sub     rsp, 40
+    xor     r13d, r13d
     lea     rbx, [arrows]
     lea     r12, [arrows_end]
 .loop:
     cmp     dword [rbx + ARROWENT.live], 0
     je      .next
+    cmp     dword [rbx + ARROWENT.kind], PROJ_BOLT
+    jb      .model
+    inc     r13d                        ; magic: the second pass
+    jmp     .next
+.model:
     call    glPushMatrix
     movss   xmm0, [rbx + ARROWENT.x]
     movss   xmm1, [rbx + ARROWENT.y]
@@ -555,7 +678,78 @@ arrows_render:
     add     rbx, ARROWENT_size
     cmp     rbx, r12
     jb      .loop
-    add     rsp, 16
+    test    r13d, r13d
+    jz      .ret
+    mov     edi, GL_TEXTURE_2D          ; ---- bolts and fireballs: flat and fullbright --------
+    call    glIsEnabled
+    movzx   eax, al
+    mov     [rsp], eax
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glIsEnabled
+    movzx   eax, al
+    mov     [rsp + 4], eax
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    lea     rbx, [arrows]
+.magic:
+    cmp     dword [rbx + ARROWENT.live], 0
+    je      .magic_next
+    mov     eax, [rbx + ARROWENT.kind]
+    cmp     eax, PROJ_BOLT
+    je      .bolt
+    cmp     eax, PROJ_FIREBALL
+    jne     .magic_next
+    movss   xmm4, [c_fire_half]
+    movss   xmm0, [c_fire_col]
+    movss   xmm1, [c_fire_col + 4]
+    movss   xmm2, [c_fire_col + 8]
+    jmp     .cube
+.bolt:
+    movss   xmm4, [c_bolt_half]
+    movss   xmm0, [c_bolt_col]
+    movss   xmm1, [c_bolt_col + 4]
+    movss   xmm2, [c_bolt_col + 8]
+.cube:                                  ; the cube centred on the projectile, colour in xmm0..2
+%assign i 0
+%rep 3
+    movss   xmm3, [rbx + ARROWENT.x + i]
+    movaps  xmm5, xmm3
+    subss   xmm3, xmm4
+    addss   xmm5, xmm4
+    movss   [rsp + 8 + i], xmm3
+    movss   [rsp + 20 + i], xmm5
+%assign i i + 4
+%endrep
+    lea     rdi, [rsp + 8]
+    lea     rsi, [zero_tiles]
+    lea     rdx, [shades_flat]
+    call    render_box
+.magic_next:
+    add     rbx, ARROWENT_size
+    cmp     rbx, r12
+    jb      .magic
+    cmp     dword [rsp], 0
+    je      .unit1
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+.unit1:
+    cmp     dword [rsp + 4], 0
+    je      .ret
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+.ret:
+    add     rsp, 40
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

@@ -4,7 +4,7 @@
 default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
-global game_open_screen, game_open_cont, game_bow_charge, game_aim
+global game_open_screen, game_open_cont, game_bow_charge, game_aim, game_open_npc
 global game_new, game_load, game_save, game_frame, game_respawn
 
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
@@ -18,7 +18,7 @@ extern item_tool, item_food, item_max_stack, item_armor_slot
 extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
-extern mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
+extern mobs, mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
 extern mobs_intersect_block, mobs_save, mobs_load
 extern audio_play, audio_play_at, rng_next, str_copy, input_captured
 extern drops_clear, drops_spawn, drops_step, hand_swing
@@ -26,6 +26,14 @@ extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
 extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
 extern fire_clear, fire_place, fire_step, fire_rebuild, fx_clear, fx_step
+extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_class, rpg_stat
+extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_step, combat_heal
+extern combat_speed_mult, combat_crit_roll, combat_crit_mult, combat_max_mana
+extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
+extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
+extern dmgnum_clear, dmgnum_step
+extern structures_plan, structures_reset, structures_spawn_npcs, structures_step
+extern surv_max_health
 
 section .rodata
 align 4
@@ -56,6 +64,10 @@ vol_bow:      dd 0.8
 aim_rate:     dd 12.0                  ; aiming eases in/out at min(1, 12 dt) per frame
 aim_spread:   dd 0.75                  ; fully aimed: a quarter of the hip spread
 aim_look:     dd 0.4                   ; fully aimed: 60 % look sensitivity
+walk_speed:   dd 4.317
+celestial_mul: dd 1.5
+mana_potion:  dd 50.0
+vol_drink:    dd 0.8
 
 section .data
 align 4
@@ -69,7 +81,8 @@ alignb 8
 game_open_cont:  resq 1                 ; CONTAINER* of the furnace/chest to open
 game_target:     resb RAYHIT_size
 game_has_target: resd 1
-game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE or ST_CHEST
+game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE, ST_CHEST, ST_TRADE, ST_DIALOG
+game_open_npc:   resd 1                 ; mob index of the merchant/elder whose screen opens
 game_bow_charge: resd 1                 ; float seconds drawn, 0 = not drawing
 step_accum:      resd 1
 break_timer:     resd 1                 ; creative repeat timer
@@ -83,8 +96,10 @@ brk_z:           resd 1
 
 section .text
 
-; reset_session(): per-session timers and targeting
+; reset_session(): per-session timers, targeting and combat state
 reset_session:
+    push    rbp
+    mov     rbp, rsp
     xor     eax, eax
     mov     [step_accum], eax
     mov     [break_timer], eax
@@ -94,11 +109,16 @@ reset_session:
     mov     [step_dist], eax
     mov     [game_has_target], eax
     mov     [game_open_screen], eax
+    mov     [game_open_npc], eax
     mov     [game_open_cont], rax
     mov     [game_bow_charge], eax
     mov     [game_break_progress], eax
     mov     [game_aim], eax
     mov     dword [brk_y], -1
+    call    combat_reset
+    call    abilities_reset
+    call    dmgnum_clear
+    pop     rbp
     jmp     gun_reset                   ; and the firearm's cooldown, reload and recoil
 
 ; game_new(edi seed, esi mode, rdx name)
@@ -149,6 +169,9 @@ game_new:
     call    fx_clear
     mov     qword [inv_container], 0
     call    mobs_populate
+    call    rpg_reset
+    call    structures_reset
+    call    structures_spawn_npcs
     call    reset_session
     add     rsp, 8
     pop     r13
@@ -198,13 +221,15 @@ game_load:
     jne     .fly_ok
     mov     dword [player + BODY.flying], 0
 .fly_ok:
-    ; survival stats
+    ; RPG progression (sets surv_max_health), then the survival stats clamped to it
+    mov     rdi, rbx
+    call    rpg_load
     call    survival_reset
     mov     eax, [rbx + WORLDHDR.health]
     xor     ecx, ecx
     test    eax, eax
     cmovs   eax, ecx
-    mov     ecx, 20
+    mov     ecx, [surv_max_health]
     cmp     eax, ecx
     cmova   eax, ecx
     mov     [surv + SURVIVAL.health], eax
@@ -224,6 +249,7 @@ game_load:
     jne     .alive
     call    survival_reset
     call    player_spawn
+    call    rpg_on_death                ; died, then quit from the death screen: same XP loss
 .alive:
     ; hotbar selection
     mov     eax, [rbx + WORLDHDR.sel]
@@ -274,6 +300,10 @@ game_load:
     call    fire_rebuild                ; the table of the FIRE blocks just loaded
     mov     rdi, rbx
     call    mobs_load
+    mov     edi, [rbx + WORLDHDR.seed]  ; the sites are planned again from the seed
+    call    structures_plan
+    call    structures_reset
+    call    structures_spawn_npcs
     call    drops_clear
     call    arrows_clear
     call    tnt_clear
@@ -323,6 +353,8 @@ game_save:
     mov     [rbx + WORLDHDR.mode], eax
     mov     rdi, rbx
     call    mobs_save
+    mov     rdi, rbx
+    call    rpg_save
     mov     rdi, r12
     call    world_save
     pop     r12
@@ -336,7 +368,8 @@ game_respawn:
     mov     rbp, rsp
     call    survival_reset
     call    player_spawn
-    call    reset_session
+    call    rpg_on_death
+    call    reset_session               ; combat state too
     pop     rbp
     ret
 
@@ -406,7 +439,103 @@ held_id:
     movzx   eax, byte [inv + INVENTORY.slots + rax*4 + ITEMSTACK.id]
     ret
 
-; damage_held_tool(edi amount_if_sword, esi amount_otherwise): wear the held tool
+; try_potion() -> eax 1 when this frame's RMB press drank the held potion: a health potion
+; heals 4 hearts, a mana potion restores 50 mana; survival uses it up
+try_potion:
+    push    rbp
+    mov     rbp, rsp
+    xor     eax, eax
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .ret
+    call    held_id
+    cmp     eax, HEALTH_POTION
+    je      .health
+    cmp     eax, MANA_POTION
+    jne     .none
+    call    combat_max_mana
+    movss   xmm1, [combat_mana]
+    addss   xmm1, [mana_potion]
+    minss   xmm1, xmm0
+    movss   [combat_mana], xmm1
+    jmp     .drunk
+.health:
+    mov     edi, 8
+    call    combat_heal
+.drunk:
+    mov     edi, SND_DRINK
+    movss   xmm0, [vol_drink]
+    call    audio_play
+    call    hand_swing
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .done
+    mov     edi, 1
+    call    inv_consume_held
+.done:
+    mov     eax, 1
+    jmp     .ret
+.none:
+    xor     eax, eax
+.ret:
+    pop     rbp
+    ret
+
+; want_guard(edi targeted mob or -1) -> eax 1 when the player raises the guard this frame:
+; RMB held with a sword, axe or dagger, unless this frame's RMB press talks to a merchant or
+; elder or opens a crafting table, furnace or chest
+want_guard:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+    xor     eax, eax
+    cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    je      .ret
+    call    held_id
+    movzx   eax, byte [item_tool + rax]
+    cmp     eax, TOOL_SWORD
+    je      .melee
+    cmp     eax, TOOL_AXE
+    je      .melee
+    cmp     eax, TOOL_DAGGER
+    jne     .no
+.melee:
+    mov     eax, 1
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .ret
+    test    ebx, ebx
+    js      .block
+    imul    ecx, ebx, MOB_size
+    lea     rdx, [mobs]
+    mov     ecx, [rdx + rcx + MOB.type]
+    cmp     ecx, MOB_MERCHANT
+    je      .no
+    cmp     ecx, MOB_ELDER
+    je      .no
+.block:
+    cmp     dword [game_has_target], 0
+    je      .ret
+    call    target_block
+    cmp     eax, CRAFTING_TABLE
+    je      .no
+    cmp     eax, FURNACE
+    je      .no
+    cmp     eax, FURNACE_LIT
+    je      .no
+    cmp     eax, CHEST
+    je      .no
+    mov     eax, 1
+    jmp     .ret
+.no:
+    xor     eax, eax
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; damage_held_tool(edi amount_if_blade, esi amount_otherwise): wear the held tool; swords and
+; daggers take the first amount
 damage_held_tool:
     mov     eax, [inv_sel]
     movzx   eax, byte [inv + INVENTORY.slots + rax*4 + ITEMSTACK.id]
@@ -414,7 +543,11 @@ damage_held_tool:
     test    eax, eax
     jz      .ret
     cmp     eax, TOOL_SWORD
-    cmovne  edi, esi
+    je      .blade
+    cmp     eax, TOOL_DAGGER
+    je      .blade
+    mov     edi, esi
+.blade:
     jmp     inv_damage_held
 .ret:
     ret
@@ -489,7 +622,16 @@ game_frame:
 .look:
     call    player_look
 
-    ; 4. fixed 1/60 s steps, at most 5 per frame
+    ; 4. fixed 1/60 s steps, at most 5 per frame; a hit-stop freezes the simulation
+    movss   xmm0, [combat_hitstop]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .no_hitstop
+    subss   xmm0, [rsp + F_DT]
+    maxss   xmm0, xmm1
+    movss   [combat_hitstop], xmm0
+    jmp     .steps_done
+.no_hitstop:
     movss   xmm0, [step_accum]
     addss   xmm0, [rsp + F_DT]
     movss   [step_accum], xmm0
@@ -541,8 +683,64 @@ game_frame:
     mov     dword [rsp + F_MOB], -1
 .mob_done:
 
-    ; 6. attack the targeted mob (no block breaking this frame). A held firearm owns both
-    ; buttons (section 12): it never punches, digs, uses or places.
+    ; 5b. combat input while playing: guard (RMB with a melee weapon), dodge, abilities
+    cmp     dword [input_captured], 1
+    jne     .no_combat
+    cmp     dword [game_open_screen], 0
+    jne     .no_combat
+    mov     edi, [rsp + F_MOB]
+    call    want_guard
+    mov     edi, eax
+    call    combat_set_guard
+    cmp     dword [frame_input + FRAMEINPUT.dodge], 0
+    je      .no_dodge
+    lea     rdi, [frame_input + FRAMEINPUT.move]
+    call    combat_dodge
+.no_dodge:
+    xor     ebx, ebx
+.ability:
+    cmp     dword [frame_input + FRAMEINPUT.ability + rbx*4], 0
+    je      .next_ability
+    mov     edi, ebx
+    lea     rsi, [rsp + F_EYE]
+    lea     rdx, [rsp + F_DIR]
+    call    abilities_use
+.next_ability:
+    inc     ebx
+    cmp     ebx, 3
+    jb      .ability
+    jmp     .combat_done
+.no_combat:
+    xor     edi, edi
+    call    combat_set_guard
+.combat_done:
+
+    ; 6. buttons, in ownership order: a merchant or elder (talk), a held firearm (section
+    ; 12), a mage's staff (bolts), then melee on the targeted mob. The first three never
+    ; punch, dig, use or place.
+    mov     eax, [rsp + F_MOB]
+    test    eax, eax
+    js      .not_npc
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    mov     eax, [rcx + rax + MOB.type]
+    mov     ecx, ST_TRADE
+    cmp     eax, MOB_MERCHANT
+    je      .npc
+    mov     ecx, ST_DIALOG
+    cmp     eax, MOB_ELDER
+    jne     .not_npc
+.npc:
+    mov     dword [game_break_progress], 0
+    mov     dword [break_cooldown], 0
+    mov     dword [brk_y], -1
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .pick
+    mov     [game_open_screen], ecx
+    mov     eax, [rsp + F_MOB]
+    mov     [game_open_npc], eax
+    jmp     .pick
+.not_npc:
     call    held_id
     mov     edi, eax
     call    gun_index
@@ -553,16 +751,31 @@ game_frame:
     mov     dword [brk_y], -1
     jmp     .pick
 .unarmed:
+    call    held_id
+    cmp     eax, STAFF
+    je      .staff
+    cmp     eax, ARCHMAGE_STAFF
+    jne     .melee
+.staff:
+    call    rpg_class
+    cmp     eax, CLASS_MAGE
+    jne     .melee                      ; any other class swings the staff
+    mov     dword [game_break_progress], 0
+    mov     dword [break_cooldown], 0
+    mov     dword [brk_y], -1
+    cmp     dword [frame_input + FRAMEINPUT.lmb_held], 0
+    je      .pick
+    lea     rdi, [rsp + F_EYE]
+    lea     rsi, [rsp + F_DIR]
+    call    abilities_staff_bolt
+    jmp     .pick
+.melee:
     cmp     dword [rsp + F_MOB], 0
     jl      .blocks
     mov     dword [game_break_progress], 0
     cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     je      .place
     call    hand_swing
-    call    held_id
-    mov     edi, eax
-    call    item_attack_damage
-    mov     r12d, eax
     movss   xmm0, [rsp + F_DIR]         ; horizontal direction, normalised
     movss   xmm1, [rsp + F_DIR + 8]
     movaps  xmm2, xmm0
@@ -578,8 +791,7 @@ game_frame:
     divss   xmm1, xmm2
 .hit_mob:
     mov     edi, [rsp + F_MOB]
-    mov     esi, r12d
-    call    mob_hurt
+    call    combat_melee
     test    eax, eax
     jz      .place
     cmp     dword [game_mode], MODE_SURVIVAL
@@ -592,6 +804,8 @@ game_frame:
     jmp     .place
 
 .blocks:
+    cmp     dword [combat_guard_t], 0
+    jge     .break_reset                ; a raised guard never digs
     cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     je      .no_swing
     call    hand_swing                  ; a click swings even at thin air
@@ -695,6 +909,11 @@ game_frame:
     mov     esi, eax
     call    item_harvest_drop
     mov     ebx, eax
+    test    eax, eax
+    jz      .no_mined_xp
+    mov     edi, r12d                   ; ore XP for a real harvest
+    call    rpg_on_block_mined
+.no_mined_xp:
     cmp     r12d, LEAVES
     jne     .not_leaves
     call    rng_next
@@ -745,8 +964,10 @@ game_frame:
     mov     dword [break_cooldown], 0
     mov     dword [brk_y], -1
 
-    ; 9. place / use
+    ; 9. place / use (not while guarding); potions are drunk with a press, target or not
 .place:
+    cmp     dword [combat_guard_t], 0
+    jge     .pick
     mov     edi, [frame_input + FRAMEINPUT.rmb_held]
     mov     esi, [frame_input + FRAMEINPUT.rmb_pressed]
     lea     rdx, [place_timer]
@@ -755,7 +976,10 @@ game_frame:
     test    eax, eax
     jz      .pick
     cmp     dword [game_has_target], 0
-    je      .pick
+    jne     .use
+    call    try_potion
+    jmp     .pick
+.use:
     call    target_block
     mov     ebx, eax
     cmp     dword [frame_input + FRAMEINPUT.move + INPUT.down], 0
@@ -835,6 +1059,9 @@ game_frame:
     call    inv_damage_held
     jmp     .pick
 .not_use:
+    call    try_potion
+    test    eax, eax
+    jnz     .pick
     call    held_id
     mov     r12d, eax
     cmp     dword [game_mode], MODE_SURVIVAL
@@ -928,11 +1155,15 @@ game_frame:
     js      .bow
     mov     [inv_sel], eax
 
-    ; 11. bow: draw while RMB is held, shoot on release
+    ; 11. bow: draw while RMB is held, shoot on release. The Celestial Bow needs no arrows.
 .bow:
     call    held_id
+    mov     [rsp + F_SCR + 12], eax
+    cmp     eax, CELESTIAL_BOW
+    je      .is_bow
     cmp     eax, BOW
     jne     .bow_reset
+.is_bow:
     movss   xmm0, [game_bow_charge]
     xorps   xmm1, xmm1
     comiss  xmm0, xmm1
@@ -942,6 +1173,8 @@ game_frame:
     cmp     dword [game_open_screen], 0
     jne     .gun
     cmp     dword [game_mode], MODE_CREATIVE
+    je      .bow_draw
+    cmp     dword [rsp + F_SCR + 12], CELESTIAL_BOW
     je      .bow_draw
     mov     edi, ARROW
     call    inv_count
@@ -969,12 +1202,54 @@ game_frame:
     comiss  xmm1, [bow_min]
     jb      .bow_reset
     movss   [rsp + F_SCR], xmm1
+    ; damage = round((1 + round(8 power)) * (1 + RANGED/100) * (celestial ? 1.5 : 1)), x crit
     mulss   xmm1, [f_eight]
-    cvtss2si esi, xmm1
-    inc     esi                         ; damage = 1 + round(8 * power)
-    xor     edx, edx
+    cvtss2si eax, xmm1
+    inc     eax
+    cvtsi2ss xmm0, eax
+    movss   [rsp + F_SCR + 4], xmm0
+    mov     edi, STAT_RANGED_DMG
+    call    rpg_stat
+    cvtsi2ss xmm1, eax
+    divss   xmm1, [f_hundred]
+    addss   xmm1, [f_one]
+    movss   xmm0, [rsp + F_SCR + 4]
+    mulss   xmm0, xmm1
+    cmp     dword [rsp + F_SCR + 12], CELESTIAL_BOW
+    jne     .bow_plain
+    mulss   xmm0, [celestial_mul]
+.bow_plain:
+    movss   [rsp + F_SCR + 4], xmm0
+    mov     dword [rsp + F_SCR + 8], 0  ; arrow flags
+    xor     edi, edi
+    call    combat_crit_roll
+    test    eax, eax
+    jz      .bow_fire
+    mov     dword [rsp + F_SCR + 8], AF_CRIT
+    call    combat_crit_mult
+    mulss   xmm0, [rsp + F_SCR + 4]
+    movss   [rsp + F_SCR + 4], xmm0
+.bow_fire:
+    ; survival: the arrow is used up unless the bow is celestial or Quiver saves it; only a
+    ; used-up arrow can be picked up again
+    xor     ebx, ebx
     cmp     dword [game_mode], MODE_SURVIVAL
-    sete    dl                          ; survival arrows can be picked up again
+    jne     .bow_consumed
+    cmp     dword [rsp + F_SCR + 12], CELESTIAL_BOW
+    je      .bow_consumed
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    mov     ebx, edx
+    mov     edi, STAT_ARROW_SAVE
+    call    rpg_stat
+    cmp     ebx, eax
+    setge   bl
+    movzx   ebx, bl
+.bow_consumed:
+    cvtss2si esi, [rsp + F_SCR + 4]
+    mov     edx, ebx                    ; pickup
     movss   xmm6, [rsp + F_SCR]
     mulss   xmm6, [bow_speed]
     movss   xmm3, [rsp + F_DIR]
@@ -995,12 +1270,15 @@ game_frame:
     mulss   xmm5, xmm6
     xor     edi, edi                    ; owner: player
     mov     ecx, PROJ_ARROW
-    xor     r8d, r8d
+    mov     r8d, [rsp + F_SCR + 8]
     call    arrows_spawn
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .bow_sound
+    test    ebx, ebx
+    jz      .bow_worn
     mov     edi, ARROW
     call    inv_remove_one
+.bow_worn:
     mov     edi, 1
     call    inv_damage_held
 .bow_sound:
@@ -1076,7 +1354,8 @@ sim_step:
     mov     rbp, rsp
     push    rbx
     sub     rsp, 56                     ; [rsp] INPUT copy, [rsp+20] was_on_ground,
-                                        ; [rsp+24] x0, [rsp+28] z0, [rsp+32] dist
+                                        ; [rsp+24] x0, [rsp+28] z0, [rsp+32] dist,
+                                        ; [rsp+40] sprinting (drains stamina)
     lea     rsi, [frame_input + FRAMEINPUT.move]
     mov     rdi, rsp
     mov     ecx, INPUT_size
@@ -1086,6 +1365,26 @@ sim_step:
     jnz     .sprint_ok
     mov     dword [rsp + INPUT.sprint], 0
 .sprint_ok:
+    ; survival: sprinting needs stamina and drains it while running forward on foot
+    mov     dword [rsp + 40], 0
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .speed
+    movss   xmm0, [combat_stamina]
+    comiss  xmm0, [f_one]
+    jae     .stamina_ok
+    mov     dword [rsp + INPUT.sprint], 0
+.stamina_ok:
+    cmp     dword [rsp + INPUT.sprint], 0
+    je      .speed
+    cmp     dword [rsp + INPUT.fwd], 0
+    jle     .speed
+    cmp     dword [player + BODY.flying], 0
+    jne     .speed
+    mov     dword [rsp + 40], 1
+.speed:
+    call    combat_speed_mult           ; skills, guard, whirlwind and blade dance
+    mulss   xmm0, [walk_speed]
+    movss   [player + BODY.speed], xmm0
     mov     eax, [player + BODY.on_ground]
     mov     [rsp + 20], eax
     mov     eax, [player + BODY.x]
@@ -1164,6 +1463,11 @@ sim_step:
     call    arrows_step
     call    tnt_step
     call    gun_step
+    mov     edi, [rsp + 40]
+    call    combat_step
+    call    abilities_step
+    call    dmgnum_step
+    call    structures_step
     call    fire_step
     call    fx_step
     call    conts_step

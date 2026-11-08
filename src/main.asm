@@ -23,8 +23,9 @@ usage_text:
     db "  --selftest      run internal tests and exit", 10
     db "controls (rebindable in Settings > Controls): WASD move, Space jump / fly up,", 10
     db "  Left Shift sneak / fly down, Left Ctrl sprint, E inventory, F toggle fly (Creative),", 10
-    db "  mouse look, LMB break / attack, RMB place / use / eat, MMB pick block,", 10
-    db "  1-9 / wheel select, Esc pause, F3 debug info, F11 fullscreen", 10, 0
+    db "  R reload, C dodge roll, Q / G / V class abilities, K skill tree,", 10
+    db "  mouse look, LMB break / attack / cast, RMB place / use / eat / guard (melee weapon),", 10
+    db "  MMB pick block, 1-9 / wheel select, Esc pause, F3 debug info, F11 fullscreen", 10, 0
 opt_help:     db "--help", 0
 opt_selftest: db "--selftest", 0
 opt_data:     db "--data-dir", 0

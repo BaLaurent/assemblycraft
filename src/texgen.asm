@@ -6,7 +6,11 @@
 ; the crack stages (256 draws first) and 64..70 continue the stream after tile 12;
 ; then, in this order, the ores 26..29, furnaces 30/31, chest 43/44, gravel 45, TNT
 ; 46/47 and the mob tiles 71..79 follow tile 70; item icons (32..42, 80..128) and HUD
-; icons (48..56) use no rng. The font is painted last (white glyph texels) at atlas
+; icons (48..56) use no rng. The 0.6 RPG art (stone bricks 59/60, item icons 129..138, ability
+; icons 139..150, class emblems 151..154, stat icons 155..172, villager/boss textures 173..179)
+; is drawn after tile 128, so it never shifts an older rng draw: bricks and the 174..179
+; textures are 16x16 bitmaps shaded by one draw per pixel (173 is plain noise), the icons are
+; draw-free bitmaps. The font is painted last (white glyph texels) at atlas
 ; rows FONT_Y..FONT_Y+47.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
@@ -142,6 +146,23 @@ shade:
     lea     r10, [%3]
     call    bmp_px
     mov     [rdi], eax
+    TILE_END
+%endmacro
+
+; noise-shaded 16x16 bitmap tile: tile, bitmap, palette, mbase, mask. One rng draw per pixel
+; (m = mbase + (draw & mask)); every bitmap char, '.' included, must be in the palette.
+%macro NBMP 5
+    TILE_BEGIN %1
+    call    rng
+    and     eax, %5
+    add     eax, %4
+    mov     r8d, eax
+    lea     r9, [%2]
+    lea     r10, [%3]
+    call    bmp_px
+    mov     esi, eax
+    mov     edx, r8d
+    call    shade
     TILE_END
 %endmacro
 
@@ -764,6 +785,74 @@ texgen_build:
     BMP     126, shell_bmp, pal_shell
     BMP     127, round_rifle_bmp, pal_brass
     BMP     128, rocket_bmp, pal_rocket
+
+    ; ---- 59, 60 .. 179: RPG art (all drawn after every older rng draw, so tiles 0..128 and the
+    ;      font are unchanged) ----
+    ; ---- 59, 60 stone bricks, mossy: bitmaps over a light rng noise (after every older rng draw) ----
+    NBMP    59, brick_bmp, pal_brick, 232, 23
+    NBMP    60, mossy_bmp, pal_mossy, 232, 23
+    ; ---- 129..138 weapon and consumable icons: staff, archmage staff, iron dagger, diamond dagger,
+    ; Shadow Fang, King's Blade, Celestial Bow, health potion, mana potion, gold coin ----
+    BMP     129, staff_bmp, pal_staff
+    BMP     130, archstaff_bmp, pal_archstaff
+    BMP     131, dagger_bmp, pal_dagger_iron
+    BMP     132, dagger_bmp, pal_dagger_diamond
+    BMP     133, fang_bmp, pal_fang
+    BMP     134, kings_bmp, pal_kings
+    BMP     135, celestial_bmp, pal_celestial
+    BMP     136, potion_bmp, pal_potion_red
+    BMP     137, potion_bmp, pal_potion_blue
+    BMP     138, coin_bmp, pal_coin
+    ; ---- 139..150 ability icons: Warrior Charge/War Cry/Whirlwind, Mage Fireball/Blink/Meteor Storm,
+    ; Archer Volley/Explosive Arrow/Arrow Rain, Rogue Shadowstep/Smoke Bomb/Blade Dance ----
+    BMP     139, charge_bmp, pal_charge
+    BMP     140, warcry_bmp, pal_warcry
+    BMP     141, whirl_bmp, pal_whirl
+    BMP     142, fireball_bmp, pal_fireball
+    BMP     143, blink_bmp, pal_blink
+    BMP     144, meteor_bmp, pal_meteor
+    BMP     145, volley_bmp, pal_volley
+    BMP     146, explarrow_bmp, pal_explarrow
+    BMP     147, arrowrain_bmp, pal_arrowrain
+    BMP     148, shadowstep_bmp, pal_shadowstep
+    BMP     149, smoke_bmp, pal_smoke
+    BMP     150, bladedance_bmp, pal_bladedance
+    ; ---- 151..154 class emblems: Warrior, Mage, Archer, Rogue ----
+    BMP     151, emb_warrior_bmp, pal_emb_warrior
+    BMP     152, emb_mage_bmp, pal_emb_mage
+    BMP     153, emb_archer_bmp, pal_emb_archer
+    BMP     154, emb_rogue_bmp, pal_emb_rogue
+    ; ---- 155..172 stat icons, one per stat id (health, melee, ranged, spell, crit chance, crit dmg, mana,
+    ; mana regen, stamina, stamina regen, armor, move speed, backstab, parry, lifesteal, cooldown,
+    ; arrow save, dodge cost) ----
+    BMP     155, st_health_bmp, pal_st_health
+    BMP     156, st_melee_bmp, pal_st_melee
+    BMP     157, st_ranged_bmp, pal_st_ranged
+    BMP     158, st_spell_bmp, pal_st_spell
+    BMP     159, st_critchance_bmp, pal_st_critchance
+    BMP     160, st_critdmg_bmp, pal_st_critdmg
+    BMP     161, st_mana_bmp, pal_st_mana
+    BMP     162, st_manaregen_bmp, pal_st_manaregen
+    BMP     163, st_stamina_bmp, pal_st_stamina
+    BMP     164, st_staminaregen_bmp, pal_st_staminaregen
+    BMP     165, st_armor_bmp, pal_st_armor
+    BMP     166, st_speed_bmp, pal_st_speed
+    BMP     167, st_backstab_bmp, pal_st_backstab
+    BMP     168, st_parry_bmp, pal_st_parry
+    BMP     169, st_lifesteal_bmp, pal_st_lifesteal
+    BMP     170, st_cooldown_bmp, pal_st_cooldown
+    BMP     171, st_arrowsave_bmp, pal_st_arrowsave
+    BMP     172, st_wind_bmp, pal_st_wind
+    ; ---- 173..179 villager and boss textures (noise-shaded; 174..179 carry a bitmap overlay) ----
+    TILE_BEGIN 173
+    NOISE_PIXEL RGB(225,180,140), 224, 31
+    TILE_END
+    NBMP    174, npc_face_bmp, pal_npc_face, 224, 31
+    NBMP    175, npc_merchant_bmp, pal_npc_merchant, 224, 31
+    NBMP    176, npc_elder_bmp, pal_npc_elder, 224, 31
+    NBMP    177, npc_bossrobe_bmp, pal_npc_bossrobe, 224, 31
+    NBMP    178, npc_bossface_bmp, pal_npc_bossface, 224, 31
+    NBMP    179, npc_crown_bmp, pal_npc_crown, 224, 31
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -2179,5 +2268,1244 @@ rocket_bmp:
     db "..KKKKKKKKKKKK.."
     db "................"
     db "................"
+
+; ---- RPG art (tiles 59, 60 and 129..179): 16x16 bitmaps, palettes as for the icons above ----
+brick_bmp:
+    db "hhhhhhhDhhhhhhhD"
+    db "caaaabaDacbaaacD"
+    db "baaabcbDcaaacaaD"
+    db "ccaabaaDaaaacbbD"
+    db "acaacaaDaacbaccD"
+    db "baababcDbaaacaaD"
+    db "lllllllDlllllllD"
+    db "DDDDDDDDDDDDDDDD"
+    db "hhhDhhhhhhhDhhhh"
+    db "babDbbbbaaaDcaca"
+    db "aaaDbaabacbDcabc"
+    db "aaaDaaaaaabDacba"
+    db "bcbDacbabaaDcaab"
+    db "cacDcaaaabaDbaca"
+    db "lllDlllllllDllll"
+    db "DDDDDDDDDDDDDDDD"
+pal_brick:
+    PAL 'D', 66, 66, 70
+    PAL 'a', 132, 132, 134
+    PAL 'b', 120, 120, 124
+    PAL 'c', 144, 144, 146
+    PAL 'h', 160, 160, 162
+    PAL 'l', 108, 108, 112
+    dq 0
+mossy_bmp:
+    db "hGhhhhhDhhhGhhgD"
+    db "babcGaaDaagbGbaD"
+    db "cccabgaDbababcaD"
+    db "caababbDccaaaaaD"
+    db "baGaaacDcabacaaD"
+    db "babaaaaDabbccaaD"
+    db "glgglllDlllllllM"
+    db "DMMMDDDDDDDDDDDM"
+    db "gGgDhhhhhhhDhhhh"
+    db "bgaMbgaacbaDacca"
+    db "bbcDGaacaabDacac"
+    db "bbGMaabbbaaDbaaa"
+    db "baaDabaaaabDaaaa"
+    db "GgaDbbbbaaaDaaag"
+    db "lllDlllllllDllll"
+    db "MMDDDDDDDDDDMMDg"
+pal_mossy:
+    PAL 'D', 66, 66, 70
+    PAL 'G', 66, 108, 42
+    PAL 'M', 44, 66, 30
+    PAL 'a', 132, 132, 134
+    PAL 'b', 120, 120, 124
+    PAL 'c', 144, 144, 146
+    PAL 'g', 94, 136, 56
+    PAL 'h', 160, 160, 162
+    PAL 'l', 108, 108, 112
+    dq 0
+staff_bmp:
+    db "................"
+    db "...........YYY.."
+    db "..........YRRRY."
+    db "..........YRrRY."
+    db "..........YRRRY."
+    db "...........YDY.."
+    db "..........wW...."
+    db ".........wW....."
+    db "........wW......"
+    db ".......YD......."
+    db "......wW........"
+    db ".....wW........."
+    db "....wW.........."
+    db "...wW..........."
+    db "..wW............"
+    db ".wW............."
+pal_staff:
+    PAL 'D', 176, 124, 10
+    PAL 'R', 230, 40, 52
+    PAL 'W', 96, 64, 28
+    PAL 'Y', 252, 216, 64
+    PAL 'r', 255, 160, 160
+    PAL 'w', 170, 122, 66
+    dq 0
+archstaff_bmp:
+    db ".........L......"
+    db "...........TTT.L"
+    db "..........TLLCT."
+    db "..........TLCCT."
+    db "..........TCCCB."
+    db "..........YTTB.."
+    db "........YYYY...Y"
+    db "........YYW....."
+    db "........wW......"
+    db ".......wW......."
+    db "......wW........"
+    db ".....wW........."
+    db "....wW.........."
+    db "...wW..........."
+    db "..wW............"
+    db ".wW............."
+pal_archstaff:
+    PAL 'B', 48, 170, 200
+    PAL 'C', 96, 232, 238
+    PAL 'L', 236, 255, 255
+    PAL 'T', 20, 112, 124
+    PAL 'W', 44, 30, 64
+    PAL 'Y', 252, 216, 64
+    PAL 'w', 86, 60, 112
+    dq 0
+dagger_bmp:
+    db "................"
+    db "................"
+    db ".............L.."
+    db "............L..."
+    db "...........L...."
+    db "..........Lm...."
+    db ".........Lm....."
+    db "........Lm......"
+    db "...kG..Lm......."
+    db "....gG.........."
+    db ".....gG........."
+    db "....HhgG........"
+    db "...Hh..gG......."
+    db "..Hh....k......."
+    db ".pp............."
+    db "ppp............."
+pal_dagger_iron:
+    PAL 'G', 226, 190, 60
+    PAL 'H', 86, 52, 26
+    PAL 'L', 248, 248, 252
+    PAL 'g', 250, 222, 90
+    PAL 'h', 142, 88, 44
+    PAL 'k', 150, 112, 20
+    PAL 'm', 168, 174, 188
+    PAL 'p', 212, 182, 70
+    dq 0
+pal_dagger_diamond:
+    PAL 'G', 226, 190, 60
+    PAL 'H', 86, 52, 26
+    PAL 'L', 226, 255, 255
+    PAL 'g', 250, 222, 90
+    PAL 'h', 142, 88, 44
+    PAL 'k', 150, 112, 20
+    PAL 'm', 64, 200, 212
+    PAL 'p', 212, 182, 70
+    dq 0
+fang_bmp:
+    db "................"
+    db "...............V"
+    db ".............VV."
+    db "...........VV.KK"
+    db ".........VV.KB.."
+    db "........V.KB...."
+    db ".......V.B......"
+    db ".......VB......."
+    db "......VBK......."
+    db "...gg.VKK......."
+    db "....gg.K........"
+    db ".....eg........."
+    db "......gg........"
+    db "....hH.g........"
+    db "..phH..........."
+    db ".pp............."
+pal_fang:
+    PAL 'B', 72, 38, 112
+    PAL 'H', 34, 22, 48
+    PAL 'K', 26, 12, 40
+    PAL 'V', 204, 124, 255
+    PAL 'e', 240, 70, 226
+    PAL 'g', 84, 60, 120
+    PAL 'h', 60, 40, 76
+    PAL 'p', 134, 80, 196
+    dq 0
+kings_bmp:
+    db "..............LL"
+    db ".............LL."
+    db "............LWm."
+    db "...........LW..."
+    db ".GG.......LWm..."
+    db "..G......LWm...."
+    db "...G....LWm....."
+    db "....Y...Wm......"
+    db ".....Y.Wm......."
+    db "......R........."
+    db "....Hh.Y........"
+    db "...Hh...Y......."
+    db "..Hh.....G......"
+    db ".YG......GG....."
+    db "GGG............."
+    db "................"
+pal_kings:
+    PAL 'G', 232, 182, 32
+    PAL 'H', 72, 22, 26
+    PAL 'L', 255, 255, 240
+    PAL 'R', 224, 32, 52
+    PAL 'W', 255, 246, 206
+    PAL 'Y', 255, 238, 120
+    PAL 'h', 124, 44, 44
+    PAL 'm', 230, 196, 108
+    dq 0
+celestial_bmp:
+    db "................"
+    db "..............wc"
+    db "............csw."
+    db "............sw.."
+    db "...........scw.."
+    db "..........sccw.."
+    db ".........s.cww.."
+    db "........s.ccw..."
+    db ".......s..cww..."
+    db "......s..cww...."
+    db ".....s.ccwgg...."
+    db "....scccwwgg...."
+    db "..csccwww...c..."
+    db "..swwww........."
+    db ".ww...........c."
+    db ".c.............."
+pal_celestial:
+    PAL 'c', 100, 222, 250
+    PAL 'g', 255, 226, 96
+    PAL 's', 200, 244, 255
+    PAL 'w', 252, 254, 255
+    dq 0
+potion_bmp:
+    db "................"
+    db "......KkkK......"
+    db "......kkkk......"
+    db "......oooo......"
+    db "......owoo......"
+    db "......owoo......"
+    db ".....oooooo....."
+    db "....oooooooo...."
+    db "...oLLLLLLLLo..."
+    db "...olwwlllllo..."
+    db "...olwllllllo..."
+    db "...ollllllllo..."
+    db "....oddddddo...."
+    db "....ooddddoo...."
+    db ".....oooooo....."
+    db "................"
+pal_potion_red:
+    PAL 'K', 100, 64, 30
+    PAL 'L', 255, 120, 120
+    PAL 'd', 150, 22, 38
+    PAL 'k', 156, 104, 54
+    PAL 'l', 232, 52, 62
+    PAL 'o', 48, 40, 56
+    PAL 'w', 255, 255, 255
+    dq 0
+pal_potion_blue:
+    PAL 'K', 100, 64, 30
+    PAL 'L', 140, 176, 255
+    PAL 'd', 30, 52, 172
+    PAL 'k', 156, 104, 54
+    PAL 'l', 64, 104, 255
+    PAL 'o', 48, 40, 56
+    PAL 'w', 255, 255, 255
+    dq 0
+coin_bmp:
+    db "................"
+    db "................"
+    db ".....RRRRRR....."
+    db "...RLLYYYYYRR..."
+    db "...LYYDDDDYYS..."
+    db "..RLYDYDDYDYYS.."
+    db "..LYDYYDDYYDYS.."
+    db "..LYDYYDDYYDYS.."
+    db "..RYDYYDDYYDYS.."
+    db "..RYDYYDDYYDYS.."
+    db "..RYYDYDDYDYYS.."
+    db "...RYYDDDDYYS..."
+    db "...RSYYYYYYSS..."
+    db ".....SSSSSS....."
+    db "................"
+    db "................"
+pal_coin:
+    PAL 'D', 212, 156, 18
+    PAL 'L', 255, 246, 170
+    PAL 'R', 204, 144, 12
+    PAL 'S', 150, 98, 6
+    PAL 'Y', 252, 214, 60
+    dq 0
+charge_bmp:
+    db "................"
+    db ".RR...YO........"
+    db "..RR...YO......."
+    db "...RR...YO......"
+    db "....RR...YO....."
+    db "SS...RR...YO...."
+    db "......RR...YO..."
+    db ".......RRR..YYO."
+    db "SS.....RRR..YYO."
+    db "......RR...YO..."
+    db ".....RR...YO...."
+    db "SS..RR...YO....."
+    db "...RR...YO......"
+    db "..RR...YO......."
+    db ".RR...YO........"
+    db "................"
+pal_charge:
+    PAL 'O', 255, 146, 34
+    PAL 'R', 214, 44, 28
+    PAL 'S', 200, 200, 214
+    PAL 'Y', 255, 226, 90
+    dq 0
+warcry_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db ".......DD...O.R."
+    db ".....LLDD....O.."
+    db "....LYYDD..O.O.R"
+    db ".YYLYYYDD.....O."
+    db ".YLYYYYDD...O.O."
+    db ".YYYYYYDD...O.O."
+    db "..DYYYYDD.....O."
+    db "...DYYYDD..O.O.."
+    db "....DYYDD....O.R"
+    db ".....DDDD...O..."
+    db "..............R."
+    db "................"
+    db "................"
+pal_warcry:
+    PAL 'D', 168, 112, 14
+    PAL 'L', 255, 248, 190
+    PAL 'O', 255, 150, 40
+    PAL 'R', 230, 60, 30
+    PAL 'Y', 252, 212, 60
+    dq 0
+whirl_bmp:
+    db ".......S........"
+    db "...LSSSSSSS....."
+    db "..LLLWWWWWSS...."
+    db ".LSSW.....WSS..."
+    db ".SSW.......WSS.."
+    db ".SW..........S.."
+    db ".SW............."
+    db "SSW....YY...WSS."
+    db ".SW....YY...WS.."
+    db ".S..........WS.."
+    db ".SS........WSS.."
+    db "..SSW.....WSS.L."
+    db "...SSWWWWWLLLLL."
+    db "....SSSSSSSLLL.."
+    db ".......S....L..."
+    db "................"
+pal_whirl:
+    PAL 'L', 255, 255, 255
+    PAL 'S', 196, 206, 226
+    PAL 'W', 120, 140, 180
+    PAL 'Y', 255, 226, 90
+    dq 0
+fireball_bmp:
+    db "..........r....."
+    db ".......rrrOrrr.."
+    db "......rrOOOOOrr."
+    db "......rOOYYYOOr."
+    db "......rOYLLYYOr."
+    db ".....rOOYLLYYOOr"
+    db "......rOYYYYYOr."
+    db ".....rrOOYYYOOr."
+    db "...rrOrrOOOOOrr."
+    db "..rrOOOrrrOrrr.."
+    db "..rOOOOrr.r....."
+    db ".rrOOOOr........"
+    db ".rOOOOr........."
+    db ".rOOOr.........."
+    db "rO.............."
+    db "................"
+pal_fireball:
+    PAL 'L', 255, 250, 210
+    PAL 'O', 255, 138, 28
+    PAL 'Y', 255, 214, 70
+    PAL 'r', 204, 40, 20
+    dq 0
+blink_bmp:
+    db "................"
+    db "........PPPPC..."
+    db ".......CP..P...."
+    db "..C....PPCCPP..."
+    db ".......P.CC.P..."
+    db ".......PCCCCP..."
+    db ".......PC..CP..."
+    db "..pppppPC..CPL.."
+    db "ppppppLLLL.CP.LL"
+    db "..pppppPC..CPL.."
+    db ".......PCCCCP..."
+    db ".......P.CC.P..."
+    db ".......PPCCPP..."
+    db "....C...P..P...."
+    db "......C.PPPP...."
+    db "............C..."
+pal_blink:
+    PAL 'C', 110, 232, 255
+    PAL 'L', 250, 250, 255
+    PAL 'P', 176, 100, 255
+    PAL 'p', 112, 60, 196
+    dq 0
+meteor_bmp:
+    db "................"
+    db "................"
+    db ".....O.........."
+    db "....O..........."
+    db ".RRO............"
+    db ".RR.......OO...."
+    db "........OOO....."
+    db ".......OOO......"
+    db "....RRROOO......"
+    db "...RYYYROL......"
+    db "...RYYYR........"
+    db "...RYYYR......O."
+    db "...RRYRR....OOL."
+    db "....RRR...RRR..."
+    db "..........RRR..."
+    db "................"
+pal_meteor:
+    PAL 'L', 255, 252, 220
+    PAL 'O', 255, 142, 30
+    PAL 'R', 214, 44, 24
+    PAL 'Y', 255, 222, 80
+    dq 0
+volley_bmp:
+    db "................"
+    db "................"
+    db ".......G........"
+    db ".......GW......."
+    db "......GGG......."
+    db "GG....GGG....GG."
+    db "GGG.....W...GGG."
+    db ".GW.....W....G.."
+    db "...W....W...W..."
+    db "....W...W..W...."
+    db "....W...W..W...."
+    db ".....W..W.W....."
+    db "......W.WW......"
+    db "......W.WW......"
+    db "......FFF......."
+    db "......F..F......"
+pal_volley:
+    PAL 'F', 240, 240, 240
+    PAL 'G', 210, 216, 228
+    PAL 'W', 170, 120, 70
+    dq 0
+explarrow_bmp:
+    db "................"
+    db "..........OO...."
+    db ".......OOOOOOOO."
+    db "........OYYYYO.."
+    db "........OOLLOO.."
+    db "........OOOOOO.."
+    db ".......O.WOO..O."
+    db "........W.OO...."
+    db ".......W........"
+    db "......W........."
+    db ".....W.........."
+    db "....W..........."
+    db "...W............"
+    db ".FF............."
+    db "FF.............."
+    db ".FF............."
+pal_explarrow:
+    PAL 'F', 240, 240, 240
+    PAL 'L', 255, 252, 220
+    PAL 'O', 240, 90, 24
+    PAL 'W', 170, 120, 70
+    PAL 'Y', 255, 214, 70
+    dq 0
+arrowrain_bmp:
+    db ".......NN......."
+    db "..NNN.NNNN.NNN.."
+    db "..NNNNNNNNNNNN.."
+    db "..NNNNNNNNNNNN.."
+    db "..nnnnnnnnnnFFF."
+    db "..FFF........W.."
+    db "...W...FFF...W.."
+    db "...W....W....W.."
+    db "...W....W....W.."
+    db "...W....W....W.."
+    db "...W....W..GGGG."
+    db ".GGGG...W...GG.."
+    db "..GG..GGGG..GG.."
+    db "..GG...GG....W.."
+    db "...W...GG......."
+    db "........W......."
+pal_arrowrain:
+    PAL 'F', 250, 250, 250
+    PAL 'G', 226, 230, 240
+    PAL 'N', 184, 190, 208
+    PAL 'W', 170, 120, 70
+    PAL 'n', 120, 126, 150
+    dq 0
+shadowstep_bmp:
+    db "................"
+    db "..........VVV..."
+    db "...p..p.pVKKKV.."
+    db "..p.pp.pVKKKKKV."
+    db ".p.p.pp.pKKKKKV."
+    db "..p.pp.pVKEKEKV."
+    db "...p..p.pVKKKV.."
+    db "..p.pp.pVKKKKKV."
+    db ".p.p.pp.pKKKKKV."
+    db "p.p.ppppKKKKKKKV"
+    db ".p.ppppVKKKKKKKV"
+    db "p.p.ppppKKKKKKKV"
+    db ".p.ppppVKKKKKKKV"
+    db "p.p.ppppKKKKKKKV"
+    db ".p.ppppVKKKKKKKV"
+    db "........VVVVVVV."
+pal_shadowstep:
+    PAL 'E', 240, 80, 255
+    PAL 'K', 30, 18, 50
+    PAL 'V', 150, 90, 230
+    PAL 'p', 120, 64, 200
+    dq 0
+smoke_bmp:
+    db ".........O.O...."
+    db "..........Y....."
+    db ".........f.O...."
+    db ".........f......"
+    db "......kkf......."
+    db "......kk..NNN..."
+    db "....KKKKK.NNNN.."
+    db "...KKgKKKKNNNnn."
+    db "..KKggKKKKK..nn."
+    db "..KKgKKKKKKNNNn."
+    db "..KKKKKKKKNNNN.."
+    db "..KKKKKKKKNNNN.."
+    db "..KKKKKKKKK.Nnnn"
+    db "...KKKKKKK...nnn"
+    db ".....KKK........"
+    db "................"
+pal_smoke:
+    PAL 'K', 40, 40, 52
+    PAL 'N', 206, 210, 222
+    PAL 'O', 255, 140, 30
+    PAL 'Y', 255, 226, 90
+    PAL 'f', 210, 170, 110
+    PAL 'g', 120, 120, 140
+    PAL 'k', 110, 84, 64
+    PAL 'n', 144, 150, 168
+    dq 0
+bladedance_bmp:
+    db ".........PP....."
+    db "..........PP...."
+    db "............PP.."
+    db "..mL........LP.."
+    db "...mL......LmPP."
+    db "....mL....Lm..P."
+    db ".....mL..Lm....."
+    db "......mYYm......"
+    db ".......YY......."
+    db "P.....LmmL......"
+    db "PP...Lm..mL...G."
+    db ".PG.Lm....mL.G.."
+    db ".PPGm......mG..."
+    db "..hPP......G.h.."
+    db ".h..PP........h."
+    db "................"
+pal_bladedance:
+    PAL 'G', 236, 196, 64
+    PAL 'L', 250, 250, 255
+    PAL 'P', 190, 110, 255
+    PAL 'Y', 255, 226, 90
+    PAL 'h', 130, 84, 44
+    PAL 'm', 170, 176, 192
+    dq 0
+emb_warrior_bmp:
+    db ".K............K."
+    db "KLK..........KLK"
+    db ".KLK........KLK."
+    db ".KmLK......KLmK."
+    db "..KmLK....KLmK.."
+    db "...KmLK..KLmK..."
+    db "....KmLKKLmK...."
+    db "...KKKmLLmKKK..."
+    db "..KGGKKLLKKGGK.."
+    db "...KGK.KK.KGK..."
+    db "....KGK..KGK...."
+    db "....KhGKKGhK...."
+    db "..KKhKKGGKKhKK.."
+    db ".KYhK..KK..KhYK."
+    db ".KYK........KYK."
+    db "KYK..........KYK"
+pal_emb_warrior:
+    PAL 'G', 232, 182, 32
+    PAL 'K', 40, 34, 40
+    PAL 'L', 250, 250, 255
+    PAL 'Y', 255, 230, 100
+    PAL 'h', 142, 88, 44
+    PAL 'm', 170, 176, 192
+    dq 0
+emb_mage_bmp:
+    db ".........KrK..K."
+    db "........KrrrKKYK"
+    db "........KrOrK.K."
+    db ".....K.KrrOOrK.."
+    db "....KYKrrOOOrrK."
+    db ".....KKrOOYOOrK."
+    db "..K...KrOYYYOrK."
+    db ".KYK..KrOYLOOrK."
+    db "..K....KrOLOrK.."
+    db ".......KYrrrK..."
+    db "......KwWKKK...."
+    db ".....KwWK......."
+    db "....KwWK........"
+    db "...KwWK........."
+    db "..KwWK.........."
+    db ".KwWK..........."
+pal_emb_mage:
+    PAL 'K', 44, 24, 20
+    PAL 'L', 255, 250, 210
+    PAL 'O', 255, 140, 30
+    PAL 'W', 98, 66, 30
+    PAL 'Y', 255, 226, 90
+    PAL 'r', 210, 44, 22
+    PAL 'w', 172, 124, 68
+    dq 0
+emb_archer_bmp:
+    db "........KK......"
+    db "......KKwsK....."
+    db ".....KwwsWK....."
+    db ".....KwWsK......"
+    db "....KwwsK......."
+    db "....KwWsK...K..."
+    db "...KFwsK...KGKK."
+    db "..KFwFsKKKKKGGGK"
+    db "...KFFaaaaaaGGGK"
+    db "..KFwFsKKKKKGKK."
+    db "...KFwsK....K..."
+    db "....KwwsK......."
+    db ".....KwsWK......"
+    db ".....KwwsWK....."
+    db "......KKsK......"
+    db "........KsK....."
+pal_emb_archer:
+    PAL 'F', 240, 240, 244
+    PAL 'G', 210, 216, 228
+    PAL 'K', 36, 28, 22
+    PAL 'W', 104, 70, 32
+    PAL 'a', 196, 150, 90
+    PAL 's', 230, 230, 236
+    PAL 'w', 178, 126, 66
+    dq 0
+emb_rogue_bmp:
+    db "................"
+    db "....KKKKK......."
+    db "...KHHHHHK...LL."
+    db "..KHHHHHHHK..Lm."
+    db ".KHHHHHHHHHK.Lm."
+    db "KHHHHFFFHHHHKLm."
+    db "KHHHFFFFFHHHKLm."
+    db "KHHFFFFFFFHHKLm."
+    db "KHHFFEFFEFHHHLm."
+    db "KHHFFFFFFFHHHLm."
+    db "KHhHFFFFFFHhHLm."
+    db "KHHHFFFFFFHHGGGG"
+    db "KHHHHHHHHHHHHkk."
+    db ".hHHHHHHHHHHhkk."
+    db "KHHHHHHHHHHHHGG."
+    db ".KKKKKKKKKKKK..."
+pal_emb_rogue:
+    PAL 'E', 150, 255, 120
+    PAL 'F', 14, 8, 20
+    PAL 'G', 232, 182, 32
+    PAL 'H', 72, 48, 110
+    PAL 'K', 30, 18, 46
+    PAL 'L', 250, 250, 255
+    PAL 'h', 104, 74, 150
+    PAL 'k', 110, 70, 40
+    PAL 'm', 170, 176, 192
+    dq 0
+st_health_bmp:
+    db "................"
+    db "....KKK..KKK...."
+    db "...KRRRKKRRRK..."
+    db "..KRwRRRRRRRRK.."
+    db ".KRwRRRRRRRRRRK."
+    db ".KRwRRRRRRRRRRK."
+    db ".KRRRRRRRRRRRRK."
+    db ".KRRRRRRRRRRRRK."
+    db "..KRRRRRRRRRRK.."
+    db "...KRRRRRRRRK..."
+    db "....KRRRRRRK...."
+    db ".....KRRRRK....."
+    db ".....KRRRdK....."
+    db "......KRdK......"
+    db ".......KK......."
+    db "................"
+pal_st_health:
+    PAL 'K', 60, 14, 22
+    PAL 'R', 226, 40, 52
+    PAL 'd', 160, 24, 40
+    PAL 'w', 255, 170, 170
+    dq 0
+st_melee_bmp:
+    db "..............KK"
+    db ".............KLL"
+    db ".............KLK"
+    db "............KLK."
+    db "...........KLmK."
+    db "..........KLmK.."
+    db "..KK.....KLmK..."
+    db ".KGGK...KLmK...."
+    db "..KGK..KLmK....."
+    db "...KGKKLmK......"
+    db "...KhGLmK......."
+    db "..KhKLGK........"
+    db ".KhK.KKGK......."
+    db "KhK....K........"
+    db "ppK............."
+    db "pK.............."
+pal_st_melee:
+    PAL 'G', 232, 182, 32
+    PAL 'K', 36, 36, 44
+    PAL 'L', 250, 250, 255
+    PAL 'h', 150, 60, 50
+    PAL 'm', 170, 176, 192
+    PAL 'p', 232, 182, 32
+    dq 0
+st_ranged_bmp:
+    db "............KKK."
+    db "...........KGGGK"
+    db "..........KGGGWK"
+    db "...........KGGK."
+    db "...........KWGK."
+    db "..........KWKK.."
+    db ".........KWK...."
+    db "........KWK....."
+    db ".......KWK......"
+    db "....K.KWK......."
+    db "...KFKWK........"
+    db "....KFFK........"
+    db ".....KK........."
+    db "................"
+    db "................"
+    db "................"
+pal_st_ranged:
+    PAL 'F', 250, 250, 250
+    PAL 'G', 226, 230, 240
+    PAL 'K', 40, 34, 30
+    PAL 'W', 176, 124, 72
+    dq 0
+st_spell_bmp:
+    db "................"
+    db ".......KK......."
+    db "......KPPK......"
+    db "......KPPK......"
+    db "......KPPK......"
+    db ".KKKKKPQQPKKKKK."
+    db "KPPPPPPQLPPPPPPK"
+    db ".KPPQQQLLQQQPPK."
+    db "..KKPQQQQQQPKK.."
+    db "....KPQQQQPK...."
+    db "....KPQQQQPK...."
+    db "...KPQQPPQQPK..."
+    db "...KPPPKKPPPK..."
+    db "...KPKK..KKPK..."
+    db "....K......K...."
+    db "................"
+pal_st_spell:
+    PAL 'K', 40, 20, 72
+    PAL 'L', 255, 250, 255
+    PAL 'P', 150, 84, 240
+    PAL 'Q', 208, 160, 255
+    dq 0
+st_critchance_bmp:
+    db "......KRRK......"
+    db "......KRRK......"
+    db "....KKRRRKK....."
+    db "...KRRRRRRRK...."
+    db "..KRRKKRRKRRK..."
+    db "..KRK..KK.KRK..."
+    db "KKRRK.....KRRKKK"
+    db "RRRRRK.YY.KRRRRR"
+    db "RRRRRK.YY.KRRRRR"
+    db "KKKRK.....KRKKKK"
+    db "..KRRKKKKKRRK..."
+    db "...KRRRRRRRK...."
+    db "....KKRRRKK....."
+    db "......KRRK......"
+    db "......KRRK......"
+    db "......KRRK......"
+pal_st_critchance:
+    PAL 'K', 50, 14, 12
+    PAL 'R', 230, 56, 40
+    PAL 'Y', 255, 222, 80
+    dq 0
+st_critdmg_bmp:
+    db "................"
+    db "..K....KK....K.."
+    db ".KOK..KOOK..KOK."
+    db "..KOKKKOOKKKOK.."
+    db "...KYOKOOKOYK..."
+    db "...KOYYYYYYOK..."
+    db "..KKKYYYYYYKKK.."
+    db ".KOOOYYLLYYOOOK."
+    db ".KOOOYYLLYYOOOK."
+    db "..KKKYYYYYYKKK.."
+    db "...KOYYYYYYOK..."
+    db "...KYOKOOKOYK..."
+    db "..KOKKKOOKKKOK.."
+    db ".KOK..KOOK..KOK."
+    db "..K....KK....K.."
+    db "................"
+pal_st_critdmg:
+    PAL 'K', 70, 20, 8
+    PAL 'L', 255, 252, 220
+    PAL 'O', 240, 100, 24
+    PAL 'Y', 255, 214, 70
+    dq 0
+st_mana_bmp:
+    db "................"
+    db ".......KK......."
+    db "......KBBK......"
+    db "......KBBK......"
+    db ".....KBBBBK....."
+    db ".....KBBBBK....."
+    db "....KBBBBBBK...."
+    db "....KBBBBBBK...."
+    db "...KBBBBBBBBK..."
+    db "..KBBBBBBBBBBK.."
+    db "..KBBwBBBBBBBK.."
+    db "..KBBwBBBBBBBK.."
+    db "..KBBBBBBBBBBK.."
+    db "..KBBBBBBBBBdK.."
+    db "...KBBBBBBBdK..."
+    db "....KBBBBBdK...."
+pal_st_mana:
+    PAL 'B', 64, 110, 255
+    PAL 'K', 14, 24, 80
+    PAL 'd', 34, 60, 190
+    PAL 'w', 200, 222, 255
+    dq 0
+st_manaregen_bmp:
+    db "...........KK..."
+    db "..........KAAK.."
+    db "....K....KAAAAK."
+    db "...KBK...KAAAAK."
+    db "...KBK..KAAAAAAK"
+    db "..KBBBK..KKAAKK."
+    db "..KBBBK...KAAK.."
+    db ".KBBBBBK..KAAK.."
+    db "KBwBBBBBK.KAAK.."
+    db "KBwBBBBBK.KAAK.."
+    db "KBBBBBBdK.KAAK.."
+    db ".KBBBBdK..KAAK.."
+    db "..KKBKK...KAAK.."
+    db "....K.....KAAK.."
+    db "..........KAAK.."
+    db "...........KK..."
+pal_st_manaregen:
+    PAL 'A', 120, 235, 110
+    PAL 'B', 64, 110, 255
+    PAL 'K', 14, 24, 70
+    PAL 'd', 34, 60, 190
+    PAL 'w', 200, 222, 255
+    dq 0
+st_stamina_bmp:
+    db "........KYYK...."
+    db ".......KYLK....."
+    db "......KYLYK....."
+    db "......KLYK......"
+    db ".....KYYYK......"
+    db "....KYLYKKKK...."
+    db "...KYYYYYYYYK..."
+    db "...KYYYYYYYK...."
+    db "....KKKYYYK....."
+    db "......KYYK......"
+    db ".....KYYYK......"
+    db ".....KYYK......."
+    db ".....KYK........"
+    db ".....KK........."
+    db "....KYK........."
+    db ".....K.........."
+pal_st_stamina:
+    PAL 'K', 100, 64, 0
+    PAL 'L', 255, 250, 190
+    PAL 'Y', 255, 214, 40
+    dq 0
+st_staminaregen_bmp:
+    db ".....KYYK..KK..."
+    db "....KYYK..KAAK.."
+    db "...KYYYK.KAAAAK."
+    db "...KYYK..KAAAAK."
+    db "..KYYKKKKAAAAAAK"
+    db ".KYYYYYYKKKAAKK."
+    db ".KYYYYYK..KAAK.."
+    db "..KKYYYK..KAAK.."
+    db "...KYYK...KAAK.."
+    db "...KYYK...KAAK.."
+    db "...KYK....KAAK.."
+    db "..KYK.....KAAK.."
+    db "..KYK.....KAAK.."
+    db "...K......KAAK.."
+    db "..........KAAK.."
+    db "...........KK..."
+pal_st_staminaregen:
+    PAL 'A', 120, 235, 110
+    PAL 'K', 100, 64, 0
+    PAL 'Y', 255, 214, 40
+    dq 0
+st_armor_bmp:
+    db ".KKKKKKKKKKKKK.."
+    db "KSSSSSSSSSSSSSK."
+    db "KSSSSSSSSSSSSSK."
+    db "KSSBBBBLLBBBBSK."
+    db "KSSBwwBLLBBBBSK."
+    db "KSSBwBBLLBBBBDK."
+    db "KSSLLLLLLLLLLDK."
+    db "KSSLLLLLLLLLLDK."
+    db ".KSSBBBLLBBBDDK."
+    db "..KSSBBLLBBDDK.."
+    db "...KSSBLLBDDK..."
+    db "....KSBLLBDK...."
+    db "....KSDLLDDK...."
+    db ".....KDDDDK....."
+    db "......KDDK......"
+    db ".......KK......."
+pal_st_armor:
+    PAL 'B', 58, 98, 190
+    PAL 'D', 120, 126, 150
+    PAL 'K', 24, 28, 44
+    PAL 'L', 214, 224, 250
+    PAL 'S', 190, 196, 212
+    PAL 'w', 255, 255, 255
+    dq 0
+st_speed_bmp:
+    db "....KKKKK......."
+    db "...KUUUUUK......"
+    db "...KUUUUUK......"
+    db "...KTlTTTK......"
+    db "...KTlTTTK......"
+    db "ZZ.KTlTTTK......"
+    db "...KTlTTTK......"
+    db "...KTTTTTK......"
+    db "ZZZKTTTTTK......"
+    db "...KlTTTTK......"
+    db "...KTlTTKKKKKK.."
+    db "ZZ.KTTTTTTTTTTK."
+    db "...KTTTTTTTTTTK."
+    db "...KTTTTTTTTTTK."
+    db "...KDDDDDDDDDDDK"
+    db "...KDDDDDDDDDDDK"
+pal_st_speed:
+    PAL 'D', 90, 56, 28
+    PAL 'K', 40, 24, 12
+    PAL 'T', 160, 100, 52
+    PAL 'U', 200, 170, 110
+    PAL 'Z', 200, 230, 255
+    PAL 'l', 204, 140, 84
+    dq 0
+st_backstab_bmp:
+    db ".......pp......."
+    db ".......hh......."
+    db ".......hh......."
+    db ".......hh......."
+    db ".......hh......."
+    db "......gggg......"
+    db ".......Lm......."
+    db ".......Lm......."
+    db "...KKKKLmKKK...."
+    db "..KHHHHLmHHHK..."
+    db ".KHHjHHLmHHHHK.."
+    db "KHHjHHHLmHHHHHK."
+    db "HHjHHHHLRRHHHHHK"
+    db "HHHHHHHRHRHHHHHK"
+    db "HHHHHHHHHHHHHHHK"
+    db "HHHHHHHHHHHHHHHH"
+pal_st_backstab:
+    PAL 'H', 78, 52, 120
+    PAL 'K', 24, 14, 40
+    PAL 'L', 250, 250, 255
+    PAL 'R', 230, 40, 48
+    PAL 'g', 232, 182, 32
+    PAL 'h', 142, 88, 44
+    PAL 'j', 112, 84, 160
+    PAL 'm', 170, 176, 192
+    PAL 'p', 232, 182, 32
+    dq 0
+st_parry_bmp:
+    db "................"
+    db "................"
+    db "...K........K..."
+    db "..KLK......KLK.."
+    db "...KLK....KLmK.."
+    db "....KLKK.KLmK..."
+    db ".....KLYKLmK...."
+    db ".....KYLYmK....."
+    db "..K...KYLYK..K.."
+    db ".KGK.KLmYLK.KGK."
+    db "..KGKLmKKKLKGK.."
+    db "...KGmK...KGK..."
+    db "..KLmGK..KGKLK.."
+    db ".KLmKK....K.KLK."
+    db "KhhK........KhhK"
+    db ".KK..........KK."
+pal_st_parry:
+    PAL 'G', 232, 182, 32
+    PAL 'K', 36, 36, 48
+    PAL 'L', 250, 250, 255
+    PAL 'Y', 255, 214, 70
+    PAL 'h', 150, 90, 50
+    PAL 'm', 170, 176, 192
+    dq 0
+st_lifesteal_bmp:
+    db "................"
+    db ".......KK......."
+    db "......KRRK......"
+    db "......KRRK......"
+    db ".....KRRRRK....."
+    db ".....KRRRRK....."
+    db "....KRRRRRRK...."
+    db "....KRRRRRRK...."
+    db "...KRRRRRRRRK..."
+    db "..KRRRRRRRRRRK.."
+    db "..KRRwRRRRRRRK.."
+    db "..KRRwRRRRRRRK.."
+    db "..KRRRRRRRRRRK.."
+    db "..KRRRRRRRRRdK.."
+    db "...KRRRRRRRdK..."
+    db "....KRRRRRdK...."
+pal_st_lifesteal:
+    PAL 'K', 60, 10, 20
+    PAL 'R', 214, 26, 44
+    PAL 'd', 140, 14, 30
+    PAL 'w', 255, 170, 170
+    dq 0
+st_cooldown_bmp:
+    db ".KGGGGGGGGGGGGK."
+    db ".KGGGGGGGGGGGGK."
+    db "..KDVVVVVVVVDK.."
+    db "...KwwVVVVV.K..."
+    db "......VVVV......"
+    db "......VVVV......"
+    db ".......VV......."
+    db "........Y......."
+    db "........Y......."
+    db ".......VY......."
+    db "......VVVV......"
+    db "......VYYV......"
+    db "...K.VYYYYV.K..."
+    db "..KDVVVVVVVVDK.."
+    db ".KGGGGGGGGGGGGK."
+    db ".KGGGGGGGGGGGGK."
+pal_st_cooldown:
+    PAL 'D', 140, 92, 20
+    PAL 'G', 204, 150, 50
+    PAL 'K', 50, 30, 8
+    PAL 'V', 150, 200, 230
+    PAL 'Y', 255, 214, 70
+    PAL 'w', 255, 255, 255
+    dq 0
+st_arrowsave_bmp:
+    db ".....W.W.W......"
+    db "....FWFWFWF....."
+    db ".....W.W.W......"
+    db ".....W.W.W......"
+    db ".....W.W.W......"
+    db "...RRRRRRRRR...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "...UTTTTTTTu...."
+    db "....uTTTTTu....."
+    db ".....uuuuu......"
+pal_st_arrowsave:
+    PAL 'F', 245, 245, 245
+    PAL 'R', 120, 70, 30
+    PAL 'T', 168, 102, 50
+    PAL 'U', 212, 160, 100
+    PAL 'W', 190, 140, 90
+    PAL 'u', 104, 62, 28
+    dq 0
+st_wind_bmp:
+    db "................"
+    db "................"
+    db "..........WWW..."
+    db ".WWWWWWWWWWWW..."
+    db "............W..."
+    db "............W..."
+    db "..ww............"
+    db ".............WW."
+    db "WWWWWWWWWWWWWWWW"
+    db "...............W"
+    db ".ww...........WW"
+    db "..........WW..W."
+    db "...WWWWWWWW.W..."
+    db "............W..."
+    db "...........W...."
+    db "................"
+pal_st_wind:
+    PAL 'W', 196, 230, 255
+    PAL 'w', 120, 190, 240
+    dq 0
+npc_face_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "..BBBBBBBBBBBB.."
+    db "................"
+    db "...WWW....WWW..."
+    db "...WGG....GGW..."
+    db "................"
+    db "................"
+    db "................"
+    db ".....MMMMMM....."
+    db "................"
+    db "................"
+    db "................"
+pal_npc_face:
+    PAL '.', 225, 180, 140
+    PAL 'B', 96, 62, 36
+    PAL 'G', 64, 120, 70
+    PAL 'M', 150, 98, 76
+    PAL 'W', 240, 240, 240
+    dq 0
+npc_merchant_bmp:
+    db "..........f....."
+    db ".....f.........."
+    db "..........f....."
+    db ".....f.........."
+    db "..........f....."
+    db ".....f.........."
+    db "..........f....."
+    db ".....f.........."
+    db "..........f....."
+    db "BBBBBBBYYBBBBBBB"
+    db "BBBBBBByyBBBBBBB"
+    db ".....f.........."
+    db "..........f....."
+    db ".....f.........."
+    db "dddddddddddddddd"
+    db "dddddddddddddddd"
+pal_npc_merchant:
+    PAL '.', 60, 130, 60
+    PAL 'B', 112, 72, 32
+    PAL 'Y', 250, 214, 70
+    PAL 'd', 44, 100, 44
+    PAL 'f', 78, 152, 76
+    PAL 'y', 184, 140, 30
+    dq 0
+npc_elder_bmp:
+    db "D......Yy......D"
+    db "D..f...Yy...f..D"
+    db "D......Yy......D"
+    db "D......Yy......D"
+    db "D......Yy......D"
+    db "D..f...Yy...f..D"
+    db "D......Yy......D"
+    db "D......Yy......D"
+    db "D......Yy......D"
+    db "D..f...Yy...f..D"
+    db "D......Yy......D"
+    db "D......Yy......D"
+    db "YYYyYYYyYYYyYYYy"
+    db "YYYyYYYyYYYyYYYy"
+    db "yyyyyyyyyyyyyyyy"
+    db "yyyyyyyyyyyyyyyy"
+pal_npc_elder:
+    PAL '.', 100, 60, 140
+    PAL 'D', 72, 40, 104
+    PAL 'Y', 250, 214, 70
+    PAL 'f', 124, 80, 168
+    PAL 'y', 184, 140, 30
+    dq 0
+npc_bossrobe_bmp:
+    db "...r...ff...r..."
+    db "...r........r..."
+    db "................"
+    db "...r........r..."
+    db "...r...ff...r..."
+    db "................"
+    db "...r........r..."
+    db "...r........r..."
+    db ".......ff......."
+    db "...r........r..."
+    db "...r........r..."
+    db "....d....d....d."
+    db "...k...kd.k..d.."
+    db ".kdk..kk..k.k..k"
+    db "kk.kk.kk.kkdk.kk"
+    db "kkkkkdkkkkk.kkkk"
+pal_npc_bossrobe:
+    PAL '.', 52, 28, 72
+    PAL 'd', 36, 18, 52
+    PAL 'f', 84, 46, 110
+    PAL 'k', 14, 6, 20
+    PAL 'r', 130, 24, 52
+    dq 0
+npc_bossface_bmp:
+    db "................"
+    db "................"
+    db "......c........."
+    db ".......c........"
+    db ".......c........"
+    db "..KKKK....KKKK.."
+    db "..KRRK....KRRK.."
+    db "..KRRK....KRRK.."
+    db "..KKKK....KKKK.."
+    db ".......KK......."
+    db ".......KK......."
+    db "................"
+    db "...KKKKKKKKKK..."
+    db "...KK.K.K.K.KK.."
+    db "....K.K.K.K.K..."
+    db "................"
+pal_npc_bossface:
+    PAL '.', 222, 214, 192
+    PAL 'K', 18, 8, 12
+    PAL 'R', 255, 50, 36
+    PAL 'c', 150, 142, 118
+    dq 0
+npc_crown_bmp:
+    db "LLLLLLLLLLLLLLLL"
+    db "................"
+    db "................"
+    db ".D...D...D...D.."
+    db "................"
+    db "................"
+    db "...WR..WR..WR..."
+    db "...RR..RR..RR..."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "LLLLLLLLLLLLLLLL"
+    db "DDDDDDDDDDDDDDDD"
+    db "DDDDDDDDDDDDDDDD"
+    db "DDDDDDDDDDDDDDDD"
+pal_npc_crown:
+    PAL '.', 240, 190, 40
+    PAL 'D', 176, 126, 16
+    PAL 'L', 255, 236, 140
+    PAL 'R', 220, 30, 50
+    PAL 'W', 255, 170, 170
+    dq 0
 
 section .text

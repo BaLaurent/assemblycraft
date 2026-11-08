@@ -23,6 +23,8 @@ extern audio_update, player, body_init, world_generate, world_top_y, world_heade
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim
+extern screen_trade, screen_dialog, screen_class, screen_skills
+extern rpg_class, rpg_reset, combat_reset, dmgnum_clear
 
 section .rodata
 s_loading:    db "Loading world...", 0
@@ -57,6 +59,7 @@ screens:
     dq screen_title, screen_worlds, screen_create, screen_rename, screen_delete
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
+    dq screen_trade, screen_dialog, screen_class, screen_skills
 
 section .data
 align 4
@@ -215,12 +218,22 @@ show_loading:
     pop     rbp
     ret
 
-; enter_world(): start playing the loaded/created world
+; enter_world(): start playing the loaded/created world; a character without a class picks
+; one first
 enter_world:
+    push    rbp
+    mov     rbp, rsp
     mov     dword [app_in_world], 1
     mov     dword [autosave_timer], 0
+    call    rpg_class
     mov     edi, ST_PLAYING
-    jmp     app_goto
+    test    eax, eax
+    jnz     .go
+    mov     edi, ST_CLASS
+.go:
+    call    app_goto
+    pop     rbp
+    ret
 
 ; app_play_world(edi idx)
 app_play_world:
@@ -323,6 +336,9 @@ load_panorama:
     call    tnt_clear
     call    fire_clear
     call    fx_clear
+    call    dmgnum_clear
+    call    rpg_reset
+    call    combat_reset
     mov     dword [game_aim], 0
     mov     dword [game_time], NEW_WORLD_TIME
     mov     dword [game_has_target], 0
@@ -487,7 +503,13 @@ update_state:
     je      .screen
     cmp     eax, ST_CHEST
     je      .screen
-    jmp     .ret                        ; paused, death, settings: nothing simulates
+    cmp     eax, ST_TRADE
+    je      .screen
+    cmp     eax, ST_DIALOG
+    je      .screen
+    cmp     eax, ST_SKILLS
+    je      .screen
+    jmp     .ret                        ; paused, death, settings, class choice: nothing simulates
 
 .playing:
     mov     rdi, [app_window]           ; pause when focus is lost (not before it arrives)
@@ -508,6 +530,12 @@ update_state:
     call    save_world
     jmp     .ret
 .no_pause:
+    cmp     dword [frame_input + FRAMEINPUT.skills], 0
+    je      .no_skills
+    mov     edi, ST_SKILLS
+    call    app_goto
+    jmp     .ret
+.no_skills:
     cmp     dword [frame_input + FRAMEINPUT.inventory], 0
     je      .simulate
     mov     dword [craft_size], 2
@@ -527,9 +555,14 @@ update_state:
     jz      .autosave
     mov     dword [game_open_screen], 0
     cmp     edi, ST_CRAFTING
-    jne     .container
+    jne     .not_table
     mov     dword [craft_size], 3
     jmp     .open
+.not_table:
+    cmp     edi, ST_TRADE               ; merchant and elder screens hold no container
+    je      .open
+    cmp     edi, ST_DIALOG
+    je      .open
 .container:
     mov     rax, [game_open_cont]
     mov     [inv_container], rax
@@ -600,6 +633,12 @@ draw_frame:
     cmp     eax, ST_FURNACE
     je      .in_view
     cmp     eax, ST_CHEST
+    je      .in_view
+    cmp     eax, ST_TRADE
+    je      .in_view
+    cmp     eax, ST_DIALOG
+    je      .in_view
+    cmp     eax, ST_SKILLS
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -616,7 +655,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_CHEST
+    cmp     eax, ST_SKILLS
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax
@@ -692,6 +731,7 @@ app_run:
     mov     [ui_input + UIINPUT.rmb_pressed], eax
     mov     [ui_input + UIINPUT.double_click], eax
     mov     [frame_input + FRAMEINPUT.inventory], eax
+    mov     [frame_input + FRAMEINPUT.skills], eax
     mov     dword [ui_input + UIINPUT.key_pressed], -1
 .same_state:
     movss   xmm0, [frame_dt]

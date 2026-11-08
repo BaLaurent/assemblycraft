@@ -4,7 +4,7 @@ default rel
 
 global test_worldgen_deterministic, test_worldgen_shape, test_worldgen_ores
 
-extern blocks
+extern blocks, world_header
 extern world_clear, world_generate, fnv1a
 
 section .text
@@ -16,6 +16,15 @@ section .text
     call    fnv1a
 %endmacro
 
+; zero_conts(): empties the container table in the world header (world_generate fills it with
+; the chests of the dungeons and the crypt)
+zero_conts:
+    lea     rdi, [world_header + WORLDHDR.containers]
+    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    xor     eax, eax
+    rep     stosb
+    ret
+
 test_worldgen_deterministic:
     push    rbp
     mov     rbp, rsp
@@ -24,15 +33,18 @@ test_worldgen_deterministic:
     call    world_clear
     mov     edi, 42
     call    world_generate
+    call    zero_conts
     HASH_BLOCKS
     mov     ebx, eax
     mov     edi, 42
     call    world_generate
+    call    zero_conts
     HASH_BLOCKS
     cmp     eax, ebx
     jne     .fail
     mov     edi, 43
     call    world_generate
+    call    zero_conts
     HASH_BLOCKS
     cmp     eax, ebx
     je      .fail
@@ -58,6 +70,7 @@ test_worldgen_shape:
     call    world_clear
     mov     edi, 42
     call    world_generate
+    call    zero_conts
     ; bedrock at y = 0 of every column (first 65536 bytes)
     lea     rsi, [blocks]
     mov     ecx, 65536
@@ -146,6 +159,7 @@ test_worldgen_ores:
     call    world_clear
     mov     edi, 42
     call    world_generate
+    call    zero_conts
     lea     rdi, [ore_count]            ; zero counts and heights
     xor     eax, eax
     mov     ecx, NUM_BLOCKS * 2

@@ -1,7 +1,9 @@
-; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, drawn with the
-; state render_world leaves set up: atlas on unit 0, night combiner on unit 1, fog, alpha test,
-; face culling.
-; Model space has the front at -Z; limbs swing about X at their pivot.
+; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, the villagers
+; (merchant, elder) and the Fallen King boss, drawn with the state render_world leaves set up:
+; atlas on unit 0, night combiner on unit 1, fog, alpha test, face culling.
+; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
+; is doing (hit red, wind-up red flicker, stun yellow flicker, elite gold) and sized by what it is
+; (elite 1.2 x, wind-up surge 1.05 x, creeper swell).
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -33,6 +35,13 @@ f_half:     dd 0.5
 f_swing:    dd 30.0                     ; peak limb angle, degrees
 mob_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8   ; +X -X +Y -Y +Z -Z
 f_swell:    dd 0.0022222222             ; creeper swell: 20 % over 90 fuse steps
+f_elite_g:  dd 0.85                     ; elite tint (1, 0.85, 0.5)
+f_elite_b:  dd 0.5
+f_wind_g:   dd 0.45                     ; wind-up flicker (1, 0.45, 0.45)
+f_wind_b:   dd 0.45
+f_stun_b:   dd 0.4                      ; stun flicker (1, 1, 0.4)
+f_elite_scale: dd 1.2
+f_wind_scale: dd 1.05
 
 zombie_parts:
     PART -0.25, 0.0, -0.125,  0.0, 0.75, 0.125,   TILE_ZOMBIE_PANTS, TILE_ZOMBIE_PANTS, 0.75, 0.0,  1.0    ; left leg
@@ -93,6 +102,31 @@ chicken_parts:
     PART  0.0625, 0.0, -0.03125,  0.125,  0.3125, 0.03125, TILE_CHICKEN_LEG, TILE_CHICKEN_LEG, 0.3125, 0.0, -1.0  ; right leg
 %define CHICKEN_PARTS 6
 
+; the villagers share one model, only the robe differs: legs, body, folded arms, head, nose
+%macro VILLAGER 1
+    PART -0.22, 0.0, -0.11,  0.0,  0.75, 0.11,  %1, %1, 0.75, 0.0,  1.0                 ; left leg
+    PART  0.0,  0.0, -0.11,  0.22, 0.75, 0.11,  %1, %1, 0.75, 0.0, -1.0                 ; right leg
+    PART -0.25, 0.75, -0.15, 0.25, 1.45, 0.15,  %1, %1, 0.0, 0.0, 0.0                   ; body
+    PART -0.3,  1.1, -0.3,   0.3,  1.35, -0.15, %1, %1, 0.0, 0.0, 0.0                   ; folded arms
+    PART -0.2,  1.45, -0.2,  0.2,  1.95, 0.2,   TILE_VILLAGER_SKIN, TILE_VILLAGER_FACE, 0.0, 0.0, 0.0   ; head
+    PART -0.05, 1.55, -0.3,  0.05, 1.72, -0.2,  TILE_VILLAGER_SKIN, TILE_VILLAGER_SKIN, 0.0, 0.0, 0.0   ; nose
+%endmacro
+merchant_parts:
+    VILLAGER TILE_MERCHANT_ROBE
+elder_parts:
+    VILLAGER TILE_ELDER_ROBE
+%define VILLAGER_PARTS 6
+
+boss_parts:                             ; the Fallen King, 3.3 blocks tall
+    PART -0.35, 0.0, -0.12, -0.1,  1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0,  1.0   ; left leg
+    PART  0.1,  0.0, -0.12,  0.35, 1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0, -1.0   ; right leg
+    PART -0.45, 1.1, -0.25,  0.45, 2.4, 0.25,  TILE_BOSS_ROBE, TILE_BOSS_ROBE, 0.0, 0.0, 0.0           ; robe
+    PART -0.7,  1.4, -0.12, -0.45, 2.4, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 2.3, 0.0, -0.5   ; left arm
+    PART  0.45, 1.4, -0.12,  0.7,  2.4, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 2.3, 0.0,  0.5   ; right arm
+    PART -0.35, 2.4, -0.35,  0.35, 3.1, 0.35,  TILE_SKELETON_BONE, TILE_BOSS_FACE, 0.0, 0.0, 0.0        ; head
+    PART -0.38, 3.1, -0.38,  0.38, 3.35, 0.38, TILE_BOSS_CROWN, TILE_BOSS_CROWN, 0.0, 0.0, 0.0         ; crown
+%define BOSS_PARTS 7
+
 align 8
 models:                                 ; indexed by type - 1: parts, part count
     dq zombie_parts, ZOMBIE_PARTS
@@ -101,6 +135,9 @@ models:                                 ; indexed by type - 1: parts, part count
     dq skeleton_parts, SKELETON_PARTS
     dq spider_parts, SPIDER_PARTS
     dq chicken_parts, CHICKEN_PARTS
+    dq merchant_parts, VILLAGER_PARTS
+    dq elder_parts, VILLAGER_PARTS
+    dq boss_parts, BOSS_PARTS
 
 section .text
 
@@ -117,7 +154,8 @@ section .text
 
 ; mobs_render(): draw every live mob.
 ; rbx = mob, r12 = end of the table, r13d = model index, r14 = part, r15d = parts left
-; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] limb angle
+; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] limb angle, [rsp+20] flash flag,
+; [rsp+24] size factor
 mobs_render:
     push    rbp
     mov     rbp, rsp
@@ -126,7 +164,7 @@ mobs_render:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 24
+    sub     rsp, 40
     lea     rbx, [mobs]
     lea     r12, [mobs + MAX_MOBS * MOB_size]
 .mob:
@@ -138,9 +176,30 @@ mobs_render:
     call    sincos_deg
     mulss   xmm0, [f_swing]
     movss   [rsp], xmm0                 ; swing = sin(walk) * 30 degrees
-    movss   xmm0, [f_one]
-    movss   xmm1, xmm0
+    movss   xmm0, [f_one]               ; tint, lowest priority first: elite gold, stun flicker,
+    movss   xmm1, xmm0                  ; wind-up flicker, then the hit's red over everything
     movss   xmm2, xmm0
+    cmp     dword [rbx + MOB.elite], 0
+    je      .not_elite
+    movss   xmm1, [f_elite_g]
+    movss   xmm2, [f_elite_b]
+.not_elite:
+    mov     eax, [rbx + MOB.stun]
+    test    eax, eax
+    jle     .not_stunned
+    test    al, 4                       ; (stun >> 2) & 1: yellow flicker
+    jz      .not_stunned
+    movss   xmm1, [f_one]
+    movss   xmm2, [f_stun_b]
+.not_stunned:
+    mov     eax, [rbx + MOB.windup]
+    test    eax, eax
+    jle     .not_winding
+    test    al, 4                       ; (windup >> 2) & 1: red flicker
+    jz      .not_winding
+    movss   xmm1, [f_wind_g]
+    movss   xmm2, [f_wind_b]
+.not_winding:
     cmp     dword [rbx + MOB.hurt], 0
     jle     .tinted
     movss   xmm1, [f_half]              ; hit: red tint
@@ -161,25 +220,46 @@ mobs_render:
     xorps   xmm3, xmm3
     call    glRotatef                   ; front (-Z) turns to the mob's heading
     mov     dword [rsp + 20], 0         ; flash flag: untextured parts
+    movss   xmm0, [f_one]               ; size: creeper swell x elite x wind-up surge
+    movss   [rsp + 24], xmm0
     cmp     dword [rbx + MOB.type], MOB_CREEPER
-    jne     .model
+    jne     .size_elite
     mov     eax, [rbx + MOB.fuse]
     test    eax, eax
-    jle     .model
+    jle     .size_elite
     mov     ecx, 90
     cmp     eax, ecx
     cmova   eax, ecx                    ; swells with the fuse: up to 20 % bigger
     cvtsi2ss xmm0, eax
     mulss   xmm0, [f_swell]
     addss   xmm0, [f_one]
-    movaps  xmm1, xmm0
-    movaps  xmm2, xmm0
-    call    glScalef
+    movss   [rsp + 24], xmm0
     mov     eax, [rbx + MOB.fuse]
     shr     eax, 2
     and     eax, 1                      ; white flash every other 4 steps
     mov     [rsp + 20], eax
-    jz      .model
+.size_elite:
+    cmp     dword [rbx + MOB.elite], 0
+    je      .size_windup
+    movss   xmm0, [rsp + 24]
+    mulss   xmm0, [f_elite_scale]
+    movss   [rsp + 24], xmm0
+.size_windup:
+    cmp     dword [rbx + MOB.windup], 0
+    jle     .sized
+    movss   xmm0, [rsp + 24]
+    mulss   xmm0, [f_wind_scale]
+    movss   [rsp + 24], xmm0
+.sized:
+    movss   xmm0, [rsp + 24]
+    ucomiss xmm0, [f_one]
+    je      .unscaled
+    movaps  xmm1, xmm0
+    movaps  xmm2, xmm0
+    call    glScalef
+.unscaled:
+    cmp     dword [rsp + 20], 0
+    je      .model
     mov     edi, GL_TEXTURE_2D
     call    glDisable
 .model:
@@ -229,7 +309,7 @@ mobs_render:
     add     rbx, MOB_size
     cmp     rbx, r12
     jb      .mob
-    add     rsp, 24
+    add     rsp, 40
     pop     r15
     pop     r14
     pop     r13

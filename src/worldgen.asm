@@ -1,11 +1,12 @@
-; worldgen.asm - deterministic heightmap terrain, sand beaches and trees.
+; worldgen.asm - deterministic heightmap terrain, sand beaches, ores, trees and the structures.
 %include "common.inc"
 default rel
 
-global world_generate
+global world_generate, hash32, worldgen_height, worldgen_set_seed
 
 extern blocks, world_header
 extern world_clear, world_mark_all_dirty
+extern structures_plan, structures_generate
 
 section .rodata
 align 4
@@ -177,6 +178,17 @@ column_height:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; worldgen_height(edi x, esi z) -> eax terrain height of the column in [5, 56]: the height
+; world_generate gives that column before trees and structures (it works for any seed set
+; with worldgen_set_seed, whether or not the world was generated)
+worldgen_height:
+    jmp     column_height
+
+; worldgen_set_seed(edi seed): the seed hash32 and the height noise use
+worldgen_set_seed:
+    mov     [gen_seed], edi
     ret
 
 ; place_layer(edi x, esi y, edx z, ecx r, r8d skipcorners)
@@ -582,6 +594,9 @@ world_generate:
     jb      .tz
     mov     eax, [gen_seed]
     mov     [world_header + WORLDHDR.seed], eax
+    mov     edi, eax
+    call    structures_plan             ; sites from the seed (no block writes)
+    call    structures_generate         ; then their blocks, chests and loot
     call    world_mark_all_dirty
     add     rsp, 8
     pop     r15

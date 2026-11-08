@@ -1,4 +1,4 @@
-; sfx.asm - procedural sound effects: the 35 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural sound effects: the 53 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few layers (noise / square / saw through a one-pole filter and an
 ; envelope). sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
@@ -6,7 +6,7 @@ default rel
 
 global sfx_build, sfx_table, sfx_pool
 
-%define POOL_SAMPLES 524288
+%define POOL_SAMPLES 1048576
 
 %define W_NOISE  0                      ; SFXLAYER.wave
 %define W_SQUARE 1
@@ -106,6 +106,53 @@ layers:
     LAYER SND_RELOAD,        W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.01,  0.0,  0.12, 0.03, 0.3,  0.0,  0.0
     LAYER SND_DRY_FIRE,      W_SQUARE, 1800.0, 1200.0, 1.0,  0, E_EXP, 0.01,  0.0,  0.0,  0.04, 0.3,  0.0,  0.0
     LAYER SND_DRY_FIRE,      W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.008, 0.0,  0.0,  0.03, 0.3,  0.0,  0.0
+    ; --- 0.6 RPG sounds 35..52 (peak target: inside -18 .. -0.1 dBFS, measured with the harness) ---
+    LAYER SND_SWING,         W_NOISE,  0.0,    0.0,    0.2,  0, E_LIN, 0.0,   0.04, 0.0,  0.18, 1.6,  0.0,  0.0
+    LAYER SND_SWING,         W_NOISE,  0.0,    0.0,    0.6,  1, E_LIN, 0.0,   0.05, 0.02, 0.14, 0.25, 0.0,  0.0
+    LAYER SND_PARRY,         W_SQUARE, 1800.0, 1600.0, 0.6,  0, E_EXP, 0.12,  0.0,  0.0,  0.50, 0.30, 0.0,  0.0
+    LAYER SND_PARRY,         W_SQUARE, 2700.0, 2400.0, 0.6,  0, E_EXP, 0.08,  0.0,  0.0,  0.40, 0.14, 0.0,  0.0
+    LAYER SND_PARRY,         W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.01,  0.0,  0.0,  0.06, 0.45, 0.0,  0.0
+    LAYER SND_BLOCK,         W_NOISE,  0.0,    0.0,    0.06, 0, E_EXP, 0.03,  0.0,  0.0,  0.20, 2.2,  0.0,  0.0
+    LAYER SND_BLOCK,         W_SQUARE, 90.0,   55.0,   0.2,  0, E_EXP, 0.05,  0.0,  0.0,  0.20, 0.35, 0.0,  0.0
+    LAYER SND_DODGE,         W_NOISE,  0.0,    0.0,    0.08, 0, E_LIN, 0.0,   0.08, 0.0,  0.30, 2.6,  0.0,  0.0
+    LAYER SND_CRIT,          W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.02,  0.0,  0.0,  0.12, 0.5,  0.0,  0.0
+    LAYER SND_CRIT,          W_SQUARE, 120.0,  60.0,   0.2,  0, E_EXP, 0.03,  0.0,  0.0,  0.10, 0.30, 0.0,  0.0
+    LAYER SND_CRIT,          W_SQUARE, 2600.0, 2200.0, 0.6,  0, E_EXP, 0.08,  0.0,  0.0,  0.30, 0.22, 0.0,  0.0
+    LAYER SND_CRIT,          W_SQUARE, 3400.0, 3200.0, 0.6,  0, E_EXP, 0.06,  0.0,  0.03, 0.25, 0.14, 0.0,  0.0
+    LAYER SND_LEVELUP,       W_SQUARE, 523.0,  523.0,  0.5,  0, E_EXP, 0.10,  0.0,  0.0,  0.22, 0.30, 0.0,  0.0
+    LAYER SND_LEVELUP,       W_SQUARE, 659.0,  659.0,  0.5,  0, E_EXP, 0.10,  0.0,  0.10, 0.22, 0.30, 0.0,  0.0
+    LAYER SND_LEVELUP,       W_SQUARE, 784.0,  784.0,  0.5,  0, E_EXP, 0.10,  0.0,  0.20, 0.22, 0.30, 0.0,  0.0
+    LAYER SND_LEVELUP,       W_SQUARE, 1047.0, 1047.0, 0.5,  0, E_EXP, 0.18,  0.0,  0.30, 0.55, 0.30, 0.0,  0.0
+    LAYER SND_SPELL,         W_SAW,    500.0,  1400.0, 0.12, 0, E_LIN, 0.0,   0.01, 0.0,  0.22, 0.80, 0.0,  0.0
+    LAYER SND_SPELL,         W_NOISE,  0.0,    0.0,    0.6,  1, E_LIN, 0.0,   0.01, 0.0,  0.20, 0.12, 0.0,  0.0
+    LAYER SND_FIREBALL,      W_NOISE,  0.0,    0.0,    0.25, 0, E_LIN, 0.0,   0.05, 0.0,  0.60, 1.0,  0.0,  0.0
+    LAYER SND_FIREBALL,      W_SAW,    70.0,   50.0,   0.1,  0, E_LIN, 0.0,   0.05, 0.0,  0.60, 0.30, 8.0,  11.0
+    LAYER SND_BLINK,         W_SQUARE, 3000.0, 800.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.0,  0.30, 0.22, 60.0, 30.0
+    LAYER SND_BLINK,         W_SQUARE, 2000.0, 500.0,  0.5,  0, E_LIN, 0.0,   0.0,  0.04, 0.26, 0.16, 40.0, 27.0
+    LAYER SND_BLINK,         W_NOISE,  0.0,    0.0,    0.6,  1, E_LIN, 0.0,   0.0,  0.0,  0.25, 0.15, 0.0,  0.0
+    LAYER SND_WARCRY,        W_SAW,    110.0,  90.0,   0.2,  0, E_LIN, 0.0,   0.05, 0.0,  0.70, 0.45, 6.0,  7.0
+    LAYER SND_WARCRY,        W_SAW,    220.0,  180.0,  0.2,  0, E_LIN, 0.0,   0.05, 0.0,  0.70, 0.18, 10.0, 7.0
+    LAYER SND_WARCRY,        W_NOISE,  0.0,    0.0,    0.3,  0, E_LIN, 0.0,   0.05, 0.0,  0.60, 0.35, 0.0,  0.0
+    LAYER SND_WHIRL,         W_NOISE,  0.0,    0.0,    0.2,  0, E_LIN, 0.0,   0.05, 0.0,  0.30, 1.2,  0.0,  0.0
+    LAYER SND_WHIRL,         W_NOISE,  0.0,    0.0,    0.2,  0, E_LIN, 0.0,   0.05, 0.22, 0.30, 1.2,  0.0,  0.0
+    LAYER SND_SMOKE,         W_NOISE,  0.0,    0.0,    0.5,  1, E_LIN, 0.0,   0.1,  0.0,  0.70, 0.60, 0.0,  0.0
+    LAYER SND_COIN,          W_SQUARE, 2600.0, 2600.0, 0.7,  0, E_EXP, 0.04,  0.0,  0.0,  0.18, 0.30, 0.0,  0.0
+    LAYER SND_COIN,          W_SQUARE, 3500.0, 3500.0, 0.7,  0, E_EXP, 0.07,  0.0,  0.08, 0.30, 0.30, 0.0,  0.0
+    LAYER SND_QUEST,         W_SQUARE, 523.0,  523.0,  0.4,  0, E_EXP, 0.10,  0.0,  0.0,  0.18, 0.35, 0.0,  0.0
+    LAYER SND_QUEST,         W_SQUARE, 659.0,  659.0,  0.4,  0, E_EXP, 0.10,  0.0,  0.14, 0.18, 0.35, 0.0,  0.0
+    LAYER SND_QUEST,         W_SQUARE, 784.0,  784.0,  0.4,  0, E_EXP, 0.18,  0.0,  0.28, 0.50, 0.35, 0.0,  0.0
+    LAYER SND_BOSS_ROAR,     W_SAW,    70.0,   45.0,   0.1,  0, E_LIN, 0.0,   0.15, 0.0,  1.60, 0.45, 8.0,  6.0
+    LAYER SND_BOSS_ROAR,     W_SAW,    105.0,  68.0,   0.1,  0, E_LIN, 0.0,   0.15, 0.0,  1.60, 0.22, 10.0, 7.0
+    LAYER SND_BOSS_ROAR,     W_NOISE,  0.0,    0.0,    0.15, 0, E_LIN, 0.0,   0.10, 0.0,  1.40, 0.75, 0.0,  0.0
+    LAYER SND_SLAM,          W_NOISE,  0.0,    0.0,    0.05, 0, E_EXP, 0.15,  0.0,  0.0,  0.80, 1.4,  0.0,  0.0
+    LAYER SND_SLAM,          W_SAW,    60.0,   30.0,   0.2,  0, E_EXP, 0.12,  0.0,  0.0,  0.60, 0.40, 0.0,  0.0
+    LAYER SND_SLAM,          W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.02,  0.0,  0.0,  0.08, 0.35, 0.0,  0.0
+    LAYER SND_VILLAGER,      W_SQUARE, 140.0,  120.0,  0.1,  0, E_LIN, 0.0,   0.03, 0.0,  0.30, 0.45, 6.0,  8.0
+    LAYER SND_VILLAGER,      W_SQUARE, 280.0,  240.0,  0.1,  0, E_LIN, 0.0,   0.03, 0.0,  0.30, 0.15, 12.0, 8.0
+    LAYER SND_DRINK,         W_SQUARE, 250.0,  400.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.0,  0.07, 0.35, 0.0,  0.0
+    LAYER SND_DRINK,         W_SQUARE, 220.0,  350.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.10, 0.07, 0.35, 0.0,  0.0
+    LAYER SND_DRINK,         W_SQUARE, 200.0,  300.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.20, 0.07, 0.35, 0.0,  0.0
+    LAYER SND_DRINK,         W_NOISE,  0.0,    0.0,    0.1,  0, E_LIN, 0.0,   0.0,  0.0,  0.27, 0.40, 0.0,  0.0
 layers_end:
 
 section .bss

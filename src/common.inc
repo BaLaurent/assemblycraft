@@ -632,6 +632,73 @@ endstruc
 %error "RPGSAVE must be 64 bytes"
 %endif
 
+; rpg_class_info record: class card texts (dq zstr)
+struc CLASSINFO
+    .name:  resq 1
+    .line1: resq 1
+    .line2: resq 1
+    .line3: resq 1
+endstruc
+%if CLASSINFO_size != 32
+%error "CLASSINFO must be 32 bytes"
+%endif
+
+; rpg_node_info record: one skill-tree node
+struc NODEINFO
+    .name:  resq 1
+    .desc:  resq 1
+    .kind:  resb 1                      ; 0 stat, 1 ability
+    .stat:  resb 1                      ; stat id; ability slot for an ability node
+    .max:   resb 1                      ; max rank
+    .pad:   resb 1
+    .value: resd 1                      ; per rank, 0 for abilities
+endstruc
+%if NODEINFO_size != 24
+%error "NODEINFO must be 24 bytes"
+%endif
+
+; rpg_ability_info record: one class ability
+struc ABILINFO
+    .name:     resq 1
+    .desc:     resq 1
+    .resource: resd 1                   ; RES_*
+    .cost:     resd 1
+    .cooldown: resd 1                   ; seconds
+    .pad:      resd 1
+endstruc
+%if ABILINFO_size != 32
+%error "ABILINFO must be 32 bytes"
+%endif
+
+; quests_current record: one quest of the chain
+struc QUESTINFO
+    .type:       resd 1                 ; Q_*
+    .target:     resd 1                 ; mob type (Q_KILL) or item id (Q_BRING), else 0
+    .count:      resd 1
+    .xp:         resd 1
+    .coins:      resd 1
+    .item:       resd 1
+    .item_count: resd 1
+    .pad:        resd 1
+    .title:      resq 1
+    .line1:      resq 1
+    .line2:      resq 1
+endstruc
+%if QUESTINFO_size != 56
+%error "QUESTINFO must be 56 bytes"
+%endif
+
+; trade_offer record: give give_n items for get get_n items
+struc TRADEOFFER
+    .give:   resd 1
+    .give_n: resd 1
+    .get:    resd 1
+    .get_n:  resd 1
+endstruc
+%if TRADEOFFER_size != 16
+%error "TRADEOFFER must be 16 bytes"
+%endif
+
 ; a generated site (village, dungeon, crypt); lo/hi = inclusive trigger box
 struc SITE
     .kind:  resd 1

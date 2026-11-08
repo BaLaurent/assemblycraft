@@ -1,23 +1,30 @@
-; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, crosshair, hotbar,
-; hearts, armor and food, held-item name, firearm ammunition and reload bar, and the F3
-; debug lines. GUI units; hud_draw runs after ui_begin. The hotbar sits at
-; x0 = ui_w/2 - 91, y0 = ui_h - 22.
+; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, stealth tint, health bars and
+; name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and level, hearts / armor /
+; food, mana and stamina bars, ability bar, held-item name, firearm ammunition and reload bar, boss
+; bar, quest tracker, banner and the F3 debug lines. GUI units; hud_draw runs after ui_begin. The
+; hotbar sits at x0 = ui_w/2 - 91, y0 = ui_h - 22.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global hud_draw, hud_dt
+global hud_draw, hud_dt, hud_banner
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
-extern ui_item_icon, ui_icon9
+extern ui_item_icon, ui_icon9, ui_tile_icon
 extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
-extern surv, inv, inv_sel, player, mob_count_kind, sky_brightness, world_get
+extern surv, surv_max_health, inv, inv_sel, player, mobs, mob_count_kind, mob_is_hostile
+extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw
 extern item_names, item_durability, armor_points
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
-extern str_append, i32_to_str, f32_to_str, fx_flash
+extern str_append, str_copy, i32_to_str, f32_to_str, fx_flash, atan2_deg
+extern rpg_state, rpg_class, rpg_level, rpg_xp_need, rpg_stat, rpg_ability_unlocked
+extern rpg_class_info, rpg_ability_info, quests_current, quests_progress
+extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
+extern abilities_cd, abilities_cd_total, structures_nearest
 
 %define WHITE   0xFFFFFFFF
+
 
 section .rodata
 align 4
@@ -26,7 +33,17 @@ f_two:      dd 2.0
 f_255:      dd 255.0
 f_200:      dd 200.0
 f_100:      dd 100.0
-s_dbg_title: db "AssemblyCraft 0.5  ", 0
+f_25:       dd 25.0                     ; the stamina bar turns red below this
+f_24sq:     dd 576.0                    ; health bars: hostile mobs within 24 blocks
+f_10sq:     dd 100.0                    ; name tags: villagers within 10 blocks
+f_48sq:     dd 2304.0                   ; boss bar: a boss within 48 blocks
+f_bar_up:   dd 0.35                     ; a mob's health bar floats this far over its head
+f_tag_up:   dd 0.5                      ; and its name tag this far
+f_22_5:     dd 22.5
+f_45:       dd 45.0
+f_360:      dd 360.0
+f_2_5:      dd 2.5                      ; seconds a banner stays
+s_dbg_title: db "AssemblyCraft 0.6  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -36,6 +53,7 @@ s_target:   db "Target: ", 0
 s_none:     db "Target: none", 0
 s_at:       db " at ", 0
 s_space:    db " ", 0
+s_gap:      db "  ", 0
 s_mode:     db "Mode: ", 0
 s_survival: db "Survival", 0
 s_creative: db "Creative", 0
@@ -47,12 +65,28 @@ s_passive:  db " passive", 0
 s_light:    db "Light: ", 0
 s_percent:  db "%", 0
 s_health:   db "Health ", 0
-s_food:     db "/20  Food ", 0
+s_food:     db "  Food ", 0
 s_sat:      db "/20  Sat ", 0
 s_slash:    db "/", 0
+s_comma:    db ",", 0
+s_class:    db "Class: ", 0
+s_no_class: db "none", 0
+s_lv:       db " Lv ", 0
+s_xp:       db "  XP ", 0
+s_xp_max:   db "  XP max", 0
+s_sites:    db "Sites: V ", 0
+s_site_d:   db "  D ", 0
+s_site_c:   db "  C ", 0
+s_site_none: db "none", 0
 s_ammo_l:   db "  [", 0
 s_ammo_r:   db "]", 0
 s_ammo_inf: db "  [inf]", 0
+s_quest:    db "Quest: ", 0
+s_metres:   db "m", 0
+s_merchant: db "Merchant", 0
+s_elder:    db "Elder", 0
+s_boss:     db "The Fallen King", 0
+headings:   db "N", 0, 0, "NE", 0, "E", 0, 0, "SE", 0, "S", 0, 0, "SW", 0, "W", 0, 0, "NW", 0   ; 3 bytes each
 
 section .data
 align 4
@@ -63,16 +97,23 @@ section .bss
 alignb 4
 hud_dt:     resd 1                      ; frame time in seconds, written by the app before hud_draw
 name_timer: resd 1                      ; seconds left to show the held item's name
+banner_timer: resd 1                    ; seconds left to show the banner
+banner_rgba: resd 1
+banner_text: resb 48
 dbg_buf:    resb 128
+quest_buf:  resb 128
 
 section .text
 
 ; hud_draw(): everything the player sees on top of the world
+; ebx = x0, r12d = y0, r13d = y of the held item's name
 hud_draw:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    push    r13
+    sub     rsp, 8
     mov     ebx, [ui_w]
     shr     ebx, 1
     sub     ebx, 91                     ; x0
@@ -80,26 +121,61 @@ hud_draw:
     sub     r12d, 22                    ; y0
     call    hud_flash
     call    hud_blast_flash
+    call    hud_stealth
+    cmp     dword [app_state], ST_PLAYING ; health bars, name tags and numbers stay out of screens
+    jne     .no_overlays
+    call    hud_mobs
+    call    dmgnum_draw
+.no_overlays:
     call    hud_crosshair
     mov     edi, ebx
     mov     esi, r12d
     call    hud_hotbar
+    lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar,
+    call    rpg_class
+    test    eax, eax
+    jz      .no_class
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_xp
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_abilities
+    lea     r13d, [r12 - 24]            ; over the level number once there is a class,
+.no_class:
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .no_bars
+    jne     .name
     mov     edi, ebx
     mov     esi, r12d
-    call    hud_bars
-.no_bars:
-    mov     edi, ebx
-    mov     esi, r12d
+    call    hud_bars                    ; eax = top of the left stack
+    lea     edx, [r12 - 21]
+    cmp     eax, edx
+    cmovg   eax, edx                    ; or of the stamina bar, whichever is higher
+    lea     r13d, [rax - 12]            ; over the bars in survival
+.name:
+    mov     edi, r13d
     call    hud_held_name
     mov     edi, ebx
     mov     esi, r12d
     call    hud_gun
+    call    hud_boss
+    mov     edi, 4                      ; quest tracker: top left, under the boss bar when it is up,
+    test    eax, eax
+    jz      .tracker_y
+    mov     edi, 26
+.tracker_y:
+    cmp     dword [app_show_debug], 0
+    je      .tracker
+    mov     edi, 102                    ; or under the F3 lines
+.tracker:
+    call    hud_quest
+    call    hud_banner_draw
     cmp     dword [app_show_debug], 0
     je      .ret
     call    hud_debug
 .ret:
+    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
@@ -336,29 +412,58 @@ bar_tile:
 .ret:
     ret
 
-; hud_bars(edi x0, esi y0): ten hearts from the left, ten food icons from the right
+; hud_bars(edi x0, esi y0) -> eax y of the top of the left stack
+; Hearts (one per two points of maximum health, a second row above the first once there are more
+; than ten) at the left, food icons at the right, then stacked over the hearts the mana bar (when the
+; class has mana) and the armor row (worn armor plus the skill-tree bonus); the stamina bar sits over
+; the food.
+; r12d = x0, r13d = y0, ebx = icon, r14d = hearts, r15d = top of the stack; [rsp] armor points
 hud_bars:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
+    push    r14
+    push    r15
     sub     rsp, 8
     mov     r12d, edi
-    lea     r13d, [rsi - 10]            ; icon row
-    call    armor_points
-    mov     [rsp], eax
+    mov     r13d, esi
+    mov     eax, [surv_max_health]
+    inc     eax
+    sar     eax, 1                      ; hearts = ceil(max / 2), kept within 0..15
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     ecx, 15
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     r14d, eax
     xor     ebx, ebx
-.i:
+.heart:
+    cmp     ebx, r14d
+    jge     .food
     mov     edi, [surv + SURVIVAL.health]
     lea     eax, [rbx + rbx]
-    sub     edi, eax                    ; hearts left for this icon
+    sub     edi, eax                    ; half hearts left for this icon
     mov     esi, TILE_HEART_FULL
     call    bar_tile
     mov     edi, eax
-    lea     esi, [r12 + rbx*8]
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 10
+    div     ecx                         ; eax = row, edx = column
+    lea     esi, [r12 + rdx*8]
+    imul    eax, eax, 10
     mov     edx, r13d
+    sub     edx, 15
+    sub     edx, eax                    ; y0 - 15 - 10 * row
     call    ui_icon9
+    inc     ebx
+    jmp     .heart
+.food:
+    xor     ebx, ebx
+.food_icon:
     mov     edi, [surv + SURVIVAL.food]
     lea     eax, [rbx + rbx]
     sub     edi, eax
@@ -369,15 +474,39 @@ hud_bars:
     lea     eax, [rbx*8]
     sub     esi, eax
     add     esi, r12d
-    mov     edx, r13d
+    lea     edx, [r13 - 15]
     call    ui_icon9
     inc     ebx
     cmp     ebx, 10
-    jb      .i
-    cmp     dword [rsp], 0              ; armor row above the hearts, when worn
-    je      .done
-    xor     ebx, ebx
+    jb      .food_icon
+    lea     r15d, [r13 - 15]            ; the top of the hearts
+    cmp     r14d, 10
+    jle     .mana
+    sub     r15d, 10                    ; or of the second row
+.mana:
+    call    combat_max_mana
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .armor
+    movss   xmm1, xmm0
+    movss   xmm0, [combat_mana]
+    mov     edi, 80
+    call    bar_px
+    mov     r8d, eax
+    mov     edi, r12d
+    lea     esi, [r15 - 6]
+    mov     edx, 80
+    mov     ecx, 4
+    mov     r9d, RGBA(70, 110, 255, 255)
+    call    bar_draw
+    sub     r15d, 6
 .armor:
+    call    armor_effective
+    test    eax, eax
+    jz      .stamina
+    mov     [rsp], eax
+    xor     ebx, ebx
+.armor_icon:
     mov     edi, [rsp]
     lea     eax, [rbx + rbx]
     sub     edi, eax
@@ -385,26 +514,46 @@ hud_bars:
     call    bar_tile
     mov     edi, eax
     lea     esi, [r12 + rbx*8]
-    lea     edx, [r13 - 10]
+    lea     edx, [r15 - 10]
     call    ui_icon9
     inc     ebx
     cmp     ebx, 10
-    jb      .armor
-.done:
+    jb      .armor_icon
+    sub     r15d, 10
+.stamina:
+    call    combat_max_stamina
+    movss   xmm1, xmm0
+    movss   xmm0, [combat_stamina]
+    mov     edi, 80
+    call    bar_px
+    mov     r8d, eax
+    mov     r9d, RGBA(240, 200, 60, 255)
+    mov     ecx, RGBA(220, 60, 40, 255)
+    movss   xmm0, [combat_stamina]
+    comiss  xmm0, [f_25]
+    cmovb   r9d, ecx                    ; red once it runs low
+    lea     edi, [r12 + 102]
+    lea     esi, [r13 - 21]
+    mov     edx, 80
+    mov     ecx, 4
+    call    bar_draw
+    mov     eax, r15d
     add     rsp, 8
+    pop     r15
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; hud_held_name(edi x0, esi y0): the held item's name above the bar, fading out
+; hud_held_name(edi y): the held item's name centred above the hotbar at y, fading out
 hud_held_name:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    mov     r12d, esi
+    mov     r12d, edi
     mov     eax, [inv_sel]
     lea     rcx, [inv + rax*4]
     movzx   ebx, byte [rcx + ITEMSTACK.id]
@@ -441,19 +590,6 @@ hud_held_name:
     shl     ecx, 24
     or      ecx, 0x00FFFFFF
     mov     edx, r12d
-    sub     edx, 12                     ; just above the bar in creative,
-    cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .row
-    sub     edx, 12                     ; above the hearts in survival,
-    push    rcx
-    push    rdx
-    call    armor_points
-    pop     rdx
-    pop     rcx
-    test    eax, eax
-    jz      .row
-    sub     edx, 10                     ; and above the armor row when it shows
-.row:
     lea     rax, [item_names]
     mov     rdi, [rax + rbx*8]
     mov     esi, [ui_w]
@@ -559,6 +695,608 @@ hud_gun:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; bar_px(xmm0 value, xmm1 max, edi width) -> eax filled pixels: width * value / max clamped to
+; 0..width, at least 1 while value > 0, 0 when max <= 0
+bar_px:
+    xorps   xmm2, xmm2
+    comiss  xmm1, xmm2
+    jbe     .zero
+    movss   xmm3, xmm0                  ; value
+    divss   xmm0, xmm1
+    maxss   xmm0, xmm2
+    minss   xmm0, [f_one]
+    cvtsi2ss xmm4, edi
+    mulss   xmm0, xmm4
+    cvttss2si eax, xmm0
+    test    eax, eax
+    jnz     .ret
+    comiss  xmm3, xmm2                  ; a sliver stays visible while there is any value
+    jbe     .ret
+    mov     eax, 1
+.ret:
+    ret
+.zero:
+    xor     eax, eax
+    ret
+
+; bar_draw(edi x, esi y, edx w, ecx h, r8d fill_w, r9d fill_rgba): a translucent black backing,
+; then the fill from the left edge
+bar_draw:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, ecx
+    mov     r14d, r8d
+    mov     r15d, r9d
+    mov     r8d, RGBA(0, 0, 0, 160)
+    call    ui_rect                     ; edi, esi, edx, ecx are still x, y, w, h
+    test    r14d, r14d
+    jle     .ret
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r14d
+    mov     ecx, r13d
+    mov     r8d, r15d
+    call    ui_rect
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; armor_effective() -> eax worn armor points plus the skill-tree bonus, at most 20: the armor
+; survival_damage works with
+armor_effective:
+    sub     rsp, 8
+    call    armor_points
+    mov     [rsp], eax
+    mov     edi, STAT_ARMOR_BONUS
+    call    rpg_stat
+    add     eax, [rsp]
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    add     rsp, 8
+    ret
+
+; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and the level number between the hearts
+; and the food icons
+; ebx = x0, r12d = y0, r13d = level; [rsp] level text
+hud_xp:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 24
+    mov     ebx, edi
+    mov     r12d, esi
+    call    rpg_level
+    mov     r13d, eax
+    mov     edi, eax
+    call    rpg_xp_need
+    mov     r8d, 180                    ; the last level shows a full bar
+    test    eax, eax
+    jz      .have_fill
+    mov     ecx, eax
+    mov     eax, [rpg_state + RPGSAVE.xp]
+    imul    eax, eax, 180
+    xor     edx, edx
+    div     ecx
+    cmp     eax, r8d
+    cmovb   r8d, eax                    ; min(180, 180 * xp / need)
+.have_fill:
+    lea     edi, [rbx + 1]
+    lea     esi, [r12 - 5]
+    mov     edx, 180
+    mov     ecx, 3
+    mov     r9d, RGBA(120, 220, 60, 255)
+    call    bar_draw
+    mov     edi, r13d
+    mov     rsi, rsp
+    call    i32_to_str
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    mov     esi, [ui_w]
+    shr     esi, 1
+    lea     edx, [r12 - 15]
+    mov     ecx, RGBA(140, 255, 90, 255)
+    mov     r8d, 1
+    call    ui_text_centered
+    add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_abilities(edi x0, esi y0): the three ability slots left of the hotbar: the icon (dimmed while
+; locked, red while the resource is short), the cooldown sweeping down from the top, and the key
+; ebx = x0, r12d = y0, r13d = slot, r14d = class, r15d = slot x
+; [rsp] icon tint, [rsp+4] sweep height, [rsp+16] key label
+hud_abilities:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56
+    mov     ebx, edi
+    mov     r12d, esi
+    call    rpg_class
+    mov     r14d, eax
+    xor     r13d, r13d
+.slot:
+    imul    r15d, r13d, 23
+    lea     r15d, [r15 + rbx - 70]      ; slot x = x0 - 70 + 23 * slot
+    mov     edi, r15d
+    lea     esi, [r12 + 1]              ; slot y = y0 + 1
+    mov     edx, 20
+    mov     ecx, 20
+    mov     r8d, RGBA(0, 0, 0, 115)
+    call    ui_rect
+    mov     dword [rsp], WHITE
+    mov     dword [rsp + 4], 0
+    mov     edi, r13d
+    call    rpg_ability_unlocked
+    test    eax, eax
+    jnz     .unlocked
+    mov     dword [rsp], RGBA(255, 255, 255, 80)        ; locked: dimmed, no timer
+    jmp     .icon
+.unlocked:
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .sweep                      ; creative pays nothing
+    mov     edi, r14d
+    mov     esi, r13d
+    call    rpg_ability_info
+    cvtsi2ss xmm1, dword [rax + ABILINFO.cost]
+    movss   xmm0, [combat_stamina]
+    cmp     dword [rax + ABILINFO.resource], RES_MANA
+    jne     .have
+    movss   xmm0, [combat_mana]
+.have:
+    comiss  xmm0, xmm1
+    jae     .sweep
+    mov     dword [rsp], RGBA(255, 90, 90, 255)         ; the resource is short: red
+.sweep:
+    lea     rcx, [abilities_cd]
+    mov     eax, [rcx + r13*4]          ; steps left
+    lea     rcx, [abilities_cd_total]
+    mov     ecx, [rcx + r13*4]          ; steps of the whole cooldown
+    test    eax, eax
+    jle     .icon
+    test    ecx, ecx
+    jle     .icon
+    imul    eax, eax, 20
+    xor     edx, edx
+    div     ecx
+    mov     edx, 20
+    cmp     eax, edx
+    cmova   eax, edx
+    mov     [rsp + 4], eax              ; 20 * left / total
+.icon:
+    lea     eax, [r14 - 1]
+    lea     eax, [rax + rax*2]
+    add     eax, r13d
+    lea     edi, [rax + TILE_ABILITY0]  ; TILE_ABILITY0 + (class - 1) * 3 + slot
+    lea     esi, [r15 + 2]
+    lea     edx, [r12 + 3]
+    mov     ecx, 16
+    mov     r8d, [rsp]
+    call    ui_tile_icon
+    mov     ecx, [rsp + 4]
+    test    ecx, ecx
+    jz      .label
+    mov     edi, r15d
+    lea     esi, [r12 + 1]
+    mov     edx, 20
+    mov     r8d, RGBA(0, 0, 0, 170)
+    call    ui_rect                     ; ecx = the swept height
+.label:
+    lea     rax, [settings + SETTINGS.keys + 4 * BIND_ABILITY1]
+    mov     edi, [rax + r13*4]
+    lea     rsi, [rsp + 16]
+    call    key_name
+    mov     byte [rsp + 19], 0          ; at most three characters fit over a slot
+    lea     rdi, [rsp + 16]
+    lea     esi, [r15 + 1]
+    lea     edx, [r12 - 8]              ; 9 above the slot
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text
+    inc     r13d
+    cmp     r13d, 3
+    jb      .slot
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_stealth(): a violet tint over the whole screen while stealth lasts
+hud_stealth:
+    sub     rsp, 8
+    cmp     dword [combat_stealth_t], 0
+    jle     .ret
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    mov     r8d, RGBA(20, 0, 40, 60)
+    call    ui_rect
+.ret:
+    add     rsp, 8
+    ret
+
+; ANCHOR above: project the point that high over the head of mob rbx into [rsp+16] (x, y); eax = visible.
+; [rsp] is scratch for the world position
+%macro ANCHOR 1
+    mov     eax, [rbx + BODY.x]
+    mov     [rsp], eax
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [rbx + BODY.height]
+    addss   xmm0, [%1]
+    movss   [rsp + 4], xmm0
+    mov     eax, [rbx + BODY.z]
+    mov     [rsp + 8], eax
+    mov     rdi, rsp
+    lea     rsi, [rsp + 16]
+    call    world_to_ui
+%endmacro
+
+; hud_mobs(): things pinned to mobs with world_to_ui: a health bar over every hostile mob that was
+; hurt lately (MOB.bar) or is elite, within 24 blocks (elites get a gold frame), and the name of the
+; villagers within 10 blocks
+; rbx = mob, r12d = index, r13d = type, r14d = bar fill / name; [rsp] anchor, [rsp+16] out x, y
+hud_mobs:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 32
+    lea     rbx, [mobs]
+    xor     r12d, r12d
+.mob:
+    mov     r13d, [rbx + MOB.type]
+    test    r13d, r13d
+    jz      .next
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [player + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    subss   xmm1, [player + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    subss   xmm2, [player + BODY.z]
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    mulss   xmm2, xmm2
+    addss   xmm0, xmm1
+    addss   xmm0, xmm2                  ; squared distance to the player
+    cmp     r13d, MOB_MERCHANT
+    je      .villager
+    cmp     r13d, MOB_ELDER
+    je      .villager
+    cmp     dword [rbx + MOB.bar], 0
+    jg      .bar
+    cmp     dword [rbx + MOB.elite], 0
+    je      .next
+.bar:
+    comiss  xmm0, [f_24sq]
+    ja      .next
+    mov     edi, r12d
+    call    mob_is_hostile
+    test    eax, eax
+    jz      .next
+    ANCHOR  f_bar_up
+    test    eax, eax
+    jz      .next
+    cvtsi2ss xmm0, dword [rbx + MOB.health]
+    cvtsi2ss xmm1, dword [rbx + MOB.max_health]
+    maxss   xmm1, xmm0                  ; never more than full
+    mov     edi, 20
+    call    bar_px
+    mov     r14d, eax
+    mov     edi, [rsp + 16]
+    sub     edi, 11                     ; 22 x 4 backing, centred on the anchor
+    mov     esi, [rsp + 20]
+    sub     esi, 2
+    mov     edx, 22
+    mov     ecx, 4
+    mov     r8d, RGBA(0, 0, 0, 160)
+    call    ui_rect
+    test    r14d, r14d
+    jz      .frame
+    mov     edi, [rsp + 16]
+    sub     edi, 10
+    mov     esi, [rsp + 20]
+    dec     esi
+    mov     edx, r14d
+    mov     ecx, 2
+    mov     r8d, RGBA(230, 40, 40, 255)
+    call    ui_rect
+.frame:
+    cmp     dword [rbx + MOB.elite], 0
+    je      .next
+    mov     edi, [rsp + 16]
+    sub     edi, 11
+    mov     esi, [rsp + 20]
+    sub     esi, 2
+    mov     edx, 22
+    mov     ecx, 4
+    mov     r8d, RGBA(255, 200, 60, 255)
+    call    ui_frame
+    jmp     .next
+.villager:
+    comiss  xmm0, [f_10sq]
+    ja      .next
+    ANCHOR  f_tag_up
+    test    eax, eax
+    jz      .next
+    lea     r14, [s_merchant]
+    lea     rax, [s_elder]
+    cmp     r13d, MOB_ELDER
+    cmove   r14, rax
+    mov     rdi, r14
+    mov     esi, [rsp + 16]
+    mov     edx, [rsp + 20]
+    sub     edx, 8                      ; the name sits on the anchor
+    mov     ecx, RGBA(255, 255, 180, 255)
+    mov     r8d, 1
+    call    ui_text_centered
+.next:
+    add     rbx, MOB_size
+    inc     r12d
+    cmp     r12d, MAX_MOBS
+    jb      .mob
+    add     rsp, 32
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_boss() -> eax 1 when the boss bar is up: a living boss within 48 blocks, its name over a
+; red bar across the top of the screen
+hud_boss:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    lea     rbx, [mobs]
+.scan:
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .next
+    cmp     dword [rbx + MOB.health], 0
+    jle     .next
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [player + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    subss   xmm1, [player + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    subss   xmm2, [player + BODY.z]
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    mulss   xmm2, xmm2
+    addss   xmm0, xmm1
+    addss   xmm0, xmm2
+    comiss  xmm0, [f_48sq]
+    jbe     .found
+.next:
+    add     rbx, MOB_size
+    lea     rax, [mobs + MAX_MOBS * MOB_size]
+    cmp     rbx, rax
+    jb      .scan
+    xor     eax, eax
+    jmp     .ret
+.found:
+    lea     rdi, [s_boss]
+    mov     esi, [ui_w]
+    shr     esi, 1
+    mov     edx, 4
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text_centered
+    cvtsi2ss xmm0, dword [rbx + MOB.health]
+    cvtsi2ss xmm1, dword [rbx + MOB.max_health]
+    maxss   xmm1, xmm0
+    mov     edi, 182
+    call    bar_px
+    mov     r8d, eax
+    mov     edi, [ui_w]
+    shr     edi, 1
+    sub     edi, 91
+    mov     esi, 14
+    mov     edx, 182
+    mov     ecx, 5
+    mov     r9d, RGBA(200, 30, 30, 255)
+    call    bar_draw
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_quest(edi y): the accepted quest as "Quest: <title>  p/c" at (4, y); for the dungeon and boss
+; quests also the compass heading and distance to the nearest site left to clear, "  NE 120m"
+; rbx = QUESTINFO*, r12 = write cursor into quest_buf, r13d = y, r14 = heading name; [rsp] dx, dz
+hud_quest:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16
+    mov     r13d, edi
+    cmp     byte [rpg_state + RPGSAVE.quest_state], 1
+    jne     .ret
+    call    quests_current
+    test    rax, rax
+    jz      .ret
+    mov     rbx, rax
+    lea     rdi, [quest_buf]
+    lea     rsi, [s_quest]
+    call    str_append
+    mov     rdi, rax
+    mov     rsi, [rbx + QUESTINFO.title]
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_gap]
+    call    str_append
+    mov     r12, rax
+    call    quests_progress
+    mov     ecx, [rbx + QUESTINFO.count]
+    cmp     eax, ecx
+    cmova   eax, ecx                    ; never past the goal
+    mov     edi, eax
+    mov     rsi, r12
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     edi, [rbx + QUESTINFO.count]
+    mov     rsi, rax
+    call    i32_to_str
+    mov     r12, rax
+    mov     eax, [rbx + QUESTINFO.type]
+    mov     edi, SITE_DUNGEON
+    cmp     eax, Q_CLEAR
+    je      .site
+    mov     edi, SITE_CRYPT
+    cmp     eax, Q_BOSS
+    jne     .draw
+.site:
+    mov     esi, 1
+    call    structures_nearest
+    test    rax, rax
+    jz      .draw
+    cvtsi2ss xmm0, dword [rax + SITE.x]
+    subss   xmm0, [player + BODY.x]
+    cvtsi2ss xmm1, dword [rax + SITE.z]
+    subss   xmm1, [player + BODY.z]
+    movss   [rsp], xmm0                 ; dx
+    movss   [rsp + 4], xmm1             ; dz
+    xorps   xmm2, xmm2
+    subss   xmm2, xmm1
+    movss   xmm1, xmm2                  ; north is -z
+    call    atan2_deg                   ; xmm0 = atan2(dx, -dz): degrees clockwise from north
+    addss   xmm0, [f_22_5]              ; headings are 45 degrees wide, centred on the compass points
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jae     .sector
+    addss   xmm0, [f_360]
+.sector:
+    divss   xmm0, [f_45]
+    cvttss2si eax, xmm0
+    and     eax, 7
+    lea     eax, [rax + rax*2]          ; 3 bytes per heading name
+    lea     r14, [headings]
+    add     r14, rax
+    mov     rdi, r12
+    lea     rsi, [s_gap]
+    call    str_append
+    mov     rdi, rax
+    mov     rsi, r14
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_space]
+    call    str_append
+    movss   xmm0, [rsp]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsp + 4]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0
+    cvttss2si edi, xmm0
+    mov     rsi, rax
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_metres]
+    call    str_append
+    mov     r12, rax
+.draw:
+    mov     byte [r12], 0
+    lea     rdi, [quest_buf]
+    mov     esi, 4
+    mov     edx, r13d
+    mov     ecx, RGBA(255, 215, 60, 255)
+    mov     r8d, 1
+    call    ui_text
+.ret:
+    add     rsp, 16
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_banner(rdi zstr, esi rgba): show a message in the middle of the screen for 2.5 s, fading over
+; the last half second; the text is copied, at most 47 characters
+hud_banner:
+    sub     rsp, 8
+    mov     [banner_rgba], esi
+    mov     rsi, rdi
+    lea     rdi, [banner_text]
+    mov     edx, 47
+    call    str_copy
+    movss   xmm0, [f_2_5]
+    movss   [banner_timer], xmm0
+    add     rsp, 8
+    ret
+
+; hud_banner_draw(): the banner at (ui_w/2, ui_h/2 - 50), scale 2; hud_dt counts it down
+hud_banner_draw:
+    sub     rsp, 8
+    movss   xmm0, [banner_timer]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .ret
+    subss   xmm0, [hud_dt]
+    movss   [banner_timer], xmm0
+    comiss  xmm0, xmm1
+    jbe     .ret
+    mulss   xmm0, [f_two]               ; timer / 0.5
+    minss   xmm0, [f_one]
+    movzx   eax, byte [banner_rgba + 3]
+    cvtsi2ss xmm1, eax
+    mulss   xmm0, xmm1
+    cvttss2si ecx, xmm0                 ; alpha = min(1, timer / 0.5) * the banner's own alpha
+    shl     ecx, 24
+    mov     eax, [banner_rgba]
+    and     eax, 0x00FFFFFF
+    or      ecx, eax
+    lea     rdi, [banner_text]
+    mov     esi, [ui_w]
+    shr     esi, 1
+    mov     edx, [ui_h]
+    shr     edx, 1
+    sub     edx, 50
+    mov     r8d, 2
+    call    ui_text_centered
+.ret:
+    add     rsp, 8
     ret
 
 ; put2(edi value 0..99, rsi buf) -> rax past the two digits
@@ -770,18 +1508,87 @@ hud_debug:
     EMIT
 
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .ret
+    jne     .class
     APPEND_STR s_health
     APPEND_INT [surv + SURVIVAL.health]
+    APPEND_STR s_slash
+    APPEND_INT [surv_max_health]
     APPEND_STR s_food
     APPEND_INT [surv + SURVIVAL.food]
     APPEND_STR s_sat
     APPEND_F32 [surv + SURVIVAL.saturation], 1
     EMIT
-.ret:
+
+.class:
+    APPEND_STR s_class
+    call    rpg_class
+    test    eax, eax
+    jnz     .class_named
+    APPEND_STR s_no_class
+    jmp     .class_done
+.class_named:
+    mov     edi, eax
+    call    rpg_class_info
+    mov     rsi, [rax + CLASSINFO.name]
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_lv
+    call    rpg_level
+    mov     r13d, eax
+    APPEND_EAX
+    mov     edi, r13d
+    call    rpg_xp_need
+    test    eax, eax
+    jz      .xp_max
+    mov     [rsp + 12], eax
+    APPEND_STR s_xp
+    APPEND_INT [rpg_state + RPGSAVE.xp]
+    APPEND_STR s_slash
+    APPEND_INT [rsp + 12]
+    jmp     .class_done
+.xp_max:
+    APPEND_STR s_xp_max
+.class_done:
+    EMIT
+
+    APPEND_STR s_sites
+    mov     edi, SITE_VILLAGE
+    call    debug_site
+    APPEND_STR s_site_d
+    mov     edi, SITE_DUNGEON
+    call    debug_site
+    APPEND_STR s_site_c
+    mov     edi, SITE_CRYPT
+    call    debug_site
+    EMIT
     add     rsp, 24
     pop     r13
     pop     r12
     pop     rbx
+    pop     rbp
+    ret
+
+; debug_site(edi kind): "x,z" of the nearest site of that kind (cleared or not) or "none",
+; appended at the cursor rbx (updated)
+debug_site:
+    push    rbp
+    mov     rbp, rsp
+    push    r12
+    sub     rsp, 8
+    xor     esi, esi
+    call    structures_nearest
+    test    rax, rax
+    jnz     .site
+    APPEND_STR s_site_none
+    jmp     .ret
+.site:
+    mov     r12, rax
+    APPEND_INT [r12 + SITE.x]
+    APPEND_STR s_comma
+    APPEND_INT [r12 + SITE.z]
+.ret:
+    add     rsp, 8
+    pop     r12
     pop     rbp
     ret

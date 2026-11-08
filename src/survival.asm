@@ -2,7 +2,7 @@
 %include "common.inc"
 default rel
 
-global surv
+global surv, surv_max_health
 global survival_reset, survival_damage, survival_land, survival_exhaust
 global survival_step, survival_eat_step, survival_can_sprint
 
@@ -10,6 +10,7 @@ extern game_mode, settings, player
 extern audio_play, inv_held, inv_consume_held, armor_points, armor_wear
 extern item_food, item_saturation, block_step_sound
 extern world_get, world_is_solid, world_is_opaque
+extern rpg_stats
 
 section .rodata
 align 4
@@ -30,21 +31,27 @@ section .bss
 align 4
 surv: resb SURVIVAL_size
 
+section .data
+align 4
+surv_max_health: dd 20                  ; health cap in half hearts; rpg_recompute sets it
+
 section .text
 
-; survival_reset(): full health and food, everything else zero
+; survival_reset(): full health (surv_max_health) and food, everything else zero
 survival_reset:
     lea     rdi, [surv]
     mov     ecx, SURVIVAL_size
     xor     eax, eax
     rep     stosb
-    mov     dword [surv + SURVIVAL.health], 20
+    mov     eax, [surv_max_health]
+    mov     [surv + SURVIVAL.health], eax
     mov     dword [surv + SURVIVAL.food], 20
     mov     dword [surv + SURVIVAL.saturation], __float32__(5.0)
     ret
 
-; survival_damage(edi amount, esi cause) -> eax 1 if applied. Worn armor reduces
-; damage from mobs and explosions (and wears by one point per applied hit).
+; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
+; armor bonus, at most 20) reduces damage from mobs and explosions; the worn pieces wear by one
+; point per applied hit.
 survival_damage:
     push    rbp
     mov     rbp, rsp
@@ -60,12 +67,18 @@ survival_damage:
     jg      .no
     cmp     r12d, CAUSE_ZOMBIE
     je      .armored
+    cmp     r12d, CAUSE_BOSS
+    je      .armored
     cmp     r12d, CAUSE_SKELETON
     jb      .apply
     cmp     r12d, CAUSE_SPIDER
     ja      .apply
 .armored:
     call    armor_points
+    add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovg   eax, ecx                    ; at most 20 points
     test    eax, eax
     jz      .apply
     mov     ecx, 25
@@ -191,7 +204,8 @@ survival_step:
     cmp     dword [surv + SURVIVAL.regen_timer], 60
     jb      .suffocate
     mov     dword [surv + SURVIVAL.regen_timer], 0
-    cmp     dword [surv + SURVIVAL.health], 20
+    mov     eax, [surv_max_health]
+    cmp     [surv + SURVIVAL.health], eax
     jge     .suffocate
     inc     dword [surv + SURVIVAL.health]
     jmp     .suffocate
@@ -223,7 +237,8 @@ survival_step:
     ; 4. regeneration while well fed
     cmp     dword [surv + SURVIVAL.food], 18
     jl      .no_regen
-    cmp     dword [surv + SURVIVAL.health], 20
+    mov     eax, [surv_max_health]
+    cmp     [surv + SURVIVAL.health], eax
     jge     .no_regen
     inc     dword [surv + SURVIVAL.regen_timer]
     cmp     dword [surv + SURVIVAL.regen_timer], 240

@@ -1,14 +1,16 @@
-; fx.asm - explosion effects: fireball and smoke particles, flying block debris, camera shake and a
-; screen flash. Particles are not saved with the world; everything lives in fx_particles.
+; fx.asm - effect particles: explosion fireballs and smoke, flying block debris, the sparks, magic
+; motes and gold glitter of combat, camera shake and a screen flash. Particles are not saved with
+; the world; everything lives in fx_particles.
 ;
-; A particle has kind 0 (free), FX_FIRE, FX_SMOKE or FX_DEBRIS. Velocities are in blocks per
-; second and every position moves v / 60 per fixed step. fx_explosion and fx_debris spawn,
-; fx_step runs once per fixed step, fx_render draws inside the world pass.
+; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC or FX_GOLD.
+; Velocities are in blocks per second and every position moves v / 60 per fixed step.
+; fx_explosion, fx_debris and fx_burst spawn, fx_step runs once per fixed step, fx_render draws
+; inside the world pass.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global fx_clear, fx_explosion, fx_debris, fx_step, fx_render, fx_count
+global fx_clear, fx_explosion, fx_debris, fx_burst, fx_step, fx_render, fx_count
 global fx_particles, fx_shake, fx_shake_yaw, fx_shake_pitch, fx_flash
 
 extern rng_next, player_eye, world_is_solid, block_tiles, render_box
@@ -21,6 +23,7 @@ align 4
 k_inv65536: dd 0.000015258789
 k_dt:       dd 0.016666668              ; one fixed step in seconds
 k_half:     dd 0.5
+k_near2:    dd 0.64                     ; particles within 0.8 blocks of the eye are not drawn
 k_one:      dd 1.0
 k_neg_one:  dd -1.0
 k_eps:      dd 0.0001
@@ -72,6 +75,24 @@ k_fire_g1:  dd 0.2
 k_fire_b1:  dd 0.05
 k_smoke_g0: dd 0.62
 k_smoke_g1: dd 0.35
+; fx_burst: sparks fall 0.3 b/s per step, magic motes slow x0.9 per step, gold rises 0.04 b/s per step
+k_spark_g:  dd 0.3
+k_magic_dv: dd 0.9
+k_gold_up:  dd 0.04
+; start and end colour (r, g, b, r, g, b) of the burst kinds SPARK, MAGIC, GOLD
+k_burst_col:
+    dd 1.0, 0.95, 0.6,  1.0, 0.6, 0.2
+    dd 0.7, 0.3, 1.0,   0.3, 0.1, 0.6
+    dd 1.0, 0.85, 0.3,  1.0, 0.6, 0.1
+; fx_burst rows by kind - FX_FIRE: size lo, size hi, life lo, number of lives (hi = lo + n - 1);
+; the DEBRIS row is never used
+burst_tab:
+    dd 0.15, 0.3,  10, 7                ; FIRE
+    dd 0.2, 0.4,   40, 31               ; SMOKE
+    dd 0.0, 0.0,   0, 1                 ; DEBRIS
+    dd 0.08, 0.14, 10, 7                ; SPARK
+    dd 0.12, 0.2,  18, 13               ; MAGIC
+    dd 0.1, 0.18,  30, 21               ; GOLD
 ; render_box face order +X -X +Y -Y +Z -Z
 shades_block: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
 shades_flat:  dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
@@ -85,6 +106,7 @@ fx_shake:         resd 1                ; camera shake strength (0 = none)
 fx_shake_yaw:     resd 1                ; this step's camera offsets, degrees
 fx_shake_pitch:   resd 1
 fx_flash:         resd 1                ; screen flash strength 0..1
+cull_eye:         resd 3                ; the eye this frame's particles are culled against
 
 section .text
 
@@ -480,6 +502,133 @@ fx_debris:
     pop     rbp
     ret
 
+; rand_dir(rdi out float[3]): a random unit vector (a point of the cube [-1, 1)^3 normalised;
+; straight up for a draw too close to the centre)
+rand_dir:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rbx, rdi
+%assign off 0
+%rep 3
+    movss   xmm0, [k_neg_one]
+    movss   xmm1, [k_one]
+    call    rnd_range
+    movss   [rbx + off], xmm0
+%assign off off + 4
+%endrep
+    movss   xmm1, [rbx]
+    mulss   xmm1, xmm1
+    movss   xmm0, [rbx + 4]
+    mulss   xmm0, xmm0
+    addss   xmm1, xmm0
+    movss   xmm0, [rbx + 8]
+    mulss   xmm0, xmm0
+    addss   xmm1, xmm0                  ; |d|^2
+    comiss  xmm1, [k_eps]
+    ja      .unit
+    mov     dword [rbx], 0
+    mov     eax, [k_one]
+    mov     [rbx + 4], eax
+    mov     dword [rbx + 8], 0
+    jmp     .done
+.unit:
+    sqrtss  xmm1, xmm1
+    movss   xmm0, [k_one]
+    divss   xmm0, xmm1                  ; 1 / |d|
+%assign off 0
+%rep 3
+    movss   xmm1, [rbx + off]
+    mulss   xmm1, xmm0
+    movss   [rbx + off], xmm1
+%assign off off + 4
+%endrep
+.done:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+%define B_P     0                       ; float position[3]
+%define B_V     12                      ; float unit direction[3]
+%define B_SPEED 24                      ; float
+%define B_FRAME 32
+
+; fx_burst(xmm0..2 position, edi kind, esi count, xmm3 speed): count particles of one kind
+; (FX_FIRE, FX_SMOKE, FX_SPARK, FX_MAGIC or FX_GOLD) fly off from the position in random
+; directions at speed * U(0.5, 1) blocks per second, each with the size and life its kind has in
+; burst_tab. Any other kind spawns nothing; when the table is full the rest is dropped.
+; rbx = the particle being filled, r12d = particles left, r13 = the kind's burst_tab row,
+; r14d = kind.
+fx_burst:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, B_FRAME
+    movss   [rsp + B_P], xmm0
+    movss   [rsp + B_P + 4], xmm1
+    movss   [rsp + B_P + 8], xmm2
+    movss   [rsp + B_SPEED], xmm3
+    mov     r12d, esi
+    mov     r14d, edi
+    lea     eax, [rdi - FX_FIRE]
+    cmp     eax, FX_GOLD - FX_FIRE
+    ja      .done                       ; not a particle kind
+    cmp     edi, FX_DEBRIS
+    je      .done                       ; debris is fx_debris's
+    shl     eax, 4                      ; 16 bytes per row
+    lea     r13, [burst_tab]
+    add     r13, rax
+.loop:
+    test    r12d, r12d
+    jle     .done
+    call    alloc
+    test    rax, rax
+    jz      .done
+    mov     rbx, rax
+%assign off 0
+%rep 3
+    mov     eax, [rsp + B_P + off]
+    mov     [rbx + PARTICLE.x + off], eax
+%assign off off + 4
+%endrep
+    lea     rdi, [rsp + B_V]
+    call    rand_dir
+    movss   xmm0, [k_half]
+    movss   xmm1, [k_one]
+    call    rnd_range                   ; U(0.5, 1)
+    mulss   xmm0, [rsp + B_SPEED]
+%assign off 0
+%rep 3
+    movss   xmm1, [rsp + B_V + off]
+    mulss   xmm1, xmm0
+    movss   [rbx + PARTICLE.vx + off], xmm1
+%assign off off + 4
+%endrep
+    movss   xmm0, [r13]
+    movss   xmm1, [r13 + 4]
+    call    rnd_range
+    movss   [rbx + PARTICLE.size], xmm0
+    mov     edi, [r13 + 12]
+    call    rnd_mod
+    add     eax, [r13 + 8]
+    mov     [rbx + PARTICLE.life], eax
+    mov     [rbx + PARTICLE.kind], r14d ; set last: the particle exists from here
+    dec     r12d
+    jmp     .loop
+.done:
+    add     rsp, B_FRAME
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; MOVE_POS: position += velocity / 60 for the particle at rbx
 %macro MOVE_POS 0
 %assign i 0
@@ -510,6 +659,12 @@ fx_step:
     je      .fire
     cmp     eax, FX_SMOKE
     je      .smoke
+    cmp     eax, FX_SPARK
+    je      .spark
+    cmp     eax, FX_MAGIC
+    je      .magic
+    cmp     eax, FX_GOLD
+    je      .gold
     ; ---- debris: gravity, then move unless the new cell is solid (then bounce) ----------
     movss   xmm0, [rbx + PARTICLE.vy]
     subss   xmm0, [k_grav]
@@ -582,6 +737,28 @@ fx_step:
 .smoke_size:
     movss   [rbx + PARTICLE.size], xmm0
     MOVE_POS
+    jmp     .age
+.spark:                                 ; sparks arc: vy -= 0.3 per step
+    movss   xmm0, [rbx + PARTICLE.vy]
+    subss   xmm0, [k_spark_g]
+    movss   [rbx + PARTICLE.vy], xmm0
+    MOVE_POS
+    jmp     .age
+.magic:                                 ; magic motes slow down: v *= 0.9 per step
+%assign i 0
+%rep 3
+    movss   xmm0, [rbx + PARTICLE.vx + i]
+    mulss   xmm0, [k_magic_dv]
+    movss   [rbx + PARTICLE.vx + i], xmm0
+%assign i i + 4
+%endrep
+    MOVE_POS
+    jmp     .age
+.gold:                                  ; gold glitter drifts up: vy += 0.04 per step
+    movss   xmm0, [rbx + PARTICLE.vy]
+    addss   xmm0, [k_gold_up]
+    movss   [rbx + PARTICLE.vy], xmm0
+    MOVE_POS
 .age:
     inc     dword [rbx + PARTICLE.age]
     mov     eax, [rbx + PARTICLE.age]
@@ -633,8 +810,9 @@ fx_step:
     ret
 
 ; draw_pass(edi mode) -> eax particles drawn. Mode 0 draws the debris cubes (textured with their
-; tile, shaded like a block); mode 1 draws fire (yellow -> red, flat) and smoke (grey, shaded)
-; with the caller having switched texturing off.
+; tile, shaded like a block); mode 1 draws fire (yellow -> red), sparks, magic and gold (their
+; kind's two colours; all flat) and smoke (grey, shaded) with the caller having switched
+; texturing off.
 ; rbx = particle, r12d = mode, r13d = drawn; [rsp] = box, [rsp + 24] = tile bytes
 draw_pass:
     push    rbp
@@ -659,6 +837,17 @@ draw_pass:
     cmp     eax, FX_DEBRIS
     je      .next
 .draw:
+    xorps   xmm2, xmm2                  ; a burst at the player's own chest would fill the view
+%assign i 0
+%rep 3
+    movss   xmm0, [rbx + PARTICLE.x + i]
+    subss   xmm0, [cull_eye + i]
+    mulss   xmm0, xmm0
+    addss   xmm2, xmm0
+%assign i i + 4
+%endrep
+    comiss  xmm2, [k_near2]
+    jb      .next
     movss   xmm4, [rbx + PARTICLE.size]
     mulss   xmm4, [k_half]
 %assign i 0
@@ -679,6 +868,25 @@ draw_pass:
     divss   xmm4, xmm5                  ; t = age / life
     cmp     eax, FX_FIRE
     je      .fire
+    cmp     eax, FX_SMOKE
+    je      .smoke_col
+    sub     eax, FX_SPARK               ; sparks, magic and gold: the row of k_burst_col
+    lea     eax, [rax + rax*2]
+    shl     eax, 3                      ; 24 bytes per kind
+    lea     rcx, [k_burst_col]
+    add     rcx, rax
+%assign i 0
+%rep 3
+    movss   xmm %+ i, [rcx + 12 + i*4]
+    subss   xmm %+ i, [rcx + i*4]
+    mulss   xmm %+ i, xmm4
+    addss   xmm %+ i, [rcx + i*4]
+%assign i i + 1
+%endrep
+    lea     rsi, [zero_tiles]
+    lea     rdx, [shades_flat]
+    jmp     .call
+.smoke_col:
     movss   xmm0, [k_smoke_g1]          ; grey 0.55 -> 0.25
     subss   xmm0, [k_smoke_g0]
     mulss   xmm0, xmm4
@@ -747,6 +955,8 @@ fx_render:
     test    eax, eax
     jz      .ret
     mov     [rsp + 24], eax
+    lea     rdi, [cull_eye]
+    call    player_eye
     mov     edi, GL_CURRENT_COLOR
     mov     rsi, rsp
     call    glGetFloatv

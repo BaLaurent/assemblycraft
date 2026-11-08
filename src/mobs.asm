@@ -1,20 +1,25 @@
-; mobs.asm - zombies, pigs, creepers, skeletons, spiders and chickens: slot storage, AI,
-; spawning, ray/block queries, damage, drops, save records.
+; mobs.asm - zombies, pigs, creepers, skeletons, spiders and chickens, the RPG's villagers
+; (merchant, elder) and the Fallen King boss: slot storage, AI, spawning, ray/block queries,
+; damage, drops, save records.
 ; A MOB starts with its BODY (MOB.body = 0), so a mob pointer is also a body pointer.
 %include "common.inc"
 default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
-global mob_spawn, mobs_raycast, mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
+global mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_is_hostile, mobs_raycast
+global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load, yaw_from
 
 extern body_init, body_step, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
 extern world_top_y, world_get, raycast
 extern sky_brightness, sky_is_night
-extern survival_damage, surv, drops_spawn, audio_play_at
+extern surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
-extern arrows_spawn, explode_at
+extern arrows_spawn, explode_at, fx_explosion
+extern player_take_hit, combat_hit_flags, combat_stealth_t
+extern dmgnum_spawn, dmgnum_text, hud_banner
+extern rpg_state, rpg_on_mob_killed, rpg_add_xp, quests_on_boss_killed, structures_on_mob_killed
 
 %define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive
 %define PIG_CAP       10                ; pigs the spawner keeps alive
@@ -27,35 +32,78 @@ extern arrows_spawn, explode_at
 ; ground a mob may spawn on, one bit per block id
 %define HOSTILE_GROUND ((1 << STONE) | (1 << GRASS) | (1 << DIRT) | (1 << COBBLE) | (1 << SAND) | (1 << GRAVEL))
 %define PASSIVE_GROUND (1 << GRASS)
+%define ZOMBIE_WINDUP 20                ; steps a zombie's arm is up before the blow
+%define ZOMBIE_WINDUP_ELITE 16
+%define SPIDER_WINDUP 12                ; steps a spider rears up before the bite
+%define SPIDER_WINDUP_ELITE 10
+%define STUN_PARRIED  50                ; a parried zombie or spider is dazed this long
+%define BAR_STEPS     180               ; a hit mob's health bar stays up this long
+%define TAG_STEPS     200               ; a player hit counts for XP this long
+%define BOSS_WINDUP   36                ; the Fallen King's slam wind-up (phase 3: 24)
+%define BOSS_WINDUP_RAGE 24
+%define BOSS_STUN     30                ; a parried slam stuns him this long
+%define BOSS_COOLDOWN 70                ; steps between slams (phase 3: 45)
+%define BOSS_COOLDOWN_RAGE 45
+%define BOSS_SUMMON_STEPS 600           ; skeletons rise this often
+%define BOSS_VOLLEY_STEPS 240           ; arrow volleys (phases 2 and 3) this often
+%define BOSS_MAX_MINIONS 4              ; no summons while this many skeletons live
+
+; ELITE_DAMAGE reg32: damage x 1.5, rounded, when the mob at rbx is an elite (clobbers xmm7)
+%macro ELITE_DAMAGE 1
+    cmp     dword [rbx + MOB.elite], 0
+    je      %%plain
+    cvtsi2ss xmm7, %1
+    mulss   xmm7, [c_1_5]
+    cvtss2si %1, xmm7
+%%plain:
+%endmacro
+
+; DEC_TIMER field: the step counter MOB.field of the mob at rbx counts down to 0 and stays there
+%macro DEC_TIMER 1
+    cmp     dword [rbx + %1], 0
+    jle     %%zero
+    dec     dword [rbx + %1]
+%%zero:
+%endmacro
 
 section .rodata
 align 4
-; per-type tables, index = type - 1 (zombie, pig, creeper, skeleton, spider, chicken)
-t_half_w:   dd 0.3, 0.45, 0.3, 0.3, 0.7, 0.2
-t_height:   dd 1.8, 0.9, 1.7, 1.8, 0.9, 0.7
-t_speed:    dd 2.6, 1.6, 2.4, 2.5, 3.0, 1.4
-t_run:      dd 0.0, 3.2, 0.0, 0.0, 0.0, 2.4     ; panic speed of the passive types
-t_health:   dd 20, 10, 20, 20, 16, 4
+; per-type tables, index = type - 1 (zombie, pig, creeper, skeleton, spider, chicken, merchant,
+; elder, boss)
+t_half_w:   dd 0.3, 0.45, 0.3, 0.3, 0.7, 0.2, 0.3, 0.3, 0.6
+t_height:   dd 1.8, 0.9, 1.7, 1.8, 0.9, 0.7, 1.95, 1.95, 3.3
+t_speed:    dd 2.6, 1.6, 2.4, 2.5, 3.0, 1.4, 1.0, 1.0, 2.4
+t_run:      dd 0.0, 3.2, 0.0, 0.0, 0.0, 2.4, 0.0, 0.0, 0.0     ; panic speed of the passive types
+t_health:   dd 20, 10, 20, 20, 16, 4, 20, 20, 300              ; (the boss's depends on the difficulty)
 t_dmg:      dd 0, 2, 3, 4               ; zombie and skeleton hit by difficulty
 t_dmg_spider: dd 0, 2, 2, 3
+t_dmg_slam: dd 0, 6, 8, 12              ; the Fallen King's slam by difficulty
+t_dmg_volley: dd 0, 3, 4, 5             ; ...and each arrow of his volley
+t_boss_health: dd 200, 200, 300, 450
 t_spread:   dd 0.0, 1.5, 1.0, 0.5       ; skeleton aim error in blocks/s by difficulty
-t_hostile:  db 1, 0, 1, 1, 1, 0
-t_burns:    db 1, 0, 0, 1, 0, 0         ; sunlight hurts the undead
+t_hostile:  db 1, 0, 1, 1, 1, 0, 0, 0, 1
+t_burns:    db 1, 0, 0, 1, 0, 0, 0, 0, 0   ; sunlight hurts the undead
 t_say:      db SND_ZOMBIE_SAY, SND_PIG_SAY, 0xFF, SND_SKELETON_SAY, SND_SPIDER_SAY, SND_CHICKEN_SAY
+            db SND_VILLAGER, SND_VILLAGER, SND_BOSS_ROAR
 t_hurt:     db SND_ZOMBIE_HURT, SND_PIG_HURT, SND_CREEPER_HURT, SND_SKELETON_HURT
-            db SND_SPIDER_HURT, SND_CHICKEN_HURT
+            db SND_SPIDER_HURT, SND_CHICKEN_HURT, SND_VILLAGER, SND_VILLAGER, SND_SKELETON_HURT
 ; death drops, 8 bytes per type: two (item, base, range) entries, count = base + rng % range;
-; item 0 = unused entry
+; item 0 = unused entry. Villagers and the boss have none here: mob_drops special-cases the boss.
 t_drops:    db ROTTEN_FLESH, 0, 3, 0, 0, 0, 0, 0
             db PORKCHOP, 1, 3, 0, 0, 0, 0, 0
             db GUNPOWDER, 0, 3, 0, 0, 0, 0, 0
             db ARROW, 0, 3, 0, 0, 0, 0, 0
             db STRING, 0, 3, 0, 0, 0, 0, 0
             db FEATHER, 0, 3, RAW_CHICKEN, 1, 1, 0, 0
+            db 0, 0, 0, 0, 0, 0, 0, 0
+            db 0, 0, 0, 0, 0, 0, 0, 0
+            db 0, 0, 0, 0, 0, 0, 0, 0
+; the Fallen King's legendary drop by class (none, warrior, mage, archer, rogue)
+t_legendary: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG
 ; what the night spawner picks from
 night_kinds: db MOB_ZOMBIE, MOB_SKELETON, MOB_CREEPER, MOB_SPIDER
 align 8
-hunt_ai:    dq 0, 0, ai_creeper, ai_skeleton, ai_spider, 0   ; by type - 1; the zombie's AI is inline
+hunt_ai:    dq 0, 0, ai_creeper, ai_skeleton, ai_spider, 0, 0, 0, ai_boss   ; by type - 1; the zombie's AI is inline
 align 4
 c_360:      dd 360.0
 c_180:      dd 180.0                    ; walk-cycle degrees per block walked
@@ -63,6 +111,7 @@ c_half:     dd 0.5
 c_aggro2:   dd 576.0                    ; zombies notice the player within 24 blocks
 c_hunt2:    dd 256.0                    ; creepers, skeletons and spiders within 16
 c_reach2:   dd 2.89                     ; zombie hit range 1.7 blocks, squared
+c_close2:   dd 1.21                     ; a zombie stops walking 1.1 blocks from the player, squared
 c_bite2:    dd 1.96                     ; spider bite range 1.4 blocks, squared
 c_far2:     dd 9216.0                   ; hostile mobs further than 96 blocks vanish
 c_kb:       dd 6.0                      ; knockback speed
@@ -101,6 +150,37 @@ c_leap_hi2: dd 16.0
 c_climb:    dd 3.0
 c_leap_vy:  dd 5.5
 c_lift_vy:  dd 5.0
+; elites and telegraphed attacks
+c_1_5:      dd 1.5                      ; elite damage
+c_1_15:     dd 1.15                     ; elite speed
+c_2_5:      dd 2.5                      ; elite health
+c_strike2:  dd 3.6                      ; a raised arm still connects within 1.9 blocks, squared
+c_bite_end2: dd 2.45                    ; a rearing spider still bites within 1.56 blocks, squared
+c_over_head: dd 0.2                     ; floating numbers start this far above the head
+; villagers
+c_home2:    dd 36.0                     ; they walk home from beyond 6 blocks
+c_talk2:    dd 16.0                     ; they turn to a player within 4
+; the Fallen King
+c_boss_aggro2: dd 2304.0                ; he hunts within 48 blocks
+c_boss_stop2: dd 4.84                   ; he stops 2.2 blocks from the player (his fists reach 3.5)
+c_boss_speed: dd 2.4
+c_boss_rage: dd 1.4                     ; phase 3 speed factor
+c_slam_start2: dd 9.0                   ; the fists go up within 3 blocks
+c_slam2:    dd 12.25                    ; the slam reaches 3.5 blocks (phase 3: 5), squared
+c_slam2_rage: dd 25.0
+c_slam_dy2: dd 6.25                     ; ...and 2.5 blocks up or down, squared
+c_slam_kb:  dd 10.0                     ; speed of the shove
+c_slam_lift: dd 0.2                     ; the blast sits just above the floor
+c_slam_fx:  dd 1.5
+c_boss_kb:  dd 0.2                      ; he barely budges when hit
+c_boss_eye: dd 2.6                      ; his arrows leave from his head
+c_volley_v: dd 30.0
+c_volley_muzzle: dd 0.8
+c_fan_step: dd 10.0                     ; degrees between the 5 arrows of a volley
+c_boss_death_r: dd 3.0
+c_two:      dd 2.0
+s_furious:  db "The Fallen King grows furious!", 0
+s_victory:  db "Victory! The Fallen King is no more.", 0
 
 section .bss
 alignb 16
@@ -151,7 +231,11 @@ mob_count_kind:
     jb      .loop
     ret
 
-; mob_spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1 (bad type / no free slot)
+; mob_spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1 (bad type / no free slot).
+; Every mob remembers its spawn point as its home (villagers stroll around it); max_health is the
+; spawn health. The Fallen King's health depends on the difficulty and his two timers start.
+; mob_spawn_npc(...) is the same call: structures spawn the merchant and elder through it.
+mob_spawn_npc:
 mob_spawn:
     push    rbp
     mov     rbp, rsp
@@ -192,13 +276,26 @@ mob_spawn:
     mov     [r12 + MOB.type], ebx
     lea     ecx, [rbx - 1]
     mov     eax, [t_health + rcx*4]
+    cmp     ebx, MOB_BOSS
+    jne     .health
+    mov     eax, [settings + SETTINGS.difficulty]   ; the Fallen King: 200 / 200 / 300 / 450 by difficulty
+    mov     ecx, DIFF_HARD
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     eax, [t_boss_health + rax*4]
+    mov     dword [r12 + MOB.timer_a], BOSS_SUMMON_STEPS
+    mov     dword [r12 + MOB.timer_b], BOSS_VOLLEY_STEPS
+.health:
     mov     [r12 + MOB.health], eax
+    mov     [r12 + MOB.max_health], eax
     mov     eax, [rsp]
     mov     [r12 + BODY.x], eax
+    mov     [r12 + MOB.home_x], eax
     mov     eax, [rsp + 4]
     mov     [r12 + BODY.y], eax
     mov     eax, [rsp + 8]
     mov     [r12 + BODY.z], eax
+    mov     [r12 + MOB.home_z], eax
     call    rng_next                    ; yaw = rng % 360
     xor     edx, edx
     mov     ecx, 360
@@ -212,6 +309,57 @@ mob_spawn:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; mob_spawn_elite(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1: mob_spawn, then the
+; elite upgrade (make_elite)
+mob_spawn_elite:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    mob_spawn
+    test    eax, eax
+    js      .ret
+    mov     ebx, eax
+    imul    edx, eax, MOB_size
+    lea     rcx, [mobs]
+    add     rdx, rcx
+    call    make_elite
+    mov     eax, ebx
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; make_elite(rdx mob): an elite has 2.5 x the health (rounded), moves 1.15 x as fast, and the AI
+; hits it 1.5 x harder (ELITE_DAMAGE); it is drawn gold and 1.2 x larger. Clobbers eax, xmm0.
+make_elite:
+    mov     dword [rdx + MOB.elite], 1
+    cvtsi2ss xmm0, dword [rdx + MOB.health]
+    mulss   xmm0, [c_2_5]
+    cvtss2si eax, xmm0
+    mov     [rdx + MOB.health], eax
+    mov     [rdx + MOB.max_health], eax
+    movss   xmm0, [rdx + BODY.speed]
+    mulss   xmm0, [c_1_15]
+    movss   [rdx + BODY.speed], xmm0
+    ret
+
+; mob_is_hostile(edi idx) -> eax 1 when slot idx holds a live hostile mob (zombie, creeper, skeleton,
+; spider, the boss), else 0 (empty slot, bad index, passive animal, villager)
+mob_is_hostile:
+    xor     eax, eax
+    cmp     edi, MAX_MOBS
+    jae     .ret
+    imul    edi, edi, MOB_size
+    lea     rcx, [mobs]
+    mov     edx, [rcx + rdi + MOB.type]
+    test    edx, edx
+    jz      .ret
+    movzx   eax, byte [t_hostile + rdx - 1]
+.ret:
     ret
 
 ; yaw_from(xmm0 dx, xmm1 dz) -> xmm0 heading in [0, 360) whose forward vector (sin, -cos) runs along (dx, dz)
@@ -233,10 +381,13 @@ yaw_from:
     ret
 
 ; mob_ai(rdi mob) -> eax 1 when the mob blew up and is gone, else 0.
-; This step's input and heading. Zombies hunt a living player within 24 blocks (Survival,
-; difficulty > 0) and hit when close; creepers, skeletons and spiders hunt within 16 blocks
-; (ai_creeper, ai_skeleton, ai_spider); a panicking pig or chicken runs along its heading;
-; everything else wanders in 1-4 s legs.
+; This step's input and heading. A stunned mob stands still and attacks nothing. Zombies hunt a
+; living player within 24 blocks (Survival, difficulty > 0, not hidden in smoke) and, after raising
+; an arm for 20 steps, hit through player_take_hit when he is still close; creepers, skeletons and
+; spiders hunt within 16 blocks (ai_creeper, ai_skeleton, ai_spider); the Fallen King hunts within
+; 48 blocks and sees through smoke (ai_boss); villagers stay within 6 blocks of home and turn to a
+; player within 4; a panicking pig or chicken runs along its heading; everything else wanders in
+; 1-4 s legs.
 ; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player.
 mob_ai:
     push    rbp
@@ -248,6 +399,8 @@ mob_ai:
     mov     [rbx + MOB.input + INPUT.strafe], eax
     mov     [rbx + MOB.input + INPUT.down], eax
     mov     [rbx + MOB.input + INPUT.sprint], eax
+    cmp     dword [rbx + MOB.stun], 0
+    jg      .stunned
     mov     ecx, [rbx + MOB.type]
     cmp     byte [t_hostile + rcx - 1], 0
     je      .passive
@@ -257,6 +410,11 @@ mob_ai:
     je      .idle
     cmp     dword [surv + SURVIVAL.dead], 0
     jne     .idle
+    cmp     ecx, MOB_BOSS
+    je      .seen                       ; the Fallen King sees through smoke
+    cmp     dword [combat_stealth_t], 0
+    jg      .idle                       ; hidden in smoke: nothing hunts him
+.seen:
     movss   xmm0, [player + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0                 ; dx
@@ -269,8 +427,12 @@ mob_ai:
     movss   [rsp + 8], xmm0
     movss   xmm1, [c_hunt2]
     cmp     ecx, MOB_ZOMBIE
-    jne     .range
+    jne     .not_zombie
     movss   xmm1, [c_aggro2]
+.not_zombie:
+    cmp     ecx, MOB_BOSS
+    jne     .range
+    movss   xmm1, [c_boss_aggro2]
 .range:
     comiss  xmm0, xmm1
     jae     .idle                       ; too far to notice
@@ -289,7 +451,14 @@ mob_ai:
     jnz     .ret                        ; it blew up
     jmp     .jump
 .zombie:
+    cmp     dword [rbx + MOB.windup], 0
+    jg      .winding
     mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    movss   xmm0, [rsp + 8]
+    comiss  xmm0, [c_close2]
+    jae     .closing
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0 ; at arm's length: it stops rather than walk into him
+.closing:
     cmp     dword [rbx + MOB.cooldown], 0
     jne     .jump
     movss   xmm0, [player + BODY.y]     ; body centres are both feet + 0.9, so only the feet differ
@@ -297,16 +466,40 @@ mob_ai:
     mulss   xmm0, xmm0
     addss   xmm0, [rsp + 8]
     comiss  xmm0, [c_reach2]
-    jae     .jump
+    jae     .jump                       ; out of reach
+    mov     eax, ZOMBIE_WINDUP          ; in reach: the arm goes up, and the zombie stands to swing
+    mov     ecx, ZOMBIE_WINDUP_ELITE
+    cmp     dword [rbx + MOB.elite], 0
+    cmovne  eax, ecx
+    mov     [rbx + MOB.windup], eax
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    jmp     .jump
+.winding:
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    dec     dword [rbx + MOB.windup]
+    jnz     .jump                       ; the arm is still up
+    movss   xmm0, [player + BODY.y]     ; the blow lands only on a player still within reach
+    subss   xmm0, [rbx + BODY.y]
+    mulss   xmm0, xmm0                  ; dy^2
+    comiss  xmm0, [c_reach_y2]          ; |dy| < 1.5
+    jae     .whiff
+    addss   xmm0, [rsp + 8]             ; distance^2 including the height difference, as at the start
+    comiss  xmm0, [c_strike2]
+    ja      .whiff                      ; more than 1.9 blocks away
     mov     eax, [settings + SETTINGS.difficulty]
     mov     ecx, DIFF_HARD
     cmp     eax, ecx
     cmova   eax, ecx
     mov     edi, [t_dmg + rax*4]
+    ELITE_DAMAGE edi
     mov     esi, CAUSE_ZOMBIE
-    call    survival_damage
-    test    eax, eax
-    jz      .jump                       ; not applied (invulnerable): try again next step
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    call    player_take_hit
+    cmp     eax, HIT_PARRIED
+    je      .parried
+    cmp     eax, HIT_TAKEN
+    jne     .hit_done                   ; blocked or dodged: no knockback
     movss   xmm2, [rsp + 8]
     sqrtss  xmm2, xmm2                  ; knock the player back along zombie -> player on the ground plane
     comiss  xmm2, [c_tiny]
@@ -326,15 +519,37 @@ mob_ai:
 .hit_done:
     mov     dword [rbx + MOB.cooldown], HIT_COOLDOWN
     jmp     .jump
+.parried:                               ; the riposte stuns it: it reels back and stands dazed
+    mov     dword [rbx + MOB.stun], STUN_PARRIED
+    mov     rdi, rbx
+    mov     rsi, rsp
+    call    mob_reel
+    mov     rdi, rbx
+    call    mob_stunned_text
+    jmp     .hit_done
+.whiff:                                 ; the player got away: it recovers sooner
+    mov     dword [rbx + MOB.cooldown], 20
+    jmp     .jump
+.stunned:                               ; a stunned mob stands still; its telegraph is broken
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    mov     dword [rbx + MOB.windup], 0
+    jmp     .jump
 .idle:                                  ; not hunting: a lit fuse dies down while it wanders
+    mov     dword [rbx + MOB.windup], 0 ; a lost target breaks the telegraph
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    je      .stand                      ; the Fallen King guards his crypt, he never strolls off
     cmp     dword [rbx + MOB.fuse], 0
     jle     .wander
     dec     dword [rbx + MOB.fuse]
     jmp     .wander
 .passive:
+    mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_MERCHANT
+    je      .npc
+    cmp     eax, MOB_ELDER
+    je      .npc
     cmp     dword [rbx + MOB.panic], 0
     jle     .wander
-    mov     eax, [rbx + MOB.type]
     mov     edx, [t_run + rax*4 - 4]    ; a hurt pig or chicken runs
     mov     [rbx + BODY.speed], edx
     mov     dword [rbx + MOB.input + INPUT.fwd], 1
@@ -342,6 +557,42 @@ mob_ai:
     jnz     .jump
     mov     edx, [t_speed + rax*4 - 4]  ; panic over: back to the stroll speed
     mov     [rbx + BODY.speed], edx
+    jmp     .jump
+.npc:                                   ; a villager: walks home from beyond 6 blocks, faces a player within 4
+    movss   xmm0, [rbx + MOB.home_x]
+    subss   xmm0, [rbx + BODY.x]
+    movss   [rsp], xmm0
+    movss   xmm1, [rbx + MOB.home_z]
+    subss   xmm1, [rbx + BODY.z]
+    movss   [rsp + 4], xmm1
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [c_home2]
+    jbe     .at_home
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    call    yaw_from
+    movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    jmp     .jump
+.at_home:
+    movss   xmm0, [player + BODY.x]
+    subss   xmm0, [rbx + BODY.x]
+    movss   [rsp], xmm0
+    movss   xmm1, [player + BODY.z]
+    subss   xmm1, [rbx + BODY.z]
+    movss   [rsp + 4], xmm1
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [c_talk2]
+    jae     .wander                     ; nobody close: the usual stroll
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    call    yaw_from
+    movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
     jmp     .jump
 .wander:
     mov     eax, [rbx + MOB.ai_timer]
@@ -383,6 +634,41 @@ mob_ai:
     add     rsp, 24
     pop     rbx
     pop     rbp
+    ret
+
+; mob_reel(rdi mob, rsi frame): knocks the mob away from the player at 6 blocks/s.
+; frame = mob_ai's [dx, dz, horizontal distance^2], dx and dz running mob -> player.
+mob_reel:
+    movss   xmm2, [rsi + 8]
+    sqrtss  xmm2, xmm2
+    comiss  xmm2, [c_tiny]
+    jb      .done                       ; standing on the player: no direction
+    movss   xmm3, [c_kb]
+    divss   xmm3, xmm2
+    xorps   xmm4, xmm4
+    movss   xmm0, [rsi]
+    mulss   xmm0, xmm3
+    subss   xmm4, xmm0
+    movss   [rdi + BODY.kbx], xmm4
+    xorps   xmm4, xmm4
+    movss   xmm1, [rsi + 4]
+    mulss   xmm1, xmm3
+    subss   xmm4, xmm1
+    movss   [rdi + BODY.kbz], xmm4
+.done:
+    ret
+
+; mob_stunned_text(rdi mob): "STUNNED" floats up over the mob's head
+mob_stunned_text:
+    sub     rsp, 8
+    movss   xmm0, [rdi + BODY.x]
+    movss   xmm1, [rdi + BODY.y]
+    addss   xmm1, [rdi + BODY.height]
+    addss   xmm1, [c_over_head]
+    movss   xmm2, [rdi + BODY.z]
+    mov     edi, TXT_STUNNED
+    call    dmgnum_text
+    add     rsp, 8
     ret
 
 ; ai_creeper(rdi mob, rsi frame) -> eax 1 when it exploded (the mob is gone).
@@ -569,6 +855,7 @@ ai_skeleton:
     mov     edi, 1                      ; fired by a mob
     mov     eax, [rsp + 76]
     mov     esi, [t_dmg + rax*4]
+    ELITE_DAMAGE esi
     xor     edx, edx                    ; cannot be picked up
     mov     ecx, PROJ_ARROW
     xor     r8d, r8d
@@ -594,8 +881,10 @@ ai_skeleton:
     ret
 
 ; ai_spider(rdi mob, rsi frame) -> eax 0.
-; Always runs at the player and climbs what blocks it. Within 1.4 blocks it bites (every 20
-; steps); from 2..4 blocks away it leaps at him (every 30 steps, from the ground).
+; Always runs at the player and climbs what blocks it. Within 1.4 blocks it rears up (12 steps,
+; elite 10) standing still, then bites through player_take_hit (every 20 steps) if the player is
+; still in reach; from 2..4 blocks away it leaps at him (every 30 steps, from the ground). A parried
+; bite stuns it.
 ai_spider:
     push    rbp
     mov     rbp, rsp
@@ -610,6 +899,8 @@ ai_spider:
     mov     eax, [c_climb]              ; against a wall: climb it
     mov     [rbx + BODY.vy], eax
 .free:
+    cmp     dword [rbx + MOB.windup], 0
+    jg      .winding
     cmp     dword [rbx + MOB.cooldown], 0
     jne     .done
     movss   xmm0, [r12 + 8]             ; horizontal distance^2
@@ -620,15 +911,39 @@ ai_spider:
     mulss   xmm1, xmm1
     comiss  xmm1, [c_reach_y2]
     jae     .done                       ; above or below its reach
+    mov     eax, SPIDER_WINDUP          ; in reach: rear up
+    mov     ecx, SPIDER_WINDUP_ELITE
+    cmp     dword [rbx + MOB.elite], 0
+    cmovne  eax, ecx
+    mov     [rbx + MOB.windup], eax
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    jmp     .done
+.winding:
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    dec     dword [rbx + MOB.windup]
+    jnz     .done                       ; still rearing
+    movss   xmm1, [player + BODY.y]     ; the bite lands only on a player still in reach
+    subss   xmm1, [rbx + BODY.y]
+    mulss   xmm1, xmm1
+    comiss  xmm1, [c_reach_y2]
+    jae     .bitten
+    movss   xmm0, [r12 + 8]
+    comiss  xmm0, [c_bite_end2]
+    ja      .bitten
     mov     eax, [settings + SETTINGS.difficulty]
     mov     ecx, DIFF_HARD
     cmp     eax, ecx
     cmova   eax, ecx
     mov     edi, [t_dmg_spider + rax*4]
+    ELITE_DAMAGE edi
     mov     esi, CAUSE_SPIDER
-    call    survival_damage
-    test    eax, eax
-    jz      .done                       ; not applied (invulnerable): bite again next step
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    call    player_take_hit
+    cmp     eax, HIT_PARRIED
+    je      .parried
+    cmp     eax, HIT_TAKEN
+    jne     .bitten                     ; blocked or dodged: no knockback
     movss   xmm2, [r12 + 8]
     sqrtss  xmm2, xmm2                  ; knock the player back along spider -> player
     comiss  xmm2, [c_tiny]
@@ -649,6 +964,14 @@ ai_spider:
 .bitten:
     mov     dword [rbx + MOB.cooldown], 20
     jmp     .done
+.parried:                               ; the riposte stuns it: it reels back and stands dazed
+    mov     dword [rbx + MOB.stun], STUN_PARRIED
+    mov     rdi, rbx
+    mov     rsi, r12
+    call    mob_reel
+    mov     rdi, rbx
+    call    mob_stunned_text
+    jmp     .bitten
 .leap:
     cmp     dword [rbx + BODY.on_ground], 0
     je      .done
@@ -676,7 +999,320 @@ ai_spider:
     pop     rbp
     ret
 
-; mob_update(rdi mob): one fixed step for a live mob (AI, physics, timers, sound, sunlight, despawn).
+; ai_boss(rdi mob, rsi frame) -> eax 0.  The Fallen King.
+; frame = mob_ai's [dx, dz, horizontal distance^2]. Phase 1 above 66 % health, phase 2 above 33 %,
+; phase 3 below. He walks at the player (phase 3: 1.4 x faster), stopping 1.6 blocks short. Within 3
+; blocks, off cooldown, he raises his fists (36 steps, phase 3: 24) and slams the floor (boss_slam).
+; Every 600 steps timer_a summons skeletons (boss_summon); every 240 steps timer_b looses a volley
+; in phases 2 and 3 (boss_volley). mob_update counts both timers down before the AI runs.
+ai_boss:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     eax, [rbx + MOB.health]
+    imul    eax, eax, 100
+    mov     ecx, [rbx + MOB.max_health]
+    imul    edx, ecx, 66
+    mov     r13d, 1
+    cmp     eax, edx
+    jg      .phased
+    imul    edx, ecx, 33
+    mov     r13d, 2
+    cmp     eax, edx
+    jg      .phased
+    mov     r13d, 3
+.phased:
+    movss   xmm0, [c_boss_speed]
+    cmp     r13d, 3
+    jne     .speed
+    mulss   xmm0, [c_boss_rage]
+.speed:
+    movss   [rbx + BODY.speed], xmm0
+    cmp     dword [rbx + MOB.windup], 0
+    jg      .winding
+    xor     eax, eax                    ; walk at the player until 1.6 blocks away
+    movss   xmm0, [r12 + 8]
+    comiss  xmm0, [c_boss_stop2]
+    setae   al
+    mov     [rbx + MOB.input + INPUT.fwd], eax
+    cmp     dword [rbx + MOB.cooldown], 0
+    jne     .timers
+    movss   xmm1, [player + BODY.y]
+    subss   xmm1, [rbx + BODY.y]
+    mulss   xmm1, xmm1
+    addss   xmm1, xmm0                  ; distance^2 including the height difference
+    comiss  xmm1, [c_slam_start2]
+    jae     .timers
+    mov     eax, BOSS_WINDUP            ; within 3 blocks: raise the fists, standing still
+    mov     ecx, BOSS_WINDUP_RAGE
+    cmp     r13d, 3
+    cmove   eax, ecx
+    mov     [rbx + MOB.windup], eax
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    jmp     .timers
+.winding:
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    dec     dword [rbx + MOB.windup]
+    jnz     .timers
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     edx, r13d
+    call    boss_slam
+.timers:
+    cmp     dword [rbx + MOB.timer_a], 0
+    jne     .volley
+    mov     dword [rbx + MOB.timer_a], BOSS_SUMMON_STEPS
+    mov     rdi, rbx
+    call    boss_summon
+.volley:
+    cmp     dword [rbx + MOB.timer_b], 0
+    jne     .done
+    mov     dword [rbx + MOB.timer_b], BOSS_VOLLEY_STEPS
+    cmp     r13d, 2
+    jb      .done                       ; phase 1 keeps to melee
+    mov     rdi, rbx
+    call    boss_volley
+.done:
+    xor     eax, eax
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; boss_slam(rdi mob, rsi frame, edx phase): the fists come down. A player within 3.5 blocks (phase 3:
+; 5) horizontally and 2.5 vertically takes the hit through player_take_hit: a parry stuns the boss
+; for 30 steps, a hit shoves the player away at 10 blocks/s and throws him up. Either way the floor
+; shakes (fx_explosion, SND_SLAM) and the slam cools down for 70 steps (phase 3: 45).
+boss_slam:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     r13d, edx
+    movss   xmm0, [player + BODY.y]
+    subss   xmm0, [rbx + BODY.y]
+    mulss   xmm0, xmm0
+    comiss  xmm0, [c_slam_dy2]
+    jae     .impact                     ; too far above or below
+    movss   xmm0, [r12 + 8]
+    movss   xmm1, [c_slam2]
+    cmp     r13d, 3
+    jne     .reach
+    movss   xmm1, [c_slam2_rage]
+.reach:
+    comiss  xmm0, xmm1
+    jae     .impact                     ; too far away
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     ecx, DIFF_HARD
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     edi, [t_dmg_slam + rax*4]
+    mov     esi, CAUSE_BOSS
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    call    player_take_hit
+    cmp     eax, HIT_PARRIED
+    je      .parried
+    cmp     eax, HIT_TAKEN
+    jne     .impact                     ; blocked or dodged
+    movss   xmm2, [r12 + 8]
+    sqrtss  xmm2, xmm2                  ; shove the player along boss -> player on the ground plane
+    comiss  xmm2, [c_tiny]
+    jb      .lift
+    movss   xmm3, [c_slam_kb]
+    divss   xmm3, xmm2
+    movss   xmm0, [r12]
+    mulss   xmm0, xmm3
+    movss   [player + BODY.kbx], xmm0
+    movss   xmm1, [r12 + 4]
+    mulss   xmm1, xmm3
+    movss   [player + BODY.kbz], xmm1
+.lift:
+    cmp     dword [player + BODY.on_ground], 0
+    je      .impact
+    mov     dword [player + BODY.vy], __float32__(5.0)
+    jmp     .impact
+.parried:
+    mov     dword [rbx + MOB.stun], BOSS_STUN
+    mov     rdi, rbx
+    call    mob_stunned_text
+.impact:
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_slam_lift]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_slam_fx]
+    call    fx_explosion
+    mov     edi, SND_SLAM
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_hurt]
+    call    audio_play_at
+    mov     eax, BOSS_COOLDOWN
+    mov     ecx, BOSS_COOLDOWN_RAGE
+    cmp     r13d, 3
+    cmove   eax, ecx
+    mov     [rbx + MOB.cooldown], eax
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; boss_summon(rdi mob): two skeletons rise 2 blocks to either side of him, unless 4 already live
+boss_summon:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     edi, MOB_SKELETON
+    call    mob_count_type
+    cmp     eax, BOSS_MAX_MINIONS
+    jae     .done
+    mov     edi, MOB_SKELETON
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [c_two]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    call    mob_spawn
+    mov     edi, MOB_SKELETON
+    movss   xmm0, [rbx + BODY.x]
+    addss   xmm0, [c_two]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    call    mob_spawn
+.done:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; boss_volley(rdi mob): 5 skeleton arrows fanned -20..+20 degrees (10 apart) around the aim at the
+; player's eye, from his head, at 30 blocks/s, lifted against gravity like a skeleton's
+; Frame: own head o[3] @0, unit aim dir[3] @12, player eye[3] @24, distance @36, lift @44... see
+; the offsets below: lift @40, sin @44, cos @48, rotated dx @52 and dz @60.
+boss_volley:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 80
+    mov     rbx, rdi
+    movss   xmm0, [rbx + BODY.x]
+    movss   [rsp], xmm0
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_boss_eye]
+    movss   [rsp + 4], xmm0
+    movss   xmm0, [rbx + BODY.z]
+    movss   [rsp + 8], xmm0
+    lea     rdi, [rsp + 24]
+    call    player_eye
+    xor     ecx, ecx
+.aim:                                   ; dir = player eye - own head
+    movss   xmm0, [rsp + 24 + rcx*4]
+    subss   xmm0, [rsp + rcx*4]
+    movss   [rsp + 12 + rcx*4], xmm0
+    inc     ecx
+    cmp     ecx, 3
+    jb      .aim
+    movss   xmm0, [rsp + 12]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsp + 16]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    movss   xmm1, [rsp + 20]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0                  ; distance
+    comiss  xmm0, [c_tiny]
+    jb      .done                       ; eye to eye: no direction to aim along
+    movss   [rsp + 36], xmm0
+    xor     ecx, ecx
+.unit:
+    movss   xmm1, [rsp + 12 + rcx*4]
+    divss   xmm1, xmm0
+    movss   [rsp + 12 + rcx*4], xmm1
+    inc     ecx
+    cmp     ecx, 3
+    jb      .unit
+    movss   xmm0, [rsp + 36]            ; flight time dist / 30: lift 10 t against gravity
+    divss   xmm0, [c_volley_v]
+    mulss   xmm0, [c_lift]
+    movss   [rsp + 40], xmm0
+    mov     r12d, -2
+.arrow:
+    cvtsi2ss xmm0, r12d
+    mulss   xmm0, [c_fan_step]
+    call    sincos_deg                  ; xmm0 = sin, xmm1 = cos of the fan angle
+    movss   xmm2, [rsp + 12]            ; turn the aim about the vertical axis
+    movss   xmm3, [rsp + 20]
+    movaps  xmm4, xmm2
+    mulss   xmm4, xmm1                  ; dx cos
+    movaps  xmm5, xmm3
+    mulss   xmm5, xmm0                  ; dz sin
+    subss   xmm4, xmm5
+    movss   [rsp + 52], xmm4            ; dx' = dx cos - dz sin
+    mulss   xmm2, xmm0                  ; dx sin
+    mulss   xmm3, xmm1                  ; dz cos
+    addss   xmm2, xmm3
+    movss   [rsp + 60], xmm2            ; dz' = dx sin + dz cos
+    movss   xmm3, [rsp + 52]
+    mulss   xmm3, [c_volley_v]          ; vx
+    movss   xmm4, [rsp + 16]
+    mulss   xmm4, [c_volley_v]
+    addss   xmm4, [rsp + 40]            ; vy
+    movss   xmm5, [rsp + 60]
+    mulss   xmm5, [c_volley_v]          ; vz
+    movss   xmm0, [rsp + 52]            ; the arrow starts 0.8 blocks along its heading
+    mulss   xmm0, [c_volley_muzzle]
+    addss   xmm0, [rsp]
+    movss   xmm1, [rsp + 16]
+    mulss   xmm1, [c_volley_muzzle]
+    addss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 60]
+    mulss   xmm2, [c_volley_muzzle]
+    addss   xmm2, [rsp + 8]
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     ecx, DIFF_HARD
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     esi, [t_dmg_volley + rax*4]
+    mov     edi, 1                      ; fired by a mob
+    xor     edx, edx                    ; cannot be picked up
+    mov     ecx, PROJ_ARROW
+    xor     r8d, r8d
+    call    arrows_spawn
+    inc     r12d
+    cmp     r12d, 2
+    jle     .arrow
+    mov     edi, SND_BOW
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_bow]
+    call    audio_play_at
+.done:
+    add     rsp, 80
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; mob_update(rdi mob): one fixed step for a live mob (timers, AI, physics, sound, sunlight, despawn).
 ; Frame: [rsp] x and [rsp+4] z before the move.
 mob_update:
     push    rbp
@@ -684,6 +1320,11 @@ mob_update:
     push    rbx
     sub     rsp, 24
     mov     rbx, rdi
+    DEC_TIMER MOB.stun                  ; counted down first, so the AI sees this step's values
+    DEC_TIMER MOB.tagged
+    DEC_TIMER MOB.bar
+    DEC_TIMER MOB.timer_a
+    DEC_TIMER MOB.timer_b
     call    mob_ai
     test    eax, eax
     jnz     .done                       ; blew up: nothing left to move
@@ -1209,8 +1850,28 @@ mobs_raycast:
     pop     rbp
     ret
 
-; mob_drops(rdi mob): the loot of a dead mob, popped out at mid-body height (a pig's a little
-; lower). Each of the type's two table entries (item, base, range) drops base + rng % range.
+; mob_drop(rdi mob, esi item, edx count): `count` of `item` pop out of the mob at mid-body height
+; (a pig's a little lower)
+mob_drop:
+    movss   xmm0, [rdi + BODY.x]
+    movss   xmm1, [rdi + BODY.height]
+    mulss   xmm1, [c_half]
+    cmp     dword [rdi + MOB.type], MOB_PIG
+    jne     .height
+    movss   xmm1, [c_drop_dy]
+.height:
+    addss   xmm1, [rdi + BODY.y]
+    movss   xmm2, [rdi + BODY.z]
+    mov     eax, esi
+    mov     esi, edx
+    mov     edi, eax
+    xor     edx, edx
+    jmp     drops_spawn
+
+; mob_drops(rdi mob): the loot of a dead mob, popped out at mid-body height. Each of the type's two
+; table entries (item, base, range) drops base + rng % range. A hostile mob also drops a gold coin
+; half of the time; an elite 3-5 coins and a health potion with 30 % chance; the Fallen King his
+; class's legendary weapon, 30 coins and 4 diamonds.
 mob_drops:
     push    rbp
     mov     rbp, rsp
@@ -1229,25 +1890,69 @@ mob_drops:
     movzx   ecx, byte [r12 + 2]
     xor     edx, edx
     div     ecx
-    movzx   esi, byte [r12 + 1]
-    add     esi, edx                    ; count
+    movzx   eax, byte [r12 + 1]
+    add     edx, eax                    ; count
     jz      .next                       ; nothing this time
-    movzx   edi, byte [r12]
-    xor     edx, edx
-    movss   xmm0, [rbx + BODY.x]
-    movss   xmm1, [rbx + BODY.height]
-    mulss   xmm1, [c_half]
-    cmp     dword [rbx + MOB.type], MOB_PIG
-    jne     .height
-    movss   xmm1, [c_drop_dy]
-.height:
-    addss   xmm1, [rbx + BODY.y]
-    movss   xmm2, [rbx + BODY.z]
-    call    drops_spawn
+    movzx   esi, byte [r12]
+    mov     rdi, rbx
+    call    mob_drop
 .next:
     add     r12, 3
     dec     r13d
     jnz     .entry
+    mov     eax, [rbx + MOB.type]
+    cmp     eax, MOB_BOSS
+    je      .boss
+    cmp     byte [t_hostile + rax - 1], 0
+    je      .done                       ; passive mobs and villagers carry nothing else
+    cmp     dword [rbx + MOB.elite], 0
+    jne     .elite
+    call    rng_next                    ; a coin every other time
+    test    al, 1
+    jnz     .done
+    mov     rdi, rbx
+    mov     esi, GOLD_COIN
+    mov     edx, 1
+    call    mob_drop
+    jmp     .done
+.elite:
+    call    rng_next                    ; 3 + rng % 3 coins
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    add     edx, 3
+    mov     rdi, rbx
+    mov     esi, GOLD_COIN
+    call    mob_drop
+    call    rng_next                    ; ...and a health potion with 30 % chance
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    cmp     edx, 30
+    jae     .done
+    mov     rdi, rbx
+    mov     esi, HEALTH_POTION
+    mov     edx, 1
+    call    mob_drop
+    jmp     .done
+.boss:
+    movzx   eax, byte [rpg_state + RPGSAVE.class]
+    xor     ecx, ecx
+    cmp     eax, NUM_CLASSES
+    cmova   eax, ecx                    ; garbage class: the warrior's blade
+    movzx   esi, byte [t_legendary + rax]
+    mov     rdi, rbx
+    mov     edx, 1
+    call    mob_drop
+    mov     rdi, rbx
+    mov     esi, GOLD_COIN
+    mov     edx, 30
+    call    mob_drop
+    mov     rdi, rbx
+    mov     esi, DIAMOND
+    mov     edx, 4
+    call    mob_drop
+.done:
     add     rsp, 8
     pop     r13
     pop     r12
@@ -1255,12 +1960,44 @@ mob_drops:
     pop     rbp
     ret
 
-; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, or still in its
-; hurt window). Knocks the mob along (dirx, dirz); a passive mob panics and flees that way, a dead
-; mob drops its loot (mob_drops).
+; boss_death(rdi mob): the Fallen King falls (his loot comes from mob_drops): the realm remembers
+; it (progress flag bit 0), 500 XP, the quest chain moves on, a banner and a blast at his heart
+boss_death:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rbx, rdi
+    or      byte [rpg_state + RPGSAVE.flags], 1
+    mov     edi, 500
+    call    rpg_add_xp
+    call    quests_on_boss_killed
+    lea     rdi, [s_victory]
+    mov     esi, RGBA(255, 215, 60, 255)
+    call    hud_banner
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.height]
+    mulss   xmm1, [c_half]
+    addss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_boss_death_r]
+    call    fx_explosion
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, a villager, or
+; still in its hurt window). Knocks the mob along (dirx, dirz); a passive mob panics and flees that
+; way, a dead mob drops its loot (mob_drops).
 ; mob_strike(...): the same, but it lands even inside the hurt window, so rapid fire, shotgun
 ; pellets, spells and melee strikes all count.
-; Frame: [rsp] dirx, [rsp+4] dirz.
+; Both consume combat_hit_flags (cleared on return): HF_PLAYER tags the mob, so a kill within 200
+; steps pays XP; HF_CRIT makes the floating damage number a critical one. A kill reports to the RPG
+; (rpg_on_mob_killed when tagged), to the dungeon the mob was born in (structures_on_mob_killed)
+; and, for the Fallen King, to boss_death. The Fallen King barely budges when hit and roars when
+; he drops to a third of his health.
+; Frame: [rsp] dirx, [rsp+4] dirz, [rsp+8] health before the hit.
 mob_strike:
     mov     r8d, 1
     jmp     mob_damage
@@ -1270,28 +2007,50 @@ mob_damage:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    sub     rsp, 24
+    push    r12
+    sub     rsp, 16
     cmp     edi, MAX_MOBS
     jae     .no
     imul    ebx, edi, MOB_size
     lea     rax, [mobs]
     add     rbx, rax
-    cmp     dword [rbx + MOB.type], MOB_NONE
+    mov     eax, [rbx + MOB.type]
+    test    eax, eax
+    jz      .no
+    cmp     eax, MOB_MERCHANT           ; villagers cannot be hurt
+    je      .no
+    cmp     eax, MOB_ELDER
     je      .no
     test    r8d, r8d
     jnz     .apply
     cmp     dword [rbx + MOB.hurt], 0
     jg      .no
 .apply:
+    mov     r12d, esi                   ; damage
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
+    mov     eax, [rbx + MOB.health]
+    mov     [rsp + 8], eax
     sub     [rbx + MOB.health], esi
     mov     dword [rbx + MOB.hurt], HURT_STEPS
+    mov     dword [rbx + MOB.bar], BAR_STEPS
+    test    byte [combat_hit_flags], HF_PLAYER
+    jz      .knock
+    mov     dword [rbx + MOB.tagged], TAG_STEPS
+.knock:
     movss   xmm2, [c_kb]
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .shove
+    mulss   xmm2, [c_boss_kb]           ; the Fallen King barely budges...
+.shove:
+    movss   xmm0, [rsp]
     mulss   xmm0, xmm2
     movss   [rbx + BODY.kbx], xmm0
+    movss   xmm1, [rsp + 4]
     mulss   xmm1, xmm2
     movss   [rbx + BODY.kbz], xmm1
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    je      .sound                      ; ...and is never thrown into the air
     cmp     dword [rbx + BODY.on_ground], 0
     je      .sound
     mov     dword [rbx + BODY.vy], __float32__(4.0)
@@ -1303,6 +2062,16 @@ mob_damage:
     movss   xmm2, [rbx + BODY.z]
     movss   xmm3, [c_vol_hurt]
     call    audio_play_at
+    movss   xmm0, [rbx + BODY.x]        ; the damage number floats up from above the head; over
+    movss   xmm1, [rbx + BODY.height]   ; the Fallen King it starts at 2 blocks, in view up close
+    minss   xmm1, [c_two]
+    addss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_over_head]
+    movss   xmm2, [rbx + BODY.z]
+    mov     edi, r12d
+    movzx   esi, byte [combat_hit_flags]
+    and     esi, HF_CRIT
+    call    dmgnum_spawn
     mov     eax, [rbx + MOB.type]
     cmp     byte [t_hostile + rax - 1], 0
     jne     .check_dead                 ; hostile mobs stand and fight
@@ -1313,17 +2082,58 @@ mob_damage:
     movss   [rbx + BODY.yaw], xmm0
 .check_dead:
     cmp     dword [rbx + MOB.health], 0
-    jg      .yes
+    jg      .alive
+    cmp     dword [rbx + MOB.tagged], 0
+    jle     .origin
+    mov     edi, [rbx + MOB.type]       ; the player had a hand in it: XP
+    mov     esi, [rbx + MOB.elite]
+    call    rpg_on_mob_killed
+.origin:
+    mov     edi, [rbx + MOB.origin]
+    lea     eax, [rdi - 1]
+    cmp     eax, NUM_DUNGEONS - 1
+    ja      .loot                       ; not born in a dungeon
+    call    structures_on_mob_killed
+.loot:
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .drops
+    mov     rdi, rbx
+    call    boss_death
+.drops:
     mov     rdi, rbx
     call    mob_drops
     mov     dword [rbx + MOB.type], MOB_NONE
+    jmp     .yes
+.alive:
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .yes
+    imul    ecx, [rbx + MOB.max_health], 33
+    mov     eax, [rbx + MOB.health]
+    imul    eax, eax, 100
+    cmp     eax, ecx
+    jg      .yes                        ; still above a third of his health
+    mov     eax, [rsp + 8]
+    imul    eax, eax, 100
+    cmp     eax, ecx
+    jle     .yes                        ; was already enraged
+    mov     edi, SND_BOSS_ROAR          ; this hit drove him into phase 3
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_hurt]
+    call    audio_play_at
+    lea     rdi, [s_furious]
+    mov     esi, RGBA(255, 80, 60, 255)
+    call    hud_banner
 .yes:
     mov     eax, 1
     jmp     .ret
 .no:
     xor     eax, eax
 .ret:
-    add     rsp, 24
+    mov     byte [combat_hit_flags], 0
+    add     rsp, 16
+    pop     r12
     pop     rbx
     pop     rbp
     ret
@@ -1368,7 +2178,8 @@ mobs_intersect_block:
     pop     rbp
     ret
 
-; mobs_save(rdi WORLDHDR*): the live mobs as compact MOBSAVE records, mob_count set
+; mobs_save(rdi WORLDHDR*): the live mobs as compact MOBSAVE records, mob_count set. An elite's
+; type carries MOB_ELITE_BIT; villagers and the boss are skipped (the sites re-create them).
 mobs_save:
     mov     r8, rdi
     lea     rdi, [r8 + WORLDHDR.mobs]
@@ -1383,6 +2194,12 @@ mobs_save:
     mov     eax, [rsi + MOB.type]
     test    eax, eax
     jz      .next
+    cmp     eax, MOB_MERCHANT
+    jae     .next                       ; villagers and the boss are re-created from the sites
+    cmp     dword [rsi + MOB.elite], 0
+    je      .plain
+    or      eax, MOB_ELITE_BIT
+.plain:
     mov     [rdi + MOBSAVE.type], eax
     mov     eax, [rsi + MOB.health]
     mov     [rdi + MOBSAVE.health], eax
@@ -1412,7 +2229,7 @@ mobs_save:
 %endmacro
 
 ; mobs_load(rdi WORLDHDR*): clear, then respawn every saved record that describes a known mob
-; type inside the world, with its health clamped to 1..max
+; type (low byte 1..6, bit 8 = elite) inside the world, with its health clamped to 1..max
 mobs_load:
     push    rbp
     mov     rbp, rsp
@@ -1432,14 +2249,14 @@ mobs_load:
     test    r12d, r12d
     jz      .done
     dec     r12d
-    mov     eax, [r13 + MOBSAVE.type]
+    movzx   eax, byte [r13 + MOBSAVE.type]
     dec     eax
-    cmp     eax, NUM_MOB_TYPES - 1
-    ja      .skip                       ; not a mob type
+    cmp     eax, 5
+    ja      .skip                       ; not a saved mob type (1..6)
     IN_RANGE [r13 + MOBSAVE.x], c_256
     IN_RANGE [r13 + MOBSAVE.y], c_64
     IN_RANGE [r13 + MOBSAVE.z], c_256
-    mov     edi, [r13 + MOBSAVE.type]
+    movzx   edi, byte [r13 + MOBSAVE.type]  ; the low byte is the type, bit 8 marks an elite
     movss   xmm0, [r13 + MOBSAVE.x]
     movss   xmm1, [r13 + MOBSAVE.y]
     movss   xmm2, [r13 + MOBSAVE.z]
@@ -1449,8 +2266,11 @@ mobs_load:
     imul    eax, eax, MOB_size
     lea     rdx, [mobs]
     add     rdx, rax                    ; the new mob
-    mov     ecx, [rdx + MOB.type]
-    mov     esi, [t_health + rcx*4 - 4]
+    test    dword [r13 + MOBSAVE.type], MOB_ELITE_BIT
+    jz      .plain
+    call    make_elite                  ; rdx = the new mob: elite flag, health and speed
+.plain:
+    mov     esi, [rdx + MOB.max_health] ; saved health clamps to 1..max (an elite's max is 2.5 x base)
     mov     eax, [r13 + MOBSAVE.health]
     mov     ecx, 1
     cmp     eax, ecx

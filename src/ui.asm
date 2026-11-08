@@ -11,7 +11,7 @@ global ui_w, ui_h, ui_scale, ui_mx, ui_my, ui_focus
 global ui_init, ui_begin, ui_rect, ui_frame, ui_panel
 global ui_text, ui_text_width, ui_text_centered
 global ui_button, ui_slider, ui_textfield, ui_slot
-global ui_item_icon, ui_icon9, ui_tooltip
+global ui_item_icon, ui_icon9, ui_tooltip, ui_tile_icon
 
 extern settings, ui_input, audio_play, tex_id
 extern font8x8, item_icon, item_max_stack, item_durability
@@ -959,17 +959,28 @@ ui_textfield:
 
 ; ---- icons and item slots -----------------------------------------------------
 
-; ui_item_icon(edi id, esi x, edx y, ecx size): the item's whole atlas tile, uv inset 1 unit
+; ui_item_icon(edi id, esi x, edx y, ecx size): the item's icon, white; ui_tile_icon with the
+; item's atlas tile
 ui_item_icon:
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 32                     ; quad record
     mov     eax, edi
     cmp     eax, NUM_ITEMS
     jae     .ret
     cmp     byte [item_max_stack + rax], 0
     je      .ret                        ; air and the unused ids have no icon
-    movzx   eax, byte [item_icon + rax] ; atlas tile
+    movzx   edi, byte [item_icon + rax] ; atlas tile
+    mov     r8d, WHITE
+    jmp     ui_tile_icon
+.ret:
+    ret
+
+; ui_tile_icon(edi tile, esi x, edx y, ecx size, r8d rgba): an atlas tile scaled to size x size at
+; (x, y), uv inset 1 unit, multiplied by the colour (its alpha too: 0xAABBGGRR as for ui_rect)
+ui_tile_icon:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48                     ; quad record, then the colour
+    mov     eax, edi
+    mov     [rsp + 32], r8d
     mov     [rsp], esi                  ; x0
     mov     [rsp + 4], edx              ; y0
     add     esi, ecx
@@ -991,15 +1002,14 @@ ui_item_icon:
     mov     [rsp + 28], eax             ; v1
     mov     edi, GL_TEXTURE_2D
     call    glEnable
-    mov     edi, WHITE
+    mov     edi, [rsp + 32]
     call    set_color
     mov     edi, GL_QUADS
     call    glBegin
     mov     rdi, rsp
     call    quad_uv
     call    glEnd
-.ret:
-    add     rsp, 32
+    add     rsp, 48
     pop     rbp
     ret
 
