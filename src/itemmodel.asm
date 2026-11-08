@@ -9,7 +9,7 @@ default rel
 
 global item_model_draw, item_model_is_block
 
-extern render_box, render_box_px, atlas, block_tiles, block_shape, item_icon, item_max_stack
+extern render_box16, render_box_px16, atlas, block_tiles, block_shape, item_icon, item_max_stack
 extern shape_boxes
 
 section .rodata
@@ -27,7 +27,7 @@ f_bottom:    dd 0.5
 section .bss
 alignb 4
 shades:      resd 6
-tiles:       resb 8
+tiles:       resw 6
 light:       resd 1
 quad_x0:     resd 1                     ; current pixel box
 quad_x1:     resd 1
@@ -82,15 +82,15 @@ item_model_draw:
 
     ; ---- block: the block's own tiles on a cube, or on the boxes of a slab / stairs ------
     lea     eax, [rbx + rbx*2]
-    movzx   ecx, byte [block_tiles + rax]      ; top
-    movzx   edx, byte [block_tiles + rax + 1]  ; side
-    movzx   esi, byte [block_tiles + rax + 2]  ; bottom
-    mov     [tiles], dl
-    mov     [tiles + 1], dl
-    mov     [tiles + 2], cl
-    mov     [tiles + 3], sil
-    mov     [tiles + 4], dl
-    mov     [tiles + 5], dl
+    movzx   ecx, word [block_tiles + rax*2]      ; top
+    movzx   edx, word [block_tiles + rax*2 + 2]  ; side
+    movzx   esi, word [block_tiles + rax*2 + 4]  ; bottom
+    mov     [tiles], dx
+    mov     [tiles + 2], dx
+    mov     [tiles + 4], cx
+    mov     [tiles + 6], si
+    mov     [tiles + 8], dx
+    mov     [tiles + 10], dx
     xor     ecx, ecx
 .shade:
     movss   xmm0, [cube_shade + rcx*4]
@@ -107,7 +107,7 @@ item_model_draw:
     movss   xmm0, [f_one]
     movss   xmm1, [f_one]
     movss   xmm2, [f_one]
-    call    render_box
+    call    render_box16
     jmp     .ret
 
     ; slab / stairs: the RENDER boxes of the item form, each mapped to model space as px / 16 - 0.5
@@ -144,7 +144,7 @@ item_model_draw:
     movss   xmm1, [f_one]
     movss   xmm2, [f_one]
     mov     rcx, r14
-    call    render_box_px
+    call    render_box_px16
     inc     r13d
     jmp     .box
 

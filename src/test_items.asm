@@ -1193,14 +1193,17 @@ test_new_blocks_tables:
     jne     .fail
     lea     rdx, [block_tiles]
     lea     rsi, [rcx + rcx*2]
-    mov     al, [rdx + rsi]
-    cmp     al, [rbx + 3]
+    movzx   eax, word [rdx + rsi*2]
+    movzx   r8d, byte [rbx + 3]
+    cmp     eax, r8d
     jne     .fail
-    mov     al, [rdx + rsi + 1]
-    cmp     al, [rbx + 4]
+    movzx   eax, word [rdx + rsi*2 + 2]
+    movzx   r8d, byte [rbx + 4]
+    cmp     eax, r8d
     jne     .fail
-    mov     al, [rdx + rsi + 2]
-    cmp     al, [rbx + 5]
+    movzx   eax, word [rdx + rsi*2 + 4]
+    movzx   r8d, byte [rbx + 5]
+    cmp     eax, r8d
     jne     .fail
     lea     rdx, [block_tool]
     mov     al, [rdx + rcx]
@@ -1305,13 +1308,13 @@ test_shrine_block_tables:
     jne     .fail
     lea     rdx, [block_tiles]
     lea     rsi, [rbx + rbx*2]
-    movzx   eax, byte [rdx + rsi]
+    movzx   eax, word [rdx + rsi*2]
     cmp     eax, TILE_SHRINE_TOP
     jne     .fail
-    movzx   eax, byte [rdx + rsi + 1]
+    movzx   eax, word [rdx + rsi*2 + 2]
     cmp     eax, TILE_SHRINE_SIDE
     jne     .fail
-    movzx   eax, byte [rdx + rsi + 2]
+    movzx   eax, word [rdx + rsi*2 + 4]
     cmp     eax, TILE_STONE_BRICK
     jne     .fail
     lea     rdx, [block_hardness]

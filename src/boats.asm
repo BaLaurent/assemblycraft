@@ -903,7 +903,7 @@ boats_render:
     push    r12
     push    r13
     sub     rsp, 8
-    movzx   eax, byte [block_tiles + PLANKS * 3 + 1]
+    movzx   eax, word [block_tiles + (PLANKS * 3 + 1) * 2]
     mov     rcx, 0x0101010101010101
     imul    rax, rcx
     mov     [plank_tiles], rax

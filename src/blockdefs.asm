@@ -49,100 +49,100 @@ block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3
 
 ; tiles per block: top, side, bottom
 block_tiles:
-    db 0, 0, 0                          ; AIR
-    db 0, 0, 0                          ; STONE
-    db 1, 2, 3                          ; GRASS
-    db 3, 3, 3                          ; DIRT
-    db 4, 4, 4                          ; COBBLE
-    db 5, 5, 5                          ; PLANKS
-    db 7, 6, 7                          ; LOG
-    db 8, 8, 8                          ; LEAVES
-    db 9, 9, 9                          ; SAND
-    db 10, 10, 10                       ; GLASS
-    db 11, 11, 11                       ; BRICK
-    db 12, 12, 12                       ; BEDROCK
-    db TILE_TABLE_TOP, TILE_TABLE_SIDE, 5 ; CRAFTING_TABLE
-    db TILE_COAL_ORE, TILE_COAL_ORE, TILE_COAL_ORE
-    db TILE_IRON_ORE, TILE_IRON_ORE, TILE_IRON_ORE
-    db TILE_GOLD_ORE, TILE_GOLD_ORE, TILE_GOLD_ORE
-    db TILE_DIAMOND_ORE, TILE_DIAMOND_ORE, TILE_DIAMOND_ORE
-    db 0, TILE_FURNACE_FRONT, 0         ; FURNACE
-    db 0, TILE_FURNACE_LIT, 0           ; FURNACE_LIT
-    db TILE_CHEST_TOP, TILE_CHEST_SIDE, TILE_CHEST_TOP
-    db TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL
-    db TILE_TNT_TOP, TILE_TNT_SIDE, TILE_TNT_TOP
-    db 0, 0, 0                          ; FIRE (drawn by fire.asm, skipped by the mesher)
-    db TILE_STONE_BRICK, TILE_STONE_BRICK, TILE_STONE_BRICK
-    db TILE_MOSSY_BRICK, TILE_MOSSY_BRICK, TILE_MOSSY_BRICK
-    db TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE, TILE_SANDSTONE_BOTTOM
-    times 3 db TILE_SMOOTH_STONE
-    times 3 db TILE_MOSSY_COBBLE
-    times 3 db TILE_CRACKED_BRICK
-    db 5, TILE_BOOKSHELF, 5             ; BOOKSHELF
-    times 3 db TILE_WOOL
-    times 3 db TILE_IRON_BLOCK
-    times 3 db TILE_GOLD_BLOCK
-    times 3 db TILE_DIAMOND_BLOCK
-    times 3 db TILE_COAL_BLOCK
+    dw 0, 0, 0                          ; AIR
+    dw 0, 0, 0                          ; STONE
+    dw 1, 2, 3                          ; GRASS
+    dw 3, 3, 3                          ; DIRT
+    dw 4, 4, 4                          ; COBBLE
+    dw 5, 5, 5                          ; PLANKS
+    dw 7, 6, 7                          ; LOG
+    dw 8, 8, 8                          ; LEAVES
+    dw 9, 9, 9                          ; SAND
+    dw 10, 10, 10                       ; GLASS
+    dw 11, 11, 11                       ; BRICK
+    dw 12, 12, 12                       ; BEDROCK
+    dw TILE_TABLE_TOP, TILE_TABLE_SIDE, 5 ; CRAFTING_TABLE
+    dw TILE_COAL_ORE, TILE_COAL_ORE, TILE_COAL_ORE
+    dw TILE_IRON_ORE, TILE_IRON_ORE, TILE_IRON_ORE
+    dw TILE_GOLD_ORE, TILE_GOLD_ORE, TILE_GOLD_ORE
+    dw TILE_DIAMOND_ORE, TILE_DIAMOND_ORE, TILE_DIAMOND_ORE
+    dw 0, TILE_FURNACE_FRONT, 0         ; FURNACE
+    dw 0, TILE_FURNACE_LIT, 0           ; FURNACE_LIT
+    dw TILE_CHEST_TOP, TILE_CHEST_SIDE, TILE_CHEST_TOP
+    dw TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL
+    dw TILE_TNT_TOP, TILE_TNT_SIDE, TILE_TNT_TOP
+    dw 0, 0, 0                          ; FIRE (drawn by fire.asm, skipped by the mesher)
+    dw TILE_STONE_BRICK, TILE_STONE_BRICK, TILE_STONE_BRICK
+    dw TILE_MOSSY_BRICK, TILE_MOSSY_BRICK, TILE_MOSSY_BRICK
+    dw TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE, TILE_SANDSTONE_BOTTOM
+    times 3 dw TILE_SMOOTH_STONE
+    times 3 dw TILE_MOSSY_COBBLE
+    times 3 dw TILE_CRACKED_BRICK
+    dw 5, TILE_BOOKSHELF, 5             ; BOOKSHELF
+    times 3 dw TILE_WOOL
+    times 3 dw TILE_IRON_BLOCK
+    times 3 dw TILE_GOLD_BLOCK
+    times 3 dw TILE_DIAMOND_BLOCK
+    times 3 dw TILE_COAL_BLOCK
 %define T_PLANKS 5, 5, 5
 %define T_COBBLE 4, 4, 4
 %define T_SBRICK TILE_STONE_BRICK, TILE_STONE_BRICK, TILE_STONE_BRICK
 %define T_BRICK 11, 11, 11
 %define T_SANDSTONE TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE, TILE_SANDSTONE_BOTTOM
-    db T_PLANKS                         ; slabs
-    db T_COBBLE
-    db T_SBRICK
-    db T_BRICK
-    db T_SANDSTONE
+    dw T_PLANKS                         ; slabs
+    dw T_COBBLE
+    dw T_SBRICK
+    dw T_BRICK
+    dw T_SANDSTONE
 %rep 4
-    db T_PLANKS                         ; PLANK_STAIRS
+    dw T_PLANKS                         ; PLANK_STAIRS
 %endrep
 %rep 4
-    db T_COBBLE
+    dw T_COBBLE
 %endrep
 %rep 4
-    db T_SBRICK
+    dw T_SBRICK
 %endrep
 %rep 4
-    db T_BRICK
+    dw T_BRICK
 %endrep
 %rep 4
-    db T_SANDSTONE
+    dw T_SANDSTONE
 %endrep
 %rep 8                                  ; WOOD_DOOR: param bit 0 = upper half
-    times 3 db TILE_DOOR_WOOD_LOWER
-    times 3 db TILE_DOOR_WOOD_UPPER
+    times 3 dw TILE_DOOR_WOOD_LOWER
+    times 3 dw TILE_DOOR_WOOD_UPPER
 %endrep
 %rep 8                                  ; IRON_DOOR
-    times 3 db TILE_DOOR_IRON_LOWER
-    times 3 db TILE_DOOR_IRON_UPPER
+    times 3 dw TILE_DOOR_IRON_LOWER
+    times 3 dw TILE_DOOR_IRON_UPPER
 %endrep
-    times 8 * 3 db TILE_TRAPDOOR
-    times 4 * 3 db TILE_LADDER
-    times 5 * 3 db TILE_TORCH
-    db T_PLANKS                         ; FENCE
-    db 10, 10, 10                       ; GLASS_PANE
-    times 3 db TILE_WATER
-    times 3 db TILE_ICE
-    times 3 db TILE_SNOW                ; SNOW_LAYER
-    times 3 db TILE_SNOW                ; SNOW_BLOCK
-    times 3 db TILE_MUD
-    times 3 db TILE_TALL_GRASS
-    db TILE_CACTUS_TOP, TILE_CACTUS_SIDE, TILE_CACTUS_TOP
-    db TILE_PINE_LOG_TOP, TILE_PINE_LOG, TILE_PINE_LOG_TOP
-    times 3 db TILE_PINE_LEAVES
-    db 7, TILE_BIRCH_LOG, 7             ; BIRCH_LOG: LOG's ring top
-    times 3 db TILE_BIRCH_LEAVES
+    times 8 * 3 dw TILE_TRAPDOOR
+    times 4 * 3 dw TILE_LADDER
+    times 5 * 3 dw TILE_TORCH
+    dw T_PLANKS                         ; FENCE
+    dw 10, 10, 10                       ; GLASS_PANE
+    times 3 dw TILE_WATER
+    times 3 dw TILE_ICE
+    times 3 dw TILE_SNOW                ; SNOW_LAYER
+    times 3 dw TILE_SNOW                ; SNOW_BLOCK
+    times 3 dw TILE_MUD
+    times 3 dw TILE_TALL_GRASS
+    dw TILE_CACTUS_TOP, TILE_CACTUS_SIDE, TILE_CACTUS_TOP
+    dw TILE_PINE_LOG_TOP, TILE_PINE_LOG, TILE_PINE_LOG_TOP
+    times 3 dw TILE_PINE_LEAVES
+    dw 7, TILE_BIRCH_LOG, 7             ; BIRCH_LOG: LOG's ring top
+    times 3 dw TILE_BIRCH_LEAVES
 %rep 4
-    db TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5
+    dw TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5
 %endrep
 %rep 4
-    db TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5
+    dw TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5
 %endrep
 %rep 5                                  ; SHRINE
-    db TILE_SHRINE_TOP, TILE_SHRINE_SIDE, TILE_STONE_BRICK
+    dw TILE_SHRINE_TOP, TILE_SHRINE_SIDE, TILE_STONE_BRICK
 %endrep
-    SIZECHECK block_tiles, 3
+    SIZECHECK block_tiles, 6
 
 align 4
 ; seconds-scale hardness; negative = unbreakable

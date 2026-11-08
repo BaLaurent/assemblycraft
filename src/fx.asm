@@ -13,7 +13,7 @@ default rel
 global fx_clear, fx_explosion, fx_debris, fx_burst, fx_step, fx_render, fx_count
 global fx_particles, fx_shake, fx_shake_yaw, fx_shake_pitch, fx_flash, fx_shift
 
-extern rng_next, player_eye, world_is_solid, block_tiles, render_box
+extern rng_next, player_eye, world_is_solid, block_tiles, render_box16
 extern glIsEnabled, glGetFloatv
 
 %define GL_CURRENT_COLOR 0x0B00
@@ -99,7 +99,7 @@ burst_tab:
 ; render_box face order +X -X +Y -Y +Z -Z
 shades_block: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
 shades_flat:  dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
-zero_tiles:   db 0, 0, 0, 0, 0, 0, 0, 0
+zero_tiles:   times 6 dw 0
 
 section .bss
 alignb 16
@@ -495,7 +495,7 @@ fx_debris:
     mov     [rbx + PARTICLE.life], eax
     lea     rax, [block_tiles]
     lea     ecx, [r12 + r12*2]
-    movzx   eax, byte [rax + rcx + 1]   ; the block's side tile
+    movzx   eax, word [rax + rcx*2 + 2]  ; the block's side tile
     mov     [rbx + PARTICLE.tile], eax
     mov     dword [rbx + PARTICLE.kind], FX_DEBRIS
 .ret:
@@ -919,9 +919,10 @@ draw_pass:
     jmp     .call
 .debris:
     mov     eax, [rbx + PARTICLE.tile]
-    mov     rcx, 0x0101010101010101
+    mov     rcx, 0x0001000100010001
     imul    rax, rcx
     mov     [rsp + 24], rax
+    mov     [rsp + 32], eax                 ; words 4 and 5 (the box float[6] fills rsp .. rsp + 23)
     movss   xmm0, [k_one]
     movss   xmm1, xmm0
     movss   xmm2, xmm0
@@ -929,7 +930,7 @@ draw_pass:
     lea     rdx, [shades_block]
 .call:
     mov     rdi, rsp
-    call    render_box
+    call    render_box16
     inc     r13d
 .next:
     add     rbx, PARTICLE_size

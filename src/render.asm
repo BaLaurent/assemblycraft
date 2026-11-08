@@ -13,7 +13,7 @@
 default rel
 
 global render_init, render_update_chunks, render_column_freed, render_world
-global render_box, render_box16, render_box_px, frustum_setup, frustum_test, tex_id, atlas
+global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, frustum_test, tex_id, atlas
 
 extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
@@ -960,6 +960,12 @@ render_box16:
 ; side tiles and a thin box a thin strip. Colour as render_box.
 render_box_px:
     xor     eax, eax
+    jmp     box_draw
+
+; render_box_px16(rdi box float[6]; rsi tiles word[6]; rdx shades float[6]; xmm0 r, xmm1 g,
+;                 xmm2 b; rcx px byte[6]): render_box_px with 16-bit atlas tile ids.
+render_box_px16:
+    mov     eax, 1
     ; fall through
 
 ; box_draw: the body of render_box, render_box_px and render_box16. In: the register arguments

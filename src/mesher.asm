@@ -764,7 +764,7 @@ face_tile:
 .slot_done:
     lea     ecx, [r14 + r14*2]
     add     ecx, eax
-    movzx   eax, byte [block_tiles + rcx]
+    movzx   eax, word [block_tiles + rcx*2]
     ret
 
 ; emit_cross: the 16 vertices of the cross-shaped block r14d at L_BX..L_BZ (pad index L_PI): two
@@ -774,7 +774,7 @@ emit_cross:
     mov     ecx, [V(L_PI)]
     movzx   eax, byte [pad_light + rcx]
     lea     edx, [r14 + r14*2]
-    movzx   edx, byte [block_tiles + rdx + 1]
+    movzx   edx, word [block_tiles + rdx*2 + 2]
     mov     r8d, edx
     and     r8d, 15
     shl     r8d, 8                      ; tile column * 256
