@@ -1233,6 +1233,23 @@ struc GENBUF
     .conts:   resb MAX_COL_CONTS * CONTAINER_size
 endstruc
 
+; the terrain of one block column (worldgen.asm terrain_cell's output)
+struc TCELL
+    .h:      resd 1                     ; surface height in 8..240
+    .biome:  resd 1                     ; BIOME_*
+    .top:    resd 1                     ; block at y = h
+    .f1:     resd 1                     ; blocks at h - 1, h - 2, h - 3 (the filler)
+    .f2:     resd 1
+    .f3:     resd 1
+    .deep:   resd 1                     ; blocks at h - 4 .. h - 6 (STONE, or SANDSTONE in deserts)
+    .cover:  resd 1                     ; block placed at h + 1 when the column is above water (0 = none)
+    .cold:   resd 1                     ; 1 when the temperature is below the snow line (water freezes)
+endstruc
+; terrain cells around a column being generated: the column plus a 3 cell margin (trees that cross its
+; border, cave pools), index (lz + 3) * TC_W + lx + 3
+%define TC_W        22
+%define TC_CELLS    484
+
 ; a road between two camps of one super-region (structures.asm roads_edges), absolute cells
 struc ROADEDGE
     .ax:      resd 1                    ; camp centres: A = the start, B = the end
