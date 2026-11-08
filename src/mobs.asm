@@ -54,7 +54,7 @@ extern gear_drop_from_mob
 %define BOSS_VOLLEY_STEPS 240           ; arrow volleys (phases 2 and 3) this often
 %define BOSS_MAX_MINIONS 4              ; no summons while this many skeletons live
 %define MOB_HP_STEP   0.15              ; health per level above 1, as a fraction of the base health
-%define MOB_DMG_STEP  0.08              ; damage of a mob's blows per level above 1
+%define MOB_DMG_STEP  0.10              ; damage of a mob's blows per level above 1 (0.8 balance: 0.08 -> 0.10)
 %define MOB_MAX_LEVEL 255               ; a save keeps the level in one byte
 %define ORIGIN_CRYPT  99                ; MOB.origin of the crypt boss
 %define CRYPT_MIN_LEVEL 20              ; the crypt boss is at least this level

@@ -47,8 +47,8 @@ k_91:     dd 91.0
 k_1e9:    dd 1.0e9
 k_m1e9:   dd -1.0e9
 k_6:      dd 6.0
-k_1_71:   dd 1.71
-k_1_73:   dd 1.73
+k_1_89:   dd 1.89
+k_1_91:   dd 1.91
 k_2_985:  dd 2.985
 k_2_995:  dd 2.995
 k_3_88:   dd 3.88
@@ -1523,7 +1523,7 @@ night_census:
 ; three above and at least 20) with the health of that level: a level-10 zombie 20 * (1 + 0.15 * 9)
 ; = 47, level 12 53, an elite of level 10 round(117.5) = 118, the Fallen King at 20 300 * 3.85 =
 ; 1155; mob_set_level heals it fully. A level-10 zombie's blow on the unarmored Normal player is
-; round(3 * 1.72) = 5, an elite's round(round(3 * 1.5) * 1.72) = 7. A save keeps the level and the
+; round(3 * 1.9) = 6, an elite's round(round(3 * 1.5) * 1.9) = 8. A save keeps the level and the
 ; affixes in the type word (an elite of level 12 with MOLTEN | SWIFT reads back as such; a record
 ; without them takes the player's level and no affix).
 test_mob_levels_and_scaling:
@@ -1547,7 +1547,7 @@ test_mob_levels_and_scaling:
     mov     byte [rpg_state + RPGSAVE.level], 25
     LEVEL_FOR 99, 28
     mov     byte [rpg_state + RPGSAVE.level], 10
-    mov     edi, 1                      ; the blows' scale: 1.0 at level 1 (and below), 1.72 at 10
+    mov     edi, 1                      ; the blows' scale: 1.0 at level 1 (and below), 1.9 at 10
     call    mob_dmg_mult
     ucomiss xmm0, [k_one]
     jne     .fail
@@ -1557,9 +1557,9 @@ test_mob_levels_and_scaling:
     jne     .fail
     mov     edi, 10
     call    mob_dmg_mult
-    ucomiss xmm0, [k_1_71]
+    ucomiss xmm0, [k_1_89]
     jbe     .fail
-    ucomiss xmm0, [k_1_73]
+    ucomiss xmm0, [k_1_91]
     jae     .fail
     lea     rdi, [mobs]                 ; a freed slot full of stale bytes: a spawn clears all the new fields
     mov     ecx, MOB_size
@@ -1681,13 +1681,13 @@ test_mob_levels_and_scaling:
     call    mobs_step
     dec     ebx
     jnz     .blow
-    cmp     dword [surv + SURVIVAL.health], 15      ; 20 - round(3 * 1.72)
+    cmp     dword [surv + SURVIVAL.health], 14      ; 20 - round(3 * 1.9)
     jne     .fail
-    xor     edi, edi                    ; a spider's bite (Normal: 2): round(2 * 1.72) = 3
+    xor     edi, edi                    ; a spider's bite (Normal: 2): round(2 * 1.9) = 4
     call    spider_bite
-    cmp     eax, 17
+    cmp     eax, 16
     jne     .fail
-    call    stand_player                ; an elite: 3 * 1.5 -> 4, then x 1.72 -> 7
+    call    stand_player                ; an elite: 3 * 1.5 -> 4, then x 1.9 -> 8
     call    survival_reset
     call    combat_reset
     mov     edi, MOB_ZOMBIE
@@ -1703,7 +1703,7 @@ test_mob_levels_and_scaling:
     call    mobs_step
     dec     ebx
     jnz     .eblow
-    cmp     dword [surv + SURVIVAL.health], 13      ; 20 - round(round(3 * 1.5) * 1.72)
+    cmp     dword [surv + SURVIVAL.health], 12      ; 20 - round(round(3 * 1.5) * 1.9)
     jne     .fail
     call    mobs_clear                  ; the save: an elite of level 12 with MOLTEN | SWIFT
     mov     edi, MOB_ZOMBIE
