@@ -1765,29 +1765,29 @@ game_frame:
     test    eax, eax
     jz      .pick
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
-    je      .no_boat_click              ; a boat is put down or boarded by a fresh click only
+    je      .no_boat_click              ; a boat is boarded or put down by a fresh click only
+    cmp     dword [boat_riding], 0      ; a boat in front (nearer than the block hit) is boarded,
+    jne     .boat_item                  ; even with a boat in hand
+    mov     eax, [rsp + F_BOAT]
+    test    eax, eax
+    js      .boat_item
+    mov     edi, eax
+    call    boats_mount
+    jmp     .pick
+.boat_item:
     call    held_id
     cmp     eax, BOAT
-    jne     .not_boat_item
+    jne     .no_boat_click
     lea     rdi, [rsp + F_EYE]
     lea     rsi, [rsp + F_DIR]
     call    boats_place
     test    eax, eax
-    jz      .not_boat_item              ; no water to put it on: the click goes on as an ordinary use
+    jz      .no_boat_click              ; no water to put it on: the click goes on as an ordinary use
     call    hand_swing
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .pick
     mov     edi, 1
     call    inv_consume_held
-    jmp     .pick
-.not_boat_item:
-    cmp     dword [boat_riding], 0
-    jne     .no_boat_click
-    mov     eax, [rsp + F_BOAT]
-    test    eax, eax
-    js      .no_boat_click
-    mov     edi, eax
-    call    boats_mount
     jmp     .pick
 .no_boat_click:
     cmp     dword [game_has_target], 0

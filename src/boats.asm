@@ -45,13 +45,14 @@ c_bound:    dd 65536.0                  ; saved coordinates must lie inside +-th
 c_256:      dd 256.0
 c_abs_mask: dd 0x7FFFFFFF
 s_many:     db "Too many boats", 0
-; the five boxes of the hull in model space (blocks, bow towards -z): lo xyz, hi xyz
+; the five boxes of the hull in model space (blocks, bow towards -z): lo xyz, hi xyz. The floor is
+; 5/16 thick so it covers the water surface (14/16 of the cell, 0.25 above a floating boat's bottom)
 hull:
-    dd -0.55, 0.0, -0.85, 0.55, 0.125, 0.85         ; floor
-    dd -0.55, 0.125, -0.85, -0.45, 0.5, 0.85        ; left wall
-    dd 0.45, 0.125, -0.85, 0.55, 0.5, 0.85          ; right wall
-    dd -0.45, 0.125, -0.85, 0.45, 0.5, -0.75        ; bow
-    dd -0.45, 0.125, 0.75, 0.45, 0.5, 0.85          ; stern
+    dd -0.55, 0.0, -0.85, 0.55, 0.3125, 0.85        ; floor
+    dd -0.55, 0.3125, -0.85, -0.45, 0.5, 0.85       ; left wall
+    dd 0.45, 0.3125, -0.85, 0.55, 0.5, 0.85         ; right wall
+    dd -0.45, 0.3125, -0.85, 0.45, 0.5, -0.75       ; bow
+    dd -0.45, 0.3125, 0.75, 0.45, 0.5, 0.85         ; stern
 hull_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8        ; +X -X +Y -Y +Z -Z
 
 section .bss
