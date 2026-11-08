@@ -1,7 +1,8 @@
 ; quests.asm - the quest chain every elder hands out, and the merchant's trades.
 ; The chain position lives in rpg_state (quest, quest_state, quest_progress) and is saved with
 ; the character. Rewards are XP and coins, sometimes an item; what does not fit in the
-; inventory is dropped at the player's feet.
+; inventory is dropped at the player's feet. A gear item the merchant sells (the jewelry rows) is
+; rolled when it is bought: a magic-or-better piece of the tier of the player's level.
 %include "common.inc"
 default rel
 
@@ -10,7 +11,8 @@ global quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
 global trade_offer, trade_can, trade_execute
 
 extern rpg_state, rpg_add_xp, rpg_give_item
-extern inv_count, inv_remove_one, audio_play, hud_banner
+extern inv_count, inv_remove_one, inv_add_dmg, drops_spawn, player, audio_play, hud_banner
+extern item_gear, gear_roll, gear_tier_for_level
 
 section .rodata.str progbits alloc noexec nowrite align=1
 
@@ -18,6 +20,7 @@ section .rodata
 align 4
 f_vol_full: dd 1.0
 f_vol_coin: dd 0.7
+f_drop_y:   dd 0.5                     ; a piece that does not fit falls this far above the feet
 s_done:     db "Quest complete!", 0
 
 %macro QUEST 10                         ; type, target, count, xp, coins, item, item_n, title, line1, line2
@@ -293,12 +296,15 @@ trade_can:
     ret
 
 ; trade_execute(edi i) -> eax 1 when the trade was made: the price is taken, the goods are
-; added (what does not fit is dropped at the player), coin sound
+; added (what does not fit is dropped at the player), coin sound. A gear item (item_gear != 0) is
+; rolled piece by piece: its dmg word is gear_roll(item, gear_tier_for_level(level), LOOT_SHOP).
 trade_execute:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    push    r13
+    sub     rsp, 8
     mov     r12d, edi
     call    trade_can
     test    eax, eax
@@ -313,13 +319,47 @@ trade_execute:
     dec     r12d
     jnz     .take
     mov     edi, [rbx + TRADEOFFER.get]
+    lea     rax, [item_gear]
+    cmp     byte [rax + rdi], 0
+    jne     .gear
     mov     esi, [rbx + TRADEOFFER.get_n]
     call    rpg_give_item
+    jmp     .paid
+.gear:
+    mov     r12d, [rbx + TRADEOFFER.get_n]
+.piece:
+    movzx   edi, byte [rpg_state + RPGSAVE.level]
+    call    gear_tier_for_level
+    mov     edi, [rbx + TRADEOFFER.get]
+    mov     esi, eax
+    mov     edx, LOOT_SHOP
+    call    gear_roll
+    mov     r13d, eax                   ; the piece's dmg word
+    mov     edi, [rbx + TRADEOFFER.get]
+    mov     esi, 1
+    mov     edx, r13d
+    call    inv_add_dmg
+    test    eax, eax
+    jz      .next
+    mov     esi, eax                    ; no room: it falls at the player's feet
+    mov     edi, [rbx + TRADEOFFER.get]
+    mov     edx, r13d
+    movss   xmm0, [player + BODY.x]
+    movss   xmm1, [player + BODY.y]
+    addss   xmm1, [f_drop_y]
+    movss   xmm2, [player + BODY.z]
+    call    drops_spawn
+.next:
+    dec     r12d
+    jnz     .piece
+.paid:
     mov     edi, SND_COIN
     movss   xmm0, [f_vol_coin]
     call    audio_play
     mov     eax, 1
 .ret:
+    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

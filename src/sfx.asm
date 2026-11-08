@@ -1,4 +1,4 @@
-; sfx.asm - procedural sound effects: the 55 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural sound effects: the 60 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few layers (noise / square / saw through a one-pole filter and an
 ; envelope). sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
@@ -159,6 +159,39 @@ layers:
     LAYER SND_DOOR_OPEN,     W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.008, 0.0,  0.0,  0.04, 0.35, 0.0,  0.0  ; latch click
     LAYER SND_DOOR_CLOSE,    W_NOISE,  0.0,    0.0,    0.06, 0, E_EXP, 0.03,  0.0,  0.0,  0.15, 1.3,  0.0,  0.0  ; thud
     LAYER SND_DOOR_CLOSE,    W_SQUARE, 90.0,   90.0,   0.2,  0, E_EXP, 0.04,  0.0,  0.0,  0.15, 0.30, 0.0,  0.0
+    ; --- 0.8 sounds 55..59 (peak target: inside -18 .. -0.1 dBFS, measured with the harness) ---
+    ; freeze: ice crackle, five short high-passed noise ticks and two glassy pings
+    LAYER SND_FREEZE,        W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.010, 0.0,  0.00, 0.05, 0.75, 0.0,  0.0
+    LAYER SND_FREEZE,        W_NOISE,  0.0,    0.0,    0.8,  1, E_EXP, 0.006, 0.0,  0.07, 0.04, 0.65, 0.0,  0.0
+    LAYER SND_FREEZE,        W_NOISE,  0.0,    0.0,    0.6,  1, E_EXP, 0.012, 0.0,  0.12, 0.06, 0.70, 0.0,  0.0
+    LAYER SND_FREEZE,        W_NOISE,  0.0,    0.0,    0.8,  1, E_EXP, 0.005, 0.0,  0.19, 0.03, 0.60, 0.0,  0.0
+    LAYER SND_FREEZE,        W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.020, 0.0,  0.23, 0.07, 0.55, 0.0,  0.0
+    LAYER SND_FREEZE,        W_SQUARE, 3600.0, 3300.0, 0.6,  0, E_EXP, 0.040, 0.0,  0.02, 0.20, 0.10, 0.0,  0.0
+    LAYER SND_FREEZE,        W_SQUARE, 4800.0, 4400.0, 0.6,  0, E_EXP, 0.030, 0.0,  0.10, 0.20, 0.07, 0.0,  0.0
+    ; heavy: low whoosh swelling into a thud
+    LAYER SND_HEAVY,         W_NOISE,  0.0,    0.0,    0.15, 0, E_LIN, 0.0,   0.07, 0.00, 0.13, 1.1,  0.0,  0.0
+    LAYER SND_HEAVY,         W_NOISE,  0.0,    0.0,    0.06, 0, E_EXP, 0.040, 0.0,  0.09, 0.16, 1.3,  0.0,  0.0
+    LAYER SND_HEAVY,         W_SAW,    75.0,   40.0,   0.2,  0, E_EXP, 0.050, 0.0,  0.09, 0.16, 0.40, 0.0,  0.0
+    ; knives: four quick swishes, each a little higher than the last
+    LAYER SND_KNIVES,        W_NOISE,  0.0,    0.0,    0.45, 1, E_LIN, 0.0,   0.02, 0.00, 0.12, 0.8,  0.0,  0.0
+    LAYER SND_KNIVES,        W_NOISE,  0.0,    0.0,    0.50, 1, E_LIN, 0.0,   0.02, 0.06, 0.12, 0.8,  0.0,  0.0
+    LAYER SND_KNIVES,        W_NOISE,  0.0,    0.0,    0.55, 1, E_LIN, 0.0,   0.02, 0.12, 0.12, 0.8,  0.0,  0.0
+    LAYER SND_KNIVES,        W_NOISE,  0.0,    0.0,    0.60, 1, E_LIN, 0.0,   0.02, 0.18, 0.12, 0.8,  0.0,  0.0
+    ; rare loot: two-note chime (A5, E6) with a bright overtone
+    LAYER SND_LOOT_RARE,     W_SQUARE, 880.0,  880.0,  0.35, 0, E_EXP, 0.080, 0.0,  0.00, 0.25, 0.30, 0.0,  0.0
+    LAYER SND_LOOT_RARE,     W_SQUARE, 1318.0, 1318.0, 0.35, 0, E_EXP, 0.110, 0.0,  0.12, 0.28, 0.30, 0.0,  0.0
+    LAYER SND_LOOT_RARE,     W_SQUARE, 2637.0, 2637.0, 0.5,  0, E_EXP, 0.050, 0.0,  0.12, 0.20, 0.08, 0.0,  0.0
+    ; legendary: rising C6 E6 G6 arpeggio into a held octave, with high sparkle on top
+    LAYER SND_LEGENDARY,     W_SQUARE, 523.0,  523.0,  0.35, 0, E_EXP, 0.100, 0.0,  0.00, 0.30, 0.28, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 659.0,  659.0,  0.35, 0, E_EXP, 0.100, 0.0,  0.14, 0.30, 0.28, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 784.0,  784.0,  0.35, 0, E_EXP, 0.100, 0.0,  0.28, 0.30, 0.28, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 1047.0, 1047.0, 0.35, 0, E_EXP, 0.200, 0.0,  0.42, 0.28, 0.24, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 1568.0, 1568.0, 0.5,  0, E_EXP, 0.150, 0.0,  0.42, 0.28, 0.10, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 3136.0, 3136.0, 0.6,  0, E_EXP, 0.040, 0.0,  0.30, 0.20, 0.07, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_SQUARE, 4186.0, 4186.0, 0.6,  0, E_EXP, 0.040, 0.0,  0.45, 0.25, 0.06, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.008, 0.0,  0.28, 0.06, 0.20, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.008, 0.0,  0.42, 0.06, 0.20, 0.0,  0.0
+    LAYER SND_LEGENDARY,     W_NOISE,  0.0,    0.0,    0.7,  1, E_EXP, 0.020, 0.0,  0.56, 0.14, 0.15, 0.0,  0.0
 layers_end:
 
 section .bss

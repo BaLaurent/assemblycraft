@@ -5,13 +5,13 @@
 %include "gl.inc"
 default rel
 
-global explode_at, explode_magic, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
+global explode_at, explode_magic, explode_dmg_mult, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
 extern block_removed, light_bind_at, light_bind_index
-extern audio_play_at, player, settings, survival_damage
-extern mobs, mob_hurt, mob_strike, item_model_draw, body_init, body_step
-extern combat_hit_flags
+extern audio_play_at, player, settings, survival_damage, surv_max_health
+extern mobs, mob_hurt, item_model_draw, body_init, body_step
+extern combat_hit_mob, combat_kb_mult, rpg_stats
 extern fx_explosion, fx_debris
 
 ; explode_at frame (rsp-relative)
@@ -26,6 +26,7 @@ extern fx_explosion, fx_debris
 %define X_K     48                      ; float r / 3
 %define X_CELL  52                      ; int cell being cleared [3]
 %define X_NDEB  64                      ; int blocks destroyed so far (every second: debris)
+%define X_KBM   68                      ; float knockback factor on the player (Juggernaut: 0)
 %define X_FRAME 72
 
 ; explode_magic frame (rsp-relative)
@@ -34,7 +35,10 @@ extern fx_explosion, fx_debris
 %define M_DMG   16                      ; int damage at the centre
 %define M_DX    20                      ; float mob offset from the centre (x, z)
 %define M_DZ    24
-%define M_FRAME 32
+%define M_SRC   28                      ; int SRC_* of the hits
+%define M_FLAGS 32                      ; int HITF_* flags of the hits
+%define M_BASE  36                      ; float damage the mob being hit takes, before the pipeline
+%define M_FRAME 48
 
 section .rodata
 align 4
@@ -58,6 +62,12 @@ c_magic_fx:  dd 0.7                     ; magic blast: fireball radius / blast r
 c_magic_vol: dd 0.6
 c_magic_kb:  dd 1.5                     ; push on a mob: along unit(mob - centre).xz
 base_dmg:    dd 8, 12, 22, 33           ; player damage at full strength for r = 3, by difficulty
+c_twenty:    dd 20.0                    ; the player's damage scales with max health / 20
+
+section .data
+align 4
+explode_dmg_mult: dd 0.0                ; > 0: factor on the damage a blast does to the player (a creeper
+                                        ; of a level sets it); 0: max health / 20
 
 section .bss
 alignb 16
@@ -477,12 +487,22 @@ explode_at:
     cvtsi2ss xmm0, dword [base_dmg + rax*4]
     mulss   xmm0, xmm1
     mulss   xmm0, [rsp + X_K]
+    movss   xmm2, [explode_dmg_mult]    ; the creeper's factor, else max health / 20
+    xorps   xmm3, xmm3
+    comiss  xmm2, xmm3
+    ja      .have_mult
+    cvtsi2ss xmm2, dword [surv_max_health]
+    divss   xmm2, [c_twenty]
+.have_mult:
+    mulss   xmm0, xmm2
     roundss xmm0, xmm0, 10              ; ceil
     cvttss2si edi, xmm0
     mov     esi, CAUSE_EXPLOSION
     call    survival_damage
     test    eax, eax
     jz      .mobs                       ; invulnerable, creative or dead: no knockback either
+    call    combat_kb_mult              ; Juggernaut: no knockback
+    movss   [rsp + X_KBM], xmm0
     movss   xmm0, [rsp + X_DX]
     movss   xmm1, [rsp + X_DZ]
     movaps  xmm2, xmm0
@@ -495,6 +515,7 @@ explode_at:
     jb      .hop                        ; straight above or below the blast
     movss   xmm3, [rsp + X_F]
     mulss   xmm3, [c_kb]
+    mulss   xmm3, [rsp + X_KBM]
     divss   xmm3, xmm2                  ; 12 f / h
     mulss   xmm0, xmm3
     mulss   xmm1, xmm3
@@ -505,6 +526,7 @@ explode_at:
     je      .mobs
     movss   xmm0, [rsp + X_F]
     mulss   xmm0, [c_hop]
+    mulss   xmm0, [rsp + X_KBM]         ; Juggernaut is not thrown up either
     movss   [player + BODY.vy], xmm0
 
     ; ---- the mobs -----------------------------------------------------------------
@@ -629,10 +651,10 @@ explode_at:
     pop     rbp
     ret
 
-; explode_magic(xmm0 x, xmm1 y, xmm2 z, xmm3 radius, edi damage): a magic blast. Draws the
-; explosion at 0.7 r and plays its sound; then every live mob that is not a villager (merchant,
-; elder) and whose body middle lies within r of the centre is struck as the player's
-; (combat_hit_flags = HF_PLAYER) for ceil(damage * (1 - 0.5 d / r)) and pushed 1.5 away along
+; explode_magic(xmm0 x, xmm1 y, xmm2 z, xmm3 radius, edi damage, esi src, edx flags): a magic blast of
+; radius * (1 + AREA / 100). Draws the explosion at 0.7 r and plays its sound; then every live mob
+; that is not a villager (merchant, elder) and whose body middle lies within r of the centre takes
+; combat_hit_mob(src, flags, damage * (1 - 0.5 d / r)) and is pushed 1.5 away along
 ; (mob - centre).xz. Blocks, TNT and the player are never touched.
 ; rbx = mob, r12d = mob index.
 explode_magic:
@@ -644,8 +666,14 @@ explode_magic:
     movss   [rsp + M_C], xmm0
     movss   [rsp + M_C + 4], xmm1
     movss   [rsp + M_C + 8], xmm2
-    movss   [rsp + M_R], xmm3
     mov     [rsp + M_DMG], edi
+    mov     [rsp + M_SRC], esi
+    mov     [rsp + M_FLAGS], edx
+    cvtsi2ss xmm4, dword [rpg_stats + STAT_AREA * 4]
+    divss   xmm4, [c_hundred]
+    addss   xmm4, [c_one]
+    mulss   xmm3, xmm4                  ; r * (1 + AREA / 100)
+    movss   [rsp + M_R], xmm3
     mulss   xmm3, [c_magic_fx]
     call    fx_explosion                ; xmm0..2 are still the centre
     mov     edi, SND_EXPLODE
@@ -688,8 +716,7 @@ explode_magic:
     subss   xmm1, xmm0                  ; 1 - 0.5 d / r
     cvtsi2ss xmm0, dword [rsp + M_DMG]
     mulss   xmm0, xmm1
-    roundss xmm0, xmm0, 10              ; ceil
-    cvttss2si esi, xmm0
+    movss   [rsp + M_BASE], xmm0
     movss   xmm0, [rsp + M_DX]
     movss   xmm1, [rsp + M_DZ]
     movaps  xmm2, xmm0
@@ -709,15 +736,18 @@ explode_magic:
     xorps   xmm0, xmm0
     xorps   xmm1, xmm1
 .strike:
-    mov     byte [combat_hit_flags], HF_PLAYER
+    movaps  xmm2, xmm1                  ; dirz
+    movaps  xmm1, xmm0                  ; dirx
+    movss   xmm0, [rsp + M_BASE]
     mov     edi, r12d
-    call    mob_strike
+    mov     esi, [rsp + M_SRC]
+    mov     edx, [rsp + M_FLAGS]
+    call    combat_hit_mob
 .next:
     add     rbx, MOB_size
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
-    mov     byte [combat_hit_flags], 0  ; no flag outlives the blast
     add     rsp, M_FRAME
     pop     r12
     pop     rbx

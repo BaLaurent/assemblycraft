@@ -8,7 +8,7 @@ global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_conta
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 
 extern inv, inv_sel, craft_size, inv_container
-extern inv_count, inv_remove_one, armor_points, armor_wear, inv_damage_held
+extern inv_count, inv_remove_one, armor_points, inv_damage_held
 extern inv_clear, inv_add, inv_click, craft_update
 extern recipes, recipes_end, recipe_sets, recipe_fits, recipe_fill
 extern item_break_time, item_harvest_drop
@@ -340,6 +340,11 @@ craft_cases:
     CASE TORCH, 4,            0, 0, 0,  0, COAL, 0,  0, STICK, 0
     CASE FENCE, 3,            PLANKS, STICK, PLANKS,  PLANKS, STICK, PLANKS,  0, 0, 0
     CASE GLASS_PANE, 16,      0, 0, 0,  GLASS, GLASS, GLASS,  GLASS, GLASS, GLASS
+    ; 0.8: warhammers and spears
+    CASE IRON_HAMMER, 1,      IRON_INGOT, IRON_INGOT, IRON_INGOT,  IRON_INGOT, STICK, IRON_INGOT,  0, STICK, 0
+    CASE DIAMOND_HAMMER, 1,   DIAMOND, DIAMOND, DIAMOND,  DIAMOND, STICK, DIAMOND,  0, STICK, 0
+    CASE IRON_SPEAR, 1,       0, 0, IRON_INGOT,  0, STICK, 0,  STICK, 0, 0
+    CASE DIAMOND_SPEAR, 1,    0, 0, DIAMOND,  0, STICK, 0,  STICK, 0, 0
     ; near misses craft nothing
     CASE 0, 0,          COBBLE, COBBLE, COBBLE,    COBBLE, COBBLE, COBBLE,  COBBLE, COBBLE, COBBLE
     CASE 0, 0,          0, IRON_INGOT, 0,          0, FLINT, 0,          0, 0, 0
@@ -351,6 +356,8 @@ craft_cases:
     CASE 0, 0,          STICK, PLANKS, STICK,  STICK, PLANKS, STICK,  0, 0, 0
     CASE 0, 0,          STRING, STRING, 0,  STRING, 0, 0,  0, 0, 0
     CASE 0, 0,          IRON_INGOT, IRON_INGOT, 0,  IRON_INGOT, IRON_INGOT, 0,  0, 0, 0
+    CASE 0, 0,          IRON_INGOT, IRON_INGOT, IRON_INGOT,  IRON_INGOT, STICK, IRON_INGOT,  0, 0, 0
+    CASE 0, 0,          IRON_INGOT, 0, 0,  0, STICK, 0,  0, 0, STICK
 craft_cases_end:
 
 section .text
@@ -662,35 +669,36 @@ test_inv_click_armor_containers:
     EXPECT  CELL(0), ARROW, 9, 0
     EXPECT  CURSOR, ARROW, 9, 0
 
-    ; armor_points adds the worn pieces; armor_wear costs each one durability and breaks
-    ; the piece that runs out
+    ; armor_points adds the worn pieces; inv_clear wipes the armor and jewelry rows with the rest
     SET     ARMOR_REF(2), IRON_LEGGINGS, 1, 0
+    mov     dword [inv + INVENTORY.jewelry + 8], STK(AMULET, 1, 0)
     call    inv_clear
-    EXPECT  ARMOR_REF(2), 0, 0, 0       ; inv_clear wipes the armor row too
+    EXPECT  ARMOR_REF(2), 0, 0, 0
+    cmp     dword [inv + INVENTORY.jewelry + 8], 0
+    jne     .fail
     SET     ARMOR_REF(0), IRON_HELMET, 1, 0
-    SET     ARMOR_REF(1), GOLD_CHESTPLATE, 1, 111 ; durability 112
+    SET     ARMOR_REF(1), GOLD_CHESTPLATE, 1, 111
     SET     ARMOR_REF(3), DIAMOND_BOOTS, 1, 5
     call    armor_points
     cmp     eax, 10                     ; 2 + 5 + 3
     jne     .fail
-    call    armor_wear
-    EXPECT  ARMOR_REF(0), IRON_HELMET, 1, 1
-    EXPECT  ARMOR_REF(1), 0, 0, 0
-    EXPECT  ARMOR_REF(2), 0, 0, 0
-    EXPECT  ARMOR_REF(3), DIAMOND_BOOTS, 1, 6
-    call    armor_points
-    cmp     eax, 5                      ; 2 + 3
-    jne     .fail
 
-    ; whatever has a durability wears, tool or not (bow, flint and steel); the rest does not
+    ; only what has a durability wears: a pickaxe and flint and steel do; gear (the bow) and the
+    ; rest do not
     call    inv_clear
     mov     dword [inv_sel], 0
+    SET     0, STONE_PICKAXE, 1, 0
+    mov     edi, 1
+    call    inv_damage_held
+    test    eax, eax
+    jnz     .fail
+    EXPECT  0, STONE_PICKAXE, 1, 1
     SET     0, BOW, 1, 0
     mov     edi, 1
     call    inv_damage_held
     test    eax, eax
     jnz     .fail
-    EXPECT  0, BOW, 1, 1
+    EXPECT  0, BOW, 1, 0
     SET     0, FLINT_AND_STEEL, 1, 63   ; durability 64
     mov     edi, 1
     call    inv_damage_held

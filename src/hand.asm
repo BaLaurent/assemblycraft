@@ -9,7 +9,7 @@ global hand_render, hand_swing
 
 extern player, inv_held, player_eye, light_brightness_at, sincos_deg, game_bow_charge, gun_kick
 extern render_box, item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim
-extern gun_reload, gun_reload_total, item_tool, combat_guard_t, combat_dodge_t
+extern gun_reload, gun_reload_total, item_tool, combat_guard_t, combat_dodge_t, game_heavy_s
 
 section .rodata
 align 8
@@ -52,6 +52,11 @@ f_guard_z:   dd 0.05
 f_guard_rz:  dd 70.0
 f_guard_rx:  dd -10.0
 f_dodge_dip: dd 0.12
+; heavy attack wind-up: the weapon draws back and tips up while the button is held (0.5 s for all of it)
+f_heavy_inv: dd 2.0                     ; 1 / 0.5 s
+f_heavy_y:   dd -0.08
+f_heavy_z:   dd 0.12
+f_heavy_rot: dd -20.0
 ; bare arm: a skin-coloured box reaching from below the screen corner
 arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
 arm_tiles:   times 6 db TILE_PLAYER_SKIN
@@ -255,6 +260,10 @@ hand_render:
     cmp     eax, TOOL_AXE
     je      .guard
     cmp     eax, TOOL_DAGGER
+    je      .guard
+    cmp     eax, TOOL_HAMMER
+    je      .guard
+    cmp     eax, TOOL_SPEAR
     jne     .no_guard
 .guard:
     movss   xmm0, [f_guard_x]
@@ -294,6 +303,25 @@ hand_render:
     xorps   xmm1, xmm1
     call    glTranslatef
 .no_draw:
+    movss   xmm2, [game_heavy_s]        ; a heavy attack winds up: o = min(seconds held / 0.5, 1)
+    xorps   xmm0, xmm0
+    comiss  xmm2, xmm0
+    jb      .no_wind                    ; not charging (-1)
+    mulss   xmm2, [f_heavy_inv]
+    minss   xmm2, [f_one]
+    movss   [rsp], xmm2                 ; the eye position is no longer needed here
+    movaps  xmm1, xmm2
+    mulss   xmm1, [f_heavy_y]           ; the weapon moves (0, -0.08 o, +0.12 o) ...
+    mulss   xmm2, [f_heavy_z]
+    xorps   xmm0, xmm0
+    call    glTranslatef
+    movss   xmm0, [rsp]
+    mulss   xmm0, [f_heavy_rot]         ; ... and tips back -20 o degrees about X
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    rot
+.no_wind:
     lea     rdi, [pose_arm]
     test    ebx, ebx
     jz      .pose

@@ -4,7 +4,7 @@
 default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
-global game_open_screen, game_open_cont, game_bow_charge, game_aim, game_open_npc
+global game_open_screen, game_open_cont, game_bow_charge, game_aim, game_open_npc, game_heavy_s
 global game_new, game_load, game_save, game_frame, game_respawn
 
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
@@ -14,7 +14,7 @@ extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_held
 extern inv_consume_held, inv_damage_held, inv_find_hotbar, inv_container
 extern inv_count, inv_remove_one
 extern item_break_time, item_harvest_drop, item_attack_damage
-extern item_tool, item_food, item_max_stack, item_armor_slot
+extern item_tool, item_food, item_max_stack, item_armor_slot, item_gear
 extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
@@ -27,8 +27,9 @@ extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
 extern fire_clear, fire_place, fire_step, fire_rebuild, fx_clear, fx_step
 extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_class, rpg_stat
-extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_step, combat_heal
-extern combat_speed_mult, combat_crit_roll, combat_crit_mult, combat_max_mana
+extern rpg_recompute, rpg_stats, rpg_keystones, status_step
+extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_heavy, combat_step, combat_heal
+extern combat_speed_mult, combat_crit_roll, combat_max_mana
 extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
 extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
 extern dmgnum_clear, dmgnum_step
@@ -43,6 +44,7 @@ repeat_dt:    dd 0.25
 reach_surv:   dd 4.5
 reach_crea:   dd 5.0
 mob_reach:    dd 3.5
+mob_reach_spear: dd 4.5
 f_one:        dd 1.0
 f_half:       dd 0.5
 f_quarter:    dd 0.25
@@ -65,7 +67,10 @@ aim_rate:     dd 12.0                  ; aiming eases in/out at min(1, 12 dt) pe
 aim_spread:   dd 0.75                  ; fully aimed: a quarter of the hip spread
 aim_look:     dd 0.4                   ; fully aimed: 60 % look sensitivity
 walk_speed:   dd 4.317
-celestial_mul: dd 1.5
+heavy_time:   dd 0.5                   ; seconds the button is held for a heavy attack
+barrage_dmg:  dd 0.6                   ; Barrage's extra arrows do 60 % of the damage
+sin6:         dd 0.10452846            ; sin and cos of 6 degrees: Barrage's spread
+cos6:         dd 0.9945219
 mana_potion:  dd 50.0
 vol_drink:    dd 0.8
 
@@ -75,6 +80,7 @@ game_mode: dd MODE_CREATIVE
 game_time: dd NEW_WORLD_TIME
 game_break_progress: dd 0.0
 game_aim: dd 0.0                       ; float 0 (hip) .. 1 (down the sights)
+game_heavy_s: dd __float32__(-1.0)     ; float seconds the left button has been held for a heavy attack; -1 = idle
 
 section .bss
 alignb 8
@@ -114,6 +120,7 @@ reset_session:
     mov     [game_bow_charge], eax
     mov     [game_break_progress], eax
     mov     [game_aim], eax
+    mov     dword [game_heavy_s], __float32__(-1.0)
     mov     dword [brk_y], -1
     call    combat_reset
     call    abilities_reset
@@ -296,6 +303,28 @@ game_load:
     inc     ecx
     cmp     ecx, 4
     jb      .armor
+    ; jewelry: a ring in each of the first two cells, an amulet in the third, one of each only
+    xor     ecx, ecx
+.jewel:
+    mov     eax, [rbx + WORLDHDR.jewelry + rcx*4]
+    movzx   edx, al
+    cmp     edx, NUM_ITEMS
+    jae     .jewel_next
+    cmp     byte [rbx + WORLDHDR.jewelry + rcx*4 + ITEMSTACK.count], 1
+    jne     .jewel_next
+    mov     r9d, GK_RING
+    mov     r10d, GK_AMULET
+    cmp     ecx, 2
+    cmove   r9d, r10d
+    lea     r8, [item_gear]
+    movzx   r8d, byte [r8 + rdx]
+    cmp     r8d, r9d
+    jne     .jewel_next
+    mov     [inv + INVENTORY.jewelry + rcx*4], eax
+.jewel_next:
+    inc     ecx
+    cmp     ecx, 3
+    jb      .jewel
     call    conts_validate
     call    fire_rebuild                ; the table of the FIRE blocks just loaded
     mov     rdi, rbx
@@ -346,6 +375,10 @@ game_save:
     lea     rsi, [inv + INVENTORY.armor]
     lea     rdi, [rbx + WORLDHDR.armor]
     mov     ecx, 16
+    rep     movsb
+    lea     rsi, [inv + INVENTORY.jewelry]
+    lea     rdi, [rbx + WORLDHDR.jewelry]
+    mov     ecx, 12                     ; ring, ring, amulet
     rep     movsb
     mov     eax, [game_time]
     mov     [rbx + WORLDHDR.time], eax
@@ -465,13 +498,23 @@ try_potion:
     cmp     eax, MANA_POTION
     jne     .none
     call    combat_max_mana
+    movaps  xmm2, xmm0                  ; a mana potion restores max(50, half the maximum)
+    mulss   xmm2, [f_half]
+    maxss   xmm2, [mana_potion]
     movss   xmm1, [combat_mana]
-    addss   xmm1, [mana_potion]
+    addss   xmm1, xmm2
     minss   xmm1, xmm0
     movss   [combat_mana], xmm1
     jmp     .drunk
 .health:
-    mov     edi, 8
+    mov     eax, [surv_max_health]      ; a health potion heals max(8, 3/10 of the maximum)
+    xor     edx, edx
+    mov     ecx, 10
+    div     ecx
+    lea     edi, [rax + rax*2]
+    mov     eax, 8
+    cmp     edi, eax
+    cmovl   edi, eax
     call    combat_heal
 .drunk:
     mov     edi, SND_DRINK
@@ -510,6 +553,10 @@ want_guard:
     cmp     eax, TOOL_AXE
     je      .melee
     cmp     eax, TOOL_DAGGER
+    je      .melee
+    cmp     eax, TOOL_HAMMER
+    je      .melee
+    cmp     eax, TOOL_SPEAR
     jne     .no
 .melee:
     mov     eax, 1
@@ -560,6 +607,106 @@ damage_held_tool:
 .ret:
     ret
 
+; unit_h(rsi dir float[3]) -> xmm0, xmm1 the horizontal part (x, z) of a direction scaled to length
+; 1 ((0, 0) for a vertical one)
+unit_h:
+    movss   xmm0, [rsi]
+    movss   xmm1, [rsi + 8]
+    movaps  xmm2, xmm0
+    mulss   xmm2, xmm2
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm3
+    addss   xmm2, xmm3
+    sqrtss  xmm2, xmm2
+    xorps   xmm3, xmm3
+    comiss  xmm2, xmm3
+    jbe     .ret
+    divss   xmm0, xmm2
+    divss   xmm1, xmm2
+.ret:
+    ret
+
+; heavy_track(edi mob under the crosshair or -1, rsi dir float[3], xmm0 dt): the button logic of the
+; heavy attack, once per frame while the melee branch of game_frame runs. game_heavy_s counts the
+; seconds the left button has been held since a press made with a melee weapon (item_gear GK_MELEE)
+; in hand and the guard down, on a mob or where no block is in reach; -1 when idle. Releasing after
+; 0.5 s or more lands a heavy blow on the mob (combat_heavy; a landed one wears the tool and tires
+; like a light one) or just swings at the air. Releasing sooner, a raised guard, another item in
+; hand or an open screen cancel it.
+; rbx = mob. Frame: [rsp] unit dir x, [rsp+4] z, [rsp+8] dt
+heavy_track:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 24
+    mov     ebx, edi
+    movss   [rsp + 8], xmm0
+    call    unit_h
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    call    held_id
+    lea     rcx, [item_gear]
+    cmp     byte [rcx + rax], GK_MELEE
+    jne     .cancel
+    cmp     dword [input_captured], 1
+    jne     .cancel
+    cmp     dword [game_open_screen], 0
+    jne     .cancel
+    movss   xmm0, [game_heavy_s]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jae     .charging
+    cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
+    je      .out                        ; idle
+    cmp     dword [combat_guard_t], 0
+    jge     .out
+    test    ebx, ebx
+    jns     .start
+    cmp     dword [game_has_target], 0
+    jne     .out                        ; a block is in reach: the click digs
+.start:
+    mov     dword [game_heavy_s], 0
+    jmp     .out
+.charging:
+    cmp     dword [frame_input + FRAMEINPUT.lmb_held], 0
+    je      .release
+    cmp     dword [combat_guard_t], 0
+    jge     .cancel
+    addss   xmm0, [rsp + 8]
+    movss   [game_heavy_s], xmm0
+    jmp     .out
+.release:
+    comiss  xmm0, [heavy_time]
+    jb      .cancel                     ; too soon: the light attack was all of it
+    mov     dword [game_heavy_s], __float32__(-1.0)
+    test    ebx, ebx
+    js      .air
+    mov     edi, ebx
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    call    combat_heavy
+    test    eax, eax
+    jz      .out
+    call    hand_swing                  ; the drawn-back weapon comes down
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .out
+    mov     edi, 1
+    mov     esi, 2
+    call    damage_held_tool
+    movss   xmm0, [exh_attack]
+    call    survival_exhaust
+    jmp     .out
+.air:
+    call    hand_swing
+    jmp     .out
+.cancel:
+    mov     dword [game_heavy_s], __float32__(-1.0)
+.out:
+    add     rsp, 24
+    pop     rbx
+    pop     rbp
+    ret
+
 ; Frame layout of game_frame
 %define F_EYE    0                      ; float[3]
 %define F_DIR    12                     ; float[3]
@@ -573,7 +720,77 @@ damage_held_tool:
 %define F_LAND   88
 %define F_DIST   92
 %define F_SCR    96                     ; scratch: screen to open / bow power
-%define F_SIZE   112
+%define F_FORCE  112                    ; int: 1 when Deadeye forces the arrow's crit
+%define F_SIZE   128
+
+; bow_barrage(rdi game_frame's frame): Barrage. Two more arrows fly 6 degrees to either side of a
+; shot just fired from that frame (same eye, direction, power and flags): 60 % of its damage, at
+; least 1; they use no ammo and cannot be picked up.
+; r12d = their damage. Frame: [rsp] side (+1 / -1), [rsp+4] arrows left
+bow_barrage:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    mov     rbx, rdi
+    cvtsi2ss xmm0, dword [rbx + F_SCR + 4]
+    mulss   xmm0, [barrage_dmg]
+    cvtss2si r12d, xmm0
+    mov     eax, 1
+    cmp     r12d, eax
+    cmovl   r12d, eax
+    mov     dword [rsp], __float32__(1.0)
+    mov     dword [rsp + 4], 2
+.arrow:
+    movss   xmm0, [rbx + F_DIR]         ; the direction turned about the vertical by 6 degrees
+    movss   xmm1, [rbx + F_DIR + 8]
+    movss   xmm2, [cos6]
+    movss   xmm3, [sin6]
+    mulss   xmm3, [rsp]                 ; +- sin 6
+    movaps  xmm4, xmm0
+    mulss   xmm4, xmm2
+    movaps  xmm5, xmm1
+    mulss   xmm5, xmm3
+    addss   xmm4, xmm5                  ; x' = x cos + z sin
+    mulss   xmm0, xmm3
+    mulss   xmm1, xmm2
+    subss   xmm1, xmm0                  ; z' = z cos - x sin
+    movss   xmm6, [rbx + F_SCR]
+    mulss   xmm6, [bow_speed]           ; power * speed
+    movaps  xmm3, xmm4
+    mulss   xmm3, xmm6                  ; vx
+    movss   xmm4, [rbx + F_DIR + 4]
+    mulss   xmm4, xmm6                  ; vy: the pitch stays
+    movaps  xmm5, xmm1
+    mulss   xmm5, xmm6                  ; vz
+    movss   xmm7, [bow_offset]
+    movss   xmm0, [rbx + F_DIR]
+    mulss   xmm0, xmm7
+    addss   xmm0, [rbx + F_EYE]
+    movss   xmm1, [rbx + F_DIR + 4]
+    mulss   xmm1, xmm7
+    addss   xmm1, [rbx + F_EYE + 4]
+    movss   xmm2, [rbx + F_DIR + 8]
+    mulss   xmm2, xmm7
+    addss   xmm2, [rbx + F_EYE + 8]
+    xor     edi, edi                    ; owner: the player
+    mov     esi, r12d
+    xor     edx, edx                    ; nothing to pick up
+    mov     ecx, PROJ_ARROW
+    mov     r8d, [rbx + F_SCR + 8]
+    call    arrows_spawn
+    movss   xmm0, [rsp]
+    xorps   xmm1, xmm1
+    subss   xmm1, xmm0
+    movss   [rsp], xmm1                 ; the other side
+    dec     dword [rsp + 4]
+    jnz     .arrow
+    add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
 
 ; game_frame(xmm0 float dt)
 game_frame:
@@ -675,9 +892,15 @@ game_frame:
     lea     rdx, [game_target]
     call    raycast
     mov     [game_has_target], eax
+    call    held_id                     ; a spear reaches 4.5 blocks, everything else 3.5
+    movss   xmm0, [mob_reach]
+    lea     rcx, [item_tool]
+    cmp     byte [rcx + rax], TOOL_SPEAR
+    jne     .mob_ray
+    movss   xmm0, [mob_reach_spear]
+.mob_ray:
     lea     rdi, [rsp + F_EYE]
     lea     rsi, [rsp + F_DIR]
-    movss   xmm0, [mob_reach]
     call    mobs_raycast
     mov     [rsp + F_MOB], eax
     test    eax, eax
@@ -715,7 +938,7 @@ game_frame:
     call    abilities_use
 .next_ability:
     inc     ebx
-    cmp     ebx, 3
+    cmp     ebx, 4
     jb      .ability
     jmp     .combat_done
 .no_combat:
@@ -739,6 +962,7 @@ game_frame:
     cmp     eax, MOB_ELDER
     jne     .not_npc
 .npc:
+    mov     dword [game_heavy_s], __float32__(-1.0)     ; no heavy attack on a villager
     mov     dword [game_break_progress], 0
     mov     dword [break_cooldown], 0
     mov     dword [brk_y], -1
@@ -754,6 +978,7 @@ game_frame:
     call    gun_index
     test    eax, eax
     js      .unarmed
+    mov     dword [game_heavy_s], __float32__(-1.0)     ; ...nor with a firearm
     mov     dword [game_break_progress], 0
     mov     dword [break_cooldown], 0
     mov     dword [brk_y], -1
@@ -768,6 +993,7 @@ game_frame:
     call    rpg_class
     cmp     eax, CLASS_MAGE
     jne     .melee                      ; any other class swings the staff
+    mov     dword [game_heavy_s], __float32__(-1.0)     ; ...nor with a mage's staff
     mov     dword [game_break_progress], 0
     mov     dword [break_cooldown], 0
     mov     dword [brk_y], -1
@@ -778,26 +1004,18 @@ game_frame:
     call    abilities_staff_bolt
     jmp     .pick
 .melee:
+    mov     edi, [rsp + F_MOB]
+    lea     rsi, [rsp + F_DIR]
+    movss   xmm0, [rsp + F_DT]
+    call    heavy_track                 ; holding the button for 0.5 s winds up a heavy attack
     cmp     dword [rsp + F_MOB], 0
     jl      .blocks
     mov     dword [game_break_progress], 0
     cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     je      .place
     call    hand_swing
-    movss   xmm0, [rsp + F_DIR]         ; horizontal direction, normalised
-    movss   xmm1, [rsp + F_DIR + 8]
-    movaps  xmm2, xmm0
-    mulss   xmm2, xmm2
-    movaps  xmm3, xmm1
-    mulss   xmm3, xmm3
-    addss   xmm2, xmm3
-    sqrtss  xmm2, xmm2
-    xorps   xmm3, xmm3
-    comiss  xmm2, xmm3
-    jbe     .hit_mob
-    divss   xmm0, xmm2
-    divss   xmm1, xmm2
-.hit_mob:
+    lea     rsi, [rsp + F_DIR]
+    call    unit_h                      ; the horizontal direction to the mob
     mov     edi, [rsp + F_MOB]
     call    combat_melee
     test    eax, eax
@@ -818,6 +1036,10 @@ game_frame:
     je      .no_swing
     call    hand_swing                  ; a click swings even at thin air
 .no_swing:
+    movss   xmm0, [game_heavy_s]        ; winding up a heavy attack: no digging
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jae     .break_reset
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .survival_break
 
@@ -1163,12 +1385,21 @@ game_frame:
 .bow_drawing:
     cmp     dword [frame_input + FRAMEINPUT.rmb_held], 0
     je      .bow_release
-    addss   xmm0, [rsp + F_DT]
+    movss   xmm1, [rsp + F_DT]          ; the draw speeds up with ATTACK_SPEED, but not with Deadeye
+    test    dword [rpg_keystones], 1 << KS_DEADEYE
+    jnz     .draw_step
+    cvtsi2ss xmm2, dword [rpg_stats + STAT_ATTACK_SPEED * 4]
+    divss   xmm2, [f_hundred]
+    addss   xmm2, [f_one]
+    mulss   xmm1, xmm2
+.draw_step:
+    addss   xmm0, xmm1
     movss   [game_bow_charge], xmm0
     jmp     .gun
 .bow_release:
     cmp     dword [input_captured], 1
     jne     .bow_reset                  ; released inside a screen: no shot
+    movaps  xmm2, xmm0                  ; the draw as held, for Deadeye
     minss   xmm0, [f_one]               ; f
     movaps  xmm1, xmm0
     mulss   xmm1, xmm0
@@ -1178,33 +1409,32 @@ game_frame:
     comiss  xmm1, [bow_min]
     jb      .bow_reset
     movss   [rsp + F_SCR], xmm1
-    ; damage = round((1 + round(8 power)) * (1 + RANGED/100) * (celestial ? 1.5 : 1)), x crit
+    xor     eax, eax                    ; Deadeye: a fully drawn shot always crits
+    test    dword [rpg_keystones], 1 << KS_DEADEYE
+    jz      .force_set
+    comiss  xmm2, [f_one]
+    setae   al
+.force_set:
+    mov     [rsp + F_FORCE], eax
+    ; damage = 1 + round(8 power), x3/2 (integer) for the Celestial Bow; the damage pipeline applies
+    ; RANGED_DMG and the crit when the arrow lands
     mulss   xmm1, [f_eight]
     cvtss2si eax, xmm1
     inc     eax
-    cvtsi2ss xmm0, eax
-    movss   [rsp + F_SCR + 4], xmm0
-    mov     edi, STAT_RANGED_DMG
-    call    rpg_stat
-    cvtsi2ss xmm1, eax
-    divss   xmm1, [f_hundred]
-    addss   xmm1, [f_one]
-    movss   xmm0, [rsp + F_SCR + 4]
-    mulss   xmm0, xmm1
     cmp     dword [rsp + F_SCR + 12], CELESTIAL_BOW
     jne     .bow_plain
-    mulss   xmm0, [celestial_mul]
+    lea     eax, [rax + rax*2]
+    shr     eax, 1
 .bow_plain:
-    movss   [rsp + F_SCR + 4], xmm0
-    mov     dword [rsp + F_SCR + 8], 0  ; arrow flags
-    xor     edi, edi
-    call    combat_crit_roll
+    mov     [rsp + F_SCR + 4], eax
+    mov     edi, [rsp + F_FORCE]
+    call    combat_crit_roll            ; forced by Deadeye, else rolled
+    mov     ecx, AF_ATTACK              ; a weapon attack, not a skill
     test    eax, eax
-    jz      .bow_fire
-    mov     dword [rsp + F_SCR + 8], AF_CRIT
-    call    combat_crit_mult
-    mulss   xmm0, [rsp + F_SCR + 4]
-    movss   [rsp + F_SCR + 4], xmm0
+    jz      .flags_set
+    or      ecx, AF_CRIT
+.flags_set:
+    mov     [rsp + F_SCR + 8], ecx
 .bow_fire:
     ; survival: the arrow is used up unless the bow is celestial or Quiver saves it; only a
     ; used-up arrow can be picked up again
@@ -1224,7 +1454,7 @@ game_frame:
     setge   bl
     movzx   ebx, bl
 .bow_consumed:
-    cvtss2si esi, [rsp + F_SCR + 4]
+    mov     esi, [rsp + F_SCR + 4]      ; the damage before the pipeline
     mov     edx, ebx                    ; pickup
     movss   xmm6, [rsp + F_SCR]
     mulss   xmm6, [bow_speed]
@@ -1248,15 +1478,17 @@ game_frame:
     mov     ecx, PROJ_ARROW
     mov     r8d, [rsp + F_SCR + 8]
     call    arrows_spawn
+    test    dword [rpg_keystones], 1 << KS_BARRAGE
+    jz      .bow_ammo
+    mov     rdi, rsp
+    call    bow_barrage                 ; Barrage: two more arrows, 6 degrees to either side
+.bow_ammo:
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .bow_sound
     test    ebx, ebx
-    jz      .bow_worn
+    jz      .bow_sound
     mov     edi, ARROW
     call    inv_remove_one
-.bow_worn:
-    mov     edi, 1
-    call    inv_damage_held
 .bow_sound:
     mov     edi, SND_BOW
     movss   xmm0, [vol_bow]
@@ -1332,6 +1564,7 @@ sim_step:
     sub     rsp, 56                     ; [rsp] INPUT copy, [rsp+20] was_on_ground,
                                         ; [rsp+24] x0, [rsp+28] z0, [rsp+32] dist,
                                         ; [rsp+40] sprinting (drains stamina)
+    call    rpg_recompute               ; the character first: gear, ranks and attributes may have changed
     lea     rsi, [frame_input + FRAMEINPUT.move]
     mov     rdi, rsp
     mov     ecx, INPUT_size
@@ -1435,6 +1668,7 @@ sim_step:
     call    play_block_sound
 .mobs:
     call    mobs_step
+    call    status_step
     call    drops_step
     call    arrows_step
     call    tnt_step

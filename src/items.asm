@@ -1,19 +1,20 @@
 ; items.asm - inventory, crafting and tool rules.
 ; Slot refs map straight onto the INVENTORY struct: ref*4 + inv is a slot (0..35), grid cell
 ; (36..44), the craft result (45), the cursor stack (46, never clickable) or a worn armor
-; piece (47..50). Refs 51..77 are the cells of the open furnace/chest (inv_container).
+; piece (47..50). Refs 51..77 are the cells of the open furnace/chest (inv_container); refs
+; 78..80 are the two ring cells and the amulet cell (INVENTORY.jewelry).
 %include "common.inc"
 default rel
 
 global inv, inv_sel, craft_size, inv_container
 global inv_clear, inv_set_creative_default, inv_add, inv_add_dmg, inv_room_for, inv_held
 global inv_consume_held, inv_damage_held, inv_find_hotbar, inv_click
-global inv_close_screen, craft_update, inv_count, inv_remove_one, armor_points, armor_wear
+global inv_close_screen, craft_update, inv_count, inv_remove_one, armor_points
 global item_break_time, item_harvest_drop, item_attack_damage
 global recipes, recipes_end
 global recipe_uses, recipe_have, recipe_sets, recipe_fits, recipe_fill, inv_take_stack
 
-extern item_max_stack, item_tool, item_tier, item_durability, item_attack
+extern item_max_stack, item_tool, item_tier, item_durability, item_attack, item_gear
 extern item_burn, item_smelt, item_armor_slot, item_armor_points
 extern block_hardness, block_tool, block_harvest_level, block_drop
 extern audio_play, drops_toss
@@ -291,7 +292,8 @@ inv_consume_held:
     sub     [rax + 1], dil
     ret
 
-; inv_damage_held(edi amount) -> eax 1 if the held tool broke
+; inv_damage_held(edi amount) -> eax 1 if the held tool broke. Only items with a durability wear
+; (tools, flint and steel); gear never does, so it returns 0 with the stack untouched.
 inv_damage_held:
     push    rbp
     mov     rbp, rsp
@@ -419,40 +421,6 @@ armor_points:
     inc     ecx
     cmp     ecx, 4
     jb      .l
-    ret
-
-; armor_wear() - every worn piece takes 1 damage; one that reaches its durability breaks
-armor_wear:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    lea     rbx, [inv + INVENTORY.armor]
-    xor     r12d, r12d
-.l:
-    cmp     byte [rbx + r12*4 + 1], 0
-    je      .n
-    movzx   ecx, byte [rbx + r12*4]
-    lea     rdx, [item_durability]
-    movzx   edx, word [rdx + rcx*2]
-    movzx   eax, word [rbx + r12*4 + 2]
-    inc     eax
-    cmp     eax, edx
-    jae     .break
-    mov     [rbx + r12*4 + 2], ax
-    jmp     .n
-.break:
-    mov     dword [rbx + r12*4], 0
-    mov     edi, SND_TOOL_BREAK
-    movss   xmm0, [f_break]
-    call    audio_play
-.n:
-    inc     r12d
-    cmp     r12d, 4
-    jb      .l
-    pop     r12
-    pop     rbx
-    pop     rbp
     ret
 
 ; craft_update() - recomputes inv.result from the active craft_size x craft_size grid
@@ -855,7 +823,7 @@ recipe_fill:
 
 ; inv_click(edi slotref, esi button 0 left/1 right, edx shift) -> eax 1 if anything changed
 ; Refs: 0..35 slots, 36..44 grid, 45 craft result, 46 none (the cursor), 47..50 armor,
-; 51..77 cells of the open container (inv_container)
+; 51..77 cells of the open container (inv_container), 78..80 jewelry (ring, ring, amulet)
 inv_click:
     push    rbp
     mov     rbp, rsp
@@ -880,7 +848,7 @@ inv_click:
     cmp     r13d, SLOTREF_CONTAINER
     jb      .armor_cell
     cmp     r13d, SLOTREF_CONTAINER + 26
-    ja      .none
+    ja      .jewelry
     mov     rax, [inv_container]
     test    rax, rax
     jz      .none
@@ -892,6 +860,12 @@ inv_click:
 .cont_cell:
     lea     rbx, [rax + CONTAINER.slots + rcx*4]
     jmp     .have
+.jewelry:
+    lea     eax, [r13 - SLOTREF_JEWELRY]
+    cmp     eax, 2
+    ja      .none                       ; past the amulet cell
+    lea     rbx, [r12 + INVENTORY.jewelry + rax*4]
+    jmp     .have
 .armor_cell:
     lea     rbx, [r12 + r13*4]          ; the armor row follows the cursor: inv + ref*4
 .have:
@@ -901,6 +875,8 @@ inv_click:
     jb      .plain
     cmp     r13d, SLOTREF_CONTAINER
     jb      .armor_rule
+    cmp     r13d, SLOTREF_JEWELRY
+    jae     .jewel_rule
     mov     rax, [inv_container]
     cmp     byte [rax + CONTAINER.kind], CONT_FURNACE
     jne     .plain
@@ -1033,6 +1009,27 @@ inv_click:
     je      .none
     jmp     .swap
 
+    ; jewelry cell, either button: rings fit the two ring cells, the amulet its own; the cursor
+    ; and the cell swap
+.jewel_rule:
+    cmp     byte [r12 + CURSOR_COUNT], 0
+    je      .j_take
+    movzx   ecx, byte [r12 + INVENTORY.cursor]
+    lea     rdx, [item_gear]
+    movzx   ecx, byte [rdx + rcx]
+    mov     eax, GK_RING
+    cmp     r13d, SLOTREF_JEWELRY + 2
+    jne     .j_kind
+    mov     eax, GK_AMULET
+.j_kind:
+    cmp     ecx, eax
+    jne     .none                       ; wrong piece for this cell
+    jmp     .swap
+.j_take:
+    cmp     byte [rbx + 1], 0
+    je      .none
+    jmp     .swap
+
     ; furnace output cell, either button: take-only, the whole stack
 .output_rule:
     cmp     byte [rbx + 1], 0
@@ -1096,8 +1093,24 @@ inv_click:
     lea     r9, [item_armor_slot]       ; armor goes to its free cell first
     movzx   eax, byte [r9 + rdx]
     test    eax, eax
-    jz      .sh_hm
+    jz      .sh_jewel
     lea     r9, [r12 + INVENTORY.armor + rax*4 - 4]
+    jmp     .sh_cell
+.sh_jewel:                              ; a ring goes to the first free ring cell, an amulet to its own
+    lea     r9, [item_gear]
+    movzx   eax, byte [r9 + rdx]
+    lea     r9, [r12 + INVENTORY.jewelry]
+    cmp     eax, GK_RING
+    jne     .sh_amulet
+    cmp     byte [r9 + 1], 0
+    je      .sh_cell
+    add     r9, 4                       ; the second ring cell
+    jmp     .sh_cell
+.sh_amulet:
+    cmp     eax, GK_AMULET
+    jne     .sh_hm
+    add     r9, 8                       ; the amulet cell
+.sh_cell:
     cmp     byte [r9 + 1], 0
     jne     .sh_hm                      ; that cell is taken
     mov     eax, [rbx]

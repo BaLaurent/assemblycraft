@@ -2,8 +2,8 @@
 ; motes and gold glitter of combat, camera shake and a screen flash. Particles are not saved with
 ; the world; everything lives in fx_particles.
 ;
-; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC or FX_GOLD.
-; Velocities are in blocks per second and every position moves v / 60 per fixed step.
+; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC, FX_GOLD or
+; FX_FROST. Velocities are in blocks per second and every position moves v / 60 per fixed step.
 ; fx_explosion, fx_debris and fx_burst spawn, fx_step runs once per fixed step, fx_render draws
 ; inside the world pass.
 %include "common.inc"
@@ -75,15 +75,17 @@ k_fire_g1:  dd 0.2
 k_fire_b1:  dd 0.05
 k_smoke_g0: dd 0.62
 k_smoke_g1: dd 0.35
-; fx_burst: sparks fall 0.3 b/s per step, magic motes slow x0.9 per step, gold rises 0.04 b/s per step
+; fx_burst: sparks fall 0.3 b/s per step, magic motes and frost flecks slow x0.9 per step, gold
+; rises 0.04 b/s per step
 k_spark_g:  dd 0.3
 k_magic_dv: dd 0.9
 k_gold_up:  dd 0.04
-; start and end colour (r, g, b, r, g, b) of the burst kinds SPARK, MAGIC, GOLD
+; start and end colour (r, g, b, r, g, b) of the burst kinds SPARK, MAGIC, GOLD, FROST
 k_burst_col:
     dd 1.0, 0.95, 0.6,  1.0, 0.6, 0.2
     dd 0.7, 0.3, 1.0,   0.3, 0.1, 0.6
     dd 1.0, 0.85, 0.3,  1.0, 0.6, 0.1
+    dd 0.75, 0.9, 1.0,  0.4, 0.6, 1.0
 ; fx_burst rows by kind - FX_FIRE: size lo, size hi, life lo, number of lives (hi = lo + n - 1);
 ; the DEBRIS row is never used
 burst_tab:
@@ -93,6 +95,7 @@ burst_tab:
     dd 0.08, 0.14, 10, 7                ; SPARK
     dd 0.12, 0.2,  18, 13               ; MAGIC
     dd 0.1, 0.18,  30, 21               ; GOLD
+    dd 0.12, 0.2,  20, 11               ; FROST
 ; render_box face order +X -X +Y -Y +Z -Z
 shades_block: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
 shades_flat:  dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
@@ -556,7 +559,7 @@ rand_dir:
 %define B_FRAME 32
 
 ; fx_burst(xmm0..2 position, edi kind, esi count, xmm3 speed): count particles of one kind
-; (FX_FIRE, FX_SMOKE, FX_SPARK, FX_MAGIC or FX_GOLD) fly off from the position in random
+; (FX_FIRE, FX_SMOKE, FX_SPARK, FX_MAGIC, FX_GOLD or FX_FROST) fly off from the position in random
 ; directions at speed * U(0.5, 1) blocks per second, each with the size and life its kind has in
 ; burst_tab. Any other kind spawns nothing; when the table is full the rest is dropped.
 ; rbx = the particle being filled, r12d = particles left, r13 = the kind's burst_tab row,
@@ -576,7 +579,7 @@ fx_burst:
     mov     r12d, esi
     mov     r14d, edi
     lea     eax, [rdi - FX_FIRE]
-    cmp     eax, FX_GOLD - FX_FIRE
+    cmp     eax, FX_FROST - FX_FIRE
     ja      .done                       ; not a particle kind
     cmp     edi, FX_DEBRIS
     je      .done                       ; debris is fx_debris's
@@ -663,6 +666,8 @@ fx_step:
     je      .spark
     cmp     eax, FX_MAGIC
     je      .magic
+    cmp     eax, FX_FROST
+    je      .magic
     cmp     eax, FX_GOLD
     je      .gold
     ; ---- debris: gravity, then move unless the new cell is solid (then bounce) ----------
@@ -744,7 +749,7 @@ fx_step:
     movss   [rbx + PARTICLE.vy], xmm0
     MOVE_POS
     jmp     .age
-.magic:                                 ; magic motes slow down: v *= 0.9 per step
+.magic:                                 ; magic motes and frost flecks slow down: v *= 0.9 per step
 %assign i 0
 %rep 3
     movss   xmm0, [rbx + PARTICLE.vx + i]
@@ -810,8 +815,8 @@ fx_step:
     ret
 
 ; draw_pass(edi mode) -> eax particles drawn. Mode 0 draws the debris cubes (textured with their
-; tile, shaded like a block); mode 1 draws fire (yellow -> red), sparks, magic and gold (their
-; kind's two colours; all flat) and smoke (grey, shaded) with the caller having switched
+; tile, shaded like a block); mode 1 draws fire (yellow -> red), sparks, magic, gold and frost
+; (their kind's two colours; all flat) and smoke (grey, shaded) with the caller having switched
 ; texturing off.
 ; rbx = particle, r12d = mode, r13d = drawn; [rsp] = box, [rsp + 24] = tile bytes
 draw_pass:
@@ -870,7 +875,7 @@ draw_pass:
     je      .fire
     cmp     eax, FX_SMOKE
     je      .smoke_col
-    sub     eax, FX_SPARK               ; sparks, magic and gold: the row of k_burst_col
+    sub     eax, FX_SPARK               ; sparks, magic, gold and frost: the row of k_burst_col
     lea     eax, [rax + rax*2]
     shl     eax, 3                      ; 24 bytes per kind
     lea     rcx, [k_burst_col]

@@ -14,6 +14,7 @@ extern mobs, mobs_clear, mob_count_type
 extern rpg_state, rpg_reset, rpg_xp_need
 extern fx_clear, survival_reset, combat_reset
 extern game_mode, settings, player
+extern item_gear
 
 section .rodata
 align 4
@@ -21,6 +22,8 @@ k_one:   dd 1.0
 k_half:  dd 0.5
 k_3_5:   dd 3.5
 k_10:    dd 10.0
+k_6:     dd 6.0
+k_20:    dd 20.0
 
 section .bss
 alignb 16
@@ -183,8 +186,12 @@ test_structure_sites_deterministic:
     pop     rbp
     ret
 
-; chests_in(rdi SITE*) -> eax number of CONT_CHEST containers inside the site's box, each on a
-; CHEST block and holding at least one item; -1 when one of them is not
+; chests_in(rdi SITE*, esi gears, edx tier, ecx min_rar) -> eax number of CONT_CHEST containers
+; inside the site's box, each on a CHEST block and holding loot plus exactly `gears` rolled gear
+; pieces (item_gear != 0, a seed in the dmg word) of the given tier and at least that rarity;
+; -1 when one of them does not
+; Frame: [rsp] gear pieces of the chest, [rsp+4] other items, [rsp+8] gears, [rsp+12] tier,
+; [rsp+16] lowest rarity.
 chests_in:
     push    rbp
     mov     rbp, rsp
@@ -193,7 +200,10 @@ chests_in:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 8
+    sub     rsp, 24
+    mov     [rsp + 8], esi
+    mov     [rsp + 12], edx
+    mov     [rsp + 16], ecx
     mov     rbx, rdi
     lea     r12, [world_header + WORLDHDR.containers]
     mov     r13d, MAX_CONTAINERS
@@ -222,18 +232,41 @@ chests_in:
     call    world_get
     cmp     eax, CHEST
     jne     .bad
-    xor     r15d, r15d                  ; the first non-empty cell
+    mov     qword [rsp], 0
+    xor     r15d, r15d
 .cell:
-    cmp     byte [r12 + CONTAINER.slots + r15*4 + ITEMSTACK.id], 0
-    je      .cnext
+    movzx   eax, byte [r12 + CONTAINER.slots + r15*4 + ITEMSTACK.id]
+    test    eax, eax
+    jz      .cnext
     cmp     byte [r12 + CONTAINER.slots + r15*4 + ITEMSTACK.count], 0
-    jne     .loot
+    je      .cnext
+    lea     rcx, [item_gear]
+    cmp     byte [rcx + rax], 0
+    jne     .gear
+    inc     dword [rsp + 4]
+    jmp     .cnext
+.gear:
+    inc     dword [rsp]
+    movzx   eax, word [r12 + CONTAINER.slots + r15*4 + ITEMSTACK.dmg]
+    test    eax, GEAR_SEED_MASK
+    jz      .bad                        ; no seed: not a rolled piece
+    mov     ecx, eax
+    shr     ecx, GEAR_RARITY_SHIFT
+    cmp     ecx, [rsp + 16]
+    jb      .bad                        ; below the table's lowest rarity
+    shr     eax, GEAR_TIER_SHIFT
+    and     eax, 15
+    cmp     eax, [rsp + 12]
+    jne     .bad
 .cnext:
     inc     r15d
     cmp     r15d, 27
     jb      .cell
-    jmp     .bad                        ; an empty chest
-.loot:
+    mov     eax, [rsp]
+    cmp     eax, [rsp + 8]
+    jne     .bad
+    cmp     dword [rsp + 4], 0
+    je      .bad                        ; an empty chest, or one holding nothing but gear
     inc     r14d
 .rnext:
     add     r12, CONTAINER_size
@@ -244,13 +277,27 @@ chests_in:
 .bad:
     mov     eax, -1
 .ret:
-    add     rsp, 8
+    add     rsp, 24
     pop     r15
     pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; first_mob() -> rax the first live mob, 0 when there is none
+first_mob:
+    lea     rax, [mobs]
+    mov     ecx, MAX_MOBS
+.l:
+    cmp     dword [rax + MOB.type], MOB_NONE
+    jne     .ret
+    add     rax, MOB_size
+    dec     ecx
+    jnz     .l
+    xor     eax, eax
+.ret:
     ret
 
 ; block_at(rdi SITE*, esi dx, edx y, ecx dz) -> eax the block at (site x + dx, y, site z + dz)
@@ -341,8 +388,9 @@ tun_frame:
 %endmacro
 
 ; world_generate(42): the first dungeon has open rooms, corridor and west opening, a brick west
-; wall, four loaded chests, and a stair tunnel with brick floor and open passage that ends in the
-; entrance frame; the crypt has an open hall, its pillars and two loaded chests
+; wall, four loaded chests (each with one rolled piece of gear of tier 2 + 2 * dungeon, in every
+; dungeon), and a stair tunnel with brick floor and open passage that ends in the entrance frame;
+; the crypt has an open hall, its pillars and two loaded chests with two pieces of tier 13 each
 test_dungeon_built_with_chests:
     push    rbp
     mov     rbp, rsp
@@ -382,6 +430,9 @@ test_dungeon_built_with_chests:
     jne     .fail
 .wall_ok:
     mov     rdi, rbx
+    mov     esi, 1
+    mov     edx, 2
+    xor     ecx, ecx                    ; a dungeon's table may roll common
     call    chests_in
     cmp     eax, 4
     jne     .fail
@@ -434,6 +485,13 @@ test_dungeon_built_with_chests:
     test    rax, rax
     jz      .fail
     mov     rbx, rax
+    mov     rdi, rbx
+    mov     esi, 1
+    lea     edx, [r12*2 + 2]
+    xor     ecx, ecx
+    call    chests_in
+    cmp     eax, 4
+    jne     .fail
     mov     r15d, 1
 .exit_scan:
     call    tun_frame
@@ -473,6 +531,9 @@ test_dungeon_built_with_chests:
     cmp     eax, STONE_BRICK
     jne     .fail
     mov     rdi, rbx
+    mov     esi, 2
+    mov     edx, 13
+    mov     ecx, RAR_MAGIC              ; the boss table never rolls common
     call    chests_in
     cmp     eax, 2
     jne     .fail
@@ -629,7 +690,8 @@ test_village_built_with_npcs:
     ret
 
 ; eight deaths of dungeon 0's mobs clear it: the 8th (not the 7th, not origin 0 or the crypt boss)
-; sets bit 0 of the cleared mask and awards 150 XP once
+; sets bit 0 of the cleared mask and awards 150 XP + 15 per level (165 at level 1) once; the clear
+; of dungeon 1 at level 10 pays 300
 test_dungeon_clears_after_kills:
     push    rbp
     mov     rbp, rsp
@@ -667,12 +729,28 @@ test_dungeon_clears_after_kills:
     cmp     eax, 1                      ; dungeon 0 only
     jne     .fail
     call    total_xp
-    cmp     eax, 150
+    cmp     eax, 165
     jne     .fail
     mov     edi, 1                      ; a 9th death changes nothing
     call    structures_on_mob_killed
     call    total_xp
-    cmp     eax, 150
+    cmp     eax, 165
+    jne     .fail
+    mov     byte [rpg_state + RPGSAVE.level], 10
+    mov     dword [rpg_state + RPGSAVE.xp], 0
+    call    total_xp
+    mov     r12d, eax
+    mov     ebx, 8
+.eight:
+    mov     edi, 2                      ; dungeon 1's mobs
+    call    structures_on_mob_killed
+    dec     ebx
+    jnz     .eight
+    test    byte [rpg_state + RPGSAVE.cleared], 2
+    jz      .fail
+    call    total_xp
+    sub     eax, r12d
+    cmp     eax, 300
     jne     .fail
     xor     eax, eax
     jmp     .out
@@ -718,8 +796,9 @@ total_xp:
     ret
 
 ; the crypt's boss: nothing wakes while the player is outside, in Creative or on Peaceful; inside
-; in Survival one step spawns a single boss (origin 99), more steps add none, and once the boss
-; is marked defeated (rpg_state.flags bit 0) none comes back
+; in Survival one step spawns a single boss (origin 99, level 20 for a level 1 player), more steps
+; add none, and once the boss is marked defeated (rpg_state.flags bit 0) none comes back. Then a
+; step inside the first dungeon spawns one of its elites (origin 1) at the player's level + 2.
 ; Frame: [rsp] saved player body, [rsp+72] game_mode, [rsp+76] difficulty.
 test_crypt_spawns_boss_once:
     push    rbp
@@ -796,6 +875,8 @@ test_crypt_spawns_boss_once:
 .have:
     cmp     dword [rax + MOB.origin], 99
     jne     .fail
+    cmp     dword [rax + MOB.level], 20
+    jne     .fail
     call    structures_step             ; once only
     mov     edi, MOB_BOSS
     call    mob_count_type
@@ -808,6 +889,34 @@ test_crypt_spawns_boss_once:
     call    mob_count_type
     test    eax, eax
     jnz     .fail
+    call    mobs_clear                  ; a dungeon's spawner, with the player in the dungeon's far
+    call    structures_reset            ; south-west corner, 6 or more blocks from every room's middle
+    mov     byte [rpg_state + RPGSAVE.level], 4
+    mov     edi, SITE_DUNGEON
+    xor     esi, esi
+    call    find_site
+    test    rax, rax
+    jz      .fail
+    mov     rbx, rax
+    cvtsi2ss xmm0, dword [rbx + SITE.x]
+    subss   xmm0, [k_6]
+    movss   [player + BODY.x], xmm0
+    cvtsi2ss xmm0, dword [rbx + SITE.y]
+    addss   xmm0, [k_one]
+    movss   [player + BODY.y], xmm0
+    cvtsi2ss xmm0, dword [rbx + SITE.z]
+    addss   xmm0, [k_20]
+    movss   [player + BODY.z], xmm0
+    call    structures_step
+    call    first_mob
+    test    rax, rax
+    jz      .fail
+    cmp     dword [rax + MOB.origin], 1
+    jne     .fail
+    cmp     dword [rax + MOB.elite], 1
+    jne     .fail
+    cmp     dword [rax + MOB.level], 6
+    jne     .fail
     xor     eax, eax
     jmp     .out
 .fail:

@@ -37,6 +37,17 @@ test_game_save_load_roundtrip:
     mov     byte [rax + ITEMSTACK.id], IRON_CHESTPLATE
     mov     byte [rax + ITEMSTACK.count], 1
     mov     word [rax + ITEMSTACK.dmg], 3
+    lea     rax, [inv + INVENTORY.jewelry + 0*4]    ; a rare ring (rarity 2, tier 3, seed 5) ...
+    mov     byte [rax + ITEMSTACK.id], RING
+    mov     byte [rax + ITEMSTACK.count], 1
+    mov     word [rax + ITEMSTACK.dmg], 0x8C05
+    lea     rax, [inv + INVENTORY.jewelry + 2*4]    ; ... an amulet in the third cell ...
+    mov     byte [rax + ITEMSTACK.id], AMULET
+    mov     byte [rax + ITEMSTACK.count], 1
+    mov     word [rax + ITEMSTACK.dmg], 0x4403
+    lea     rax, [inv + INVENTORY.jewelry + 1*4]    ; ... and a sword in the second, which a load must drop
+    mov     byte [rax + ITEMSTACK.id], IRON_SWORD
+    mov     byte [rax + ITEMSTACK.count], 1
     mov     edi, 128
     mov     esi, 60
     mov     edx, 128
@@ -84,6 +95,21 @@ test_game_save_load_roundtrip:
     cmp     byte [rax + ITEMSTACK.count], 1
     jne     .fail
     cmp     word [rax + ITEMSTACK.dmg], 3
+    jne     .fail
+    lea     rax, [inv + INVENTORY.jewelry + 0*4]
+    cmp     byte [rax + ITEMSTACK.id], RING
+    jne     .fail
+    cmp     byte [rax + ITEMSTACK.count], 1
+    jne     .fail
+    cmp     word [rax + ITEMSTACK.dmg], 0x8C05
+    jne     .fail
+    lea     rax, [inv + INVENTORY.jewelry + 2*4]
+    cmp     byte [rax + ITEMSTACK.id], AMULET
+    jne     .fail
+    cmp     word [rax + ITEMSTACK.dmg], 0x4403
+    jne     .fail
+    lea     rax, [inv + INVENTORY.jewelry + 1*4]
+    cmp     byte [rax + ITEMSTACK.count], 0
     jne     .fail
     mov     edi, 128
     mov     esi, 60

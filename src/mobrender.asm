@@ -3,7 +3,8 @@
 ; atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog,
 ; alpha test, face culling.
 ; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
-; is doing (hit red, wind-up red flicker, stun yellow flicker, elite gold) and sized by what it is
+; is doing and suffering (hit red, wind-up red flicker, frozen and chilled blue, burning orange
+; flicker, poisoned green, stun yellow flicker, elite gold; first one wins) and sized by what it is
 ; (elite 1.2 x, wind-up surge 1.05 x, creeper swell).
 %include "common.inc"
 %include "gl.inc"
@@ -43,6 +44,14 @@ f_wind_b:   dd 0.45
 f_stun_b:   dd 0.4                      ; stun flicker (1, 1, 0.4)
 f_elite_scale: dd 1.2
 f_wind_scale: dd 1.05
+f_pois_r:   dd 0.75                     ; poisoned tint (0.75, 1, 0.6)
+f_pois_b:   dd 0.6
+f_burn_g:   dd 0.6                      ; burning flicker (1, 0.6, 0.3)
+f_burn_b:   dd 0.3
+f_chill_r:  dd 0.7                      ; chilled tint (0.7, 0.85, 1)
+f_chill_g:  dd 0.85
+f_frozen_r: dd 0.5                      ; frozen tint (0.5, 0.7, 1)
+f_frozen_g: dd 0.7
 
 zombie_parts:
     PART -0.25, 0.0, -0.125,  0.0, 0.75, 0.125,   TILE_ZOMBIE_PANTS, TILE_ZOMBIE_PANTS, 0.75, 0.0,  1.0    ; left leg
@@ -178,8 +187,8 @@ mobs_render:
     mulss   xmm0, [f_swing]
     movss   [rsp], xmm0                 ; swing = sin(walk) * 30 degrees
     movss   xmm0, [f_one]               ; tint, lowest priority first: elite gold, stun flicker,
-    movss   xmm1, xmm0                  ; wind-up flicker, then the hit's red over everything
-    movss   xmm2, xmm0
+    movss   xmm1, xmm0                  ; poison green, burning flicker, chill blue, freeze blue,
+    movss   xmm2, xmm0                  ; wind-up flicker, then the hit's red over everything
     cmp     dword [rbx + MOB.elite], 0
     je      .not_elite
     movss   xmm1, [f_elite_g]
@@ -193,16 +202,47 @@ mobs_render:
     movss   xmm1, [f_one]
     movss   xmm2, [f_stun_b]
 .not_stunned:
+    cmp     dword [rbx + MOB.poison_t], 0
+    jle     .not_poisoned
+    movss   xmm0, [f_pois_r]
+    movss   xmm1, [f_one]
+    movss   xmm2, [f_pois_b]
+.not_poisoned:
+    mov     eax, [rbx + MOB.burn_t]
+    test    eax, eax
+    jle     .not_burning
+    test    al, 8                       ; (burn_t >> 3) & 1: orange flicker
+    jz      .not_burning
+    movss   xmm0, [f_one]
+    movss   xmm1, [f_burn_g]
+    movss   xmm2, [f_burn_b]
+.not_burning:
+    cmp     dword [rbx + MOB.chill_t], 0
+    jle     .not_chilled
+    movss   xmm0, [f_chill_r]
+    movss   xmm1, [f_chill_g]
+    movss   xmm2, [f_one]
+.not_chilled:
+    cmp     dword [rbx + MOB.freeze_cd], 0
+    jle     .not_frozen
+    cmp     dword [rbx + MOB.stun], 0
+    jle     .not_frozen                 ; frozen: stunned by a freeze
+    movss   xmm0, [f_frozen_r]
+    movss   xmm1, [f_frozen_g]
+    movss   xmm2, [f_one]
+.not_frozen:
     mov     eax, [rbx + MOB.windup]
     test    eax, eax
     jle     .not_winding
     test    al, 4                       ; (windup >> 2) & 1: red flicker
     jz      .not_winding
+    movss   xmm0, [f_one]
     movss   xmm1, [f_wind_g]
     movss   xmm2, [f_wind_b]
 .not_winding:
     cmp     dword [rbx + MOB.hurt], 0
     jle     .tinted
+    movss   xmm0, [f_one]
     movss   xmm1, [f_half]              ; hit: red tint
     movss   xmm2, [f_half]
 .tinted:

@@ -267,7 +267,7 @@ test_sky_day_cycle:
     mov     dword [inv + INVENTORY.armor + 12], (%1 + 3) | (1 << 8)
 %endmacro
 
-; Full diamond (20 points) turns a 3-damage zombie hit into 1 and wears each piece;
+; Full diamond (20 points) turns a 3-damage zombie hit into 1 and wears nothing (gear never wears);
 ; falls ignore armor; full iron (15 points) turns a 10-damage blast into 4.
 test_armor_reduces_damage:
     push    rbp
@@ -287,7 +287,7 @@ test_armor_reduces_damage:
     jne     .fail
     xor     ebx, ebx
 .wear:
-    cmp     word [inv + INVENTORY.armor + rbx*4 + ITEMSTACK.dmg], 1
+    cmp     word [inv + INVENTORY.armor + rbx*4 + ITEMSTACK.dmg], 0     ; no piece took damage
     jne     .fail
     inc     ebx
     cmp     ebx, 4

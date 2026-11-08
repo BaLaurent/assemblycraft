@@ -7,11 +7,11 @@ default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_hurt, mob_strike, explode_at, explode_magic
+extern player, raycast, ray_aabb, mobs_raycast, mob_strike, explode_at, explode_magic
 extern surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg, fx_burst
-extern player_take_hit, combat_hit_flags, combat_heal, rpg_stat
+extern player_take_hit, combat_hit_flags, combat_hit_mob, combat_player_status, combat_kb_mult
 extern glIsEnabled
 
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
@@ -58,7 +58,7 @@ c_src_t:     dd 0.1                     ; a mob's arrow "comes from" 0.1 s back 
 c_trail_v:   dd 0.3                     ; speed of a trail particle
 c_burst_v:   dd 1.0                     ; speed of the sparks where a bolt ends
 ; flying steps before a projectile is gone (a rocket or fireball explodes then), by kind
-max_age:     dd 600, 120, 300, 90, 120  ; ARROW, BULLET, ROCKET, BOLT, FIREBALL
+max_age:     dd 600, 120, 300, 90, 120, 20  ; ARROW, BULLET, ROCKET, BOLT, FIREBALL, KNIFE
 
 ; arrow model: shaft, tip, fletching (box lo xyz, hi xyz); the tip points to -Z
 arrow_shaft: dd -0.03, -0.03, -0.25,  0.03, 0.03, 0.25
@@ -89,6 +89,9 @@ c_bolt_half: dd 0.09                    ; 0.18 cube
 c_bolt_col:  dd 0.75, 0.4, 1.0
 c_fire_half: dd 0.15                    ; 0.3 cube
 c_fire_col:  dd 1.0, 0.55, 0.15
+; throwing knife: a 0.12 cube of steel, drawn in the world pass like an arrow
+knife_box:   dd -0.06, -0.06, -0.06,  0.06, 0.06, 0.06
+c_knife_col: dd 0.75, 0.75, 0.8
 
 section .bss
 alignb 16
@@ -107,7 +110,8 @@ arrows_clear:
 
 ; arrows_spawn(xmm0 x, xmm1 y, xmm2 z, xmm3 vx, xmm4 vy, xmm5 vz, edi owner, esi damage,
 ;              edx pickup, ecx kind, r8d flags) -> eax slot index, or -1 when every slot is in use
-; owner: 0 player, 1 mob. kind: PROJ_ARROW .. PROJ_FIREBALL. flags: AF_*. Velocities are
+; owner: 0 player, 1 mob. kind: PROJ_ARROW .. PROJ_KNIFE. flags: AF_* (a player's weapon projectile
+; carries its element in bits AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED). Velocities are
 ; blocks per second.
 arrows_spawn:
     lea     r9, [arrows]
@@ -193,9 +197,11 @@ arrow_hdir:
 
 ; arrows_step(): one fixed 1/60 s step for every arrow.
 ; Flying arrows fall under gravity along the segment they travel this step; the nearest of
-; the first block, the first mob (the player's arrows) or the player (a mob's arrows) on that
-; segment ends the flight: a creature is hurt and the arrow vanishes, a block holds it.
-; Stuck arrows time out; the player walks over its own to pick it up again.
+; the first block, the first mob (the player's projectiles) or the player (a mob's arrows) on that
+; segment ends the flight: a creature is hurt and the arrow vanishes, a block holds it (a knife,
+; bullet or bolt just vanishes). Everything a player's projectile does to a mob goes through
+; combat_hit_mob; an elemental mob arrow also afflicts the player. Stuck arrows time out; the
+; player walks over its own to pick it up again.
 ; rbx = arrow, r12 = end of the table
 arrows_step:
     push    rbp
@@ -283,7 +289,45 @@ arrows_step:
     je      .magic_burst                ; so does a fireball...
     test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
     jnz     .magic_burst                ; ...and an explosive arrow
-    mov     ecx, HF_PLAYER              ; the player's hit: the mob learns whose it is, and a crit
+    cmp     eax, PROJ_BULLET
+    je      .bullet_hit
+    mov     r8d, [rbx + ARROWENT.flags] ; the player's weapon projectile: the damage pipeline decides
+    mov     edx, r8d
+    shr     edx, AF_ELEM_SHIFT
+    and     edx, HITF_ELEM_MASK         ; its element
+    test    r8d, AF_CRIT
+    jz      .no_crit
+    or      edx, HITF_CRIT
+.no_crit:
+    test    r8d, AF_BLEED
+    jz      .no_bleed
+    or      edx, HITF_BLEED
+.no_bleed:
+    mov     esi, SRC_MELEE_SKILL        ; a knife
+    cmp     eax, PROJ_KNIFE
+    je      .hit
+    cmp     eax, PROJ_ARROW
+    je      .arrow
+    mov     esi, SRC_SPELL              ; a bolt: a staff's (an attack) or a skill's
+    test    r8d, AF_ATTACK
+    jz      .hit
+    mov     esi, SRC_BOLT
+    jmp     .hit
+.arrow:
+    or      edx, HITF_HURTWIN           ; an arrow cannot hit again inside the hurt window
+    mov     esi, SRC_RANGED_SKILL
+    test    r8d, AF_ATTACK
+    jz      .hit
+    mov     esi, SRC_BOW
+.hit:
+    mov     edi, [rsp + S_IDX]
+    cvtsi2ss xmm0, dword [rbx + ARROWENT.damage]
+    movss   xmm1, [rsp + S_H]
+    movss   xmm2, [rsp + S_H + 4]
+    call    combat_hit_mob
+    jmp     .impact
+.bullet_hit:                            ; guns take no stats: the mob learns whose hit it is, and a crit
+    mov     ecx, HF_PLAYER
     mov     edx, HF_PLAYER | HF_CRIT
     test    dword [rbx + ARROWENT.flags], AF_CRIT
     cmovnz  ecx, edx
@@ -292,27 +336,7 @@ arrows_step:
     mov     esi, [rbx + ARROWENT.damage]
     movss   xmm0, [rsp + S_H]
     movss   xmm1, [rsp + S_H + 4]
-    cmp     eax, PROJ_ARROW
-    je      .arrow_hit
-    call    mob_strike                  ; every bullet and bolt counts, even in the hurt window
-    mov     byte [combat_hit_flags], 0
-    cmp     dword [rbx + ARROWENT.kind], PROJ_BOLT
-    jne     .impact
-    test    eax, eax
-    jz      .impact                     ; nothing landed: nothing to steal
-    mov     edi, STAT_LIFESTEAL         ; a bolt heals floor(damage * LIFESTEAL / 100)
-    call    rpg_stat
-    imul    eax, [rbx + ARROWENT.damage]
-    xor     edx, edx
-    mov     ecx, 100
-    div     ecx
-    test    eax, eax
-    jz      .impact
-    mov     edi, eax
-    call    combat_heal
-    jmp     .impact
-.arrow_hit:
-    call    mob_hurt
+    call    mob_strike                  ; every bullet counts, even in the hurt window
     mov     byte [combat_hit_flags], 0
     jmp     .impact
 
@@ -364,12 +388,37 @@ arrows_step:
     call    player_take_hit
     cmp     eax, HIT_TAKEN
     jne     .impact                     ; parried, blocked, dodged or invulnerable: spent anyway
-    movss   xmm0, [rsp + S_H]           ; shoved along the arrow's heading
-    mulss   xmm0, [c_kb]
-    movss   [player + BODY.kbx], xmm0
-    movss   xmm0, [rsp + S_H + 4]
-    mulss   xmm0, [c_kb]
-    movss   [player + BODY.kbz], xmm0
+    mov     eax, [rbx + ARROWENT.flags] ; an elemental arrow (an elite skeleton's) afflicts what it hits
+    shr     eax, AF_ELEM_SHIFT
+    and     eax, HITF_ELEM_MASK
+    mov     edi, STS_BURN
+    cmp     eax, ELEM_FIRE
+    je      .afflict
+    mov     edi, STS_CHILL
+    cmp     eax, ELEM_FROST
+    je      .afflict
+    mov     edi, STS_POISON
+    cmp     eax, ELEM_POISON
+    jne     .shove
+.afflict:
+    mov     eax, [rbx + ARROWENT.damage]
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    mov     esi, 1
+    cmp     eax, esi
+    cmovae  esi, eax                    ; max(1, damage / 3)
+    call    combat_player_status
+.shove:
+    call    combat_kb_mult              ; Juggernaut takes no knockback
+    movss   xmm1, [rsp + S_H]           ; shoved along the arrow's heading
+    mulss   xmm1, [c_kb]
+    mulss   xmm1, xmm0
+    movss   [player + BODY.kbx], xmm1
+    movss   xmm1, [rsp + S_H + 4]
+    mulss   xmm1, [c_kb]
+    mulss   xmm1, xmm0
+    movss   [player + BODY.kbz], xmm1
 
     ; ---- a creature was hit: sound at the hit point, the arrow is gone ----------------
 .impact:
@@ -389,6 +438,8 @@ arrows_step:
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_BULLET
     je      .bullet_block
+    cmp     eax, PROJ_KNIFE
+    je      .bullet_block               ; a knife is spent on the surface, too
     cmp     eax, PROJ_ROCKET
     je      .rocket_block
     cmp     eax, PROJ_FIREBALL
@@ -448,6 +499,16 @@ arrows_step:
     jz      .magic_go
     movss   xmm3, [c_magic_big]
 .magic_go:
+    mov     esi, SRC_SPELL              ; a fireball is a spell...
+    cmp     dword [rbx + ARROWENT.kind], PROJ_FIREBALL
+    je      .magic_src
+    mov     esi, SRC_RANGED_SKILL       ; ...an explosive arrow a ranged skill
+.magic_src:
+    mov     edx, ELEM_FIRE              ; both burn
+    test    dword [rbx + ARROWENT.flags], AF_CRIT
+    jz      .magic_fire
+    or      edx, HITF_CRIT
+.magic_fire:
     movss   xmm0, [rsp + S_HP]
     movss   xmm1, [rsp + S_HP + 4]
     movss   xmm2, [rsp + S_HP + 8]
@@ -587,6 +648,8 @@ arrows_render:
 .loop:
     cmp     dword [rbx + ARROWENT.live], 0
     je      .next
+    cmp     dword [rbx + ARROWENT.kind], PROJ_KNIFE
+    je      .model                      ; a knife is drawn with the arrows
     cmp     dword [rbx + ARROWENT.kind], PROJ_BOLT
     jb      .model
     inc     r13d                        ; magic: the second pass
@@ -625,6 +688,8 @@ arrows_render:
     je      .bullet
     cmp     eax, PROJ_ROCKET
     je      .rocket
+    cmp     eax, PROJ_KNIFE
+    je      .knife
     lea     rdi, [arrow_shaft]
     lea     rsi, [tiles_shaft]
     call    draw_box
@@ -650,6 +715,15 @@ arrows_render:
     lea     rdi, [rocket_fins]
     lea     rsi, [tiles_steel]
     call    draw_box
+    jmp     .drawn
+.knife:
+    lea     rdi, [knife_box]
+    lea     rsi, [tiles_steel]
+    lea     rdx, [arrow_shades]
+    movss   xmm0, [c_knife_col]
+    movss   xmm1, [c_knife_col + 4]
+    movss   xmm2, [c_knife_col + 8]
+    call    render_box
 .drawn:
     call    glPopMatrix
 .next:

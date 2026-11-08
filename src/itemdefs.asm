@@ -415,24 +415,20 @@ item_legendary:
     END_TABLE item_legendary, 1, 0
 
 align 2
+; wear in uses. Only pickaxes, axes, shovels and flint and steel wear; gear (swords, daggers,
+; hammers, spears, bows, staves, armor, jewelry) never does: its dmg word holds its rarity, tier
+; and seed instead.
 item_durability:
     PAD_TO item_durability, WOOD_PICKAXE, 2, 0
-    times 4 dw 59
-    times 4 dw 131
+    dw 59, 59, 59, 0                    ; wood pickaxe, axe, shovel, sword
+    dw 131, 131, 131, 0                 ; stone
     PAD_TO item_durability, IRON_PICKAXE, 2, 0
-    times 4 dw 250                      ; iron tools
-    times 4 dw 32                       ; gold tools
-    times 4 dw 1561                     ; diamond tools
-    dw 384                              ; bow
+    dw 250, 250, 250, 0                 ; iron
+    dw 32, 32, 32, 0                    ; gold
+    dw 1561, 1561, 1561, 0              ; diamond
     PAD_TO item_durability, FLINT_AND_STEEL, 2, 0
     dw 64                               ; flint and steel
-    PAD_TO item_durability, IRON_HELMET, 2, 0
-    dw 165, 240, 225, 195               ; iron armor
-    dw 77, 112, 105, 91                 ; gold armor
-    dw 363, 528, 495, 429               ; diamond armor
-    PAD_TO item_durability, STAFF, 2, 0 ; firearms never wear, ammunition
-    dw 300, 0, 200, 1200                ; staff, archmage staff, iron/diamond dagger
-    END_TABLE item_durability, 2, 0     ; legendaries never wear
+    END_TABLE item_durability, 2, 0     ; every other item never wears
 
 ; fuel value in furnace steps, or 0
 %macro BURN 2                           ; item id, steps

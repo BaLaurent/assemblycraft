@@ -52,6 +52,12 @@ extern test_step_up_slab_not_block, test_stairs_then_block, test_door_blocks_unt
 extern test_ladder_climb, test_fence_cannot_jump, test_place_variants
 extern test_door_break_removes_pair_and_support, test_raycast_shapes
 extern test_world_load_v4_converts
+extern test_rpg_attributes_and_respec, test_rpg_keystones_and_caps
+extern test_gear_decode_deterministic, test_gear_stats_and_powers
+extern test_gear_drops_and_chests, test_gear_jewelry_and_no_wear
+extern test_damage_pipeline, test_status_effects, test_heavy_attack_and_speed
+extern test_player_statuses_and_defenses, test_new_abilities
+extern test_mob_levels_and_scaling, test_elite_affixes
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -179,6 +185,19 @@ tests:
     TEST door_break_removes_pair_and_support
     TEST raycast_shapes
     TEST world_load_v4_converts
+    TEST rpg_attributes_and_respec
+    TEST rpg_keystones_and_caps
+    TEST gear_decode_deterministic
+    TEST gear_stats_and_powers
+    TEST gear_drops_and_chests
+    TEST gear_jewelry_and_no_wear
+    TEST damage_pipeline
+    TEST status_effects
+    TEST heavy_attack_and_speed
+    TEST player_statuses_and_defenses
+    TEST new_abilities
+    TEST mob_levels_and_scaling
+    TEST elite_affixes
     dq 0
 
 section .rodata
@@ -298,6 +317,19 @@ section .rodata
     TESTNAME door_break_removes_pair_and_support
     TESTNAME raycast_shapes
     TESTNAME world_load_v4_converts
+    TESTNAME rpg_attributes_and_respec
+    TESTNAME rpg_keystones_and_caps
+    TESTNAME gear_decode_deterministic
+    TESTNAME gear_stats_and_powers
+    TESTNAME gear_drops_and_chests
+    TESTNAME gear_jewelry_and_no_wear
+    TESTNAME damage_pipeline
+    TESTNAME status_effects
+    TESTNAME heavy_attack_and_speed
+    TESTNAME player_statuses_and_defenses
+    TESTNAME new_abilities
+    TESTNAME mob_levels_and_scaling
+    TESTNAME elite_affixes
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

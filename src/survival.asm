@@ -4,13 +4,13 @@ default rel
 
 global surv, surv_max_health
 global survival_reset, survival_damage, survival_land, survival_exhaust
-global survival_step, survival_eat_step, survival_can_sprint
+global survival_step, survival_eat_step, survival_can_sprint, survival_dot
 
 extern game_mode, settings, player
-extern audio_play, inv_held, inv_consume_held, armor_points, armor_wear
+extern audio_play, inv_held, inv_consume_held, armor_points
 extern item_food, item_saturation, block_step_sound
 extern world_get, world_is_solid, world_is_opaque
-extern rpg_stats
+extern rpg_stats, gear_powers, combat_phoenix_cd, fx_burst, hud_banner
 
 section .rodata
 align 4
@@ -25,6 +25,9 @@ k_3:       dd 3.0
 k_4:       dd 4.0
 k_eye:     dd 1.62                      ; head height above the feet
 k_below:   dd 0.1                       ; probe depth under the feet
+k_1_2:     dd 1.2                       ; chest height above the feet (effect origin)
+k_20:      dd 20.0                      ; the health environmental damage amounts are given for
+s_phoenix: db "The Phoenix Ring saves you!", 0
 starve_floor: db 0, 10, 1, 0            ; per difficulty: health that starvation stops at
 
 section .bss
@@ -50,8 +53,10 @@ survival_reset:
     ret
 
 ; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
-; armor bonus, at most 20) reduces damage from mobs and explosions; the worn pieces wear by one
-; point per applied hit.
+; armor bonus, at most 20) reduces damage from mobs and explosions; environmental damage (a fall,
+; fire, hunger, suffocation) is given for a 20-health character and scales with the maximum
+; health (env_scale). A hit that lands starts 30 steps of invulnerability. A blow that would kill
+; may be undone by the Phoenix ring (lower_health).
 survival_damage:
     push    rbp
     mov     rbp, rsp
@@ -70,9 +75,9 @@ survival_damage:
     cmp     r12d, CAUSE_BOSS
     je      .armored
     cmp     r12d, CAUSE_SKELETON
-    jb      .apply
+    jb      .environment
     cmp     r12d, CAUSE_SPIDER
-    ja      .apply
+    ja      .environment
 .armored:
     call    armor_points
     add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
@@ -92,26 +97,22 @@ survival_damage:
     cmp     eax, ecx
     cmovb   eax, ecx                    ; max(1, ...)
     mov     ebx, eax
-    call    armor_wear
-.apply:
+    jmp     .apply
+.environment:                           ; a fall, hunger, suffocation or fire: scaled to the health
+    cmp     r12d, CAUSE_POISON
+    jae     .apply
     mov     edi, ebx
-    mov     esi, r12d
-    mov     eax, [surv + SURVIVAL.health]
-    sub     eax, edi
-    xor     edx, edx
-    test    eax, eax
-    cmovs   eax, edx
-    mov     [surv + SURVIVAL.health], eax
+    call    env_scale
+    mov     ebx, eax
+.apply:
     mov     dword [surv + SURVIVAL.invuln], 30
     mov     dword [surv + SURVIVAL.hurt_flash], 20
     movss   xmm0, [surv + SURVIVAL.exhaustion]
     addss   xmm0, [k_0_1]
     movss   [surv + SURVIVAL.exhaustion], xmm0
-    test    eax, eax
-    jnz     .alive
-    mov     dword [surv + SURVIVAL.dead], 1
-    mov     [surv + SURVIVAL.death_cause], esi
-.alive:
+    mov     edi, ebx
+    mov     esi, r12d
+    call    lower_health                ; the Phoenix may replace the invulnerability by a longer one
     mov     edi, SND_HURT
     movss   xmm0, [k_1]
     call    audio_play
@@ -125,6 +126,108 @@ survival_damage:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; survival_dot(edi amount, esi cause) -> eax 1 if applied. Damage over time (burn, poison): no armor,
+; no sound, and invulnerability neither stops it nor is started by it; it flashes the screen. Nothing
+; in creative, for the dead, or for an amount below 1. A lethal tick is handled as in survival_damage.
+survival_dot:
+    cmp     dword [game_mode], MODE_CREATIVE
+    je      .no
+    cmp     dword [surv + SURVIVAL.dead], 0
+    jne     .no
+    test    edi, edi
+    jle     .no
+    sub     rsp, 8
+    call    lower_health
+    mov     dword [surv + SURVIVAL.hurt_flash], 10
+    add     rsp, 8
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; lower_health(edi amount, esi cause): the damage lands, health down by amount. A blow that would
+; kill is undone by the Phoenix ring (gear_powers) once per 2 minutes: health back to half the
+; maximum (at least 1), 60 steps of invulnerability, flames, a sound and a banner. Otherwise the
+; player dies of that cause with 0 health.
+lower_health:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, esi
+    mov     eax, [surv + SURVIVAL.health]
+    sub     eax, edi
+    jg      .store                      ; still standing
+    test    dword [gear_powers], 1 << LP_PHOENIX
+    jz      .dead
+    cmp     dword [combat_phoenix_cd], 0
+    jg      .dead
+    mov     eax, [surv_max_health]
+    shr     eax, 1
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     [surv + SURVIVAL.health], eax
+    mov     dword [surv + SURVIVAL.invuln], 60
+    mov     dword [combat_phoenix_cd], 7200
+    movss   xmm0, [player + BODY.x]
+    movss   xmm1, [player + BODY.y]
+    addss   xmm1, [k_1_2]
+    movss   xmm2, [player + BODY.z]
+    movss   xmm3, [k_3]
+    mov     edi, FX_FIRE
+    mov     esi, 40
+    call    fx_burst
+    mov     edi, SND_FIREBALL
+    movss   xmm0, [k_1]
+    call    audio_play
+    lea     rdi, [s_phoenix]
+    mov     esi, RGBA(255, 140, 40, 255)
+    call    hud_banner
+    jmp     .out
+.dead:
+    mov     dword [surv + SURVIVAL.health], 0
+    mov     dword [surv + SURVIVAL.dead], 1
+    mov     [surv + SURVIVAL.death_cause], ebx
+    jmp     .out
+.store:
+    mov     [surv + SURVIVAL.health], eax
+.out:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; env_scale(edi base) -> eax max(1, round(base * max health / 20)): environmental damage is given
+; for a character of 20 health
+env_scale:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, dword [surv_max_health]
+    mulss   xmm0, xmm1
+    divss   xmm0, [k_20]
+    cvtss2si eax, xmm0
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    ret
+
+; regen_heal(): one regeneration tick: health + max(1, max health / 20), at most the maximum
+regen_heal:
+    mov     eax, [surv_max_health]
+    xor     edx, edx
+    mov     ecx, 20
+    div     ecx
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovb   eax, ecx
+    add     eax, [surv + SURVIVAL.health]
+    mov     ecx, [surv_max_health]
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     [surv + SURVIVAL.health], eax
     ret
 
 ; survival_land(xmm0 dist): fall damage beyond 3 blocks, thud for any real landing
@@ -207,7 +310,7 @@ survival_step:
     mov     eax, [surv_max_health]
     cmp     [surv + SURVIVAL.health], eax
     jge     .suffocate
-    inc     dword [surv + SURVIVAL.health]
+    call    regen_heal
     jmp     .suffocate
     ; 3. drain: every 4.0 exhaustion costs saturation, then food
 .drain:
@@ -244,7 +347,7 @@ survival_step:
     cmp     dword [surv + SURVIVAL.regen_timer], 240
     jb      .starve
     mov     dword [surv + SURVIVAL.regen_timer], 0
-    inc     dword [surv + SURVIVAL.health]
+    call    regen_heal
     movss   xmm0, [surv + SURVIVAL.exhaustion]
     addss   xmm0, [k_3]
     movss   [surv + SURVIVAL.exhaustion], xmm0
@@ -263,6 +366,10 @@ survival_step:
     and     eax, 3
     lea     rcx, [starve_floor]
     movzx   eax, byte [rcx + rax]
+    imul    eax, [surv_max_health]      ; the floor scales with the maximum health
+    xor     edx, edx
+    mov     ecx, 20
+    div     ecx
     cmp     [surv + SURVIVAL.health], eax
     jle     .suffocate
     mov     edi, 1

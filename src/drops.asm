@@ -9,11 +9,13 @@ global drops, drops_clear, drops_spawn, drops_toss, drops_step, drops_render
 
 extern player, player_eye, player_forward, world_is_solid, rng_next, sincos_deg
 extern inv_add_dmg, audio_play, surv, item_max_stack, item_model_draw, item_model_is_block
-extern light_bind_at, light_bind_index
+extern light_bind_at, light_bind_index, gear_rarity, gear_rarity_color
+extern glIsEnabled, glGetFloatv
 
 %define DESPAWN_STEPS 18000             ; 5 minutes
 %define SPAWN_DELAY   10                ; steps before a fresh drop can be picked up
 %define TOSS_DELAY    40
+%define GL_CURRENT_COLOR 0x0B00
 
 section .rodata
 align 4
@@ -43,11 +45,19 @@ c_block_sc:  dd 0.25
 c_item_sc:   dd 0.45
 c_stack_off: dd 0.25                    ; second copy of a stack, in model units
 c_light_dy:  dd 0.25                    ; the light is sampled this far above the drop's bottom
+c_inv255:    dd 0.003921569             ; 1 / 255
+c_beam_a:    dd 0.5                     ; beam alpha
+; the 8 corners of a rarity beam, relative to the drop: two crossed vertical quads, 0.06 wide
+; and 1.6 tall (x-y plane, then z-y plane)
+beam_offsets:
+    dd -0.03, 0.0, 0.0,   0.03, 0.0, 0.0,   0.03, 1.6, 0.0,  -0.03, 1.6, 0.0
+    dd 0.0, 0.0, -0.03,   0.0, 0.0, 0.03,   0.0, 1.6, 0.03,   0.0, 1.6, -0.03
 
 section .bss
 alignb 16
 drops:       resb MAX_DROPS * DROP_size
 drops_end:
+beam_rar:    resb MAX_DROPS             ; rarity of each drop for the beam pass, 0 = no beam
 
 section .text
 
@@ -365,9 +375,9 @@ drops_step:
     pop     rbp
     ret
 
-; drops_render(): every drop spinning and bobbing above its spot. Called inside the world
-; pass (atlas bound, alpha test on, light map active): each drop binds the light of the cell it
-; floats in on unit 1 (sky-full again afterwards), so the model light is 1.
+; drops_render(): every drop spinning and bobbing above its spot, then the rarity beams. Called
+; inside the world pass (atlas bound, alpha test on, light map active): each drop binds the light
+; of the cell it floats in on unit 1 (sky-full again afterwards), so the model light is 1.
 drops_render:
     push    rbp
     mov     rbp, rsp
@@ -433,7 +443,154 @@ drops_render:
     jb      .loop
     mov     edi, LIGHT_SKY_FULL
     call    light_bind_index
+    call    drops_beams
     add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; drops_beams(): a vertical beam over every gear drop of magic rarity or better, in its rarity
+; colour at half alpha: two crossed quads. Drawn after the items, fullbright (texturing off on
+; texture units 0 and 1, so neither the atlas nor the light map touches it), blended, without
+; depth writes, culling or alpha test (which would reject alpha 0.5). Every state it touches is
+; put back; when no drop qualifies nothing is touched at all. The world pass state it expects:
+; alpha test and face culling on, blending off, unit 0 active.
+; Frame: [rsp] the saved current colour (4 floats), +16 unit 0 enabled, +20 unit 1 enabled.
+; r12 walks beam_rar alongside the drops in rbx, r13d counts.
+drops_beams:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 56
+    lea     rbx, [drops]                ; which drops get a beam
+    lea     r12, [beam_rar]
+    xor     r13d, r13d
+.scan:
+    xor     eax, eax
+    movzx   edi, byte [rbx + DROP.id]
+    test    edi, edi
+    jz      .mark
+    movzx   esi, word [rbx + DROP.dmg]
+    call    gear_rarity
+.mark:
+    mov     [r12], al
+    cmp     eax, RAR_MAGIC
+    jb      .scan_next
+    inc     r13d
+.scan_next:
+    add     rbx, DROP_size
+    inc     r12
+    lea     rax, [drops_end]
+    cmp     rbx, rax
+    jb      .scan
+    test    r13d, r13d
+    jz      .ret
+    mov     edi, GL_CURRENT_COLOR
+    mov     rsi, rsp
+    call    glGetFloatv
+    mov     edi, GL_TEXTURE_2D
+    call    glIsEnabled
+    movzx   eax, al
+    mov     [rsp + 16], eax
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glIsEnabled
+    movzx   eax, al
+    mov     [rsp + 20], eax
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_ALPHA_TEST
+    call    glDisable
+    mov     edi, GL_CULL_FACE
+    call    glDisable
+    mov     edi, GL_BLEND
+    call    glEnable
+    mov     edi, GL_SRC_ALPHA
+    mov     esi, GL_ONE_MINUS_SRC_ALPHA
+    call    glBlendFunc
+    xor     edi, edi
+    call    glDepthMask
+    mov     edi, GL_QUADS
+    call    glBegin
+    lea     rbx, [drops]
+    lea     r12, [beam_rar]
+.beam:
+    movzx   edi, byte [r12]
+    cmp     edi, RAR_MAGIC
+    jb      .beam_next
+    call    gear_rarity_color           ; packed r, g, b, a bytes
+    movzx   ecx, al
+    cvtsi2ss xmm0, ecx
+    mulss   xmm0, [c_inv255]
+    movzx   ecx, ah
+    cvtsi2ss xmm1, ecx
+    mulss   xmm1, [c_inv255]
+    shr     eax, 16
+    movzx   ecx, al
+    cvtsi2ss xmm2, ecx
+    mulss   xmm2, [c_inv255]
+    movss   xmm3, [c_beam_a]
+    call    glColor4f
+    xor     r13d, r13d
+.vertex:
+    lea     ecx, [r13 + r13*2]
+    lea     rax, [beam_offsets]
+    lea     rax, [rax + rcx*4]
+    movss   xmm0, [rbx + DROP.x]
+    addss   xmm0, [rax]
+    movss   xmm1, [rbx + DROP.y]
+    addss   xmm1, [rax + 4]
+    movss   xmm2, [rbx + DROP.z]
+    addss   xmm2, [rax + 8]
+    call    glVertex3f
+    inc     r13d
+    cmp     r13d, 8
+    jb      .vertex
+.beam_next:
+    add     rbx, DROP_size
+    inc     r12
+    lea     rax, [drops_end]
+    cmp     rbx, rax
+    jb      .beam
+    call    glEnd
+    mov     edi, 1
+    call    glDepthMask
+    mov     edi, GL_BLEND
+    call    glDisable
+    mov     edi, GL_CULL_FACE
+    call    glEnable
+    mov     edi, GL_ALPHA_TEST
+    call    glEnable
+    cmp     dword [rsp + 16], 0
+    je      .unit1
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+.unit1:
+    cmp     dword [rsp + 20], 0
+    je      .colour
+    mov     edi, GL_TEXTURE1
+    call    glActiveTexture
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+    mov     edi, GL_TEXTURE0
+    call    glActiveTexture
+.colour:
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    call    glColor4f
+.ret:
+    add     rsp, 56
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

@@ -1,23 +1,27 @@
 ; test_abilities.asm - the class abilities: cost, cooldown and unlock rules (and the charge and war
 ; cry), a fireball that explodes without breaking anything, blink stopping at walls, the volley
-; and the arrow rain.
+; and the arrow rain; then the slot 3 abilities (ground slam, frost nova, hunter's mark, fan of
+; knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance), AREA and
+; the staff bolt.
 %include "common.inc"
 default rel
 
 global test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
-global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn
+global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn, test_new_abilities
 
-extern abilities_cd, abilities_cd_total, abilities_reset, abilities_step, abilities_use
+extern abilities_cd, abilities_cd_total, abilities_bolt_cd, abilities_reset, abilities_step
+extern abilities_use, abilities_staff_bolt
 extern arrows, arrows_clear, arrows_step
 extern mobs, mobs_clear, mob_spawn
-extern fx_clear, fx_count
-extern tnt_clear, drops_clear, inv_clear, inv_add, inv_count, inv_sel
+extern fx_clear, fx_count, fx_step, fx_particles, fx_shake
+extern tnt_clear, drops_clear, inv, inv_clear, inv_add, inv_count, inv_sel
 extern player, body_init, player_eye, player_forward, rng_seed
 extern world_clear, world_set, world_get, world_is_solid
 extern game_mode, game_time, settings, surv, survival_reset
-extern rpg_state, rpg_stats, rpg_recompute, rpg_reset
+extern rpg_state, rpg_stats, rpg_recompute, rpg_reset, rpg_ext, rpg_keystones
+extern gear_powers
 extern combat_mana, combat_stamina, combat_reset
-extern combat_warcry_t
+extern combat_warcry_t, combat_stealth_t, combat_crit_next_t
 
 section .rodata
 align 4
@@ -83,6 +87,50 @@ section .text
     mov     r9d, %6
     mov     r10d, %7
     call    fill_box
+%endmacro
+
+; MOBF(n, field): that field of mob slot n (the mobs of a scene land in slots 0, 1, 2.. in the order
+; they are spawned)
+%define MOBF(n, f) [mobs + (n) * MOB_size + (f)]
+
+; SPAWN type, x, y, z (float constants): rax = the new mob; fails the test when none fits
+%macro SPAWN 4
+    mov     edi, %1
+    movss   xmm0, [%2]
+    movss   xmm1, [%3]
+    movss   xmm2, [%4]
+    call    spawn
+    test    rax, rax
+    jz      .fail
+%endmacro
+
+; SAVE_HEALTH mob, offset: remember the mob's health at [rsp + offset]
+%macro SAVE_HEALTH 2
+    mov     eax, MOBF(%1, MOB.health)
+    mov     [rsp + %2], eax
+%endmacro
+
+; EXPECT_LOST mob, offset, n: fail unless the mob lost exactly n health since SAVE_HEALTH
+%macro EXPECT_LOST 3
+    mov     eax, [rsp + %2]
+    sub     eax, MOBF(%1, MOB.health)
+    cmp     eax, %3
+    jne     .fail
+%endmacro
+
+; CAST slot, buf: eax = abilities_use's answer for the view (eye[3], dir[3]) at [rsp + buf]
+%macro CAST 2
+    mov     edi, %1
+    lea     rsi, [rsp + %2]
+    lea     rdx, [rsp + %2 + 12]
+    call    abilities_use
+%endmacro
+
+; BOLT buf: eax = abilities_staff_bolt's answer for the view at [rsp + buf]
+%macro BOLT 1
+    lea     rdi, [rsp + %1]
+    lea     rsi, [rsp + %1 + 12]
+    call    abilities_staff_bolt
 %endmacro
 
 ; close_to(xmm0 a, xmm1 b) -> eax 1 when |a - b| < 0.01
@@ -162,6 +210,8 @@ fixture:
     call    abilities_reset
     call    rpg_reset
     call    combat_reset
+    mov     dword [rpg_keystones], 0
+    mov     dword [gear_powers], 0
     mov     dword [inv_sel], 0
     mov     dword [game_mode], MODE_SURVIVAL
     mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
@@ -210,6 +260,8 @@ cleanup:
     call    abilities_reset
     call    rpg_reset
     call    combat_reset
+    mov     dword [rpg_keystones], 0
+    mov     dword [gear_powers], 0
     add     rsp, 8
     ret
 
@@ -260,11 +312,12 @@ count_live:
     ret
 
 ; Warrior: Charge costs 30 stamina, starts a 360 step cooldown, shoves the player along -z at
-; 22 b/s and strikes the zombie in its way once (round(6 * 1.1) = 7, stunned 30 steps); a recast
+; 22 b/s and strikes the zombie in its way once (6 * 1.1 = 6.6, so 7; stunned 30 steps); a recast
 ; during the cooldown and the locked war cry cost nothing; COOLDOWN_RED shortens the cooldown;
-; the unlocked war cry stuns hostile mobs within 6 blocks only. Mage with 10 mana: no Fireball
-; (nothing paid, nothing fired); with 100 it fires one (75 mana left, 180 steps, damage 9).
-; rbx = the zombie; frame: eye[3] @0, dir[3] @12
+; the unlocked war cry stuns hostile mobs within 6 blocks only (within 9 with AREA 50). Mage with
+; 10 mana: no Fireball (nothing paid, nothing fired); with 100 it fires one (75 mana left, 180
+; steps, the unscaled base damage 8).
+; rbx = the zombie; frame: eye[3] @0, dir[3] @12, the zombie's health before the charge @24
 test_ability_cost_cooldown_and_unlock:
     push    rbp
     mov     rbp, rsp
@@ -290,6 +343,8 @@ test_ability_cost_cooldown_and_unlock:
     imul    ebx, eax, MOB_size
     lea     rax, [mobs]
     add     rbx, rax
+    mov     eax, [rbx + MOB.health]
+    mov     [rsp + 24], eax
     xor     edi, edi                    ; ---- Charge
     lea     rsi, [rsp]
     lea     rdx, [rsp + 12]
@@ -320,12 +375,16 @@ test_ability_cost_cooldown_and_unlock:
     cmp     dword [abilities_cd + 4], 0
     jne     .fail
     call    abilities_step              ; the charge reaches the zombie
-    cmp     dword [rbx + MOB.health], 13
+    mov     eax, [rsp + 24]
+    sub     eax, [rbx + MOB.health]
+    cmp     eax, 7
     jne     .fail
     cmp     dword [rbx + MOB.stun], 30
     jne     .fail
     call    abilities_step              ; and strikes it once
-    cmp     dword [rbx + MOB.health], 13
+    mov     eax, [rsp + 24]
+    sub     eax, [rbx + MOB.health]
+    cmp     eax, 7
     jne     .fail
     cmp     dword [abilities_cd], 358
     jne     .fail
@@ -346,7 +405,7 @@ test_ability_cost_cooldown_and_unlock:
     call    abilities_reset             ; ---- War Cry, bought: stuns within 6 blocks, not beyond
     call    rpg_recompute
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
-    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 5], 1
+    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
     SETF    [combat_stamina], 100.0
     mov     edi, MOB_ZOMBIE
     movss   xmm0, [k_16_5]
@@ -377,6 +436,18 @@ test_ability_cost_cooldown_and_unlock:
     jne     .fail
     cmp     dword [mobs + MOB_size + MOB.stun], 0
     jne     .fail
+    call    abilities_reset             ; ---- AREA 50: 9 blocks, the zombie 8 ahead too
+    mov     dword [rpg_stats + STAT_AREA * 4], 50
+    SETF    [combat_stamina], 100.0
+    mov     edi, 1
+    lea     rsi, [rsp]
+    lea     rdx, [rsp + 12]
+    call    abilities_use
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [mobs + MOB_size + MOB.stun], 20
+    jne     .fail
+    mov     dword [rpg_stats + STAT_AREA * 4], 0
     call    mobs_clear                  ; ---- Mage: short of mana
     call    abilities_reset
     mov     edi, CLASS_MAGE
@@ -414,7 +485,7 @@ test_ability_cost_cooldown_and_unlock:
     jne     .fail
     cmp     dword [arrows + ARROWENT.flags], 0
     jne     .fail
-    cmp     dword [arrows + ARROWENT.damage], 9 ; round(8 * 1.1)
+    cmp     dword [arrows + ARROWENT.damage], 8 ; the unscaled base: the pipeline applies the 10 %
     jne     .fail
     EXPECT_NEAR [arrows + ARROWENT.z], 16.0
     EXPECT_NEAR [arrows + ARROWENT.vz], -28.0
@@ -431,11 +502,11 @@ test_ability_cost_cooldown_and_unlock:
     pop     rbp
     ret
 
-; A Mage's Fireball (damage 9, radius 2.5) flies +x into a stone wall with a pig standing in front
-; of it, beside the line of flight: the pig takes ceil(9 * (1 - 0.5 d / 2.5)) = 7 from the blast
-; (d = 1.35 to its middle), while the wall, a floor cell the blast reaches and the player's health
-; (he stands 3.5 blocks away, inside the 2r a TNT blast would hurt) are untouched.
-; rbx = the pig, r12d = steps left; frame: eye[3] @0, dir[3] @12
+; A Mage's Fireball (base damage 8, radius 2.5) flies +x into a stone wall with a pig standing in
+; front of it, beside the line of flight: the blast hurts the pig by 6 (8 * (1 - 0.5 d / 2.5) * 1.1
+; rounded, d = 1.35 to its middle), while the wall, a floor cell the blast reaches and the player's
+; health (he stands 3.5 blocks away, inside the 2r a TNT blast would hurt) are untouched.
+; rbx = the pig, r12d = steps left; frame: eye[3] @0, dir[3] @12, his health @24, the pig's @28
 test_fireball_explodes_without_breaking:
     push    rbp
     mov     rbp, rsp
@@ -467,6 +538,8 @@ test_fireball_explodes_without_breaking:
     imul    ebx, eax, MOB_size
     lea     rax, [mobs]
     add     rbx, rax
+    mov     eax, [rbx + MOB.health]
+    mov     [rsp + 28], eax
     xor     edi, edi
     lea     rsi, [rsp]
     lea     rdx, [rsp + 12]
@@ -480,7 +553,9 @@ test_fireball_explodes_without_breaking:
     jnz     .fly
     cmp     dword [arrows + ARROWENT.live], 0
     jne     .fail                       ; spent on the wall
-    cmp     dword [rbx + MOB.health], 3 ; 10 - 7
+    mov     eax, [rsp + 28]             ; 6 lost
+    sub     eax, [rbx + MOB.health]
+    cmp     eax, 6
     jne     .fail
     call    fx_count
     test    eax, eax
@@ -507,7 +582,7 @@ test_fireball_explodes_without_breaking:
     pop     rbp
     ret
 
-; A Mage with Blink (slot 1, node 5) facing +x: a stone wall right in front leaves no room (less
+; A Mage with Blink (slot 1, node 7) facing +x: a stone wall right in front leaves no room (less
 ; than a block): the cast fails and costs nothing. With the wall 3.5 blocks away the march stops
 ; at 3.0 blocks (the box would touch the wall at 3.25): the player is there, upright, motion and
 ; fall forgotten, 20 mana and 300 steps spent, magic sparks at both ends.
@@ -521,7 +596,7 @@ test_blink_stops_before_wall:
     mov     edi, CLASS_MAGE
     mov     esi, 5
     call    set_class
-    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 5], 1
+    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
     SETF    [combat_mana], 100.0
     lea     rdi, [rsp]
     movss   xmm0, [k_90]                ; facing +x
@@ -599,9 +674,9 @@ test_blink_stops_before_wall:
     pop     rbp
     ret
 
-; An Archer's Volley: 30 stamina, five live arrows (damage round(6 * 1.15) = 7) fanned -20, -10, 0,
-; 10, 20 degrees around -z at 40 b/s, the ten arrows in the quiver all still there. Arrow Rain
-; (slot 2, node 7), aimed 45 degrees down at the floor: 60 stamina and a 1800 step cooldown; after
+; An Archer's Volley: 30 stamina, five live arrows (each carrying the unscaled 6) fanned -20, -10,
+; 0, 10, 20 degrees around -z at 40 b/s, the ten arrows in the quiver all still there. Arrow Rain
+; (slot 2, node 9), aimed 45 degrees down at the floor: 60 stamina and a 1800 step cooldown; after
 ; 120 steps all 24 arrows exist (29 in all), each above the target (16.5, 10.5, 14.5) at
 ; y = 24.5, within +-4 of it, falling straight down at 35 b/s.
 ; rbx = arrow, r12d = counter; frame: eye[3] @0, dir[3] @12
@@ -616,7 +691,7 @@ test_volley_and_arrow_rain_spawn:
     mov     edi, CLASS_ARCHER
     mov     esi, 5
     call    set_class
-    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 7], 1
+    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
     SETF    [combat_stamina], 100.0
     mov     edi, ARROW
     mov     esi, 10
@@ -661,7 +736,7 @@ test_volley_and_arrow_rain_spawn:
     jne     .fail
     cmp     dword [rcx + ARROWENT.flags], 0
     jne     .fail
-    cmp     dword [rcx + ARROWENT.damage], 7
+    cmp     dword [rcx + ARROWENT.damage], 6
     jne     .fail
     inc     ebx
     cmp     ebx, 5
@@ -704,7 +779,7 @@ test_volley_and_arrow_rain_spawn:
     jne     .fail
     cmp     dword [rcx + ARROWENT.pickup], 0
     jne     .fail
-    cmp     dword [rcx + ARROWENT.damage], 7
+    cmp     dword [rcx + ARROWENT.damage], 6
     jne     .fail
     movss   xmm0, [rcx + ARROWENT.y]
     movss   xmm1, [k_24_5]
@@ -761,6 +836,1002 @@ test_volley_and_arrow_rain_spawn:
     pop     rbp
     ret
 
+; ---- the slot 3 abilities, the keystones that reach the abilities, AREA and the staff bolt -----
+; test_new_abilities runs the scenes below in turn. Each starts from world_clear and the fixture,
+; builds its character (the tree in rpg_ext, the keystones in rpg_keystones, the legendary powers
+; in gear_powers, stats poked after the recompute) and cleans up after itself; it returns 0 when
+; everything held.
+
+; tree_12_15(): rank 1 in nodes 12, 13, 14 and 15 and nowhere else: the third branch down to its
+; slot 3 ability
+tree_12_15:
+    mov     dword [rpg_ext + RPGEXT.ranks + 12], 0x01010101
+    ret
+
+; hold(edi id): the item alone in hotbar slot 0, selected
+hold:
+    mov     dword [inv_sel], 0
+    mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], dil
+    mov     byte [inv + INVENTORY.slots + ITEMSTACK.count], 1
+    mov     word [inv + INVENTORY.slots + ITEMSTACK.dmg], 0
+    ret
+
+; spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> rax the mob, 0 when the table is full
+spawn:
+    sub     rsp, 8
+    call    mob_spawn
+    test    eax, eax
+    js      .none
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    add     rax, rcx
+    jmp     .ret
+.none:
+    xor     eax, eax
+.ret:
+    add     rsp, 8
+    ret
+
+; arrows_all(edi n, esi kind, edx damage, ecx flags) -> eax 1 when the first n arrows are live
+; arrows of the player's (no pickup) of that kind, carrying that damage and exactly those flags
+arrows_all:
+    lea     r8, [arrows]
+.l:
+    test    edi, edi
+    jz      .yes
+    cmp     dword [r8 + ARROWENT.live], 1
+    jne     .no
+    cmp     [r8 + ARROWENT.kind], esi
+    jne     .no
+    cmp     dword [r8 + ARROWENT.owner], 0
+    jne     .no
+    cmp     dword [r8 + ARROWENT.pickup], 0
+    jne     .no
+    cmp     [r8 + ARROWENT.damage], edx
+    jne     .no
+    cmp     [r8 + ARROWENT.flags], ecx
+    jne     .no
+    add     r8, ARROWENT_size
+    dec     edi
+    jmp     .l
+.yes:
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; count_flag(edi bits) -> eax the live arrows whose flags carry any of the bits
+count_flag:
+    lea     rcx, [arrows]
+    xor     eax, eax
+    mov     edx, MAX_ARROWS
+.l:
+    cmp     dword [rcx + ARROWENT.live], 0
+    je      .next
+    test    [rcx + ARROWENT.flags], edi
+    jz      .next
+    inc     eax
+.next:
+    add     rcx, ARROWENT_size
+    dec     edx
+    jnz     .l
+    ret
+
+; arrow_near(rdi arrow, rsi float[6] x y z vx vy vz) -> eax 1 when the arrow's position and
+; velocity are all within 0.01 of those
+; rbx = arrow, r12 = the expected, r13d = the field
+arrow_near:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12, rsi
+    xor     r13d, r13d
+.f:
+    movss   xmm0, [rbx + r13*4]
+    movss   xmm1, [r12 + r13*4]
+    call    close_to
+    test    eax, eax
+    jz      .done
+    inc     r13d
+    cmp     r13d, 6
+    jb      .f
+    mov     eax, 1
+.done:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Ground Slam. Warrior L15 holding an iron sword, ranks in nodes 12..15 only, AREA 0, crit chance 0:
+; it costs 45 stamina and starts a 720 step cooldown; the zombie 3 blocks ahead loses
+; round(7 * 1.5 * 1.1) = 12, is stunned 40 steps and launched at 6 b/s; the Fallen King 3 blocks
+; east is stunned 15 steps, a Juggernaut elite 3 blocks west not at all; the zombie 5 blocks ahead
+; is untouched - until AREA 50 stretches the slam from 4 blocks to 6. The floor bursts and the
+; camera shakes. With CRIT_CHANCE 100 the blow is a crit: round(7 * 1.5 * 1.1 * 1.5) = 17.
+; frame: eye[3] @0, dir[3] @12, the health of mob 0 @24 and of mob 1 @28, the result @40
+na_ground_slam:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    call    tree_12_15
+    mov     edi, CLASS_WARRIOR
+    mov     esi, 15
+    call    set_class
+    mov     dword [rpg_stats + STAT_AREA * 4], 0
+    mov     edi, IRON_SWORD
+    call    hold
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0                  ; yaw 0: facing -z
+    xorps   xmm1, xmm1
+    call    view
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_13_5    ; mob 0: 3 blocks ahead
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_11_5    ; mob 1: 5 blocks ahead
+    SPAWN   MOB_ZOMBIE, k_19_5, k_11, k_16_5    ; mob 2: 3 blocks east, the Fallen King
+    mov     dword MOBF(2, MOB.type), MOB_BOSS
+    SPAWN   MOB_ZOMBIE, k_13_5, k_11, k_16_5    ; mob 3: 3 blocks west, a Juggernaut
+    mov     dword MOBF(3, MOB.affix), AFX_JUGGERNAUT
+    SAVE_HEALTH 0, 24
+    SAVE_HEALTH 1, 28
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 55.0
+    cmp     dword [abilities_cd + 12], 720
+    jne     .fail
+    cmp     dword [abilities_cd_total + 12], 720
+    jne     .fail
+    EXPECT_LOST 0, 24, 12
+    cmp     dword MOBF(0, MOB.stun), 40
+    jne     .fail
+    movss   xmm0, MOBF(0, BODY.vy)
+    comiss  xmm0, [k_6]
+    jb      .fail                       ; launched
+    cmp     dword MOBF(2, MOB.stun), 15
+    jne     .fail
+    cmp     dword MOBF(3, MOB.stun), 0
+    jne     .fail
+    EXPECT_LOST 1, 28, 0                ; out of reach
+    cmp     dword MOBF(1, MOB.stun), 0
+    jne     .fail
+    call    fx_count
+    test    eax, eax
+    jz      .fail
+    movss   xmm0, [fx_shake]
+    comiss  xmm0, [k_0_6]
+    jb      .fail
+    call    mobs_clear                  ; ---- AREA 50: 4 * 1.5 = 6 blocks
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_AREA * 4], 50
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_11_5
+    SAVE_HEALTH 0, 24
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_LOST 0, 24, 12
+    cmp     dword MOBF(0, MOB.stun), 40
+    jne     .fail
+    call    mobs_clear                  ; ---- a crit (a skeleton has no weakness to hide it)
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_AREA * 4], 0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    SPAWN   MOB_SKELETON, k_16_5, k_11, k_13_5
+    SAVE_HEALTH 0, 24
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_LOST 0, 24, 17               ; round(7 * 1.5 * 1.1 * 1.5) = round(17.3)
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Frost Nova. Mage L15 with ranks in nodes 12..15 only, AREA 0, crit chance 0: it costs 35 mana and
+; starts a 600 step cooldown; the zombie 4 blocks ahead loses round(6 * 1.1 * 1.08) = 7 and the
+; skeleton 4 blocks east, which resists frost by 25 %, round(6 * 1.1 * 1.08 * 0.75) = 5, and both
+; freeze (stunned 90 steps). A pig 3 blocks west (no foe) and a zombie 5.5 blocks ahead (beyond the
+; nova's 5 blocks) are untouched - until AREA 20 stretches the nova to 6 blocks. A burst of ice
+; surrounds the caster: FX_FROST flecks 0.12 to 0.2 across that live 20 to 30 steps and slow to 0.9
+; of their speed every step.
+; frame: eye[3] @0, dir[3] @12, the health of mobs 0..3 @24, @28, @32, @36, the result @40, a
+; fleck's speed after a step @44
+na_frost_nova:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    call    tree_12_15
+    mov     edi, CLASS_MAGE
+    mov     esi, 15
+    call    set_class
+    mov     dword [rpg_stats + STAT_AREA * 4], 0
+    SETF    [combat_mana], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5    ; mob 0: 4 blocks ahead
+    SPAWN   MOB_SKELETON, k_20_5, k_11, k_16_5  ; mob 1: 4 blocks east
+    SPAWN   MOB_PIG, k_13_5, k_11, k_16_5       ; mob 2: 3 blocks west
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_11      ; mob 3: 5.5 blocks ahead
+    SAVE_HEALTH 0, 24
+    SAVE_HEALTH 1, 28
+    SAVE_HEALTH 2, 32
+    SAVE_HEALTH 3, 36
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 65.0
+    cmp     dword [abilities_cd + 12], 600
+    jne     .fail
+    cmp     dword [abilities_cd_total + 12], 600
+    jne     .fail
+    EXPECT_LOST 0, 24, 7
+    cmp     dword MOBF(0, MOB.stun), 90
+    jne     .fail
+    EXPECT_LOST 1, 28, 5
+    cmp     dword MOBF(1, MOB.stun), 90
+    jne     .fail
+    EXPECT_LOST 2, 32, 0
+    cmp     dword MOBF(2, MOB.stun), 0
+    jne     .fail
+    EXPECT_LOST 3, 36, 0
+    cmp     dword MOBF(3, MOB.stun), 0
+    jne     .fail
+    call    fx_count
+    cmp     eax, 40
+    jb      .fail
+    cmp     dword [fx_particles + PARTICLE.kind], FX_FROST
+    jne     .fail
+    movss   xmm0, [fx_particles + PARTICLE.size]
+    comiss  xmm0, [k_0_12]
+    jb      .fail
+    comiss  xmm0, [k_0_2]
+    jae     .fail                       ; a fleck is 0.12 to 0.2 across
+    mov     eax, [fx_particles + PARTICLE.life]
+    cmp     eax, 20
+    jb      .fail
+    cmp     eax, 30
+    ja      .fail                       ; and lives 20 to 30 steps
+    movss   xmm0, [fx_particles + PARTICLE.vx]
+    mulss   xmm0, [k_0_9]
+    movss   [rsp + 44], xmm0
+    call    fx_step
+    movss   xmm0, [fx_particles + PARTICLE.vx]
+    movss   xmm1, [rsp + 44]
+    call    close_to
+    test    eax, eax
+    jz      .fail                       ; it slows to 0.9 of its speed each step
+    call    abilities_reset             ; ---- AREA 20: 5 * 1.2 = 6 blocks
+    SETF    [combat_mana], 100.0
+    mov     dword [rpg_stats + STAT_AREA * 4], 20
+    SAVE_HEALTH 3, 36
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_LOST 3, 36, 7
+    cmp     dword MOBF(3, MOB.stun), 90
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Hunter's Mark. Archer L5 with rank 1 in node 15: a zombie 6 blocks ahead behind a stone wall is
+; no target - the cast fails and costs nothing; with the wall gone it marks the zombie for 600
+; steps, costs 20 stamina, starts a 480 step cooldown and gold sparks fly; a pig in plain sight is
+; no target either.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_hunters_mark:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_ext + RPGEXT.ranks + 15], 1
+    mov     edi, CLASS_ARCHER
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_10_5    ; mob 0: 6 blocks ahead
+    FILL    16, 11, 13, 16, 13, 13, STONE       ; a wall in between
+    CAST    3, 0
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_stamina], 100.0
+    cmp     dword [abilities_cd + 12], 0
+    jne     .fail
+    cmp     dword MOBF(0, MOB.mark_t), 0
+    jne     .fail
+    FILL    16, 11, 13, 16, 13, 13, AIR         ; the wall gone
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 80.0
+    cmp     dword [abilities_cd + 12], 480
+    jne     .fail
+    cmp     dword MOBF(0, MOB.mark_t), 600
+    jne     .fail
+    call    fx_count
+    cmp     eax, 12
+    jb      .fail
+    call    mobs_clear                  ; ---- a pig is no foe (on a step: the eye ray meets it)
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    SPAWN   MOB_PIG, k_16_5, k_12, k_10_5
+    CAST    3, 0
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_stamina], 100.0
+    cmp     dword MOBF(0, MOB.mark_t), 0
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Fan of Knives. Rogue L5 with rank 1 in node 15: it costs 35 stamina and starts a 540 step
+; cooldown; eight live PROJ_KNIFE of the player's (no pickup, damage 4, AF_BLEED) leave
+; (16.5, eye y - 0.5, 16.5) level at 30 b/s, 45 degrees apart from the heading, -z: knife k flies
+; along (sin 45k, -cos 45k). With CRIT_CHANCE 100 every knife also carries AF_CRIT; with 50 each
+; rolls for itself (the eight are not all alike).
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_fan_of_knives:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 56
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_ext + RPGEXT.ranks + 15], 1
+    mov     edi, CLASS_ROGUE
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 65.0
+    cmp     dword [abilities_cd + 12], 540
+    jne     .fail
+    mov     edi, 8
+    mov     esi, PROJ_KNIFE
+    mov     edx, 4
+    mov     ecx, AF_BLEED
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    count_live
+    cmp     eax, 8
+    jne     .fail
+    xor     ebx, ebx
+.knife:
+    imul    eax, ebx, ARROWENT_size
+    lea     rdi, [arrows]
+    add     rdi, rax
+    imul    eax, ebx, 24
+    lea     rsi, [knife_exp]
+    add     rsi, rax
+    call    arrow_near
+    test    eax, eax
+    jz      .fail
+    inc     ebx
+    cmp     ebx, 8
+    jb      .knife
+    call    arrows_clear                ; ---- CRIT_CHANCE 100: all eight carry AF_CRIT
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 8
+    mov     esi, PROJ_KNIFE
+    mov     edx, 4
+    mov     ecx, AF_BLEED | AF_CRIT
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear                ; ---- 50 %: each knife rolls on its own
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 50
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, AF_CRIT
+    call    count_flag
+    test    eax, eax
+    jz      .fail
+    cmp     eax, 8
+    je      .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    add     rsp, 56
+    pop     rbx
+    pop     rbp
+    ret
+
+; Blood Magic. Mage L5 with the keystone: the Fireball (25 mana) is paid with ceil(25 / 5) = 5
+; health (12 -> 7): the mana stays at 100, the hurt flash is 6, a PROJ_FIREBALL flies and the
+; 180 step cooldown runs. With 5 health left (not more than the cost) the cast fails and costs
+; nothing.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_blood_magic:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     edi, CLASS_MAGE
+    mov     esi, 5
+    call    set_class
+    or      dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
+    SETF    [combat_mana], 100.0
+    mov     dword [surv + SURVIVAL.health], 12
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.health], 7
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 100.0
+    cmp     dword [surv + SURVIVAL.hurt_flash], 6
+    jne     .fail
+    cmp     dword [abilities_cd], 180
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_FIREBALL
+    mov     edx, 8
+    xor     ecx, ecx
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    abilities_reset             ; ---- 5 health: not more than the cost
+    call    arrows_clear
+    mov     dword [surv + SURVIVAL.health], 5
+    CAST    0, 0
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [surv + SURVIVAL.health], 5
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 100.0
+    cmp     dword [abilities_cd], 0
+    jne     .fail
+    call    count_live
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Barrage. Archer L5 with the keystone: the Volley (30 stamina) fires seven arrows, none of them
+; from the quiver, each carrying the unscaled 6 and fanned from -30 to 30 degrees in 10 degree
+; steps around -z at 40 b/s: the ends fly along (-+20, -34.64), the middle one along -z.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_barrage:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     edi, CLASS_ARCHER
+    mov     esi, 5
+    call    set_class
+    or      dword [rpg_keystones], 1 << KS_BARRAGE
+    SETF    [combat_stamina], 100.0
+    mov     edi, ARROW
+    mov     esi, 10
+    call    inv_add
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 70.0
+    call    count_live
+    cmp     eax, 7
+    jne     .fail
+    mov     edi, 7
+    mov     esi, PROJ_ARROW
+    mov     edx, 6
+    xor     ecx, ecx
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    mov     edi, ARROW
+    call    inv_count
+    cmp     eax, 10
+    jne     .fail
+    EXPECT_NEAR [arrows + ARROWENT.vx], -20.0
+    EXPECT_NEAR [arrows + ARROWENT.vz], -34.64
+    EXPECT_NEAR [arrows + ARROWENT_size * 3 + ARROWENT.vx], 0.0
+    EXPECT_NEAR [arrows + ARROWENT_size * 3 + ARROWENT.vz], -40.0
+    EXPECT_NEAR [arrows + ARROWENT_size * 6 + ARROWENT.vx], 20.0
+    EXPECT_NEAR [arrows + ARROWENT_size * 6 + ARROWENT.vz], -34.64
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; BOLT_KIND n, kind: another staff bolt, the wait over and the mana full: it is arrow n, of that
+; kind
+%macro BOLT_KIND 2
+    mov     dword [abilities_bolt_cd], 0
+    SETF    [combat_mana], 100.0
+    BOLT    0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [arrows + ARROWENT_size * %1 + ARROWENT.kind], %2
+    jne     .fail
+%endmacro
+
+; The staff bolt. Mage L5 holding a staff: 5 mana, a PROJ_BOLT carrying the unscaled 4, AF_ATTACK
+; and a shock element, at 45 b/s from 0.4 ahead of the eye, and 24 steps until the next (asked
+; too early it is silently nothing); with ATTACK_SPEED 50 the wait is 16 steps (24 * 100 / 150),
+; 12 for the Archmage Staff (18 * 100 / 150), which costs 4 mana and carries 7; CRIT_CHANCE 100
+; adds AF_CRIT; short of mana (3) the click plays and the wait is the full 24 steps. Under the
+; Archmage's power every 4th bolt is a fireball for twice the base (8, no flags, 28 b/s) and the
+; count starts over. A Warrior holding the staff swings it.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_staff_bolt:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     edi, CLASS_MAGE
+    mov     esi, 5
+    call    set_class
+    mov     edi, STAFF
+    call    hold
+    SETF    [combat_mana], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    BOLT    0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 95.0
+    cmp     dword [abilities_bolt_cd], 24
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_BOLT
+    mov     edx, 4
+    mov     ecx, AF_ATTACK | (ELEM_SHOCK << AF_ELEM_SHIFT)
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    EXPECT_NEAR [arrows + ARROWENT.z], 16.1
+    EXPECT_NEAR [arrows + ARROWENT.vz], -45.0
+    BOLT    0                           ; too early: nothing
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_mana], 95.0
+    call    count_live
+    cmp     eax, 1
+    jne     .fail
+    call    arrows_clear                ; ---- ATTACK_SPEED 50: 24 * 100 / 150 = 16 steps
+    mov     dword [abilities_bolt_cd], 0
+    mov     dword [rpg_stats + STAT_ATTACK_SPEED * 4], 50
+    SETF    [combat_mana], 100.0
+    BOLT    0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [abilities_bolt_cd], 16
+    jne     .fail
+    call    arrows_clear                ; ---- the Archmage Staff: 4 mana, base 7, 12 steps
+    mov     dword [abilities_bolt_cd], 0
+    mov     edi, ARCHMAGE_STAFF
+    call    hold
+    SETF    [combat_mana], 100.0
+    BOLT    0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 96.0
+    cmp     dword [abilities_bolt_cd], 12
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_BOLT
+    mov     edx, 7
+    mov     ecx, AF_ATTACK | (ELEM_SHOCK << AF_ELEM_SHIFT)
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear                ; ---- a crit rides along as a flag
+    mov     dword [abilities_bolt_cd], 0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    SETF    [combat_mana], 100.0
+    BOLT    0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_BOLT
+    mov     edx, 7
+    mov     ecx, AF_ATTACK | AF_CRIT | (ELEM_SHOCK << AF_ELEM_SHIFT)
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear                ; ---- short of mana: the click, and the full wait
+    mov     dword [abilities_bolt_cd], 0
+    mov     dword [rpg_stats + STAT_ATTACK_SPEED * 4], 0
+    mov     edi, STAFF
+    call    hold
+    SETF    [combat_mana], 3.0
+    BOLT    0
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [abilities_bolt_cd], 24
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 3.0
+    call    count_live
+    test    eax, eax
+    jnz     .fail
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0     ; ---- the Archmage's power
+    or      dword [gear_powers], 1 << LP_ARCHMAGE
+    BOLT_KIND 0, PROJ_BOLT
+    BOLT_KIND 1, PROJ_BOLT
+    BOLT_KIND 2, PROJ_BOLT
+    BOLT_KIND 3, PROJ_FIREBALL
+    cmp     dword [arrows + ARROWENT_size * 3 + ARROWENT.damage], 8
+    jne     .fail
+    cmp     dword [arrows + ARROWENT_size * 3 + ARROWENT.flags], 0
+    jne     .fail
+    EXPECT_NEAR [arrows + ARROWENT_size * 3 + ARROWENT.vz], -28.0
+    BOLT_KIND 4, PROJ_BOLT              ; the count starts over
+    call    arrows_clear                ; ---- a Warrior swings the staff
+    mov     edi, CLASS_WARRIOR
+    mov     esi, 5
+    call    set_class
+    mov     dword [abilities_bolt_cd], 0
+    SETF    [combat_mana], 100.0
+    BOLT    0
+    test    eax, eax
+    jnz     .fail
+    call    count_live
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; The whirlwind's reach and the smoke bomb. Warrior L5 holding an iron sword with rank 1 in node 9,
+; AREA 0: there is no slot 4; the whirlwind costs 60 stamina, starts a 1800 step cooldown and pulses
+; on the next step: the zombie 3 blocks ahead loses round(7 * 1.1) = 8, the one 4 ahead is beyond
+; its 3.5 blocks - until AREA 50 stretches them to 5.25 (and under the war cry the blow is x1.3:
+; round(7 * 1.3 * 1.1) = 10). Rogue L5 with rank 1 in node 7: the smoke bomb gives 300 steps of
+; stealth, 1800 under Shadow Dance.
+; frame: eye[3] @0, dir[3] @12, the health of mobs 0 and 1 @24, @28, the result @40
+na_whirl_and_smoke:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
+    mov     edi, CLASS_WARRIOR
+    mov     esi, 5
+    call    set_class
+    mov     dword [rpg_stats + STAT_AREA * 4], 0
+    mov     edi, IRON_SWORD
+    call    hold
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    CAST    4, 0
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_stamina], 100.0
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_13_5    ; mob 0: 3 blocks ahead
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5    ; mob 1: 4 blocks ahead
+    SAVE_HEALTH 0, 24
+    SAVE_HEALTH 1, 28
+    CAST    2, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 40.0
+    cmp     dword [abilities_cd + 8], 1800
+    jne     .fail
+    call    abilities_step             ; the first pulse
+    EXPECT_LOST 0, 24, 8
+    EXPECT_LOST 1, 28, 0
+    call    mobs_clear                  ; ---- AREA 50: 5.25 blocks, and the war cry: x1.3
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_AREA * 4], 50
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5
+    SAVE_HEALTH 0, 24
+    CAST    2, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     dword [combat_warcry_t], 480
+    call    abilities_step
+    EXPECT_LOST 0, 24, 10               ; round(7 * 1.3 * 1.1) = round(10.01)
+    call    abilities_reset             ; ---- the smoke bomb
+    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
+    mov     edi, CLASS_ROGUE
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [combat_stealth_t], 300
+    jne     .fail
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    or      dword [rpg_keystones], 1 << KS_SHADOW_DANCE
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [combat_stealth_t], 1800
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Shadowstep (its target search is the one Hunter's Mark uses). Rogue L5, a zombie 4 blocks ahead
+; that faces -z: with a stone wall in between nothing is in sight - the cast fails and costs
+; nothing; with the wall gone the player appears behind the zombie by its half width plus 0.8
+; (16.5, 11, 13.6), facing it (yaw 0, pitch level), with 25 stamina and a 480 step cooldown paid,
+; and his next hit within 120 steps is a crit.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_shadowstep:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     edi, CLASS_ROGUE
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0                  ; yaw 0: facing -z
+    xorps   xmm1, xmm1
+    call    view
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5    ; mob 0: 4 blocks ahead
+    mov     dword MOBF(0, BODY.yaw), 0          ; facing -z as well
+    FILL    16, 11, 13, 16, 13, 13, STONE       ; a wall in between
+    CAST    0, 0
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_stamina], 100.0
+    EXPECT_NEAR [player + BODY.z], 16.5
+    cmp     dword [abilities_cd], 0
+    jne     .fail
+    FILL    16, 11, 13, 16, 13, 13, AIR         ; the wall gone
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 75.0
+    cmp     dword [abilities_cd], 480
+    jne     .fail
+    EXPECT_NEAR [player + BODY.x], 16.5
+    EXPECT_NEAR [player + BODY.y], 11.0
+    EXPECT_NEAR [player + BODY.z], 13.6
+    EXPECT_NEAR [player + BODY.yaw], 0.0
+    EXPECT_NEAR [player + BODY.pitch], 0.0
+    cmp     dword [combat_crit_next_t], 120
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; The projectile abilities carry unscaled bases. Mage L5 with rank 1 in node 9: the Meteor Storm
+; (70 mana, a 2400 step cooldown) drops its first meteor on the next step: a PROJ_FIREBALL of the
+; player's carrying 12 and AF_BIG; the Fireball with CRIT_CHANCE 100 carries 8 and AF_CRIT.
+; Archer L5 with rank 1 in node 7: the Explosive Arrow (35 stamina, a 600 step cooldown) is a
+; PROJ_ARROW carrying 10 and AF_EXPLOSIVE, and AF_CRIT besides with CRIT_CHANCE 100.
+; frame: eye[3] @0, dir[3] @12, the result @40
+na_projectile_bases:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
+    mov     edi, CLASS_MAGE
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_mana], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    view
+    CAST    2, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 30.0
+    cmp     dword [abilities_cd + 8], 2400
+    jne     .fail
+    call    abilities_step              ; the first meteor
+    mov     edi, 1
+    mov     esi, PROJ_FIREBALL
+    mov     edx, 12
+    mov     ecx, AF_BIG
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    count_live
+    cmp     eax, 1
+    jne     .fail
+    call    arrows_clear                ; ---- the Fireball, critical
+    call    abilities_reset
+    SETF    [combat_mana], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_FIREBALL
+    mov     edx, 8
+    mov     ecx, AF_CRIT
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear                ; ---- the Explosive Arrow
+    call    abilities_reset
+    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
+    mov     edi, CLASS_ARCHER
+    mov     esi, 5
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 65.0
+    cmp     dword [abilities_cd + 4], 600
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_ARROW
+    mov     edx, 10
+    mov     ecx, AF_EXPLOSIVE
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_ARROW
+    mov     edx, 10
+    mov     ecx, AF_EXPLOSIVE | AF_CRIT
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; SCENE function, number: run the scene; a failure ends test_new_abilities with the scene's number
+%macro SCENE 2
+    call    %1
+    test    eax, eax
+    jz      %%ok
+    mov     eax, %2
+    jmp     .ret
+%%ok:
+%endmacro
+
+; Every scene above in turn: 0 when all held, else the number of the first scene that failed
+; (1 ground slam, 2 frost nova, 3 hunter's mark, 4 fan of knives, 5 blood magic, 6 barrage, 7 staff
+; bolt, 8 whirlwind and smoke bomb, 9 shadowstep, 10 projectile bases)
+test_new_abilities:
+    push    rbp
+    mov     rbp, rsp
+    SCENE   na_ground_slam, 1
+    SCENE   na_frost_nova, 2
+    SCENE   na_hunters_mark, 3
+    SCENE   na_fan_of_knives, 4
+    SCENE   na_blood_magic, 5
+    SCENE   na_barrage, 6
+    SCENE   na_staff_bolt, 7
+    SCENE   na_whirl_and_smoke, 8
+    SCENE   na_shadowstep, 9
+    SCENE   na_projectile_bases, 10
+    xor     eax, eax
+.ret:
+    pop     rbp
+    ret
+
 section .rodata
 align 4
 k_14_5:   dd 14.5
@@ -768,3 +1839,23 @@ k_18_5:   dd 18.5
 k_20:     dd 20.0
 k_24_5:   dd 24.5
 k_m35:    dd -35.0
+k_13_5:   dd 13.5                       ; 3, 5, 6 blocks off the player (16.5); 19.5, 20.5 east
+k_11_5:   dd 11.5
+k_10_5:   dd 10.5
+k_19_5:   dd 19.5
+k_20_5:   dd 20.5
+k_6:      dd 6.0
+k_0_6:    dd 0.6
+k_12:     dd 12.0
+k_0_12:   dd 0.12
+k_0_2:    dd 0.2
+k_0_9:    dd 0.9
+knife_exp:                              ; x y z vx vy vz of knife k, facing -z from (16.5, 11, 16.5)
+    dd 16.5, 12.12, 16.5,    0.0,     0.0, -30.0
+    dd 16.5, 12.12, 16.5,   21.2132,  0.0, -21.2132
+    dd 16.5, 12.12, 16.5,   30.0,     0.0,   0.0
+    dd 16.5, 12.12, 16.5,   21.2132,  0.0,  21.2132
+    dd 16.5, 12.12, 16.5,    0.0,     0.0,  30.0
+    dd 16.5, 12.12, 16.5,  -21.2132,  0.0,  21.2132
+    dd 16.5, 12.12, 16.5,  -30.0,     0.0,   0.0
+    dd 16.5, 12.12, 16.5,  -21.2132,  0.0, -21.2132

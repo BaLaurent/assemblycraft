@@ -1,13 +1,15 @@
-; abilities.asm - the twelve class abilities (three per class), the mage's staff bolt and the
+; abilities.asm - the sixteen class abilities (four per class), the mage's staff bolt and the
 ; timers behind them.
 ;
-; abilities_use(slot, eye, dir) checks the unlock, the cooldown and, for the two abilities that
-; need one, a landing spot (blink, shadowstep); only then does it pay through combat_spend, start
-; the cooldown and fire, so a failed cast costs nothing and plays the dry-fire click. Resource,
-; cost and base cooldown come from rpg_ability_info; the COOLDOWN_RED stat shortens the cooldown.
-; The abilities that last (charge, whirlwind, meteor storm, arrow rain) keep their state in this
-; file and abilities_step advances it once per fixed step. Projectiles are plain arrows.asm
-; entities; magic goes off through explode_magic there.
+; abilities_use(slot, eye, dir) checks the unlock, the cooldown and, for the three abilities that
+; need one (blink, shadowstep, hunter's mark), a landing spot or a target; only then does it pay
+; through combat_pay (Blood Magic pays mana in health), start the cooldown and fire, so a failed
+; cast costs nothing and plays the dry-fire click. Resource, cost and base cooldown come from
+; rpg_ability_info; the COOLDOWN_RED stat shortens the cooldown. The abilities that last (charge,
+; whirlwind, meteor storm, arrow rain) keep their state in this file and abilities_step advances
+; it once per fixed step. Nothing here scales a damage: a strike is a combat_hit_mob call and a
+; projectile (a plain arrows.asm entity) carries an unscaled base; a critical roll is only a flag,
+; and the pipeline applies the stats, the element, the resistances and the crit multiplier.
 %include "common.inc"
 default rel
 
@@ -15,33 +17,53 @@ global abilities_cd, abilities_cd_total, abilities_bolt_cd
 global abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
 
 extern player, mobs
-extern mob_strike, mobs_raycast, mob_is_hostile, yaw_from, ray_aabb
+extern mobs_raycast, mob_is_hostile, yaw_from, ray_aabb
 extern raycast, world_is_solid
-extern arrows_spawn, fx_burst
+extern arrows_spawn, fx_burst, fx_explosion, fx_shake
 extern audio_play, hand_swing
 extern inv_held, item_attack_damage
 extern rng_next, sincos_deg
-extern rpg_class, rpg_stat, rpg_ability_unlocked, rpg_ability_info
-extern combat_spend, combat_crit_roll, combat_crit_mult
-extern combat_hit_flags, combat_stealth_t, combat_warcry_t, combat_slow_t
+extern rpg_class, rpg_stat, rpg_keystone, rpg_ability_unlocked, rpg_ability_info
+extern gear_has_power
+extern combat_pay, combat_crit_roll, combat_hit_mob
+extern combat_stealth_t, combat_warcry_t, combat_slow_t
 extern combat_blade_t, combat_crit_next_t
 
-; effect index = (class - 1) * 3 + slot
-%define IDX_BLINK       4               ; mage, slot 1
-%define IDX_SHADOW      9               ; rogue, slot 0
-%define IDX_SMOKE       10              ; rogue, slot 1
+; ab_crit hands combat_crit_roll's 0/1 on as the flag value
+%if AF_CRIT != 1 || HITF_CRIT != AF_CRIT << 8
+%error "abilities.asm: AF_CRIT must be 1 and HITF_CRIT AF_CRIT << 8"
+%endif
+
+; effect index = (class - 1) * 4 + slot
+%define IDX_BLINK       5               ; mage, slot 1
+%define IDX_MARK        11              ; archer, slot 3
+%define IDX_SHADOW      12              ; rogue, slot 0
+%define IDX_SMOKE       13              ; rogue, slot 1
 
 %define CHARGE_STEPS    15
 %define WHIRL_STEPS     90
 %define WHIRL_PERIOD    30              ; a pulse every 30 steps: at 90, 60 and 30 steps left
 %define WARCRY_STEPS    480
 %define STEALTH_STEPS   300
+%define DANCE_STEPS     1800            ; the smoke bomb's stealth under Shadow Dance
 %define BLADE_STEPS     360
 %define CRIT_NEXT_STEPS 120
+%define MARK_STEPS      600
+%define SLAM_STUN       40
+%define SLAM_STUN_BOSS  15
 %define METEORS         8
 %define METEOR_GAP      22
 %define RAIN_ARROWS     24
 %define RAIN_GAP        5
+%define KNIVES          8
+
+; the unscaled damage of the projectiles
+%define FIREBALL_DMG    8
+%define METEOR_DMG      12
+%define VOLLEY_DMG      6
+%define EXPLOSIVE_DMG   10
+%define RAIN_DMG        6
+%define KNIFE_DMG       4
 
 ; abilities_use frame (rsp-relative)
 %define U_EYE           0               ; qword eye*
@@ -71,16 +93,12 @@ k_25:         dd 2.5
 k_3:          dd 3.0
 k_4:          dd 4.0
 k_6:          dd 6.0
-k_7:          dd 7.0
-k_8:          dd 8.0
-k_10:         dd 10.0
-k_12:         dd 12.0
 k_charge_kb:  dd 22.0                   ; charge: push on the player, b/s
 k_charge_hit: dd 2.0                    ; and the scale of the push on a mob it strikes
 k_reach:      dd 0.9                    ; strike reach beyond the mob's half width
 k_charge_dy:  dd 1.5
-k_warcry_r2:  dd 36.0                   ; war cry: 6 blocks, squared
-k_whirl_r2:   dd 12.25                  ; whirlwind: 3.5 blocks, squared
+k_warcry_r:   dd 6.0                    ; radii: war cry 6 blocks, whirlwind 3.5, ground slam 4,
+k_whirl_r:    dd 3.5                    ; frost nova 5 - each times 1 + AREA / 100
 k_whirl_dy:   dd 2.0
 k_whirl_push: dd 1.5
 k_warcry_mul: dd 1.3                    ; whirlwind damage while the war cry lasts
@@ -100,33 +118,45 @@ k_meteor_far: dd 30.0                   ; ...and where they aim when it hits not
 k_rain_far:   dd 25.0
 k_shadow_rng: dd 12.0                   ; shadowstep sight, blocks
 k_shadow_gap: dd 0.8                    ; behind the mob by its half width plus this
+k_slam_r:     dd 4.0
+k_slam_dy:    dd 2.0                    ; ground slam: within 2 blocks in height
+k_slam_mul:   dd 1.5                    ; ...for 1.5 x the attack of the held item
+k_slam_push:  dd 2.0                    ; outward shove of the strike
+k_slam_vy:    dd 6.0                    ; and the launch of the mob it hit, b/s
+k_slam_up:    dd 0.1                    ; the blast sits this far above the feet
+k_slam_fx:    dd 1.2                    ; its radius
+k_slam_shake: dd 0.6                    ; camera shake
+k_nova_r:     dd 5.0
+k_nova_dy:    dd 3.0                    ; frost nova: within 3 blocks in height
+k_nova_base:  dd 6.0                    ; ...6 points of frost
+k_nova_push:  dd 0.5
+k_knife_v:    dd 30.0                   ; fan of knives: speed, b/s
+k_knife_drop: dd 0.5                    ; ...thrown from this far below the eye
 
 align 8
 ab_effects:                             ; by effect index; each (rdi eye*, rsi dir*, rdx plan*)
-    dq ab_charge, ab_warcry, ab_whirl
-    dq ab_fireball, ab_blink, ab_meteor
-    dq ab_volley, ab_explosive, ab_rain
-    dq ab_shadowstep, ab_smoke, ab_blade
+    dq ab_charge, ab_warcry, ab_whirl, ab_slam
+    dq ab_fireball, ab_blink, ab_meteor, ab_nova
+    dq ab_volley, ab_explosive, ab_rain, ab_mark
+    dq ab_shadowstep, ab_smoke, ab_blade, ab_knives
 
 section .bss
 alignb 4
 ab_state:                               ; everything abilities_reset clears
-abilities_cd:       resd 3              ; steps left, by slot
-abilities_cd_total: resd 3              ; the cooldown each was started with (for the HUD)
+abilities_cd:       resd NUM_ABILITY_SLOTS  ; steps left, by slot
+abilities_cd_total: resd NUM_ABILITY_SLOTS  ; the cooldown each was started with (for the HUD)
 abilities_bolt_cd:  resd 1              ; steps until the next staff bolt
+bolt_n:       resd 1                    ; bolts under the Archmage's power since the last fireball
 charge_t:     resd 1                    ; steps of charge left
 charge_mask:  resd 1                    ; bit i = mob i was already struck by this charge
 charge_dx:    resd 1                    ; float: the charge's horizontal heading
 charge_dz:    resd 1
-charge_dmg:   resd 1                    ; damage of the strike
 whirl_t:      resd 1                    ; steps of whirlwind left
 meteor_n:     resd 1                    ; meteors still to fall
 meteor_t:     resd 1                    ; steps until the next
-meteor_dmg:   resd 1
 meteor_tgt:   resd 3                    ; float: where they fall
 rain_n:       resd 1
 rain_t:       resd 1
-rain_dmg:     resd 1
 rain_tgt:     resd 3
 ab_state_end:
 
@@ -153,7 +183,7 @@ abilities_step:
     dec     dword [rdx + rcx*4]
 .cd_next:
     inc     ecx
-    cmp     ecx, 3
+    cmp     ecx, NUM_ABILITY_SLOTS
     jb      .cd
     cmp     dword [abilities_bolt_cd], 0
     jle     .lasting
@@ -166,7 +196,7 @@ abilities_step:
     pop     rbp
     ret
 
-; abilities_use(edi slot 0..2, rsi eye float[3], rdx dir float[3] unit look direction) -> eax 1
+; abilities_use(edi slot 0..3, rsi eye float[3], rdx dir float[3] unit look direction) -> eax 1
 ; when the ability fired, 0 when it did not (no class, locked, cooling down, short of its
 ; resource, no valid target: nothing is paid, the dry-fire click plays). Every cast but the smoke
 ; bomb ends stealth.
@@ -181,7 +211,7 @@ abilities_use:
     mov     [rsp + U_EYE], rsi
     mov     [rsp + U_DIR], rdx
     mov     r12d, edi
-    cmp     r12d, 3
+    cmp     r12d, NUM_ABILITY_SLOTS
     jae     .none                       ; no such slot
     call    rpg_class
     lea     r13d, [rax - 1]
@@ -198,10 +228,11 @@ abilities_use:
     mov     esi, r12d
     call    rpg_ability_info
     mov     rbx, rax
-    lea     r13d, [r13 + r13*2]         ; (class - 1) * 3
-    add     r13d, r12d                  ; the effect's index
+    lea     r13d, [r12 + r13*4]         ; the effect's index: (class - 1) * 4 + slot
     cmp     r13d, IDX_BLINK
     je      .plan_blink
+    cmp     r13d, IDX_MARK
+    je      .plan_mark
     cmp     r13d, IDX_SHADOW
     jne     .pay
     mov     rdi, [rsp + U_EYE]
@@ -214,13 +245,19 @@ abilities_use:
     mov     rsi, [rsp + U_DIR]
     lea     rdx, [rsp + U_PLAN]
     call    ab_blink_plan
+    jmp     .planned
+.plan_mark:
+    mov     rdi, [rsp + U_EYE]
+    mov     rsi, [rsp + U_DIR]
+    lea     rdx, [rsp + U_PLAN]
+    call    ab_mark_plan
 .planned:
     test    eax, eax
-    jz      .fail                       ; nowhere to go: nothing is paid
+    jz      .fail                       ; nowhere to go, nobody to mark: nothing is paid
 .pay:
     mov     edi, [rbx + ABILINFO.resource]
     cvtsi2ss xmm0, dword [rbx + ABILINFO.cost]
-    call    combat_spend
+    call    combat_pay
     test    eax, eax
     jz      .fail
     mov     eax, [rbx + ABILINFO.cooldown]          ; cooldown steps = cd_s * 60 * (100 - COOLDOWN_RED) / 100
@@ -265,17 +302,22 @@ abilities_use:
     ret
 
 ; abilities_staff_bolt(rdi eye float[3], rsi dir float[3]) -> eax 1 when a bolt flew. A mage holding
-; a staff: STAFF 5 mana, 24 steps between bolts, damage round(4 S); ARCHMAGE_STAFF 4 mana, 18
-; steps, round(7 S); each crits as combat_crit_roll decides. 0 for anyone else, while the
-; previous bolt is still cooling down (silently) or when the mana is short (the click plays, and
-; the next try waits one bolt cooldown, so a held button does not click every frame).
-; rbx = mana cost, r12d = bolt cooldown; frame: eye[3] @0, dir[3] @12, base damage float @24
+; a staff: STAFF 5 mana, 24 steps between bolts, base damage 4; ARCHMAGE_STAFF 4 mana, 18 steps,
+; base 7. The steps shrink with ATTACK_SPEED: round(steps * 100 / (100 + ATTACK_SPEED)). The bolt
+; is a PROJ_BOLT carrying the unscaled base, AF_ATTACK, a shock element and the crit flag
+; combat_crit_roll decides; under the Archmage's power every 4th bolt is a PROJ_FIREBALL for twice
+; the base instead. 0 for anyone else, while the previous bolt is still cooling down (silently) or
+; when the mana is short (the click plays, and the next try waits one bolt cooldown, so a held
+; button does not click every frame).
+; rbx = mana cost, r12d = bolt cooldown, r13d = base damage; frame: eye[3] @0, dir[3] @12, scratch
+; @24
 abilities_staff_bolt:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 32
+    push    r13
+    sub     rsp, 40
     mov     rax, [rdi]
     mov     [rsp], rax
     mov     eax, [rdi + 8]
@@ -288,43 +330,78 @@ abilities_staff_bolt:
     movzx   eax, byte [rax + ITEMSTACK.id]
     mov     ebx, 5
     mov     r12d, 24
-    movss   xmm0, [k_4]
+    mov     r13d, 4
     cmp     eax, STAFF
     je      .have
     mov     ebx, 4
     mov     r12d, 18
-    movss   xmm0, [k_7]
+    mov     r13d, 7
     cmp     eax, ARCHMAGE_STAFF
     jne     .none
 .have:
-    movss   [rsp + 24], xmm0
     call    rpg_class
     cmp     eax, CLASS_MAGE
     jne     .none                       ; anyone else swings it
     cmp     dword [abilities_bolt_cd], 0
     jg      .none
+    cvtsi2ss xmm0, r12d                 ; the cooldown: steps * 100 / (100 + ATTACK_SPEED), rounded
+    mulss   xmm0, [k_hundred]
+    movss   [rsp + 24], xmm0
+    mov     edi, STAT_ATTACK_SPEED
+    call    rpg_stat
+    cvtsi2ss xmm1, eax
+    addss   xmm1, [k_hundred]
+    movss   xmm0, [rsp + 24]
+    divss   xmm0, xmm1
+    cvtss2si r12d, xmm0
     mov     edi, RES_MANA
     cvtsi2ss xmm0, ebx
-    call    combat_spend
+    call    combat_pay
     test    eax, eax
     jz      .dry
-    movss   xmm0, [rsp + 24]
-    mov     edi, STAT_SPELL_DMG
-    call    ab_dmg
-    mov     edi, eax
-    call    ab_crit                     ; eax damage, edx AF_CRIT or 0
-    mov     r8d, edx
-    mov     edx, eax
+    call    ab_crit
+    mov     [rsp + 24], eax             ; the crit flag
+    mov     edi, LP_ARCHMAGE
+    call    gear_has_power
+    mov     edx, eax                    ; non-zero under the Archmage's power
+    xor     ecx, ecx
+    test    edx, edx
+    jz      .counted                    ; no power: the count starts over
+    mov     ecx, [bolt_n]
+    inc     ecx
+    and     ecx, 3
+.counted:
+    mov     [bolt_n], ecx
+    test    edx, edx
+    jz      .bolt
+    test    ecx, ecx
+    jz      .fireball                   ; the 4th bolt under the power
+.bolt:
     lea     rdi, [rsp]
     lea     rsi, [rsp + 12]
     movss   xmm0, [k_arrow_o]
     movss   xmm1, [k_bolt_v]
+    mov     edx, r13d
     mov     ecx, PROJ_BOLT
+    mov     r8d, [rsp + 24]
+    or      r8d, AF_ATTACK | (ELEM_SHOCK << AF_ELEM_SHIFT)
     call    ab_shoot
-    mov     [abilities_bolt_cd], r12d
     mov     edi, SND_SPELL
+    jmp     .flew
+.fireball:
+    lea     rdi, [rsp]
+    lea     rsi, [rsp + 12]
+    movss   xmm0, [k_fireball_o]
+    movss   xmm1, [k_fireball_v]
+    lea     edx, [r13 + r13]
+    mov     ecx, PROJ_FIREBALL
+    mov     r8d, [rsp + 24]
+    call    ab_shoot
+    mov     edi, SND_FIREBALL
+.flew:
     movss   xmm0, [k_vol]
     call    audio_play
+    mov     [abilities_bolt_cd], r12d
     mov     eax, 1
     jmp     .ret
 .dry:
@@ -335,7 +412,8 @@ abilities_staff_bolt:
 .none:
     xor     eax, eax
 .ret:
-    add     rsp, 32
+    add     rsp, 40
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
@@ -368,36 +446,120 @@ ab_mult:
     add     rsp, 8
     ret
 
-; ab_dmg(xmm0 base, edi stat) -> eax round(base * (1 + stat / 100))
-ab_dmg:
-    sub     rsp, 24
-    movss   [rsp], xmm0
-    call    ab_mult
-    mulss   xmm0, [rsp]
-    cvtss2si eax, xmm0
-    add     rsp, 24
-    ret
-
-; ab_crit(edi damage) -> eax damage (round(damage * crit multiplier) on a crit), edx AF_CRIT on a
-; crit else 0
+; ab_crit() -> eax 1 (the value of AF_CRIT) when this hit rolls a critical against the crit chance,
+; else 0. What a critical does to the damage is the pipeline's business.
 ab_crit:
-    push    rbx
-    mov     ebx, edi
+    sub     rsp, 8
     xor     edi, edi
     call    combat_crit_roll
-    test    eax, eax
-    jz      .plain
-    call    combat_crit_mult
-    cvtsi2ss xmm1, ebx
-    mulss   xmm0, xmm1
-    cvtss2si eax, xmm0
-    mov     edx, AF_CRIT
-    pop     rbx
+    add     rsp, 8
     ret
-.plain:
-    mov     eax, ebx
-    xor     edx, edx
+
+; ab_sweep(xmm0 base, xmm1 radius, xmm2 dy limit, xmm3 push, edi src, esi flags, edx rolls) -> eax
+; mask: every hostile mob whose horizontal distance from the player is below radius and whose
+; feet are less than the dy limit above or below his takes combat_hit_mob(src, flags, base,
+; outward * push); with rolls non-zero each hit rolls its own critical (HITF_CRIT). Bit i of eax is
+; set for every mob i that was struck.
+; rbx = mob, r12d = index, r13d = mask, r14d = flags
+%define S_BASE          0               ; frame: floats base, radius^2, dy limit, push, ...
+%define S_R2            4
+%define S_DY            8
+%define S_PUSH          12
+%define S_SRC           16              ; ...ints src, rolls, ...
+%define S_ROLLS         20
+%define S_DX            24              ; ...and the mob's offset from the player
+%define S_DZ            28
+%define S_FRAME         32
+ab_sweep:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, S_FRAME
+    movss   [rsp + S_BASE], xmm0
+    mulss   xmm1, xmm1
+    movss   [rsp + S_R2], xmm1
+    movss   [rsp + S_DY], xmm2
+    movss   [rsp + S_PUSH], xmm3
+    mov     [rsp + S_SRC], edi
+    mov     r14d, esi
+    mov     [rsp + S_ROLLS], edx
+    xor     r13d, r13d
+    lea     rbx, [mobs]
+    xor     r12d, r12d
+.mob:
+    cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .next
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [player + BODY.x]
+    movss   [rsp + S_DX], xmm0
+    movss   xmm1, [rbx + BODY.z]
+    subss   xmm1, [player + BODY.z]
+    movss   [rsp + S_DZ], xmm1
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1                  ; horizontal distance^2
+    comiss  xmm0, [rsp + S_R2]
+    jae     .next
+    movss   xmm0, [rbx + BODY.y]
+    subss   xmm0, [player + BODY.y]
+    movss   xmm1, [k_abs]
+    andps   xmm1, xmm0                  ; |dy|
+    comiss  xmm1, [rsp + S_DY]
+    jae     .next
+    mov     edi, r12d
+    call    mob_is_hostile
+    test    eax, eax
+    jz      .next
+    xor     eax, eax
+    cmp     dword [rsp + S_ROLLS], 0
+    je      .flags
+    call    ab_crit
+    shl     eax, 8                      ; HITF_CRIT
+.flags:
+    mov     edx, r14d
+    or      edx, eax
+    movss   xmm1, [rsp + S_DX]
+    movss   xmm2, [rsp + S_DZ]
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm3
+    movaps  xmm4, xmm2
+    mulss   xmm4, xmm4
+    addss   xmm3, xmm4
+    sqrtss  xmm3, xmm3                  ; horizontal distance
+    comiss  xmm3, [k_tiny]
+    jb      .still                      ; right on top of the player
+    divss   xmm1, xmm3
+    divss   xmm2, xmm3
+    movss   xmm4, [rsp + S_PUSH]
+    mulss   xmm1, xmm4
+    mulss   xmm2, xmm4
+    jmp     .strike
+.still:
+    xorps   xmm1, xmm1
+    xorps   xmm2, xmm2
+.strike:
+    movss   xmm0, [rsp + S_BASE]
+    mov     edi, r12d
+    mov     esi, [rsp + S_SRC]
+    call    combat_hit_mob
+    test    eax, eax
+    jz      .next
+    bts     r13d, r12d
+.next:
+    add     rbx, MOB_size
+    inc     r12d
+    cmp     r12d, MAX_MOBS
+    jb      .mob
+    mov     eax, r13d
+    add     rsp, S_FRAME
+    pop     r14
+    pop     r13
+    pop     r12
     pop     rbx
+    pop     rbp
     ret
 
 ; ab_shoot(rdi eye float[3], rsi dir float[3], xmm0 offset, xmm1 speed, edx damage, ecx kind,
@@ -657,27 +819,20 @@ ab_blink_plan:
     pop     rbp
     ret
 
-; ab_shadow_plan(rdi eye float[3], rsi dir float[3], rdx out float[4]) -> eax 1 when a hostile mob
-; stands in sight within 12 blocks, nearer than any block, with room for the player behind it;
-; out = x, y, z of that spot (behind the mob by its half width + 0.8, at its feet) and the yaw
-; that faces the mob from there
-; rbx = out, r12 = eye, r13 = dir, r14 = the mob; frame: RAYHIT @0, lo @24, hi @36, t @48
-ab_shadow_plan:
+; ab_sight_mob(rdi eye float[3], rsi dir float[3], xmm0 range) -> eax index of the hostile mob the
+; look ray meets within range and nearer than the first block (which cuts the range short), or -1
+; rbx = eye, r12 = dir; frame: RAYHIT @0, lo @24, hi @36, t @48
+ab_sight_mob:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    push    r13
-    push    r14
     sub     rsp, 64
-    mov     rbx, rdx
-    mov     r12, rdi
-    mov     r13, rsi
-    mov     eax, [k_shadow_rng]
-    mov     [rsp + 48], eax             ; distance to the first block (the whole range: none)
+    mov     rbx, rdi
+    mov     r12, rsi
+    movss   [rsp + 48], xmm0            ; distance to the first block (the whole range: none)
     lea     rdx, [rsp]
-    movss   xmm0, [k_shadow_rng]
-    call    raycast                     ; rdi, rsi: eye, dir
+    call    raycast                     ; rdi, rsi, xmm0 as passed
     test    eax, eax
     jz      .mobs
     xor     ecx, ecx
@@ -689,43 +844,91 @@ ab_shadow_plan:
     inc     ecx
     cmp     ecx, 3
     jb      .cell
-    mov     rdi, r12
-    mov     rsi, r13
+    mov     rdi, rbx
+    mov     rsi, r12
     lea     rdx, [rsp + 24]
     lea     rcx, [rsp + 36]
-    movss   xmm0, [k_shadow_rng]
+    movss   xmm0, [rsp + 48]
     call    ray_aabb
     test    eax, eax
     jz      .mobs                       ; a grazing miss: the whole range
     movss   [rsp + 48], xmm0
 .mobs:
-    mov     rdi, r12
-    mov     rsi, r13
+    mov     rdi, rbx
+    mov     rsi, r12
     movss   xmm0, [rsp + 48]
     call    mobs_raycast                ; only a mob nearer than the block counts
     test    eax, eax
-    js      .fail
-    mov     r14d, eax
+    js      .done                       ; nobody: -1
+    mov     ebx, eax
     mov     edi, eax
     call    mob_is_hostile
     test    eax, eax
-    jz      .fail
-    imul    r14d, r14d, MOB_size
+    mov     eax, ebx
+    mov     ecx, -1
+    cmovz   eax, ecx                    ; a villager or an animal does not count
+.done:
+    add     rsp, 64
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ab_mark_plan(rdi eye float[3], rsi dir float[3], rdx out dword[1]) -> eax 1 when a hostile mob
+; stands in sight within 40 blocks, nearer than any block; out = its index
+; rbx = out
+ab_mark_plan:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rbx, rdx
+    movss   xmm0, [k_range]
+    call    ab_sight_mob                ; rdi, rsi: eye, dir
+    test    eax, eax
+    js      .none
+    mov     [rbx], eax
+    mov     eax, 1
+    jmp     .done
+.none:
+    xor     eax, eax
+.done:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ab_shadow_plan(rdi eye float[3], rsi dir float[3], rdx out float[4]) -> eax 1 when a hostile mob
+; stands in sight within 12 blocks, nearer than any block, with room for the player behind it;
+; out = x, y, z of that spot (behind the mob by its half width + 0.8, at its feet) and the yaw
+; that faces the mob from there
+; rbx = out, r12 = the mob
+ab_shadow_plan:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdx
+    movss   xmm0, [k_shadow_rng]
+    call    ab_sight_mob                ; rdi, rsi: eye, dir
+    test    eax, eax
+    js      .fail
+    imul    r12d, eax, MOB_size
     lea     rax, [mobs]
-    add     r14, rax
-    movss   xmm0, [r14 + BODY.yaw]
+    add     r12, rax
+    movss   xmm0, [r12 + BODY.yaw]
     call    sincos_deg                  ; the mob's forward vector is (sin, -cos)
-    movss   xmm2, [r14 + BODY.half_w]
+    movss   xmm2, [r12 + BODY.half_w]
     addss   xmm2, [k_shadow_gap]
     mulss   xmm0, xmm2
     mulss   xmm1, xmm2
-    movss   xmm3, [r14 + BODY.x]
+    movss   xmm3, [r12 + BODY.x]
     subss   xmm3, xmm0
     movss   [rbx], xmm3                 ; x - sin d
-    movss   xmm3, [r14 + BODY.z]
+    movss   xmm3, [r12 + BODY.z]
     addss   xmm3, xmm1
     movss   [rbx + 8], xmm3             ; z + cos d
-    mov     eax, [r14 + BODY.y]
+    mov     eax, [r12 + BODY.y]
     mov     [rbx + 4], eax
     movss   xmm0, [rbx]
     movss   xmm1, [rbx + 4]
@@ -733,9 +936,9 @@ ab_shadow_plan:
     call    ab_box_free
     test    eax, eax
     jz      .fail
-    movss   xmm0, [r14 + BODY.x]
+    movss   xmm0, [r12 + BODY.x]
     subss   xmm0, [rbx]
-    movss   xmm1, [r14 + BODY.z]
+    movss   xmm1, [r12 + BODY.z]
     subss   xmm1, [rbx + 8]
     call    yaw_from
     movss   [rbx + 12], xmm0
@@ -744,15 +947,12 @@ ab_shadow_plan:
 .fail:
     xor     eax, eax
 .done:
-    add     rsp, 64
-    pop     r14
-    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; ---- the twelve effects: each (rdi eye float[3], rsi dir float[3], rdx plan float[4]) ----------
+; ---- the sixteen effects: each (rdi eye float[3], rsi dir float[3], rdx plan float[4]) ---------
 
 ; Charge: the player is shoved forward at 22 b/s (abilities_step does the striking)
 ab_charge:
@@ -772,19 +972,15 @@ ab_charge:
     movss   [player + BODY.kbz], xmm0
     mov     dword [charge_t], CHARGE_STEPS
     mov     dword [charge_mask], 0
-    movss   xmm0, [k_6]
-    mov     edi, STAT_MELEE_DMG
-    call    ab_dmg
-    mov     [charge_dmg], eax
     mov     edi, SND_WARCRY
     movss   xmm0, [k_vol]
     call    audio_play
     leave
     ret
 
-; War Cry: the war cry's bonus lasts 480 steps, every hostile mob within 6 blocks is stunned 20
-; steps (never shortening a longer stun)
-; rbx = mob, r12d = index; frame: the player's chest float[3]
+; War Cry: the war cry's bonus lasts 480 steps, every hostile mob within 6 blocks (times 1 + AREA /
+; 100) is stunned 20 steps (never shortening a longer stun)
+; rbx = mob, r12d = index; frame: the player's chest float[3], the radius squared @12
 ab_warcry:
     push    rbp
     mov     rbp, rsp
@@ -799,6 +995,11 @@ ab_warcry:
     movss   [rsp + 4], xmm0
     movss   xmm0, [player + BODY.z]
     movss   [rsp + 8], xmm0
+    mov     edi, STAT_AREA
+    call    ab_mult
+    mulss   xmm0, [k_warcry_r]
+    mulss   xmm0, xmm0
+    movss   [rsp + 12], xmm0
     lea     rbx, [mobs]
     xor     r12d, r12d
 .mob:
@@ -817,7 +1018,7 @@ ab_warcry:
     mulss   xmm2, xmm2
     addss   xmm0, xmm1
     addss   xmm0, xmm2
-    comiss  xmm0, [k_warcry_r2]
+    comiss  xmm0, [rsp + 12]
     jae     .next
     cmp     dword [rbx + MOB.stun], 20
     jge     .next
@@ -850,7 +1051,84 @@ ab_whirl:
     mov     dword [combat_slow_t], WHIRL_STEPS
     ret
 
-; Fireball: a PROJ_FIREBALL for round(8 S), crit as rolled, at 28 b/s from half a block ahead
+; Ground Slam: every hostile mob within 4 blocks (times 1 + AREA / 100) and 2 in height takes 1.5 x
+; the attack of the held item as a physical melee-skill hit, shoved outwards at 2; the survivors
+; are launched at 6 b/s and stunned 40 steps (the Fallen King 15, a Juggernaut elite not at all);
+; the floor bursts and the camera shakes
+; rbx = mask of the mobs struck, r12d = index, r13 = mob; frame: the base damage float
+ab_slam:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    call    inv_held
+    movzx   edi, byte [rax + ITEMSTACK.id]
+    call    item_attack_damage
+    cvtsi2ss xmm0, eax
+    mulss   xmm0, [k_slam_mul]
+    movss   [rsp], xmm0
+    mov     edi, STAT_AREA
+    call    ab_mult
+    movaps  xmm1, xmm0
+    mulss   xmm1, [k_slam_r]
+    movss   xmm0, [rsp]
+    movss   xmm2, [k_slam_dy]
+    movss   xmm3, [k_slam_push]
+    mov     edi, SRC_MELEE_SKILL
+    mov     esi, ELEM_PHYS
+    mov     edx, 1
+    call    ab_sweep
+    mov     ebx, eax
+    xor     r12d, r12d
+.mob:
+    bt      ebx, r12d
+    jnc     .next
+    imul    r13d, r12d, MOB_size
+    lea     rax, [mobs]
+    add     r13, rax
+    mov     eax, [r13 + MOB.type]
+    test    eax, eax
+    jz      .next                       ; it died of the blow
+    movss   xmm0, [k_slam_vy]
+    movss   [r13 + BODY.vy], xmm0
+    mov     ecx, SLAM_STUN
+    cmp     eax, MOB_BOSS
+    jne     .stun
+    mov     ecx, SLAM_STUN_BOSS
+.stun:
+    test    dword [r13 + MOB.affix], AFX_JUGGERNAUT
+    jz      .set
+    xor     ecx, ecx
+.set:
+    cmp     [r13 + MOB.stun], ecx       ; never shortening a longer stun
+    jge     .next
+    mov     [r13 + MOB.stun], ecx
+.next:
+    inc     r12d
+    cmp     r12d, MAX_MOBS
+    jb      .mob
+    movss   xmm0, [player + BODY.x]
+    movss   xmm1, [player + BODY.y]
+    addss   xmm1, [k_slam_up]
+    movss   xmm2, [player + BODY.z]
+    movss   xmm3, [k_slam_fx]
+    call    fx_explosion
+    movss   xmm0, [fx_shake]
+    maxss   xmm0, [k_slam_shake]
+    movss   [fx_shake], xmm0
+    mov     edi, SND_SLAM
+    movss   xmm0, [k_vol]
+    call    audio_play
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Fireball: a PROJ_FIREBALL for 8, crit as rolled, at 28 b/s from half a block ahead
 ; rbx = eye, r12 = dir
 ab_fireball:
     push    rbp
@@ -860,13 +1138,9 @@ ab_fireball:
     sub     rsp, 16
     mov     rbx, rdi
     mov     r12, rsi
-    movss   xmm0, [k_8]
-    mov     edi, STAT_SPELL_DMG
-    call    ab_dmg
-    mov     edi, eax
     call    ab_crit
-    mov     r8d, edx
-    mov     edx, eax
+    mov     r8d, eax
+    mov     edx, FIREBALL_DMG
     mov     rdi, rbx
     mov     rsi, r12
     movss   xmm0, [k_fireball_o]
@@ -929,29 +1203,61 @@ ab_meteor:
     call    ab_target                   ; rdi, rsi: eye, dir
     mov     dword [meteor_n], METEORS
     mov     dword [meteor_t], 0
-    movss   xmm0, [k_12]
-    mov     edi, STAT_SPELL_DMG
-    call    ab_dmg
-    mov     [meteor_dmg], eax
     pop     rbp
     ret
 
-; Volley: five arrows fanned at -20, -10, 0, 10 and 20 degrees of yaw, each rolling its own crit,
-; none taken from the quiver
-; rbx = eye, r12 = dir, r13d = arrow; frame: this arrow's direction float[3]
+; Frost Nova: every hostile mob within 5 blocks (times 1 + AREA / 100) and 3 in height takes 6
+; points of frost spell damage that chills it three times - the third freezes it - shoved
+; outwards at 0.5; a burst of ice around the player
+ab_nova:
+    push    rbp
+    mov     rbp, rsp
+    mov     edi, STAT_AREA
+    call    ab_mult
+    movaps  xmm1, xmm0
+    mulss   xmm1, [k_nova_r]
+    movss   xmm0, [k_nova_base]
+    movss   xmm2, [k_nova_dy]
+    movss   xmm3, [k_nova_push]
+    mov     edi, SRC_SPELL
+    mov     esi, ELEM_FROST | HITF_CHILL3
+    mov     edx, 1
+    call    ab_sweep
+    movss   xmm0, [k_6]
+    mov     edi, FX_FROST
+    mov     esi, 40
+    call    ab_burst
+    mov     edi, SND_FREEZE
+    movss   xmm0, [k_vol]
+    call    audio_play
+    pop     rbp
+    ret
+
+; Volley: five arrows fanned at -20, -10, 0, 10 and 20 degrees of yaw (seven from -30 to 30 with
+; Barrage), each carrying 6 and rolling its own crit, none taken from the quiver
+; rbx = eye, r12 = dir, r13d = arrow, r14d = arrows; frame: this arrow's direction float[3]
 ab_volley:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 24
+    push    r14
+    sub     rsp, 16
     mov     rbx, rdi
     mov     r12, rsi
+    mov     r14d, 5
+    mov     edi, KS_BARRAGE
+    call    rpg_keystone
+    test    eax, eax
+    jz      .fan
+    mov     r14d, 7
+.fan:
     xor     r13d, r13d
 .arrow:
-    lea     eax, [r13 - 2]
-    imul    eax, eax, 10
+    lea     eax, [r13 + r13 + 1]
+    sub     eax, r14d                   ; 2 i + 1 - n: -4 .. 4 for five arrows, -6 .. 6 for seven
+    imul    eax, eax, 5                 ; ...times 5 degrees
     cvtsi2ss xmm0, eax
     call    sincos_deg                  ; xmm0 = sin, xmm1 = cos of the offset
     movss   xmm2, [r12]
@@ -968,13 +1274,9 @@ ab_volley:
     mulss   xmm2, xmm0
     addss   xmm3, xmm2
     movss   [rsp + 8], xmm3             ; z cos + x sin
-    movss   xmm0, [k_6]
-    mov     edi, STAT_RANGED_DMG
-    call    ab_dmg
-    mov     edi, eax
     call    ab_crit
-    mov     r8d, edx
-    mov     edx, eax
+    mov     r8d, eax
+    mov     edx, VOLLEY_DMG
     mov     rdi, rbx
     lea     rsi, [rsp]
     movss   xmm0, [k_arrow_o]
@@ -982,19 +1284,20 @@ ab_volley:
     mov     ecx, PROJ_ARROW
     call    ab_shoot
     inc     r13d
-    cmp     r13d, 5
+    cmp     r13d, r14d
     jb      .arrow
     mov     edi, SND_BOW
     movss   xmm0, [k_vol]
     call    audio_play
-    add     rsp, 24
+    add     rsp, 16
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; Explosive Arrow: one arrow at 45 b/s for round(10 R), crit as rolled, that blows up where it
+; Explosive Arrow: one arrow at 45 b/s for 10, crit as rolled, that blows up (fire) where it
 ; lands instead of sticking
 ; rbx = eye, r12 = dir
 ab_explosive:
@@ -1005,14 +1308,10 @@ ab_explosive:
     sub     rsp, 16
     mov     rbx, rdi
     mov     r12, rsi
-    movss   xmm0, [k_10]
-    mov     edi, STAT_RANGED_DMG
-    call    ab_dmg
-    mov     edi, eax
     call    ab_crit
-    or      edx, AF_EXPLOSIVE
-    mov     r8d, edx
-    mov     edx, eax
+    or      eax, AF_EXPLOSIVE
+    mov     r8d, eax
+    mov     edx, EXPLOSIVE_DMG
     mov     rdi, rbx
     mov     rsi, r12
     movss   xmm0, [k_arrow_o]
@@ -1039,10 +1338,34 @@ ab_rain:
     call    ab_target
     mov     dword [rain_n], RAIN_ARROWS
     mov     dword [rain_t], 0
-    movss   xmm0, [k_6]
-    mov     edi, STAT_RANGED_DMG
-    call    ab_dmg
-    mov     [rain_dmg], eax
+    pop     rbp
+    ret
+
+; Hunter's Mark: the mob the plan holds takes 30% more damage for 600 steps (the pipeline reads its
+; mark timer); gold sparks over its head
+; rbx = mob
+ab_mark:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    imul    eax, [rdx], MOB_size
+    lea     rbx, [mobs]
+    add     rbx, rax
+    mov     dword [rbx + MOB.mark_t], MARK_STEPS
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [rbx + BODY.height]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [k_2]
+    mov     edi, FX_GOLD
+    mov     esi, 12
+    call    fx_burst
+    mov     edi, SND_SPELL
+    movss   xmm0, [k_vol]
+    call    audio_play
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 
@@ -1086,7 +1409,7 @@ ab_shadowstep:
     pop     rbp
     ret
 
-; Smoke Bomb: a cloud around the player and 300 steps of stealth
+; Smoke Bomb: a cloud around the player and 300 steps of stealth (1800 under Shadow Dance)
 ab_smoke:
     push    rbp
     mov     rbp, rsp
@@ -1094,7 +1417,13 @@ ab_smoke:
     mov     edi, FX_SMOKE
     mov     esi, 40
     call    ab_burst
-    mov     dword [combat_stealth_t], STEALTH_STEPS
+    mov     edi, KS_SHADOW_DANCE
+    call    rpg_keystone
+    mov     ecx, STEALTH_STEPS
+    mov     edx, DANCE_STEPS
+    test    eax, eax
+    cmovnz  ecx, edx
+    mov     [combat_stealth_t], ecx
     mov     edi, SND_SMOKE
     movss   xmm0, [k_vol]
     call    audio_play
@@ -1116,25 +1445,74 @@ ab_blade:
     pop     rbp
     ret
 
+; Fan of Knives: eight PROJ_KNIFE thrown level from half a block below the eye, 45 degrees apart
+; starting along the player's heading, 30 b/s, 4 each, bleeding, each rolling its own crit; nobody
+; picks them up again
+; rbx = eye, r12d = knife; frame: sin and cos of the knife's heading
+ab_knives:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    mov     rbx, rdi
+    xor     r12d, r12d
+.knife:
+    imul    eax, r12d, 45
+    cvtsi2ss xmm0, eax
+    addss   xmm0, [player + BODY.yaw]
+    call    sincos_deg                  ; xmm0 = sin, xmm1 = cos: the heading is (sin, -cos)
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    call    ab_crit
+    or      eax, AF_BLEED
+    mov     r8d, eax
+    movss   xmm3, [rsp]
+    mulss   xmm3, [k_knife_v]           ; vx
+    movss   xmm5, [rsp + 4]
+    mulss   xmm5, [k_knife_v]
+    xorps   xmm6, xmm6
+    subss   xmm6, xmm5
+    movaps  xmm5, xmm6                  ; vz = -30 cos
+    xorps   xmm4, xmm4                  ; level
+    movss   xmm0, [rbx]
+    movss   xmm1, [rbx + 4]
+    subss   xmm1, [k_knife_drop]
+    movss   xmm2, [rbx + 8]
+    xor     edi, edi                    ; the player's
+    mov     esi, KNIFE_DMG
+    xor     edx, edx                    ; nobody picks it up
+    mov     ecx, PROJ_KNIFE
+    call    arrows_spawn
+    inc     r12d
+    cmp     r12d, KNIVES
+    jb      .knife
+    mov     edi, SND_KNIVES
+    movss   xmm0, [k_vol]
+    call    audio_play
+    add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; ---- the lasting abilities, once per step -------------------------------------------------------
 
 ; ab_charge_step(): while the charge lasts, every hostile mob the player touches (horizontal
-; distance < its half width + 0.9, within 1.5 blocks in height) and has not struck yet takes
-; round(6 M) along the charge and is stunned 30 steps
-; rbx = mob, r12d = index, r13d = mask of the struck, r14d = damage
+; distance < its half width + 0.9, within 1.5 blocks in height) and has not struck yet takes a
+; 6 point physical melee-skill hit along the charge and is stunned 30 steps
+; rbx = mob, r12d = index, r13d = mask of the struck
 ab_charge_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    push    r14
-    sub     rsp, 16
+    sub     rsp, 8
     cmp     dword [charge_t], 0
     jle     .done
     dec     dword [charge_t]
     mov     r13d, [charge_mask]
-    mov     r14d, [charge_dmg]
     lea     rbx, [mobs]
     xor     r12d, r12d
 .mob:
@@ -1164,15 +1542,15 @@ ab_charge_step:
     call    mob_is_hostile
     test    eax, eax
     jz      .next
-    mov     byte [combat_hit_flags], HF_PLAYER
     mov     edi, r12d
-    mov     esi, r14d
-    movss   xmm0, [charge_dx]
-    mulss   xmm0, [k_charge_hit]
-    movss   xmm1, [charge_dz]
+    mov     esi, SRC_MELEE_SKILL
+    xor     edx, edx                    ; physical
+    movss   xmm0, [k_6]
+    movss   xmm1, [charge_dx]
     mulss   xmm1, [k_charge_hit]
-    call    mob_strike
-    mov     byte [combat_hit_flags], 0
+    movss   xmm2, [charge_dz]
+    mulss   xmm2, [k_charge_hit]
+    call    combat_hit_mob
     bts     r13d, r12d
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next                       ; it died
@@ -1184,8 +1562,7 @@ ab_charge_step:
     jb      .mob
     mov     [charge_mask], r13d
 .done:
-    add     rsp, 16
-    pop     r14
+    add     rsp, 8
     pop     r13
     pop     r12
     pop     rbx
@@ -1211,85 +1588,34 @@ ab_whirl_step:
     pop     rbp
     ret
 
-; ab_whirl_pulse(): one spin: every hostile mob within 3.5 blocks (and 2 in height) takes
-; round(attack of the held item * M * (1.3 under the war cry)) and is thrown outwards at 1.5;
-; sparks, the whirl sound and the arm swings
-; rbx = mob, r12d = index, r13d = damage; frame: damage input float @0, outward dx @4, dz @8
+; ab_whirl_pulse(): one spin: every hostile mob within 3.5 blocks (times 1 + AREA / 100) and 2 in
+; height takes the attack of the held item (x1.3 under the war cry) as a physical melee-skill hit,
+; thrown outwards at 1.5; sparks, the whirl sound and the arm swings
+; frame: the base damage float
 ab_whirl_pulse:
     push    rbp
     mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    sub     rsp, 24
+    sub     rsp, 16
     call    inv_held
     movzx   edi, byte [rax + ITEMSTACK.id]
     call    item_attack_damage
     cvtsi2ss xmm0, eax
-    movss   [rsp], xmm0
-    mov     edi, STAT_MELEE_DMG
-    call    ab_mult
-    mulss   xmm0, [rsp]
     cmp     dword [combat_warcry_t], 0
-    jle     .rounded
+    jle     .base
     mulss   xmm0, [k_warcry_mul]
-.rounded:
-    cvtss2si r13d, xmm0
-    lea     rbx, [mobs]
-    xor     r12d, r12d
-.mob:
-    cmp     dword [rbx + MOB.type], MOB_NONE
-    je      .next
-    movss   xmm0, [rbx + BODY.x]
-    subss   xmm0, [player + BODY.x]
-    movss   [rsp + 4], xmm0
-    movss   xmm1, [rbx + BODY.z]
-    subss   xmm1, [player + BODY.z]
-    movss   [rsp + 8], xmm1
-    mulss   xmm0, xmm0
-    mulss   xmm1, xmm1
-    addss   xmm0, xmm1
-    comiss  xmm0, [k_whirl_r2]
-    jae     .next
-    movss   xmm0, [rbx + BODY.y]
-    subss   xmm0, [player + BODY.y]
-    movss   xmm1, [k_abs]
-    andps   xmm1, xmm0                  ; |dy|
-    comiss  xmm1, [k_whirl_dy]
-    jae     .next
-    mov     edi, r12d
-    call    mob_is_hostile
-    test    eax, eax
-    jz      .next
-    movss   xmm0, [rsp + 4]
-    movss   xmm1, [rsp + 8]
-    movaps  xmm2, xmm0
-    mulss   xmm2, xmm2
-    movaps  xmm3, xmm1
-    mulss   xmm3, xmm3
-    addss   xmm2, xmm3
-    sqrtss  xmm2, xmm2
-    comiss  xmm2, [k_tiny]
-    jb      .still                      ; right on top of the player
-    divss   xmm0, xmm2
-    divss   xmm1, xmm2
-    mulss   xmm0, [k_whirl_push]
-    mulss   xmm1, [k_whirl_push]
-    jmp     .strike
-.still:
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-.strike:
-    mov     byte [combat_hit_flags], HF_PLAYER
-    mov     edi, r12d
-    mov     esi, r13d
-    call    mob_strike
-    mov     byte [combat_hit_flags], 0
-.next:
-    add     rbx, MOB_size
-    inc     r12d
-    cmp     r12d, MAX_MOBS
-    jb      .mob
+.base:
+    movss   [rsp], xmm0
+    mov     edi, STAT_AREA
+    call    ab_mult
+    movaps  xmm1, xmm0
+    mulss   xmm1, [k_whirl_r]
+    movss   xmm0, [rsp]
+    movss   xmm2, [k_whirl_dy]
+    movss   xmm3, [k_whirl_push]
+    mov     edi, SRC_MELEE_SKILL
+    mov     esi, ELEM_PHYS
+    xor     edx, edx                    ; the whirlwind never rolled a crit
+    call    ab_sweep
     movss   xmm0, [k_4]
     mov     edi, FX_SPARK
     mov     esi, 16
@@ -1298,11 +1624,7 @@ ab_whirl_pulse:
     movss   xmm0, [k_vol]
     call    audio_play
     call    hand_swing
-    add     rsp, 24
-    pop     r13
-    pop     r12
-    pop     rbx
-    pop     rbp
+    leave
     ret
 
 ; ab_meteor_step(): the next meteor falls when its wait is over (the first one at once): a
@@ -1339,7 +1661,7 @@ ab_meteor_step:
     movss   xmm4, [k_meteor_v]
     xorps   xmm5, xmm5
     xor     edi, edi
-    mov     esi, [meteor_dmg]
+    mov     esi, METEOR_DMG
     xor     edx, edx
     mov     ecx, PROJ_FIREBALL
     mov     r8d, AF_BIG
@@ -1384,7 +1706,7 @@ ab_rain_step:
     movss   xmm4, [k_rain_v]
     xorps   xmm5, xmm5
     xor     edi, edi
-    mov     esi, [rain_dmg]
+    mov     esi, RAIN_DMG
     xor     edx, edx
     mov     ecx, PROJ_ARROW
     xor     r8d, r8d

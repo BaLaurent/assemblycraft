@@ -1,6 +1,6 @@
 ; structures.asm - villages, dungeons and the crypt: site planning from the world seed (pure),
-; their blocks (stone-brick dungeons with chests and loot, the crypt, flattened villages), NPC
-; spawns, the dungeon spawner, the boss trigger and the dungeon kill counters.
+; their blocks (stone-brick dungeons with chests, loot and rolled gear, the crypt, flattened
+; villages), NPC spawns, the dungeon spawner, the boss trigger and the dungeon kill counters.
 %include "common.inc"
 default rel
 
@@ -12,6 +12,7 @@ extern hash32, worldgen_set_seed, worldgen_height
 extern world_get, world_set, world_top_y, world_header
 extern cont_create
 extern mobs, mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_count_type
+extern mob_set_level, mob_level_for, gear_fill_chest
 extern rng_next, floor_i
 extern game_mode, settings, player
 extern rpg_state, rpg_add_xp, quests_on_dungeon_cleared
@@ -697,11 +698,13 @@ stair_tunnel:
     pop     rbp
     ret
 
-; place_chest(edi x, esi y, edx z, ecx table): a CHEST block with its container and 4..6 loot
-; rolls from the loot table (0 dungeon, 1 crypt). Roll r: h = hash32(x*31 + r, z*17 + y, 640);
-; the entry is the weighted pick h % total, count = min + (h >> 16) % (max - min + 1), cell =
-; (h >> 8) % 27 or the next free cell.
-; Frame: [rsp] r, [rsp+4] rolls, [rsp+8] h.
+; place_chest(edi x, esi y, edx z, ecx table, r8d dungeon): a CHEST block with its container and
+; 4..6 loot rolls from the loot table (0 dungeon, 1 crypt). Roll r: h = hash32(x*31 + r, z*17 + y,
+; 640); the entry is the weighted pick h % total, count = min + (h >> 16) % (max - min + 1), cell =
+; (h >> 8) % 27 or the next free cell. Then its rolled gear (gear_fill_chest, seed hash32(x, z,
+; 650)): a dungeon's chest gets one LOOT_CHEST piece of tier 2 + 2 * dungeon, the crypt's two
+; LOOT_BOSS pieces of tier 13.
+; Frame: [rsp] r, [rsp+4] rolls, [rsp+8] h, [rsp+12] dungeon.
 place_chest:
     push    rbp
     mov     rbp, rsp
@@ -711,6 +714,7 @@ place_chest:
     push    r14
     push    r15
     sub     rsp, 24
+    mov     [rsp + 12], r8d
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx
@@ -797,6 +801,23 @@ place_chest:
     mov     eax, [rsp]
     cmp     eax, [rsp + 4]
     jb      .roll
+    mov     edi, r12d                   ; the gear: seed hash32(x, z, 650)
+    mov     esi, r14d
+    mov     edx, 650
+    call    hash32
+    mov     r8d, eax
+    mov     rdi, rbx
+    mov     esi, LOOT_CHEST
+    mov     edx, [rsp + 12]
+    lea     edx, [rdx*2 + 2]            ; tier 2 + 2 * dungeon
+    mov     ecx, 1
+    test    r15d, r15d
+    jz      .gear
+    mov     esi, LOOT_BOSS              ; the crypt: two pieces of tier 13
+    mov     edx, 13
+    mov     ecx, 2
+.gear:
+    call    gear_fill_chest
 .ret:
     add     rsp, 24
     pop     r15
@@ -807,7 +828,8 @@ place_chest:
     pop     rbp
     ret
 
-; place_chests(rdi table, esi count, edx ox, ecx oz): a chest per 4-byte record (dx, y, dz, loot table)
+; place_chests(rdi table, esi count, edx ox, ecx oz, r8d dungeon): a chest per 4-byte record (dx, y,
+; dz, loot table); dungeon is the index of the dungeon the chests belong to (0 for the crypt)
 place_chests:
     push    rbp
     mov     rbp, rsp
@@ -821,6 +843,7 @@ place_chests:
     mov     r12d, esi
     mov     r13d, edx
     mov     r14d, ecx
+    mov     r15d, r8d
 .chest:
     movsx   edi, byte [rbx]
     add     edi, r13d
@@ -828,6 +851,7 @@ place_chests:
     movsx   edx, byte [rbx + 2]
     add     edx, r14d
     movzx   ecx, byte [rbx + 3]
+    mov     r8d, r15d
     call    place_chest
     add     rbx, 4
     dec     r12d
@@ -843,7 +867,7 @@ place_chests:
 
 ; build_dungeon(rdi SITE*): three stone-brick rooms joined by corridors, a stair tunnel climbing
 ; to the surface from the west wall of the first room, and a chest in each room (the third
-; room has two)
+; room has two), each holding rolled gear of the dungeon's tier
 build_dungeon:
     push    rbp
     mov     rbp, rsp
@@ -855,6 +879,7 @@ build_dungeon:
     sub     rsp, 8
     mov     r12d, [rdi + SITE.x]        ; ox
     mov     r13d, [rdi + SITE.z]        ; oz
+    mov     r14d, [rdi + SITE.index]    ; dungeon index
     lea     rdi, [dungeon_boxes]
     mov     esi, DUNGEON_BOXES
     mov     edx, r12d
@@ -869,6 +894,7 @@ build_dungeon:
     mov     esi, 4
     mov     edx, r12d
     mov     ecx, r13d
+    mov     r8d, r14d
     call    place_chests
     add     rsp, 8
     pop     r15
@@ -905,6 +931,7 @@ build_crypt:
     mov     esi, 2
     mov     edx, r12d
     mov     ecx, r13d
+    xor     r8d, r8d
     call    place_chests
     add     rsp, 8
     pop     r15
@@ -1247,9 +1274,15 @@ dungeon_spawn:
     call    mob_spawn_elite
     test    eax, eax
     js      .ret
+    mov     r14d, eax                   ; slot index
     imul    eax, eax, MOB_size
     lea     rcx, [mobs]
     mov     [rcx + rax + MOB.origin], r13d
+    mov     edi, r13d                   ; its level follows the dungeon's
+    call    mob_level_for
+    mov     edi, r14d
+    mov     esi, eax
+    call    mob_set_level
 .ret:
     add     rsp, 24
     pop     r15
@@ -1324,9 +1357,15 @@ structures_step:
     call    mob_spawn
     test    eax, eax
     js      .next                       ; no free slot: try again next step
+    mov     r13d, eax                   ; slot index
     imul    eax, eax, MOB_size
     lea     rcx, [mobs]
     mov     dword [rcx + rax + MOB.origin], ORIGIN_CRYPT
+    mov     edi, ORIGIN_CRYPT           ; the Fallen King's level
+    call    mob_level_for
+    mov     edi, r13d
+    mov     esi, eax
+    call    mob_set_level
     mov     edi, SND_BOSS_ROAR
     movss   xmm0, [c_one]
     call    audio_play
@@ -1363,8 +1402,8 @@ structures_step:
     ret
 
 ; structures_on_mob_killed(edi origin): a mob of dungeon origin - 1 died (origin 1..6; anything
-; else is ignored). The 8th death clears the dungeon: its bit in the cleared mask, 150 XP, a
-; banner, the quest hook.
+; else is ignored). The 8th death clears the dungeon: its bit in the cleared mask, 150 + 15 per
+; level XP, a banner, the quest hook.
 structures_on_mob_killed:
     lea     eax, [rdi - 1]
     cmp     eax, NUM_DUNGEONS - 1
@@ -1380,7 +1419,9 @@ structures_on_mob_killed:
     jc      .done
     bts     eax, ebx
     mov     [rpg_state + RPGSAVE.cleared], al
-    mov     edi, 150
+    movzx   edi, byte [rpg_state + RPGSAVE.level]
+    imul    edi, edi, 15
+    add     edi, 150
     call    rpg_add_xp
     lea     rdi, [s_cleared]
     mov     esi, RGBA(120, 255, 120, 255)
