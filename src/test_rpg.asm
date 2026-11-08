@@ -255,8 +255,8 @@ exp_caps:
     dd STAT_POISON_DMG,    -90, NOHI
 exp_caps_end:
 
-kill_xp_tab:                            ; plain XP of a kill by mob type 1..9
-    db 10, 2, 15, 12, 10, 2, 0, 0, 0
+kill_xp_tab:                            ; plain XP of a kill by mob type 1..8
+    db 10, 2, 15, 12, 10, 2, 0, 0
 trade_tab:                              ; give, give_n, get, get_n
     dd GOLD_COIN, 6, HEALTH_POTION, 1
     dd GOLD_COIN, 6, MANA_POTION, 1

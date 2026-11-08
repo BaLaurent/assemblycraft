@@ -1703,6 +1703,24 @@ test_dungeon_built_with_chests:
 
 ; ---- test 3: the village ---------------------------------------------------------------------------
 
+; count_role(edi role) -> eax the live MOB_FOLK mobs with that role (leaf)
+count_role:
+    xor     eax, eax
+    lea     rcx, [mobs]
+    mov     edx, MAX_MOBS
+.mob:
+    cmp     dword [rcx + MOB.type], MOB_FOLK
+    jne     .next
+    movzx   r8d, byte [rcx + MOB.role]
+    cmp     r8d, edi
+    jne     .next
+    inc     eax
+.next:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .mob
+    ret
+
 ; the first village the plans have, built through gen_column: the well's glass at its middle, the
 ; first house with its cobble floor, plank roof, closed wooden door (west wall, facing the well), wall
 ; torch inside and plank wall opposite the door, gravel paths where the merchant and the elder stand.
@@ -1767,18 +1785,20 @@ test_village_built_with_npcs:
     movss   xmm0, [k_41]
     movss   [player + BODY.y], xmm0
     call    structures_step
-    mov     edi, MOB_MERCHANT
-    call    mob_count_type
+    mov     edi, ROLE_TRADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
-    mov     edi, MOB_ELDER
-    call    mob_count_type
+    mov     edi, ROLE_LEADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
     lea     rax, [mobs]                 ; their homes: (x + 6.5, z + 0.5) and (x - 5.5, z + 0.5)
     mov     ecx, MAX_MOBS
 .homes:
-    cmp     dword [rax + MOB.type], MOB_MERCHANT
+    cmp     dword [rax + MOB.type], MOB_FOLK
+    jne     .home_next
+    cmp     byte [rax + MOB.role], ROLE_TRADER
     jne     .elder
     movss   xmm0, [rax + MOB.home_x]
     comiss  xmm0, [k_106_5]
@@ -1786,7 +1806,7 @@ test_village_built_with_npcs:
     jp      .fail
     jmp     .home_z
 .elder:
-    cmp     dword [rax + MOB.type], MOB_ELDER
+    cmp     byte [rax + MOB.role], ROLE_LEADER
     jne     .home_next
     movss   xmm0, [rax + MOB.home_x]
     comiss  xmm0, [k_94_5]
@@ -1810,12 +1830,12 @@ test_village_built_with_npcs:
     call    structures_step
     dec     r12d
     jnz     .dup
-    mov     edi, MOB_MERCHANT
-    call    mob_count_type
+    mov     edi, ROLE_TRADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
-    mov     edi, MOB_ELDER
-    call    mob_count_type
+    mov     edi, ROLE_LEADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
     call    mobs_clear                  ; removed: the next check is due 60 steps after the last
@@ -1824,17 +1844,17 @@ test_village_built_with_npcs:
     call    structures_step
     dec     r12d
     jnz     .wait
-    mov     edi, MOB_MERCHANT
-    call    mob_count_type
+    mov     edi, ROLE_TRADER
+    call    count_role
     test    eax, eax
     jnz     .fail
     call    structures_step             ; the 60th: they are back
-    mov     edi, MOB_MERCHANT
-    call    mob_count_type
+    mov     edi, ROLE_TRADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
-    mov     edi, MOB_ELDER
-    call    mob_count_type
+    mov     edi, ROLE_LEADER
+    call    count_role
     cmp     eax, 1
     jne     .fail
     call    mobs_clear                  ; the player far away: nobody is created
@@ -1846,12 +1866,12 @@ test_village_built_with_npcs:
     call    structures_step
     dec     r12d
     jnz     .far
-    mov     edi, MOB_MERCHANT
-    call    mob_count_type
+    mov     edi, ROLE_TRADER
+    call    count_role
     test    eax, eax
     jnz     .fail
-    mov     edi, MOB_ELDER
-    call    mob_count_type
+    mov     edi, ROLE_LEADER
+    call    count_role
     test    eax, eax
     jnz     .fail
     xor     eax, eax

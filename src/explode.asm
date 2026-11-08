@@ -690,9 +690,7 @@ explode_magic:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .next
-    cmp     eax, MOB_MERCHANT
-    je      .next
-    cmp     eax, MOB_ELDER
+    cmp     eax, MOB_FOLK
     je      .next
     movss   xmm0, [rbx + BODY.x]
     subss   xmm0, [rsp + M_C]

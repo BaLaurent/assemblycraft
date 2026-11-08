@@ -17,7 +17,7 @@ global structures_on_mob_killed, structures_on_boss_killed, structures_shift, si
 
 extern hash32, gen_height, gen_biome
 extern world_header, world_get, world_column_ready, world_origin_x, world_origin_z
-extern mobs, mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_count_type, mob_set_level
+extern mobs, mob_spawn, mob_spawn_elite, folk_spawn, mob_count_type, mob_set_level
 extern gear_fill_chest, gear_tier_for_level
 extern rng_next, floor_i
 extern game_mode, settings, player
@@ -2180,22 +2180,27 @@ site_state:
 
 ; ---- NPCs, spawners, counters, queries ----------------------------------------------------------
 
-; ensure_npc(edi type, esi dx, rdx SITE* village): the NPC of that type with its home in the cell
-; (village x + dx, village z), at the village's ground level + 1, is spawned unless a live one of
-; that type already has that home (within 0.01) or its column is not loaded
-; Frame: [rsp] home x, [rsp+4] y, [rsp+8] home z.
-ensure_npc:
+; ensure_folk(edi faction, esi role, edx fclass, ecx dx, r8d dz, r9 SITE* site): the folk of that
+; faction and role with its home in the cell (site x + dx, site z + dz), at the site's ground level
+; + 1, is spawned (folk_spawn) unless a live one of that faction and role already has that home
+; (within 0.01) or its column is not loaded
+; Frame: [rsp] home x, [rsp+4] y, [rsp+8] home z, [rsp+12] fclass.
+ensure_folk:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 24
+    push    r14
+    sub     rsp, 16
     mov     r12d, edi
-    mov     r13d, [rdx + SITE.x]
-    add     r13d, esi                   ; the NPC's cell
-    mov     ebx, [rdx + SITE.z]
-    mov     eax, [rdx + SITE.y]
+    mov     r14d, esi
+    mov     [rsp + 12], edx
+    mov     r13d, [r9 + SITE.x]
+    add     r13d, ecx                   ; the folk's cell
+    mov     ebx, [r9 + SITE.z]
+    add     ebx, r8d
+    mov     eax, [r9 + SITE.y]
     inc     eax
     cvtsi2ss xmm1, eax
     movss   [rsp + 4], xmm1
@@ -2208,7 +2213,13 @@ ensure_npc:
     lea     rcx, [mobs]
     mov     edx, MAX_MOBS
 .find:
-    cmp     [rcx + MOB.type], r12d
+    cmp     dword [rcx + MOB.type], MOB_FOLK
+    jne     .next
+    movzx   eax, byte [rcx + MOB.faction]
+    cmp     eax, r12d
+    jne     .next
+    movzx   eax, byte [rcx + MOB.role]
+    cmp     eax, r14d
     jne     .next
     movss   xmm3, [rcx + MOB.home_x]
     subss   xmm3, xmm0
@@ -2230,12 +2241,15 @@ ensure_npc:
     test    eax, eax
     jz      .ret
     mov     edi, r12d
+    mov     esi, r14d
+    mov     edx, [rsp + 12]
     movss   xmm0, [rsp]
     movss   xmm1, [rsp + 4]
     movss   xmm2, [rsp + 8]
-    call    mob_spawn_npc
+    call    folk_spawn
 .ret:
-    add     rsp, 24
+    add     rsp, 16
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -2243,8 +2257,8 @@ ensure_npc:
     ret
 
 ; village_npcs(): every cached village within 96 blocks of the player whose centre column is
-; loaded gets its merchant (cell x + 6) and elder (cell x - 6) at (x + 0.5, y + 1, z + 0.5) again
-; when no live one has that home: village NPCs are not saved
+; loaded gets its Villagers trader (cell x + 6) and leader (cell x - 6) at (x + 0.5, y + 1, z + 0.5)
+; again when no live one has that home: folk are not saved
 village_npcs:
     push    rbp
     mov     rbp, rsp
@@ -2275,14 +2289,20 @@ village_npcs:
     call    world_column_ready
     test    eax, eax
     jz      .next
-    mov     edi, MOB_MERCHANT
-    mov     esi, 6
-    mov     rdx, rbx
-    call    ensure_npc
-    mov     edi, MOB_ELDER
-    mov     esi, -6
-    mov     rdx, rbx
-    call    ensure_npc
+    mov     edi, FAC_VILLAGERS
+    mov     esi, ROLE_TRADER
+    xor     edx, edx
+    mov     ecx, 6
+    xor     r8d, r8d
+    mov     r9, rbx
+    call    ensure_folk
+    mov     edi, FAC_VILLAGERS
+    mov     esi, ROLE_LEADER
+    xor     edx, edx
+    mov     ecx, -6
+    xor     r8d, r8d
+    mov     r9, rbx
+    call    ensure_folk
 .next:
     add     rbx, SITE_size
     dec     r12d

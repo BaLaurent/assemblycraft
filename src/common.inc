@@ -416,10 +416,25 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MOB_SKELETON    4
 %define MOB_SPIDER      5
 %define MOB_CHICKEN     6
-%define MOB_MERCHANT    7
-%define MOB_ELDER       8
-%define MOB_BOSS        9
-%define NUM_MOB_TYPES   9
+%define MOB_BOSS        7
+%define MOB_FOLK        8               ; a faction member: MOB.faction/.role/.fclass (folk.asm)
+%define NUM_MOB_TYPES   8
+%define ROLE_NONE       0               ; MOB.role of a MOB_FOLK
+%define ROLE_LEADER     1
+%define ROLE_TRADER     2
+%define ROLE_GUARD      3               ; fighters: GUARD, CHAMPION, PATROL
+%define ROLE_WORKER     4
+%define ROLE_CAPTIVE    5
+%define ROLE_CHAMPION   6
+%define ROLE_PATROL     7
+%define ROLE_TRAVELLER  8
+%define NUM_ROLES       9
+%define FCLASS_NONE     0               ; MOB.fclass of a fighter
+%define FCLASS_ARCHER   1
+%define FCLASS_BRUTE    2
+%define FCLASS_ACOLYTE  3
+%define FCLASS_BERSERKER 4
+%define NUM_FCLASSES    5
 %define MOB_ELITE_BIT   0x100           ; MOBSAVE.type flag
 %define MS_LEVEL_SHIFT  16              ; MOBSAVE.type bits 16..23 = level (0 = derive on load)
 %define MS_AFFIX_SHIFT  24              ; MOBSAVE.type bits 24..31 = elite affixes (AFX_*)
@@ -955,6 +970,19 @@ struc MOB
     .shock:    resd 1                   ; stacks 0..3
     .mark_t:   resd 1                   ; Hunter's Mark steps
     .dot_tick: resd 1                   ; steps to the next DoT tick
+    .faction:  resb 1                   ; MOB_FOLK: FAC_*
+    .role:     resb 1                   ; ROLE_*
+    .fclass:   resb 1                   ; FCLASS_* of a fighter, else 0
+    .fflags:   resb 1                   ; FF_ASLEEP, FF_RAGE
+    .wid:      resb 1                   ; weapon item id, 0 = none
+    .captor:   resb 1                   ; ROLE_CAPTIVE: the faction holding it
+    .wdmg:     resw 1                   ; weapon dmg word (gear roll)
+    .target:   resd 1                   ; 0 none, 1 the player, 2 + slot: another mob
+    .provoked: resd 1                   ; steps the player stays a target whatever the standing
+    .patrol:   resd 1                   ; road key of a patrol member, else 0
+    .dest_x:   resd 1                   ; patrol: the end it walks to (local float); home_x/home_z hold the other end
+    .dest_z:   resd 1
+    .greet:    resd 1                   ; steps before this guard greets again
 endstruc
 
 struc MOBSAVE

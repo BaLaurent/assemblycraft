@@ -12,7 +12,7 @@ global test_mob_levels_and_scaling, test_elite_affixes
 global test_entities_rebase, test_entities_remove_box, test_mob_water_ai
 
 extern mobs, mobs_clear, mobs_step, mob_spawn, mobs_raycast, mob_hurt, mob_count_type, mob_count_kind
-extern mob_spawn_elite, mob_spawn_npc, mob_is_hostile, mob_strike, mobs_save, mobs_load
+extern mob_spawn_elite, folk_spawn, mob_is_hostile, mob_strike, mobs_save, mobs_load
 extern mobs_populate, spawn_at_ground, mobs_shift, mobs_remove_box
 extern player, body_init, rng_seed, world_clear, world_set, world_get, world_header, light_update
 extern game_mode, game_time, settings, surv, survival_reset, inv, inv_clear
@@ -910,7 +910,7 @@ test_elite_saved_and_tougher:
     jne     .fail
     cmp     dword [mobs + MOB.health], 20
     jne     .fail
-    mov     dword [hdr + WORLDHDR.mobs + MOBSAVE.type], MOB_MERCHANT | MOB_ELITE_BIT   ; not a saved type
+    mov     dword [hdr + WORLDHDR.mobs + MOBSAVE.type], MOB_FOLK | MOB_ELITE_BIT   ; not a saved type
     call    mobs_clear
     lea     rdi, [hdr]
     call    mobs_load
@@ -1027,15 +1027,23 @@ test_npc_immune_and_not_saved:
     SETF    [player + BODY.x], 2.5      ; far from everyone
     SETF    [player + BODY.y], 11.0
     SETF    [player + BODY.z], 2.5
-    mov     edi, MOB_MERCHANT
+    mov     edi, FAC_VILLAGERS
+    mov     esi, ROLE_TRADER
+    xor     edx, edx
     movss   xmm0, [k_16_5]
     movss   xmm1, [k_11]
     movss   xmm2, [k_16_5]
-    call    mob_spawn_npc
+    call    folk_spawn
     test    eax, eax
     js      .fail
     mov     [rsp], eax
-    SPAWN   MOB_ELDER, k_10_5, k_16_5
+    mov     edi, FAC_VILLAGERS
+    mov     esi, ROLE_LEADER
+    xor     edx, edx
+    movss   xmm0, [k_10_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_16_5]
+    call    folk_spawn
     test    eax, eax
     js      .fail
     mov     [rsp + 4], eax
@@ -1069,7 +1077,7 @@ test_npc_immune_and_not_saved:
     jne     .fail
     cmp     byte [combat_hit_flags], 0  ; the flags are consumed either way
     jne     .fail
-    cmp     dword [r12 + MOB.type], MOB_MERCHANT
+    cmp     dword [r12 + MOB.type], MOB_FOLK
     jne     .fail
     mov     edi, [rsp]
     call    mob_is_hostile
@@ -2010,11 +2018,13 @@ test_mob_levels_and_scaling:
     mov     esi, 30
     call    mob_set_level
     call    mobs_clear
-    mov     edi, MOB_MERCHANT           ; a villager stays at level 1 with 20 health
+    mov     edi, FAC_VILLAGERS          ; folk stay at level 1 with 20 health
+    mov     esi, ROLE_TRADER
+    xor     edx, edx
     movss   xmm0, [k_16_5]
     movss   xmm1, [k_11]
     movss   xmm2, [k_16_5]
-    call    mob_spawn_npc
+    call    folk_spawn
     test    eax, eax
     js      .fail
     mov     edi, eax
@@ -2446,7 +2456,7 @@ test_elite_affixes:
     RESIST  MOB_BOSS, ELEM_POISON, 50
     RESIST  MOB_PIG, ELEM_FIRE, 0
     RESIST  MOB_NONE, ELEM_FIRE, 0      ; no such type, no such element
-    RESIST  MOB_BOSS + 1, ELEM_FIRE, 0
+    RESIST  NUM_MOB_TYPES + 1, ELEM_FIRE, 0
     RESIST  MOB_ZOMBIE, NUM_ELEMS, 0
     xor     edi, edi
     call    mob_affix_name

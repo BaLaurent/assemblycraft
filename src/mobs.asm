@@ -1,5 +1,5 @@
-; mobs.asm - zombies, pigs, creepers, skeletons, spiders and chickens, the RPG's villagers
-; (merchant, elder) and the Fallen King boss: slot storage, AI, spawning, ray/block queries,
+; mobs.asm - zombies, pigs, creepers, skeletons, spiders and chickens, faction folk (folk.asm
+; holds their roles) and the Fallen King boss: slot storage, AI, spawning, ray/block queries,
 ; damage, drops, save records. Every mob has a level (the player's; a dungeon's two above, the
 ; crypt boss's at least 20) that scales its health and its blows on the player. Elites roll
 ; affixes: elemental parts in their blows, vampiric healing, speed, a juggernaut's stability.
@@ -11,7 +11,7 @@
 default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
-global mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_is_hostile, mobs_raycast
+global mob_spawn, mob_spawn_elite, mob_is_hostile, mobs_raycast
 global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
@@ -94,34 +94,32 @@ extern gear_drop_from_mob
 
 section .rodata
 align 4
-; per-type tables, index = type - 1 (zombie, pig, creeper, skeleton, spider, chicken, merchant,
-; elder, boss)
-t_half_w:   dd 0.3, 0.45, 0.3, 0.3, 0.7, 0.2, 0.3, 0.3, 0.6
-t_height:   dd 1.8, 0.9, 1.7, 1.8, 0.9, 0.7, 1.95, 1.95, 3.3
-t_speed:    dd 2.6, 1.6, 2.4, 2.5, 3.0, 1.4, 1.0, 1.0, 2.4
-t_run:      dd 0.0, 3.2, 0.0, 0.0, 0.0, 2.4, 0.0, 0.0, 0.0     ; panic speed of the passive types
-t_health:   dd 20, 10, 20, 20, 16, 4, 20, 20, 300              ; (the boss's depends on the difficulty)
+; per-type tables, index = type - 1 (zombie, pig, creeper, skeleton, spider, chicken, boss, folk)
+t_half_w:   dd 0.3, 0.45, 0.3, 0.3, 0.7, 0.2, 0.6, 0.3
+t_height:   dd 1.8, 0.9, 1.7, 1.8, 0.9, 0.7, 3.3, 1.95
+t_speed:    dd 2.6, 1.6, 2.4, 2.5, 3.0, 1.4, 2.4, 1.0
+t_run:      dd 0.0, 3.2, 0.0, 0.0, 0.0, 2.4, 0.0, 0.0     ; panic speed of the passive types
+t_health:   dd 20, 10, 20, 20, 16, 4, 300, 20              ; (the boss's depends on the difficulty)
 t_dmg:      dd 0, 2, 3, 4               ; zombie and skeleton hit by difficulty
 t_dmg_spider: dd 0, 2, 2, 3
 t_dmg_slam: dd 0, 6, 8, 12              ; the Fallen King's slam by difficulty
 t_dmg_volley: dd 0, 3, 4, 5             ; ...and each arrow of his volley
 t_boss_health: dd 200, 200, 300, 450
 t_spread:   dd 0.0, 1.5, 1.0, 0.5       ; skeleton aim error in blocks/s by difficulty
-t_hostile:  db 1, 0, 1, 1, 1, 0, 0, 0, 1
-t_burns:    db 1, 0, 0, 1, 0, 0, 0, 0, 0   ; sunlight hurts the undead
+t_hostile:  db 1, 0, 1, 1, 1, 0, 1, 0
+t_burns:    db 1, 0, 0, 1, 0, 0, 0, 0   ; sunlight hurts the undead
 t_say:      db SND_ZOMBIE_SAY, SND_PIG_SAY, 0xFF, SND_SKELETON_SAY, SND_SPIDER_SAY, SND_CHICKEN_SAY
-            db SND_VILLAGER, SND_VILLAGER, SND_BOSS_ROAR
+            db SND_BOSS_ROAR, SND_VILLAGER
 t_hurt:     db SND_ZOMBIE_HURT, SND_PIG_HURT, SND_CREEPER_HURT, SND_SKELETON_HURT
-            db SND_SPIDER_HURT, SND_CHICKEN_HURT, SND_VILLAGER, SND_VILLAGER, SND_SKELETON_HURT
+            db SND_SPIDER_HURT, SND_CHICKEN_HURT, SND_SKELETON_HURT, SND_VILLAGER
 ; death drops, 8 bytes per type: two (item, base, range) entries, count = base + rng % range;
-; item 0 = unused entry. Villagers and the boss have none here: mob_drops special-cases the boss.
+; item 0 = unused entry. Folk and the boss have none here: mob_drops special-cases the boss.
 t_drops:    db ROTTEN_FLESH, 0, 3, 0, 0, 0, 0, 0
             db PORKCHOP, 1, 3, 0, 0, 0, 0, 0
             db GUNPOWDER, 0, 3, 0, 0, 0, 0, 0
             db ARROW, 0, 3, 0, 0, 0, 0, 0
             db STRING, 0, 3, 0, 0, 0, 0, 0
             db FEATHER, 0, 3, RAW_CHICKEN, 1, 1, 0, 0
-            db 0, 0, 0, 0, 0, 0, 0, 0
             db 0, 0, 0, 0, 0, 0, 0, 0
             db 0, 0, 0, 0, 0, 0, 0, 0
 ; an elite's affixes in its blows, by affix bit (MOLTEN, FROZEN, VENOMOUS, STORM): the element
@@ -137,13 +135,12 @@ t_resist:   db 0, -50, 0, 0, 25         ; zombie
             db 0, 0, 25, 0, 100         ; skeleton
             db 0, -25, 0, 0, 100        ; spider
             db 0, 0, 0, 0, 0            ; chicken
-            db 0, 0, 0, 0, 0            ; merchant
-            db 0, 0, 0, 0, 0            ; elder
             db 20, 20, 20, 20, 50       ; the Fallen King
+            db 0, 0, 0, 0, 0            ; folk
 ; what the night spawner picks from
 night_kinds: db MOB_ZOMBIE, MOB_SKELETON, MOB_CREEPER, MOB_SPIDER
 align 8
-hunt_ai:    dq 0, 0, ai_creeper, ai_skeleton, ai_spider, 0, 0, 0, ai_boss   ; by type - 1; the zombie's AI is inline
+hunt_ai:    dq 0, 0, ai_creeper, ai_skeleton, ai_spider, 0, ai_boss, 0   ; by type - 1; the zombie's AI is inline
 align 4
 c_360:      dd 360.0
 c_180:      dd 180.0                    ; walk-cycle degrees per block walked
@@ -205,7 +202,7 @@ c_100:      dd 100.0
 c_strike2:  dd 3.6                      ; a raised arm still connects within 1.9 blocks, squared
 c_bite_end2: dd 2.45                    ; a rearing spider still bites within 1.56 blocks, squared
 c_over_head: dd 0.2                     ; floating numbers start this far above the head
-; villagers
+; folk
 c_home2:    dd 36.0                     ; they walk home from beyond 6 blocks
 c_talk2:    dd 16.0                     ; they turn to a player within 4
 ; the Fallen King
@@ -463,11 +460,9 @@ mob_affix_name:
     ret
 
 ; mob_spawn(edi type, xmm0 x, xmm1 y, xmm2 z) -> eax slot index, or -1 (bad type / no free slot).
-; Every mob remembers its spawn point as its home (villagers stroll around it). It starts at the
-; player's level (a villager at 1) with the health of that level (mob_scale), the Fallen King's
-; also by difficulty; his two timers start.
-; mob_spawn_npc(...) is the same call: structures spawn the merchant and elder through it.
-mob_spawn_npc:
+; Every mob remembers its spawn point as its home (folk stroll around it). It starts at the
+; player's level (folk at 1) with the health of that level (mob_scale), the Fallen King's
+; also by difficulty; his two timers start. Folk are spawned through folk_spawn (folk.asm).
 mob_spawn:
     push    rbp
     mov     rbp, rsp
@@ -512,11 +507,9 @@ mob_spawn:
     mov     dword [r12 + MOB.timer_b], BOSS_VOLLEY_STEPS
 .level:
     xor     edi, edi
-    call    mob_level_for               ; the player's level; a villager stays at 1
+    call    mob_level_for               ; the player's level; folk stay at 1
     mov     ecx, 1
-    cmp     ebx, MOB_MERCHANT
-    cmove   eax, ecx
-    cmp     ebx, MOB_ELDER
+    cmp     ebx, MOB_FOLK
     cmove   eax, ecx
     mov     [r12 + MOB.level], eax
     mov     rdi, r12
@@ -603,7 +596,7 @@ make_elite:
     ret
 
 ; mob_is_hostile(edi idx) -> eax 1 when slot idx holds a live hostile mob (zombie, creeper, skeleton,
-; spider, the boss), else 0 (empty slot, bad index, passive animal, villager)
+; spider, the boss), else 0 (empty slot, bad index, passive animal, folk)
 mob_is_hostile:
     xor     eax, eax
     cmp     edi, MAX_MOBS
@@ -640,7 +633,7 @@ yaw_from:
 ; living player within 24 blocks (Survival, difficulty > 0, not hidden in smoke) and, after raising
 ; an arm for 20 steps, hit through mob_melee_hit when he is still close; creepers, skeletons and
 ; spiders hunt within 16 blocks (ai_creeper, ai_skeleton, ai_spider); the Fallen King hunts within
-; 48 blocks and sees through smoke (ai_boss); villagers stay within 6 blocks of home and turn to a
+; 48 blocks and sees through smoke (ai_boss); folk stay within 6 blocks of home and turn to a
 ; player within 4; a panicking pig or chicken runs along its heading; everything else wanders in
 ; 1-4 s legs. At the end (.jump) a mob in water holds jump (it floats up and drifts); one that would
 ; step into water (WATER 0.7 blocks ahead at its feet or just below that) turns about when it
@@ -794,9 +787,7 @@ mob_ai:
     jmp     .wander
 .passive:
     mov     eax, [rbx + MOB.type]
-    cmp     eax, MOB_MERCHANT
-    je      .npc
-    cmp     eax, MOB_ELDER
+    cmp     eax, MOB_FOLK
     je      .npc
     cmp     dword [rbx + MOB.panic], 0
     jle     .wander
@@ -808,7 +799,7 @@ mob_ai:
     mov     edx, [t_speed + rax*4 - 4]  ; panic over: back to the stroll speed
     mov     [rbx + BODY.speed], edx
     jmp     .jump
-.npc:                                   ; a villager: walks home from beyond 6 blocks, faces a player within 4
+.npc:                                   ; folk: walks home from beyond 6 blocks, faces a player within 4
     movss   xmm0, [rbx + MOB.home_x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0
@@ -2622,7 +2613,7 @@ mob_drops:
     jnz     .entry
     mov     eax, [rbx + MOB.type]
     cmp     byte [t_hostile + rax - 1], 0
-    je      .done                       ; passive mobs and villagers carry nothing else
+    je      .done                       ; passive mobs and folk carry nothing else
     mov     rdi, rbx
     call    gear_drop_from_mob          ; rolled gear, the Fallen King's legendary included
     cmp     dword [rbx + MOB.type], MOB_BOSS
@@ -2715,7 +2706,7 @@ boss_death:
     pop     rbp
     ret
 
-; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, a villager, or
+; mob_hurt(edi idx, esi dmg, xmm0 dirx, xmm1 dirz) -> eax 1 applied / 0 (no such mob, folk, or
 ; still in its hurt window). Knocks the mob along (dirx, dirz) -- not a JUGGERNAUT elite, which
 ; stands firm; a passive mob panics and flees that way, a dead mob drops its loot (mob_drops).
 ; mob_strike(...): the same, but it lands even inside the hurt window, so rapid fire, shotgun
@@ -2748,9 +2739,7 @@ mob_damage:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .no
-    cmp     eax, MOB_MERCHANT           ; villagers cannot be hurt
-    je      .no
-    cmp     eax, MOB_ELDER
+    cmp     eax, MOB_FOLK               ; folk cannot be hurt
     je      .no
     test    r8d, r8d
     jnz     .apply
@@ -2921,7 +2910,7 @@ mobs_intersect_block:
 
 ; mobs_save(rdi WORLDHDR*): the live mobs as compact MOBSAVE records, mob_count set. A record's
 ; type carries MOB_ELITE_BIT for an elite, the level at MS_LEVEL_SHIFT and the affixes at
-; MS_AFFIX_SHIFT; villagers and the boss are skipped (the sites re-create them).
+; MS_AFFIX_SHIFT; folk and the boss are skipped (the sites re-create them).
 mobs_save:
     mov     r8, rdi
     lea     rdi, [r8 + WORLDHDR.mobs]
@@ -2936,8 +2925,8 @@ mobs_save:
     mov     eax, [rsi + MOB.type]
     test    eax, eax
     jz      .next
-    cmp     eax, MOB_MERCHANT
-    jae     .next                       ; villagers and the boss are re-created from the sites
+    cmp     eax, MOB_BOSS
+    jae     .next                       ; folk and the boss are re-created from the sites
     cmp     dword [rsi + MOB.elite], 0
     je      .plain
     or      eax, MOB_ELITE_BIT

@@ -1076,9 +1076,7 @@ combat_hit_mob:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .refused
-    cmp     eax, MOB_MERCHANT
-    je      .refused
-    cmp     eax, MOB_ELDER
+    cmp     eax, MOB_FOLK
     je      .refused
     mov     r12d, edi
     mov     r13d, esi

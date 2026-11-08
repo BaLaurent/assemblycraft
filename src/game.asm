@@ -25,7 +25,7 @@ extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
 extern mobs, mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
-extern mobs_save, mobs_load, mobs_shift, mobs_remove_box
+extern mobs_save, mobs_load, mobs_shift, mobs_remove_box, folk_interact
 extern audio_play, audio_play_at, rng_next, str_copy, input_captured
 extern drops_clear, drops_spawn, drops_step, drops_shift, drops_remove_box, hand_swing
 extern arrows_clear, arrows_step, arrows_spawn, arrows_shift
@@ -1080,9 +1080,7 @@ want_guard:
     imul    ecx, ebx, MOB_size
     lea     rdx, [mobs]
     mov     ecx, [rdx + rcx + MOB.type]
-    cmp     ecx, MOB_MERCHANT
-    je      .no
-    cmp     ecx, MOB_ELDER
+    cmp     ecx, MOB_FOLK
     je      .no
 .block:
     cmp     dword [boat_hit], 0
@@ -1480,29 +1478,27 @@ game_frame:
     call    combat_set_guard
 .combat_done:
 
-    ; 6. buttons, in ownership order: a merchant or elder (talk), a held firearm (section
-    ; 12), a mage's staff (bolts), then melee on the targeted mob. The first three never
-    ; punch, dig, use or place.
+    ; 6. buttons, in ownership order: a folk (talk), a held firearm (section 12), a mage's
+    ; staff (bolts), then melee on the targeted mob. The first three never punch, dig, use or
+    ; place.
     mov     eax, [rsp + F_MOB]
     test    eax, eax
     js      .not_npc
     imul    eax, eax, MOB_size
     lea     rcx, [mobs]
-    mov     eax, [rcx + rax + MOB.type]
-    mov     ecx, ST_TRADE
-    cmp     eax, MOB_MERCHANT
-    je      .npc
-    mov     ecx, ST_DIALOG
-    cmp     eax, MOB_ELDER
+    cmp     dword [rcx + rax + MOB.type], MOB_FOLK
     jne     .not_npc
-.npc:
-    mov     dword [game_heavy_s], __float32__(-1.0)     ; no heavy attack on a villager
+    mov     dword [game_heavy_s], __float32__(-1.0)     ; no heavy attack on folk
     mov     dword [game_break_progress], 0
     mov     dword [break_cooldown], 0
     mov     dword [brk_y], -1
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
     je      .pick
-    mov     [game_open_screen], ecx
+    mov     edi, [rsp + F_MOB]
+    call    folk_interact
+    test    eax, eax
+    jz      .pick
+    mov     [game_open_screen], eax
     mov     eax, [rsp + F_MOB]
     mov     [game_open_npc], eax
     jmp     .pick

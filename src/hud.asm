@@ -1370,9 +1370,7 @@ hud_mobs:
     mulss   xmm2, xmm2
     addss   xmm0, xmm1
     addss   xmm0, xmm2                  ; squared distance to the player
-    cmp     r13d, MOB_MERCHANT
-    je      .villager
-    cmp     r13d, MOB_ELDER
+    cmp     r13d, MOB_FOLK
     je      .villager
     cmp     dword [rbx + MOB.bar], 0
     jg      .bar
@@ -1520,7 +1518,7 @@ hud_mobs:
     jz      .next
     lea     r14, [s_merchant]
     lea     rax, [s_elder]
-    cmp     r13d, MOB_ELDER
+    cmp     byte [rbx + MOB.role], ROLE_LEADER
     cmove   r14, rax
     mov     rdi, r14
     mov     esi, [rsp + 16]

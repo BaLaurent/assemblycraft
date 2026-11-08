@@ -1152,8 +1152,8 @@ test_damage_pipeline:
     HM      99, SRC_MELEE, 0, f3                       ; no such slot
     test    eax, eax
     jnz     .fail
-    FRESH   MOB_MERCHANT
-    HM      0, SRC_MELEE, 0, f3                        ; a villager cannot be hurt
+    FRESH   MOB_FOLK
+    HM      0, SRC_MELEE, 0, f3                        ; folk cannot be hurt
     test    eax, eax
     jnz     .fail
     CHK     [rbx + MOB.health], 100

@@ -1,5 +1,5 @@
-; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, the villagers
-; (merchant, elder) and the Fallen King boss, drawn with the state render_world leaves set up:
+; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, faction folk
+; and the Fallen King boss, drawn with the state render_world leaves set up:
 ; atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog,
 ; alpha test, face culling.
 ; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
@@ -145,9 +145,8 @@ models:                                 ; indexed by type - 1: parts, part count
     dq skeleton_parts, SKELETON_PARTS
     dq spider_parts, SPIDER_PARTS
     dq chicken_parts, CHICKEN_PARTS
-    dq merchant_parts, VILLAGER_PARTS
-    dq elder_parts, VILLAGER_PARTS
     dq boss_parts, BOSS_PARTS
+    dq merchant_parts, VILLAGER_PARTS   ; folk; a leader wears elder_parts
 
 section .text
 
@@ -315,6 +314,11 @@ mobs_render:
     lea     rax, [models]
     mov     r14, [rax + r13]
     mov     r15d, [rax + r13 + 8]
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .part
+    cmp     byte [rbx + MOB.role], ROLE_LEADER
+    jne     .part
+    lea     r14, [elder_parts]
 .part:
     movss   xmm0, [r14 + P_SWING]
     xorps   xmm1, xmm1
