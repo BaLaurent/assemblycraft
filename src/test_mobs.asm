@@ -1752,15 +1752,23 @@ test_mob_levels_and_scaling:
     ucomiss xmm0, [k_3_89]
     jae     .fail
     mov     dword [hdr + WORLDHDR.mobs + MOBSAVE.type], MOB_ZOMBIE | MOB_ELITE_BIT
-    call    mobs_clear                  ; an older record: the player's level 10, no affix
+    call    mobs_clear                  ; an older record: the player's level 10, one affix rolled
     lea     rdi, [hdr]
     call    mobs_load
     cmp     dword [mobs + MOB.level], 10
     jne     .fail
-    cmp     dword [mobs + MOB.affix], 0
+    mov     eax, [mobs + MOB.affix]
+    test    eax, eax
+    jz      .fail                       ; a pre-0.8 elite rolls its affix on load...
+    lea     ecx, [rax - 1]
+    test    eax, ecx
+    jnz     .fail                       ; ...one, below level 15
+    mov     ecx, [mobs + MOB.max_health]
+    cmp     ecx, 118
+    je      .old_max
+    cmp     ecx, 176                    ; JUGGERNAUT: round(20 * 2.35 * 2.5 * 1.5)
     jne     .fail
-    cmp     dword [mobs + MOB.max_health], 118
-    jne     .fail
+.old_max:
     cmp     dword [mobs + MOB.health], 100
     jne     .fail
     mov     dword [hdr + WORLDHDR.mobs + MOBSAVE.type], MOB_ZOMBIE
@@ -1872,6 +1880,28 @@ test_elite_affixes:
     call    elite_windup
     cmp     eax, 16
     jne     .fail
+    call    mobs_clear                  ; raised to level 16 (a dungeon elite), one affix becomes two
+    SPAWN   MOB_ZOMBIE, k_8_5, k_8_5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, eax
+    call    mob_ptr
+    mov     r12, rax
+    mov     dword [r12 + MOB.elite], 1
+    mov     dword [r12 + MOB.affix], AFX_ARMORED
+    mov     edi, ebx
+    mov     esi, 16
+    call    mob_set_level
+    mov     eax, [r12 + MOB.affix]
+    test    eax, AFX_ARMORED
+    jz      .fail                       ; it keeps the first one
+    lea     ecx, [rax - 1]
+    and     ecx, eax                    ; drop the lowest bit: one bit must remain
+    jz      .fail
+    lea     edx, [rcx - 1]
+    test    ecx, edx
+    jnz     .fail                       ; and only one
     call    mobs_clear                  ; JUGGERNAUT: 20 * 2.5 * 1.5 = 75 health, no knockback
     SPAWN   MOB_ZOMBIE, k_8_5, k_8_5
     test    eax, eax

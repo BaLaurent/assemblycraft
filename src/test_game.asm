@@ -1,4 +1,5 @@
-; test_game.asm - whole-session save/load round trip.
+; test_game.asm - whole-session save/load round trip (gear-granted health survives a load; a new
+; world's animals take the new character's level, not the previous one's).
 %include "common.inc"
 default rel
 
@@ -6,7 +7,7 @@ global test_game_save_load_roundtrip
 
 extern world_clear, world_header, rng_seed, game_new, game_save, game_load
 extern game_time, game_mode, surv, inv, mob_count_type, str_eq, file_unlink
-extern world_set, cont_create, cont_at
+extern world_set, cont_create, cont_at, rpg_state, mobs
 
 section .rodata
 path:     db "/tmp/assemblycraft-selftest-game.acw", 0
@@ -27,7 +28,7 @@ test_game_save_load_roundtrip:
     mov     esi, MODE_SURVIVAL
     lea     rdx, [name_rt]
     call    game_new
-    mov     dword [surv + SURVIVAL.health], 13
+    mov     dword [surv + SURVIVAL.health], 45      ; above the bare 20: the amulet's +33 holds it
     mov     dword [surv + SURVIVAL.food], 9
     lea     rax, [inv + INVENTORY.slots + 3*4]
     mov     byte [rax + ITEMSTACK.id], STONE_PICKAXE
@@ -44,7 +45,7 @@ test_game_save_load_roundtrip:
     lea     rax, [inv + INVENTORY.jewelry + 2*4]    ; ... an amulet in the third cell ...
     mov     byte [rax + ITEMSTACK.id], AMULET
     mov     byte [rax + ITEMSTACK.count], 1
-    mov     word [rax + ITEMSTACK.dmg], 0x4403
+    mov     word [rax + ITEMSTACK.dmg], 0xFC01      ; epic, tier 15, seed 1: +33 max health
     lea     rax, [inv + INVENTORY.jewelry + 1*4]    ; ... and a sword in the second, which a load must drop
     mov     byte [rax + ITEMSTACK.id], IRON_SWORD
     mov     byte [rax + ITEMSTACK.count], 1
@@ -70,15 +71,27 @@ test_game_save_load_roundtrip:
     call    game_save
     test    eax, eax
     jnz     .fail
+    mov     byte [rpg_state + RPGSAVE.level], 30    ; a strong character in the session...
     mov     edi, 1
     mov     esi, MODE_CREATIVE
     lea     rdx, [name_x]
     call    game_new
+    lea     rax, [mobs]                             ; ...does not leak its level into a new world
+    mov     ecx, MAX_MOBS
+.new_mob:
+    cmp     dword [rax + MOB.type], MOB_NONE
+    je      .new_next
+    cmp     dword [rax + MOB.level], 1
+    jne     .fail
+.new_next:
+    add     rax, MOB_size
+    dec     ecx
+    jnz     .new_mob
     lea     rdi, [path]
     call    game_load
     test    eax, eax
     jnz     .fail
-    cmp     dword [surv + SURVIVAL.health], 13
+    cmp     dword [surv + SURVIVAL.health], 45
     jne     .fail
     cmp     dword [surv + SURVIVAL.food], 9
     jne     .fail
@@ -106,7 +119,7 @@ test_game_save_load_roundtrip:
     lea     rax, [inv + INVENTORY.jewelry + 2*4]
     cmp     byte [rax + ITEMSTACK.id], AMULET
     jne     .fail
-    cmp     word [rax + ITEMSTACK.dmg], 0x4403
+    cmp     word [rax + ITEMSTACK.dmg], 0xFC01
     jne     .fail
     lea     rax, [inv + INVENTORY.jewelry + 1*4]
     cmp     byte [rax + ITEMSTACK.count], 0

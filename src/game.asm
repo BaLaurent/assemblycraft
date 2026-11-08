@@ -175,8 +175,8 @@ game_new:
     call    fire_clear
     call    fx_clear
     mov     qword [inv_container], 0
+    call    rpg_reset                   ; first: new mobs take the (fresh) character's level
     call    mobs_populate
-    call    rpg_reset
     call    structures_reset
     call    structures_spawn_npcs
     call    reset_session
@@ -228,36 +228,6 @@ game_load:
     jne     .fly_ok
     mov     dword [player + BODY.flying], 0
 .fly_ok:
-    ; RPG progression (sets surv_max_health), then the survival stats clamped to it
-    mov     rdi, rbx
-    call    rpg_load
-    call    survival_reset
-    mov     eax, [rbx + WORLDHDR.health]
-    xor     ecx, ecx
-    test    eax, eax
-    cmovs   eax, ecx
-    mov     ecx, [surv_max_health]
-    cmp     eax, ecx
-    cmova   eax, ecx
-    mov     [surv + SURVIVAL.health], eax
-    mov     eax, [rbx + WORLDHDR.food]
-    xor     ecx, ecx
-    test    eax, eax
-    cmovs   eax, ecx
-    mov     ecx, 20
-    cmp     eax, ecx
-    cmova   eax, ecx
-    mov     [surv + SURVIVAL.food], eax
-    mov     eax, [rbx + WORLDHDR.saturation]
-    mov     [surv + SURVIVAL.saturation], eax
-    mov     eax, [rbx + WORLDHDR.exhaustion]
-    mov     [surv + SURVIVAL.exhaustion], eax
-    cmp     dword [surv + SURVIVAL.health], 0
-    jne     .alive
-    call    survival_reset
-    call    player_spawn
-    call    rpg_on_death                ; died, then quit from the death screen: same XP loss
-.alive:
     ; hotbar selection
     mov     eax, [rbx + WORLDHDR.sel]
     xor     ecx, ecx
@@ -325,6 +295,37 @@ game_load:
     inc     ecx
     cmp     ecx, 3
     jb      .jewel
+    ; RPG progression (sets surv_max_health with the gear just restored), then the survival
+    ; stats clamped to it
+    mov     rdi, rbx
+    call    rpg_load
+    call    survival_reset
+    mov     eax, [rbx + WORLDHDR.health]
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     ecx, [surv_max_health]
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [surv + SURVIVAL.health], eax
+    mov     eax, [rbx + WORLDHDR.food]
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [surv + SURVIVAL.food], eax
+    mov     eax, [rbx + WORLDHDR.saturation]
+    mov     [surv + SURVIVAL.saturation], eax
+    mov     eax, [rbx + WORLDHDR.exhaustion]
+    mov     [surv + SURVIVAL.exhaustion], eax
+    cmp     dword [surv + SURVIVAL.health], 0
+    jne     .alive
+    call    survival_reset
+    call    player_spawn
+    call    rpg_on_death                ; died, then quit from the death screen: same XP loss
+.alive:
     call    conts_validate
     call    fire_rebuild                ; the table of the FIRE blocks just loaded
     mov     rdi, rbx

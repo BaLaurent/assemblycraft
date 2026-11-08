@@ -363,7 +363,9 @@ mob_scale:
     ret
 
 ; mob_set_level(edi idx, esi level): the mob in slot idx becomes level `level` (1..255) and gets
-; that level's health, full (mob_scale); an empty or bad slot is left alone
+; that level's health, full (mob_scale); an empty or bad slot is left alone. An elite raised to
+; ELITE_TWO_AFFIXES or more with a single affix rolls its second one (a distinct kind), as if it had
+; spawned at that level (dungeon elites spawn at the player's level, then get the dungeon's).
 mob_set_level:
     cmp     edi, MAX_MOBS
     jae     .ret
@@ -379,7 +381,30 @@ mob_set_level:
     cmp     esi, eax
     cmovg   esi, eax
     mov     [rdi + MOB.level], esi
-    jmp     mob_scale
+    cmp     dword [rdi + MOB.elite], 0
+    je      mob_scale
+    cmp     esi, ELITE_TWO_AFFIXES
+    jb      mob_scale
+    mov     eax, [rdi + MOB.affix]
+    test    eax, eax
+    jz      mob_scale
+    lea     ecx, [rax - 1]
+    test    eax, ecx
+    jnz     mob_scale                   ; already two (or more)
+    push    rdi
+.roll:
+    call    rng_next                    ; a kind 0..7 the mob does not have yet
+    and     eax, NUM_AFFIX_KINDS - 1
+    mov     ecx, eax
+    mov     eax, 1
+    shl     eax, cl
+    mov     rdi, [rsp]
+    test    [rdi + MOB.affix], eax
+    jnz     .roll
+    or      [rdi + MOB.affix], eax
+    call    elite_speed                 ; SWIFT may have been rolled
+    pop     rdi
+    jmp     mob_scale                   ; JUGGERNAUT may have been rolled
 .ret:
     ret
 
@@ -2710,8 +2735,8 @@ mobs_save:
 ; mobs_load(rdi WORLDHDR*): clear, then respawn every saved record that describes a known mob
 ; type (low byte 1..6, bit 8 = elite, bits 16..23 = level, bits 24..31 = affixes) inside the
 ; world. A level of 0 (an older save) leaves the player's level mob_spawn gave; an elite takes
-; its saved affixes; the saved health clamps to 1..the maximum of that level, elite state and
-; affixes.
+; its saved affixes (an elite saved before 0.8 has none: it rolls them, make_elite); the saved
+; health clamps to 1..the maximum of that level, elite state and affixes.
 mobs_load:
     push    rbp
     mov     rbp, rsp
@@ -2760,6 +2785,12 @@ mobs_load:
     mov     dword [r14 + MOB.elite], 1
     shr     eax, MS_AFFIX_SHIFT
     mov     [r14 + MOB.affix], eax
+    test    eax, eax
+    jnz     .affixed
+    mov     rdx, r14                    ; a pre-0.8 elite: roll its affixes now
+    call    make_elite
+    jmp     .plain
+.affixed:
     mov     rdi, r14
     call    elite_speed
 .plain:

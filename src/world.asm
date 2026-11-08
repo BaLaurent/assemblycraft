@@ -7,7 +7,7 @@ global world_header, blocks, chunk_dirty
 global world_get, world_set, world_is_solid, world_is_opaque, world_top_y
 global world_clear, world_mark_all_dirty, world_mark_cell_dirty, world_save, world_load
 
-extern block_flags, block_light, file_read, file_write_atomic, item_gear
+extern block_flags, block_light, file_read, file_write_atomic, item_gear, item_legendary
 extern light_mark, light_fill_sky, light_compute_all
 
 section .rodata
@@ -505,7 +505,9 @@ migrate_gear_v4:
     jnz     .cont
     ret
 
-; gear_unroll(rdi ITEMSTACK*): zero dmg when the id is gear. Leaf, clobbers eax, r8.
+; gear_unroll(rdi ITEMSTACK*): reset the dmg word of a gear id: 0 (Common) for plain gear; a
+; legendary gets the roll every legendary carries (RAR_RARE bits, tier 0, seed 1), so its four
+; affixes appear. Leaf, clobbers eax, r8.
 gear_unroll:
     movzx   eax, byte [rdi + ITEMSTACK.id]
     cmp     eax, NUM_ITEMS
@@ -513,6 +515,10 @@ gear_unroll:
     lea     r8, [item_gear]
     cmp     byte [r8 + rax], GK_NONE
     je      .ret
+    lea     r8, [item_legendary]
+    cmp     byte [r8 + rax], LP_NONE
     mov     word [rdi + ITEMSTACK.dmg], 0
+    je      .ret
+    mov     word [rdi + ITEMSTACK.dmg], (RAR_RARE << GEAR_RARITY_SHIFT) | 1
 .ret:
     ret

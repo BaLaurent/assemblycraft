@@ -452,6 +452,7 @@ test_world_load_v4_converts:
     mov     [rax], rcx
     mov     dword [rax + WORLDHDR.inventory], IRON_SWORD | (1 << 8) | (37 << 16)
     mov     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
+    mov     dword [rax + WORLDHDR.inventory + 8], KINGS_BLADE | (1 << 8) | (50 << 16)
     mov     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8) | (3 << 16)
     lea     rax, [world_header + WORLDHDR.containers]
     mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
@@ -479,6 +480,8 @@ test_world_load_v4_converts:
     jne     .fail
     cmp     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
     jne     .fail
+    cmp     dword [rax + WORLDHDR.inventory + 8], KINGS_BLADE | (1 << 8) | (((RAR_RARE << GEAR_RARITY_SHIFT) | 1) << 16)
+    jne     .fail                       ; an old legendary rolls like a new one: rare bits, 4 affixes
     cmp     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8)
     jne     .fail
     cmp     dword [rax + WORLDHDR.containers + CONTAINER.slots], BOW | (1 << 8)
