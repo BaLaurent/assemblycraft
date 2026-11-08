@@ -19,6 +19,7 @@ global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 extern body_init, body_step, body_in_water, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
 extern world_top_y, world_get, world_column_ready, world_header, raycast, light_get, block_flags
+extern world_origin_x, world_origin_z
 extern sky_brightness, sky_is_night
 extern surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
@@ -2287,8 +2288,61 @@ mobs_spawn_tick:
     pop     rbp
     ret
 
+; mob_forget_far(rdi mob): the mob stands in a column that is not ready. When that column lies more
+; than R + 2 columns from the player's (Chebyshev, absolute chunk coordinates; R = settings.render_dist
+; clamped to 2..MAX_RENDER_DIST, so R + 2 is the radius beyond which the stream unloads) nothing will
+; ever load it: the mob is removed (MOB_NONE).
+mob_forget_far:
+    movss   xmm0, [rdi + BODY.x]
+    movss   xmm1, [player + BODY.x]
+    roundss xmm0, xmm0, 9
+    roundss xmm1, xmm1, 9
+    cvttss2si eax, xmm0
+    cvttss2si ecx, xmm1
+    add     eax, [world_origin_x]
+    add     ecx, [world_origin_x]
+    sar     eax, 4
+    sar     ecx, 4
+    sub     eax, ecx
+    mov     ecx, eax
+    sar     ecx, 31
+    xor     eax, ecx
+    sub     eax, ecx                    ; |columns apart on x|
+    movss   xmm0, [rdi + BODY.z]
+    movss   xmm1, [player + BODY.z]
+    roundss xmm0, xmm0, 9
+    roundss xmm1, xmm1, 9
+    cvttss2si edx, xmm0
+    cvttss2si ecx, xmm1
+    add     edx, [world_origin_z]
+    add     ecx, [world_origin_z]
+    sar     edx, 4
+    sar     ecx, 4
+    sub     edx, ecx
+    mov     ecx, edx
+    sar     ecx, 31
+    xor     edx, ecx
+    sub     edx, ecx                    ; |columns apart on z|
+    cmp     eax, edx
+    cmovb   eax, edx                    ; the larger one (unsigned: a wild coordinate counts as far)
+    mov     ecx, [settings + SETTINGS.render_dist]
+    mov     edx, 2
+    cmp     ecx, edx
+    cmovl   ecx, edx
+    mov     edx, MAX_RENDER_DIST
+    cmp     ecx, edx
+    cmovg   ecx, edx
+    add     ecx, 2                      ; the keep radius K
+    cmp     eax, ecx
+    jbe     .keep
+    mov     dword [rdi + MOB.type], MOB_NONE
+.keep:
+    ret
+
 ; mobs_step(): one fixed 1/60 s step for every mob, then the spawner. A mob whose column is not
-; ready (not generated yet, or not lit) stands frozen: no AI, no physics, no timers.
+; ready (not generated yet, or not lit) stands frozen: no AI, no physics, no timers. A frozen mob
+; more than render_dist + 2 columns from the player's column is removed (mob_forget_far): that column
+; will not load, and the mob would count against the spawn caps for good.
 mobs_step:
     push    rbp
     mov     rbp, rsp
@@ -2307,7 +2361,11 @@ mobs_step:
     cvttss2si esi, xmm0
     call    world_column_ready
     test    eax, eax
-    jz      .next
+    jnz     .live
+    mov     rdi, rbx
+    call    mob_forget_far
+    jmp     .next
+.live:
     mov     rdi, rbx
     call    mob_update
 .next:

@@ -9,6 +9,7 @@ global test_swim_physics, test_boats
 
 extern player, body_init, body_step, body_intersects_block
 extern raycast, world_clear, world_set
+extern world_get
 extern body_in_water, player_eye_in_water, survival_reset, survival_land, surv, game_mode
 extern drops, drops_clear, banner_text, str_eq
 extern boats, boat_riding, boats_clear, boats_step, boats_place, boats_raycast, boats_mount
@@ -51,6 +52,19 @@ k_12_45: dd 12.45
 k_12_55: dd 12.55
 k_16_0:  dd 16.0
 k_30_0:  dd 30.0
+k_5_385: dd 5.385
+k_5_395: dd 5.395
+k_5_4005: dd 5.4005
+k_12_385: dd 12.385
+k_12_395: dd 12.395
+k_12_605: dd 12.605
+k_12_615: dd 12.615
+k_7_39:  dd 7.39
+k_7_4005: dd 7.4005
+k_10_0:  dd 10.0
+k_1_62:  dd 1.62
+k_2_05:  dd 2.05
+k_0_5:   dd 0.5
 s_too_many: db "Too many boats", 0
 
 section .bss
@@ -82,6 +96,15 @@ section .text
     jb      .fail
     ucomiss xmm0, [%3]
     ja      .fail
+%endmacro
+
+; BLOCK x, y, z, id: world_set
+%macro BLOCK 4
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, %3
+    mov     ecx, %4
+    call    world_set
 %endmacro
 
 ; ---- helpers -----------------------------------------------------------------
@@ -730,6 +753,104 @@ count_boat_drops:
     jnz     .l
     ret
 
+; place_from_shore() -> eax: boats_place from the shore of the pool: eye (3.5, 11.62, 12.5), direction
+; (0.949, -0.316, 0), which meets the water cell (5, 10, 12)
+place_from_shore:
+    sub     rsp, 40
+    SETF    [rsp + 0], 3.5
+    SETF    [rsp + 4], 11.62
+    SETF    [rsp + 8], 12.5
+    SETF    [rsp + 16], 0.9486833
+    SETF    [rsp + 20], -0.3162278
+    SETF    [rsp + 24], 0.0
+    lea     rdi, [rsp + 0]
+    lea     rsi, [rsp + 16]
+    call    boats_place
+    add     rsp, 40
+    ret
+
+; put_wall_x(edi x, esi id at y 10, edx id at y 11): the cells (x, 10..11, 10..14) take those ids
+put_wall_x:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    mov     ebx, 10                     ; z
+.z:
+    mov     edi, r12d
+    mov     esi, 10
+    mov     edx, ebx
+    mov     ecx, r13d
+    call    world_set
+    mov     edi, r12d
+    mov     esi, 11
+    mov     edx, ebx
+    mov     ecx, r14d
+    call    world_set
+    inc     ebx
+    cmp     ebx, 14
+    jbe     .z
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; put_ceiling(edi y, esi id): the cells (8..12, y, 10..14) take that id
+put_ceiling:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, 10                    ; z
+.z:
+    mov     ebx, 8                      ; x
+.x:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r14d
+    mov     ecx, r13d
+    call    world_set
+    inc     ebx
+    cmp     ebx, 12
+    jbe     .x
+    inc     r14d
+    cmp     r14d, 14
+    jbe     .z
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; eye_cell() -> eax the block id in the cell that holds the player's eye (feet + 1.62)
+eye_cell:
+    sub     rsp, 8
+    movss   xmm0, [player + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si edi, xmm0
+    movss   xmm0, [player + BODY.y]
+    addss   xmm0, [k_1_62]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    movss   xmm0, [player + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si edx, xmm0
+    call    world_get
+    add     rsp, 8
+    ret
+
 ; PLACE_BOAT: boats_place from the shore: eye (3.5, 11.62, 12.5), direction (0.949, -0.316, 0) -> eax
 %macro PLACE_BOAT 0
     lea     rdi, [rsp + 0]
@@ -743,7 +864,12 @@ count_boat_drops:
 ; 3.5..5 blocks along the heading (east) at the surface (y = 10.625 +- 0.1) with the rider in it;
 ; sneak steps out 0.6 above it. Breaking it leaves one BOAT item in Survival (none in Creative). Save and
 ; load keep x, y, z, yaw and skip a NaN / far record. A shift moves it, and a boat outside the loaded
-; columns does not move. A full table refuses with the banner.
+; columns does not move. A full table refuses with the banner. A boat put against a solid block (at
+; either level of the hull) is nudged 0.11 away from it, so that driven at it, it stops there instead
+; of passing through; a block two levels up is clear of it; hemmed in by solid blocks on both sides
+; along x or along z it is not put at all. A boat is 2.05 high while it is ridden (a ceiling one block
+; over the water stops it, so the rider's head never enters the ceiling; one two blocks over lets it
+; by) and 0.5 again after he steps out; the ray test sees only the 0.5 high hull.
 ; Frame: eye[3] @0, dir[3] @16, caller's game_mode @32, x0 @36.
 test_boats:
     push    rbp
@@ -831,6 +957,7 @@ test_boats:
     mov     eax, [boats + BODY.z]
     cmp     eax, [player + BODY.z]
     jne     .fail
+    FEQ     [boats + BODY.height], k_2_05   ; his head is part of the boat's box while he rides
     mov     dword [inp + INPUT.fwd], 0  ; sneak: out, 0.6 above the boat
     mov     dword [inp + INPUT.down], 1
     lea     rdi, [inp]
@@ -842,6 +969,7 @@ test_boats:
     ucomiss xmm0, [player + BODY.y]
     jne     .fail
     jp      .fail
+    FEQ     [boats + BODY.height], k_0_5    ; and the box is the hull's again once he is out
     mov     dword [inp + INPUT.down], 0
     mov     dword [game_mode], MODE_SURVIVAL
     call    drops_clear
@@ -890,13 +1018,13 @@ test_boats:
     FEQ     [boats + BODY.yaw], k_123_5
     cmp     dword [boat_riding], 0
     jne     .fail
-    mov     dword [hdr_buf + WORLDHDR.boat_count], 3    ; record 1: NaN x; record 2: 70000 away in z
+    mov     dword [hdr_buf + WORLDHDR.boat_count], 3    ; record 1: NaN x; record 2: 2e7 away in z
     mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE_size + BOATSAVE.x], 0x7FC00000
     mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE_size + BOATSAVE.y], __float32__(10.0)
     mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE_size + BOATSAVE.z], __float32__(12.5)
     mov     dword [hdr_buf + WORLDHDR.boats + 2 * BOATSAVE_size + BOATSAVE.x], __float32__(5.5)
     mov     dword [hdr_buf + WORLDHDR.boats + 2 * BOATSAVE_size + BOATSAVE.y], __float32__(10.0)
-    mov     dword [hdr_buf + WORLDHDR.boats + 2 * BOATSAVE_size + BOATSAVE.z], __float32__(70000.0)
+    mov     dword [hdr_buf + WORLDHDR.boats + 2 * BOATSAVE_size + BOATSAVE.z], __float32__(20000000.0)
     lea     rdi, [hdr_buf]
     call    boats_load
     cmp     dword [boats + BOATENT.used], 1
@@ -915,6 +1043,16 @@ test_boats:
     dec     ebx
     jnz     .frozen
     FEQ     [boats + BODY.y], k_10_625
+    mov     dword [hdr_buf + WORLDHDR.boat_count], 1    ; a boat moored 70000 blocks away (left
+    mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE.x], __float32__(5.5) ; behind by the
+    mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE.y], __float32__(10.0) ; rebases) loads
+    mov     dword [hdr_buf + WORLDHDR.boats + BOATSAVE.z], __float32__(70000.0)
+    lea     rdi, [hdr_buf]
+    call    boats_load
+    cmp     dword [boats + BOATENT.used], 1
+    jne     .fail
+    cmp     dword [boats + BODY.z], __float32__(70000.0)
+    jne     .fail
     call    boats_clear                 ; a full table refuses, with the banner
     mov     ecx, MAX_BOATS
     lea     rax, [boats]
@@ -932,6 +1070,168 @@ test_boats:
     call    str_eq
     test    eax, eax
     jz      .fail
+    ; a boat put beside a wall: the 1.2 wide hull overlaps the cell next to its water cell by 0.1, and
+    ; a body moves through a block it already overlaps. A wall at x = 6 (y 10, 11; z 10..14) beside the
+    ; water cell (5, 10, 12) nudges the boat to x = 5.39; driven east it stops at the wall
+    call    boats_clear
+    mov     edi, 6
+    mov     esi, STONE
+    mov     edx, STONE
+    call    put_wall_x
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    FRANGE  [boats + BODY.x], k_5_385, k_5_395
+    FEQ     [boats + BODY.z], k_12_5
+    xor     edi, edi
+    call    boats_mount
+    mov     dword [inp + INPUT.fwd], 1
+    mov     ebx, 120
+.wall_drive:
+    lea     rdi, [inp]
+    call    boats_step
+    dec     ebx
+    jnz     .wall_drive
+    FRANGE  [boats + BODY.x], k_5_385, k_5_4005
+    mov     dword [inp + INPUT.fwd], 0
+    call    boats_clear
+    mov     edi, 6                      ; the wall goes; a block at the upper level of the hull only ...
+    mov     esi, WATER
+    mov     edx, AIR
+    call    put_wall_x
+    BLOCK   6, 11, 12, STONE
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    FRANGE  [boats + BODY.x], k_5_385, k_5_395
+    call    boats_clear
+    BLOCK   6, 11, 12, AIR
+    BLOCK   6, 12, 12, STONE            ; ... but one two levels up is clear of the hull
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    FEQ     [boats + BODY.x], k_5_5
+    call    boats_clear
+    BLOCK   6, 12, 12, AIR
+    BLOCK   5, 10, 13, STONE            ; along z: solid at +z nudges towards -z, x stays
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    FRANGE  [boats + BODY.z], k_12_385, k_12_395
+    FEQ     [boats + BODY.x], k_5_5
+    call    boats_clear
+    BLOCK   5, 10, 13, WATER
+    BLOCK   5, 10, 11, STONE            ; solid at -z nudges towards +z
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    FRANGE  [boats + BODY.z], k_12_605, k_12_615
+    call    boats_clear
+    BLOCK   5, 10, 13, STONE            ; solid on both sides along z: no room for a boat
+    call    place_from_shore
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [boats + BOATENT.used], 0
+    jne     .fail
+    BLOCK   5, 10, 11, WATER
+    BLOCK   5, 10, 13, WATER
+    BLOCK   4, 10, 12, STONE            ; ... or along x
+    BLOCK   6, 10, 12, STONE
+    call    place_from_shore
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [boats + BOATENT.used], 0
+    jne     .fail
+    BLOCK   4, 10, 12, WATER
+    BLOCK   6, 10, 12, WATER
+    ; a rider's head needs room. A ceiling two blocks over the water (y = 13) lets boat and rider by
+    mov     edi, 13
+    mov     esi, STONE
+    call    put_ceiling
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    xor     edi, edi
+    call    boats_mount
+    lea     rdi, [inp]
+    call    boats_step                  ; (no key) the box is now 2.05 high ...
+    FEQ     [boats + BODY.height], k_2_05
+    SETF    [rsp + 0], 3.5              ; ... but a ray at y = 11.5 passes over the 0.5 high hull
+    SETF    [rsp + 4], 11.5
+    SETF    [rsp + 8], 12.5
+    SETF    [rsp + 16], 1.0
+    SETF    [rsp + 20], 0.0
+    SETF    [rsp + 24], 0.0
+    lea     rdi, [rsp + 0]
+    lea     rsi, [rsp + 16]
+    movss   xmm0, [k_reach]
+    call    boats_raycast
+    cmp     eax, -1
+    jne     .fail
+    SETF    [rsp + 4], 10.9             ; and one at y = 10.9 hits it
+    lea     rdi, [rsp + 0]
+    lea     rsi, [rsp + 16]
+    movss   xmm0, [k_reach]
+    call    boats_raycast
+    test    eax, eax
+    jnz     .fail
+    mov     dword [inp + INPUT.fwd], 1
+    mov     ebx, 120
+.roof13:
+    lea     rdi, [inp]
+    call    boats_step
+    dec     ebx
+    jnz     .roof13
+    FRANGE  [boats + BODY.x], k_10_0, k_30_0        ; it sailed on under the ceiling (from x = 8)
+    call    eye_cell
+    test    eax, eax
+    jnz     .fail                       ; his eye is in the air
+    mov     dword [inp + INPUT.fwd], 0
+    call    boats_clear
+    mov     edi, 13
+    xor     esi, esi
+    call    put_ceiling
+    ; one block over the water (y = 12, from x = 8) his head would be in it: the boat stops at its edge
+    mov     edi, 12
+    mov     esi, STONE
+    call    put_ceiling
+    call    place_from_shore
+    cmp     eax, 1
+    jne     .fail
+    xor     edi, edi
+    call    boats_mount
+    mov     dword [inp + INPUT.fwd], 1
+    mov     ebx, 120
+.roof12:
+    lea     rdi, [inp]
+    call    boats_step
+    dec     ebx
+    jnz     .roof12
+    FRANGE  [boats + BODY.x], k_7_39, k_7_4005      ; flush against it: 8 - 0.6 - 0.001
+    call    eye_cell
+    test    eax, eax
+    jnz     .fail
+    mov     dword [inp + INPUT.fwd], 0
+    mov     dword [inp + INPUT.down], 1             ; sneak: he steps out, the box is the hull's again
+    lea     rdi, [inp]
+    call    boats_step
+    mov     dword [inp + INPUT.down], 0
+    cmp     dword [boat_riding], 0
+    jne     .fail
+    FEQ     [boats + BODY.height], k_0_5
+    xor     edi, edi                            ; a rider who is let go of without a dismount (the
+    call    boats_mount                         ; boat's slot is still in use): the box follows
+    lea     rdi, [inp]
+    call    boats_step
+    FEQ     [boats + BODY.height], k_2_05
+    mov     dword [boat_riding], 0
+    lea     rdi, [inp]
+    call    boats_step
+    FEQ     [boats + BODY.height], k_0_5
+    call    boats_clear
+    mov     edi, 12
+    xor     esi, esi
+    call    put_ceiling
     xor     ebx, ebx
     jmp     .cleanup
 .fail:

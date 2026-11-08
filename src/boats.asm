@@ -1,6 +1,8 @@
 ; boats.asm - boats: put on water, floating, driven by the rider, broken into an item, kept in the
 ; world header (WORLDHDR.boats) and drawn as five plank boxes. All coordinates are local. A boat is
-; a BODY (y = bottom of its 1.2 x 0.5 x 1.2 box, yaw = heading) plus its speed along the heading.
+; a BODY (y = bottom of its 1.2 x 0.5 x 1.2 box, yaw = heading; the box is 2.05 high while the player
+; rides it, so that a ceiling over the water stops it before the rider's head meets it) plus its speed
+; along the heading.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -19,6 +21,8 @@ align 4
 c_dt:       dd 0.016666668              ; one fixed step, seconds
 c_half_w:   dd 0.6                      ; the box: 1.2 wide ...
 c_height:   dd 0.5                      ; ... 0.5 high
+c_ridden_h: dd 2.05                     ; a ridden boat collides as high as its rider reaches: his feet are
+                                        ; 0.25 above its bottom and he is 1.8 tall
 c_half:     dd 0.5                      ; the middle of a cell
 c_quarter:  dd 0.25                     ; the boat's light is sampled this far above its bottom
 c_rest:     dd 0.625                    ; a floating boat's bottom above the floor of its water cell
@@ -41,7 +45,9 @@ c_pop:      dd 0.3                      ; a broken boat's item appears this far 
 c_far:      dd 1.0e30                   ; "this axis never moves"
 c_one:      dd 1.0
 c_reach:    dd 5.0                      ; boats_place reaches 5 blocks
-c_bound:    dd 65536.0                  ; saved coordinates must lie inside +-this
+c_nudge:    dd 0.11                     ; boats_place keeps the hull this far from a solid block beside it
+c_bound:    dd 16777216.0               ; saved coordinates must lie inside +-2^24 (exact floats;
+                                        ; a moored boat may be left far behind by rebases)
 c_256:      dd 256.0
 c_abs_mask: dd 0x7FFFFFFF
 s_many:     db "Too many boats", 0
@@ -98,11 +104,13 @@ seat:
 
 ; boats_place(rdi eye float[3], rsi dir float[3]) -> eax 1 when a boat was put on the water
 ; Walks the cells the ray enters for up to 5 blocks. A solid block ends the search (0). The first
-; WATER cell whose cell above is not solid takes the boat: centred in the cell, bottom 0.625 over
-; the cell's floor, heading = the player's yaw. A full boat table says "Too many boats" (0). The
-; caller consumes the item in Survival.
+; WATER cell whose cell above is not solid takes the boat: centred in the cell (but for the nudge of
+; hull_nudge away from solid blocks beside it; with such blocks on both sides along x or z there is
+; no room: 0), bottom 0.625 over the cell's floor, heading = the player's yaw. A full boat table
+; says "Too many boats" (0). The caller consumes the item in Survival.
 ; r13 = eye, r14 = dir, r15d = cells left, rbx = the new boat, r12d = slot counter.
-; Frame: cell[3] @0, step[3] @16, tmax[3] @32, tdelta[3] @48.
+; Frame: cell[3] @0, step[3] @16, tmax[3] @32, tdelta[3] @48; once the cell is found the hull's
+; nudge: x @32, z @36.
 boats_place:
     push    rbp
     mov     rbp, rsp
@@ -204,6 +212,14 @@ boats_place:
     xor     eax, eax
     jmp     .out
 .found:
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    mov     edx, [rsp + 8]
+    call    hull_nudge                  ; solid blocks beside the cell push the hull away from them
+    test    eax, eax
+    jz      .none                       ; or leave no room for it
+    movss   [rsp + 32], xmm0
+    movss   [rsp + 36], xmm1
     lea     rbx, [boats]
     xor     r12d, r12d
 .slot:
@@ -226,12 +242,14 @@ boats_place:
     call    body_init
     cvtsi2ss xmm0, dword [rsp]
     addss   xmm0, [c_half]
+    addss   xmm0, [rsp + 32]
     movss   [rbx + BODY.x], xmm0
     cvtsi2ss xmm0, dword [rsp + 4]
     addss   xmm0, [c_rest]
     movss   [rbx + BODY.y], xmm0
     cvtsi2ss xmm0, dword [rsp + 8]
     addss   xmm0, [c_half]
+    addss   xmm0, [rsp + 36]
     movss   [rbx + BODY.z], xmm0
     mov     eax, [player + BODY.yaw]
     mov     [rbx + BODY.yaw], eax
@@ -248,6 +266,82 @@ boats_place:
     pop     rbp
     ret
 
+%macro HULL_PROBE 4                     ; dx, dy, dz, bit
+    lea     edi, [rbx + %1]
+    lea     esi, [r12 + %2]
+    lea     edx, [r13 + %3]
+    call    world_is_solid
+    test    eax, eax
+    jz      %%free
+    or      r15d, %4
+%%free:
+%endmacro
+
+; hull_nudge(edi x, esi y, edx z) -> eax 1 with xmm0 = x offset and xmm1 = z offset (floats), or eax 0:
+; no room. (x, y, z) is the water cell a boat is about to be put in. The hull is 1.2 wide: centred in
+; the 1-wide cell it overlaps the cells beside it by 0.1, and move_axis lets a body move through a block
+; it already overlaps, so a boat put against a wall could be driven through it. A solid cell beside the
+; water cell at the hull's two levels (y and y + 1) therefore pushes the hull 0.11 the other way (0.01
+; of clearance); solid cells on both sides along x, or along z, leave no room.
+; ebx, r12d, r13d = x, y, z; r15d = the solid sides found: bit 0 -x, 1 +x, 2 -z, 3 +z.
+hull_nudge:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r15
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    xor     r15d, r15d
+    HULL_PROBE -1, 0, 0, 1
+    HULL_PROBE -1, 1, 0, 1
+    HULL_PROBE 1, 0, 0, 2
+    HULL_PROBE 1, 1, 0, 2
+    HULL_PROBE 0, 0, -1, 4
+    HULL_PROBE 0, 1, -1, 4
+    HULL_PROBE 0, 0, 1, 8
+    HULL_PROBE 0, 1, 1, 8
+    mov     eax, r15d
+    and     eax, 3
+    cmp     eax, 3
+    je      .none                       ; solid on both sides along x ...
+    mov     eax, r15d
+    shr     eax, 2
+    cmp     eax, 3
+    je      .none                       ; ... or along z
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    movss   xmm2, [c_nudge]
+    test    r15d, 1
+    jz      .no_xm
+    addss   xmm0, xmm2                  ; solid at -x: towards +x
+.no_xm:
+    test    r15d, 2
+    jz      .no_xp
+    subss   xmm0, xmm2
+.no_xp:
+    test    r15d, 4
+    jz      .no_zm
+    addss   xmm1, xmm2
+.no_zm:
+    test    r15d, 8
+    jz      .no_zp
+    subss   xmm1, xmm2
+.no_zp:
+    mov     eax, 1
+    jmp     .out
+.none:
+    xor     eax, eax
+.out:
+    pop     r15
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; boats_step(rdi INPUT*): one fixed step of every boat whose column is lit (the others are frozen).
 ; Floating (the cell at y + 0.3 or at y is WATER): vy = clamp((highest water cell within one of
 ; floor(y), + 0.625 - y) * 4, -2, 2). Otherwise vy -= 20 dt (at least -20) and the speed shrinks by
@@ -256,7 +350,9 @@ boats_place:
 ; as a mouse moved right); INPUT.down dismounts. An empty boat brakes at 2 b/s^2. The boat moves
 ; along (sin yaw, -cos yaw) by speed * dt on x, then z, then y (move_axis); a horizontal block
 ; stops it dead. The rider is carried: the player takes the boat's x and z, feet at its bottom +
-; 0.25, at rest and "on the ground".
+; 0.25, at rest and "on the ground". The boat's box is 0.5 high, and 2.05 (the rider's 0.25 plus his
+; 1.8) while the player rides it: a ceiling that his head would meet stops the boat. The height is
+; derived from boat_riding every step, so no path that lets go of a boat has to restore it.
 ; rbx = boat, r12 = INPUT*, r13d = index, r14d = ridden, r15d = floating.
 ; Frame: cell x @0, z @4, floor(y) @8, scan offset @12, dx @20, dz @24.
 boats_step:
@@ -406,6 +502,11 @@ boats_step:
     maxss   xmm1, xmm3
     addss   xmm0, xmm1
     movss   [rbx + BOATENT.speed], xmm0
+    mov     eax, [c_height]             ; the box: the hull, and the rider standing in it
+    mov     ecx, [c_ridden_h]
+    test    r14d, r14d
+    cmovnz  eax, ecx
+    mov     [rbx + BODY.height], eax
     movss   xmm0, [rbx + BODY.yaw]
     call    sincos_deg                  ; xmm0 = sin yaw, xmm1 = cos yaw
     movss   xmm2, [rbx + BOATENT.speed]
@@ -453,7 +554,8 @@ boats_step:
     ret
 
 ; boats_raycast(rdi origin[3], rsi dir[3], xmm0 max) -> eax index of the nearest boat hit within max
-; (or -1), xmm0 = its distance t (max on a miss). Box: [x +- half_w] x [y, y + height] x [z +- half_w].
+; (or -1), xmm0 = its distance t (max on a miss). Box: [x +- half_w] x [y, y + 0.5] x [z +- half_w]:
+; the hull, not the taller box a ridden boat collides with.
 ; Frame: lo[3] @0, hi[3] @16, best t @32.
 boats_raycast:
     push    rbp
@@ -482,7 +584,7 @@ boats_raycast:
     movss   [rsp + 16], xmm1
     movss   xmm0, [rbx + BODY.y]
     movss   [rsp + 4], xmm0
-    addss   xmm0, [rbx + BODY.height]
+    addss   xmm0, [c_height]
     movss   [rsp + 20], xmm0
     movss   xmm0, [rbx + BODY.z]
     movaps  xmm1, xmm0

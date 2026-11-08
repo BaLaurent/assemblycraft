@@ -22,13 +22,14 @@ extern mobs_render, boats_render, drops_render, arrows_render, tnt_render
 extern fire_render, fx_render, fx_shake_yaw, fx_shake_pitch, game_aim
 extern light_lut_build, light_bind_index, block_sel_bounds
 extern columns, world_origin_x, world_origin_z
-extern stream_spiral, stream_spiral_n, time_mono
+extern stream_spiral, stream_spiral_n, time_mono_ns
 extern player, player_eye_in_water
 
 section .rodata
 align 8
 d_near:     dq 0.05
 d_far:      dq 300.0
+d_ns:       dq 1.0e9                     ; seconds -> nanoseconds
 align 4
 f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units (u, 256 px)
 f_texscale_v: dd 0.0001220703125        ; 1/8192: v over the 512 px atlas height
@@ -81,7 +82,8 @@ r_under:     resd 1                     ; 1: the camera is the player and its ey
 r_fov:       resd 1                     ; vertical field of view of the frame, degrees
 rc_acx:      resd 1                     ; the camera's column (absolute chunk coordinates), set by
 rc_acz:      resd 1                     ; render_world and the centre of render_update_chunks
-ru_deadline: resd 1                     ; time_mono() value at which render_update_chunks stops
+alignb 8
+ru_deadline: resq 1                     ; time_mono_ns() value at which render_update_chunks stops
 fog_rgba:    resd 4                     ; sky colour, alpha 1
 eye:         resd 3
 fr_n:        resd 12                    ; frustum: four inward unit normals (left, right, bottom, top)
@@ -315,8 +317,8 @@ mesh_column:
     sub     ecx, r15d
     mov     [slot_tcount + rax*4], ecx
     btr     dword [rbx + COLUMN.dirty], r13d
-    call    time_mono
-    comiss  xmm0, [ru_deadline]
+    call    time_mono_ns
+    cmp     rax, [ru_deadline]
     jae     .spent
 .next:
     inc     r13d
@@ -414,7 +416,7 @@ try_column:
     ret
 
 ; render_update_chunks(xmm0 budget_s): remesh the dirty chunks of meshable columns, nearest first,
-; until time_mono() passes the budget (at least one chunk is meshed whenever there is work).
+; until time_mono_ns() passes the budget (at least one chunk is meshed whenever there is work).
 ; Walks stream_spiral (nearest first) up to render_dist + 1 columns around the camera column
 ; (rc_acx, rc_acz: the camera of the last render_world). When that walk finds nothing it falls
 ; back to every column of the table, so a stale centre (a load wait that draws no world frame)
@@ -429,9 +431,12 @@ render_update_chunks:
     push    r15
     sub     rsp, 8
     movss   [rsp], xmm0
-    call    time_mono
-    addss   xmm0, [rsp]
-    movss   [ru_deadline], xmm0
+    call    time_mono_ns
+    cvtss2sd xmm0, [rsp]
+    mulsd   xmm0, [d_ns]
+    cvttsd2si rcx, xmm0
+    add     rax, rcx
+    mov     [ru_deadline], rax
     mov     r15d, [settings + SETTINGS.render_dist]
     inc     r15d                        ; walk radius R + 1 (Chebyshev)
     mov     r13d, r15d

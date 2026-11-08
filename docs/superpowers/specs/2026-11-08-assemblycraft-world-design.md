@@ -1238,3 +1238,71 @@ Every worker starts from the wave-0 commit, follows Conventions, and implements 
 - **Pool:** if the mountain flight hits "chunk pool full", raise `POOL_CHUNKS` to 32768.
 - **Biome tuning:** thresholds may move by ±50% to meet `worldgen_biomes`. Changes are recorded in As built.
 - **Scope (roadmap):** if wave 1 slips, boats move to 0.10. Water, swimming and beds stay in 0.9.
+
+## As built (deviations from this plan)
+
+Recorded at the end of milestone 0.9. Everything not listed here was built as specified.
+
+### Contracts and ids
+- **`BOATENT`, not `BOAT`.** The boat struct is named `BOATENT` (like `ARROWENT`), because `BOAT` is the item-id `%define`.
+- **Gear rolls keep their 0.8 values.** `gear.asm`'s affix hash uses `id' = id - FIRST_ITEM + 128`, so moving `FIRST_ITEM` from 128 to 144 left every gear roll (and its golden tests) unchanged.
+- **Retired fields.** `RPGSAVE.cleared`/`.flags` became one `.retired` word (layout unchanged); `NUM_DUNGEONS`, `player_spawn` and `world_mark_all_dirty` were deleted once nothing used them.
+
+### Storage, light and streaming
+- **Pool:** a bump allocator plus a free stack instead of a pre-filled stack (O(1) reset).
+- **`world_install`** writes containers straight into `conts[]`; `world_install_err` says why it refused (1 pool, 2 container table). `world_set` also sets `CF_CONTS` for CHEST/FURNACE blocks.
+- **`world_top_y`** scans the cell's own column down from `COLUMN.top` (the column-wide top is only a bound). Found at integration: the first version returned the column-wide top, which broke mob spawning beside taller blocks.
+- **Edit regions** are whole columns (3×3 around the edit, merged up to 4×4), and their y cap is the highest top of the 3×3 window + 16, which keeps lighting order-independent next to taller neighbours.
+- **Region files:** blobs never land below sector 3; a file with a bad header is recreated when written; `world_save_dirty(dir)` resets the region cache through `region_set_dir`.
+- **`stream_update`** starts and lights at least one column per call, even with a spent budget. Budgets run on `time_mono_ns` (64-bit nanoseconds); `render_update_chunks` too, after review found the float deadline stopped working after ~36 h of uptime.
+- **`render_update_chunks`** centres its spiral on the camera of the last `render_world` and falls back to scanning the whole table when that finds nothing (a load wait draws no frame).
+- **Extra exports:** `world_set_raw`, `world_column_claim`, `world_drop_all`, `world_chunk_alloc`, `world_locate`, `region_dir`, `region_has_column`, `time_mono_ns`, `gen_seed`, `spawn_at_ground`, `meteor_tgt`/`rain_tgt`, `sleep_active`/`sleep_timer`, `banner_text`.
+
+### Terrain
+- **Continentalness salt 1001, not 1000.** With 1000, seed 42's ±3072 window is 53% ocean, beyond what the ±50% threshold tuning can fix; no threshold was changed. Coverage for seed 42: ocean 39.2%, plains 13.6%, forest 16.9%, desert 5.5%, snow 10.3%, swamp 7.2%, mountains 3.9%, river 3.5%. Seed 42 spawns at (8, 103, 8) in snow.
+- **Ores:** walks are seeded with `acx*32 + attempt` (with `*16`, coal attempt 16 repeated the next column's attempt 0) and clipped to each ore's y range.
+- **Cave protection** under shallow water is `y >= h - 4`.
+- **`gen_column`** costs about 0.2 ms per column without sites.
+- **Rivers** are 1–3 blocks deep at their centre (the plan's `lerp(93, h, …)`) and their RIVER-biome edges are often dry sand; cold rivers freeze over.
+
+### Sites
+- **Plan caches:** 16 entries each (one for the generator thread, one for the main thread), keyed through the seed, so nothing is flushed when the seed changes.
+- **Dungeon and boss levels** are computed in `structures.asm` (player level + 2; + 3 with a floor of 20 for the boss).
+- **Village NPCs** are re-created in every mode, when both the village centre column and the NPC's cell column are ready.
+
+### Gameplay and flows
+- **Boats:** a right-click boards the boat in front before trying to place one (the plan's order made boarding impossible with a boat in hand, e.g. in Creative). The hull floor is 5/16 thick so it hides the water surface inside the boat. Saved boats are accepted up to ±2^24 (exact floats), so a boat left 65,536+ blocks behind by rebases is no longer dropped on load.
+- **Swimming:** water is checked at the start and the end of a step, so a fall into 1-deep water is soft too.
+- **F3:** XYZ, Target and the site lines show absolute coordinates; the quest tracker moved down 3 lines.
+- **Placement:** a torch aimed at tall grass or snow replaces it and stands on the block below; a ladder cannot hang on a plant.
+- **Containers:** `abilities.asm`'s charge/slam hit masks became 64-bit for `MAX_MOBS` 64; `fire_place` refuses unready columns; furnaces in unloaded columns pause entirely.
+- **`game_new`** calls `stream_begin` before `gen_find_spawn` (the spawn search needs the seed). **`game_load`** validates into a private buffer first, masks the origin, clamps counts, and treats a non-finite or far position like a dead player.
+- **`app_wait_area`** returns 1 when the window closes; closing during "Generating terrain" removes the half-made world directory.
+- **`--play NAME`** on an old `.acw` prints exactly "NAME is a world from 0.8 or earlier; this version cannot open it" (no prefix) and exits 2.
+
+### Verification results (wave 2)
+- `make test`: 154/154, warning-free.
+- Live checks a–j passed in omabox (biomes, drowning with "Drowned", boats on a river 18.9 blocks and on the ocean 23 blocks in 5 s, sleep to 06:00 and the monsters banner, bed respawn and the missing-bed banner, dungeon rooms/loot/elites, crypt boss, far travel to r.40.-60.bin with glass and a chest kept, rebase continuity with `origin_x` +1024, the old-world list entry with an unchanged sha256 and Delete, the streamed panorama).
+- Performance at render distance 16, vsync off, no audio, 2,194 blocks of flight at 16 b/s: 0 frames over 50 ms, max 26.4 ms, p99 5.5 ms, median 1.5 ms. Village at render distance 8: ~1,400 FPS. No performance knob or fallback was needed.
+- Memory after the flight: VmRSS 495 MB, pool 8,821/24,576 chunks, no "pool full".
+
+### Wave 3 review fixes
+Four read-only reviewers found no crash. Every fix below has a regression assertion inside an existing test (the count stays 154), each proven to fail on the unfixed code.
+- **Column top after a dig** (storage): removing a block from a column's top layer rescanned from the layer below, so `COLUMN.top`, `world_top_y` and the light cap dropped while other blocks stayed on that layer (mobs spawned inside the ground, platforms lost their light). The rescan now starts at the cleared layer.
+- **Full container table froze streaming** (softlock): one column that `world_install` refused blocked every collect and dispatch. Now only that column waits 60 frames (`fail_until` per slot); every other column carries on.
+- **Mesh budget after long uptime:** see Storage above (`time_mono_ns`).
+- **Far moored boats were dropped on load** (save loss): the load bound is now ±2^24.
+- **Sites:** about a third of crypts sat under oceans or rivers with the entrance on the seabed, and ~2% of dungeon tunnels dead-ended in rock under mountains. A pure `tunnel_exit` walk (shared with `stair_tunnel`) now lets the planner reject a dungeon or crypt whose tunnel has no exit within 60 columns or exits at or below sea level, and crypts reject OCEAN/RIVER centres. Seed 42 over regions −6..6: 207 dungeons (was 211), 39 crypts (was 49); 8 of the 9 even regions in −2..2 keep a crypt.
+- **Sleep:** a bed with a solid block in either of the 2 cells above refuses ("Respawn set. The bed is obstructed"); the sleeper gets up beside the bed in the morning; sleeping starts by leaving a ridden boat.
+- **Mobs left outside the streamed area** (after a respawn far away, or saved in the outer ring) stayed frozen forever and filled the spawn caps; a frozen mob more than render distance + 2 columns from the player is now forgotten.
+- **Boats:** a boat put in next to a bank is nudged 0.11 away from solid sides (refused when hemmed in on an axis), so it can no longer be driven through walls; while ridden its box is 2.05 high, so it stops at a ceiling the rider's head would hit.
+- **Plants:** tall grass and snow layers pop when the block under them goes.
+- **Leaves:** pine and birch leaves roll the axe/apple drop like oak leaves.
+
+### Deferred (no GitHub remote: listed here)
+- Region writes are not crash-atomic (planned for 1.0); absolute coordinates wrap at ±2^31 (not handled, per the plan).
+- Rivers are shallow and their biome edges dry; cold rivers freeze.
+- Explosions destroy WATER cells like any other block (no flowing water exists to refill them).
+- If 8 freshly generated chest columns fail to install at once (container table full), no generator buffer is free that frame; it resolves as soon as the table has room.
+- The breath bubbles share their row with the held-item name for the few seconds that name shows.
+- No unit test covers the right-click order "board the boat in front before placing one"; it was verified live.

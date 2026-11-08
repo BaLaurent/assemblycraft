@@ -459,7 +459,8 @@ ws_store:
 .lower:
     cmp     r13d, [rdi + COLUMN.top]
     jne     .done
-    lea     esi, [r13 - 1]              ; the top cell went: look below it
+    mov     esi, r13d                   ; the top cell went: look from its own layer down (the cell is AIR
+                                        ; now, but other blocks may remain on that layer)
     call    col_rescan
 .done:
     mov     r9, [rsp]

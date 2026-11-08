@@ -603,8 +603,9 @@ pop_cell:
 ; block_removed(edi x, esi y, edx z, ecx old_id): the cell (x, y, z) just became air; its
 ; old block was `old_id`. A door loses its other half and a bed its other half (no drop: the
 ; broken half drops the door or the bed). What depended on the cell pops off (pop_cell): a
-; standing torch or the lower half of a door above it, and every horizontal neighbour that is
-; a ladder or wall torch whose support side points back at the cell.
+; standing torch, a tall grass, a snow layer (the plants give no item) or the lower half of a door
+; above it, and every horizontal neighbour that is a ladder or wall torch whose support side points
+; back at the cell.
 ; ebx, r12d, r13d = x, y, z; r14d = old id; r15d = door / bed param, neighbour direction.
 ; Frame: neighbour x @0, z @4, expected bed id @8.
 block_removed:
@@ -651,6 +652,10 @@ block_removed:
     mov     edx, r13d
     call    world_get
     cmp     eax, TORCH
+    je      .pop_above
+    cmp     eax, TALL_GRASS
+    je      .pop_above
+    cmp     eax, SNOW_LAYER
     je      .pop_above
     movzx   ecx, byte [block_shape + rax]
     cmp     ecx, SHAPE_DOOR

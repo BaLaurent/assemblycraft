@@ -779,7 +779,8 @@ test_raycast_shapes:
 ; (a torch there stands on the block below, and is refused over a gap); water in the placement cell is
 ; replaced too; y 256 is refused. Beds are usable. Every bed id drops BED. Breaking either half removes
 ; the other without a drop (and what rested on it pops: a torch on the head); a half whose partner is
-; not its match stays.
+; not its match stays. A tall grass or snow layer standing on a block that is broken pops with it, and
+; leaves no item.
 test_bed_place_and_break:
     push    rbp
     mov     rbp, rsp
@@ -926,6 +927,24 @@ test_bed_place_and_break:
     WORLD_IS 4, 10, 11, BED + DIR_S
     SETBLOCK 5, 10, 12, BED + 4 + DIR_E ; a lone head: nothing to remove
     BREAK   5, 10, 12, BED + 4 + DIR_E
+    ; a tall grass or a snow layer loses its ground: it pops with it and gives no item; the one on the
+    ; ground beside it stays
+    call    drops_clear
+    SETBLOCK 3, 10, 13, GRASS
+    SETBLOCK 3, 11, 13, TALL_GRASS
+    SETBLOCK 4, 10, 13, GRASS
+    SETBLOCK 4, 11, 13, SNOW_LAYER
+    SETBLOCK 5, 10, 13, GRASS
+    SETBLOCK 5, 11, 13, TALL_GRASS
+    BREAK   3, 10, 13, GRASS
+    WORLD_IS 3, 11, 13, AIR
+    BREAK   4, 10, 13, GRASS
+    WORLD_IS 4, 11, 13, AIR
+    WORLD_IS 5, 11, 13, TALL_GRASS
+    xor     edi, edi                    ; free drop records hold id 0: nothing at all was dropped
+    call    count_drops
+    cmp     eax, MAX_DROPS
+    jne     .fail
     mov     dword [game_mode], MODE_CREATIVE
     call    drops_clear
     xor     eax, eax

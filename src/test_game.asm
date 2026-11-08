@@ -1,8 +1,9 @@
 ; test_game.asm - a whole session through a 0.9 world directory (the header image keeps the character,
 ; the origin, the breath, the bed and the site records; a bad world.hdr changes nothing; a dead
 ; player comes back at the world spawn; a new world's player stands on the surface once the area is
-; ready and its animals take the new character's level), the floating-origin rebase trigger, and the
-; hook that clears out what stood in a column that unloads.
+; ready and its animals take the new character's level), the floating-origin rebase trigger, the
+; hook that clears out what stood in a column that unloads, and the dig path of game_frame (what a
+; Survival player gets for the leaves he digs).
 %include "common.inc"
 default rel
 
@@ -14,6 +15,9 @@ extern game_open_npc, app_state, input_captured
 extern brk_x, brk_y, brk_z, world_origin_x, world_origin_z
 extern surv, inv, player, mobs, mobs_clear, mob_count_type, mob_spawn, rpg_state
 extern str_eq, str_copy, file_read, file_write_atomic, mkdir_p, dir_remove_tree
+extern game_frame, frame_input, inv_sel, inv_clear, drops, drops_clear, world_get
+extern combat_reset, survival_reset, body_init, settings
+extern game_open_screen, game_heavy_s, game_break_progress
 
 section .rodata
 align 4
@@ -31,11 +35,17 @@ d_missing: db "/tmp/assemblycraft-selftest-game-missing", 0
 p_hdr:    db "/tmp/assemblycraft-selftest-game/world.hdr", 0
 name_rt:  db "Round Trip", 0
 name_x:   db "x", 0
+align 4
+k_one:    dd 1.0
+k_p_half_w: dd 0.3                     ; the player's box and walking speed
+k_p_height: dd 1.8
+k_p_speed: dd 4.317
 
 section .bss
 dir_buf:  resb 128
 d_world:  resb 64
 file_buf: resb WORLD_HDR_SIZE + 16
+saved:    resd 3                       ; the caller's game_mode, game_time and difficulty
 
 section .text
 
@@ -55,6 +65,149 @@ spawn_pigs:
     call    mob_spawn
     mov     edi, MOB_PIG
     call    mob_count_type
+    pop     rbp
+    ret
+
+; dig_leaf(edi block, esi held item) -> eax: the id of the drop that digging `block` as a Survival player
+; with `held` in his hand leaves (0: no drop), or -1 when the block still stands. A STONE floor (x, z 4..12
+; at y 9), the player at (8.5, 10, 8.5) looking along -z at the `block` cell (8, 11, 6), by day in
+; Peaceful with nothing else about, the left button pressed: game_frame with a one-second dt digs it (a
+; second frame when the pause after a dig is still running).
+; ebx = block, r12d = held, r13d = floor x, then the frames run, r14d = floor z.
+dig_leaf:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     ebx, edi
+    mov     r12d, esi
+    call    world_clear
+    call    mobs_clear
+    call    drops_clear
+    mov     r14d, 4
+.fz:
+    mov     r13d, 4
+.fx:
+    mov     edi, r13d
+    mov     esi, 9
+    mov     edx, r14d
+    mov     ecx, STONE
+    call    world_set
+    inc     r13d
+    cmp     r13d, 12
+    jbe     .fx
+    inc     r14d
+    cmp     r14d, 12
+    jbe     .fz
+    mov     edi, 8
+    mov     esi, 11
+    mov     edx, 6
+    mov     ecx, ebx
+    call    world_set
+    lea     rdi, [player]
+    movss   xmm0, [k_p_half_w]
+    movss   xmm1, [k_p_height]
+    movss   xmm2, [k_p_speed]
+    call    body_init
+    mov     dword [player + BODY.x], __float32__(8.5)
+    mov     dword [player + BODY.y], __float32__(10.0)
+    mov     dword [player + BODY.z], __float32__(8.5)
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     dword [game_time], 6007
+    mov     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
+    call    survival_reset
+    call    combat_reset
+    call    inv_clear
+    mov     dword [inv_sel], 0
+    test    r12d, r12d
+    jz      .bare
+    mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], r12b
+    mov     byte [inv + INVENTORY.slots + ITEMSTACK.count], 1
+.bare:
+    lea     rdi, [frame_input]
+    mov     ecx, FRAMEINPUT_size
+    xor     eax, eax
+    rep     stosb
+    mov     dword [frame_input + FRAMEINPUT.slot], -1
+    mov     dword [frame_input + FRAMEINPUT.lmb_held], 1
+    mov     dword [frame_input + FRAMEINPUT.lmb_pressed], 1
+    mov     dword [input_captured], 1
+    mov     dword [game_open_screen], 0
+    mov     dword [game_heavy_s], __float32__(-1.0)
+    mov     dword [game_break_progress], 0
+    mov     dword [brk_y], -1
+    xor     r13d, r13d
+.frame:
+    movss   xmm0, [k_one]
+    call    game_frame
+    inc     r13d
+    mov     edi, 8
+    mov     esi, 11
+    mov     edx, 6
+    call    world_get
+    test    eax, eax
+    jz      .dug
+    cmp     r13d, 4
+    jb      .frame
+    mov     eax, -1
+    jmp     .out
+.dug:
+    lea     rsi, [drops]
+    mov     ecx, MAX_DROPS
+    xor     eax, eax
+.scan:
+    movzx   edx, byte [rsi + DROP.id]
+    test    edx, edx
+    jz      .free
+    mov     eax, edx
+    jmp     .out
+.free:
+    add     rsi, DROP_size
+    dec     ecx
+    jnz     .scan
+.out:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; apple_digs(edi block) -> eax: how many of 120 bare-handed digs of `block` leave an APPLE, -1 when one of
+; them leaves anything else (or the block stands)
+apple_digs:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     ebx, edi
+    xor     r12d, r12d
+    mov     r13d, 120
+.dig:
+    mov     edi, ebx
+    xor     esi, esi
+    call    dig_leaf
+    test    eax, eax
+    jz      .next
+    cmp     eax, APPLE
+    jne     .bad
+    inc     r12d
+.next:
+    dec     r13d
+    jnz     .dig
+    mov     eax, r12d
+    jmp     .out
+.bad:
+    mov     eax, -1
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
     pop     rbp
     ret
 
@@ -352,13 +505,22 @@ test_game_save_load_roundtrip:
     ret
 
 ; game_rebase: past 1024 blocks from the local origin on an axis, the origin moves by a multiple of
-; 512 (the player's floored cell) and everything follows; an axis within bounds is left alone
+; 512 (the player's floored cell) and everything follows; an axis within bounds is left alone. The
+; rest of the test is about game.asm too: the unload hook, and digging leaves with game_frame: an axe
+; takes LEAVES, PINE_LEAVES and BIRCH_LEAVES themselves; a bare hand gets an APPLE now and then (and
+; nothing else); dirt gives dirt (dig_leaf, apple_digs).
 test_game_rebase_trigger:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 8
     call    world_clear
+    mov     eax, [game_mode]
+    mov     [saved], eax
+    mov     eax, [game_time]
+    mov     [saved + 4], eax
+    mov     eax, [settings + SETTINGS.difficulty]
+    mov     [saved + 8], eax
     mov     dword [world_origin_x], 0
     mov     dword [world_origin_z], 0
     mov     dword [player + BODY.x], __float32__(1030.25)
@@ -480,6 +642,45 @@ test_game_rebase_trigger:
     call    game_unload_box
     cmp     dword [app_state], ST_PLAYING           ; back in the game
     jne     .fail
+    ; the dig path: leaves dug with an axe come out as themselves, whichever tree they grew on ...
+    mov     edi, 1234
+    call    rng_seed
+    mov     edi, LEAVES
+    mov     esi, IRON_AXE
+    call    dig_leaf
+    cmp     eax, LEAVES
+    jne     .fail
+    mov     edi, PINE_LEAVES
+    mov     esi, IRON_AXE
+    call    dig_leaf
+    cmp     eax, PINE_LEAVES
+    jne     .fail
+    mov     edi, BIRCH_LEAVES
+    mov     esi, IRON_AXE
+    call    dig_leaf
+    cmp     eax, BIRCH_LEAVES
+    jne     .fail
+    mov     edi, DIRT                   ; (a plain block gives its table drop, as before)
+    xor     esi, esi
+    call    dig_leaf
+    cmp     eax, DIRT
+    jne     .fail
+    ; ... and with a bare hand they sometimes give an apple (one in sixteen), never anything else
+    mov     edi, LEAVES
+    call    apple_digs
+    sub     eax, 1
+    cmp     eax, 39                     ; 1..40 apples in 120 digs
+    ja      .fail
+    mov     edi, PINE_LEAVES
+    call    apple_digs
+    sub     eax, 1
+    cmp     eax, 39
+    ja      .fail
+    mov     edi, BIRCH_LEAVES
+    call    apple_digs
+    sub     eax, 1
+    cmp     eax, 39
+    ja      .fail
     xor     ebx, ebx
     jmp     .done
 .fail:
@@ -493,6 +694,18 @@ test_game_rebase_trigger:
     mov     dword [world_origin_z], 0
     mov     dword [game_has_target], 0
     mov     dword [brk_y], -1
+    mov     eax, [saved]
+    mov     [game_mode], eax
+    mov     eax, [saved + 4]
+    mov     [game_time], eax
+    mov     eax, [saved + 8]
+    mov     [settings + SETTINGS.difficulty], eax
+    call    drops_clear
+    lea     rdi, [frame_input]
+    mov     ecx, FRAMEINPUT_size
+    xor     eax, eax
+    rep     stosb
+    call    inv_clear
     mov     eax, ebx
     add     rsp, 8
     pop     rbx

@@ -31,6 +31,8 @@ extern hud_banner, audio_play
 %define NPC_PERIOD   60                 ; steps between the checks for missing village NPCs
 %define MAX_LIVE     3                  ; live mobs of one dungeon at a time
 %define TUNNEL_STEPS 60                 ; columns a stair tunnel climbs at most
+%define DUNGEON_TUNNEL 5                ; a dungeon's stair tunnel leaves its west wall at x - 5
+%define CRYPT_TUNNEL 8                  ; a crypt's leaves its west wall at x - 8
 %define PLAN_ENTRIES 16                 ; region plans a cache remembers
 
 ; a region plan remembered by plan_get; seed identifies the world seed (hash32(0, 0, 0))
@@ -469,9 +471,74 @@ village_find:
     pop     rbp
     ret
 
+; tunnel_exit(edi sx, esi sz, edx y0) -> eax the column i (1 .. TUNNEL_STEPS) where the stair tunnel
+; of stair_tunnel(sx, sz, y0) comes out, 0 when it is still under the ground after TUNNEL_STEPS
+; columns. The tunnel climbs west one block per column (floor y0 + i at x = sx - i) and comes out at
+; the first column where the terrain (gen_height) of the column and of the next one west is at or
+; below the floor, so the exit is walkable without a jump. The one walk of the planner (tunnel_ok)
+; and of the builder (stair_tunnel). Pure and reentrant: stack only, the seed is read-only.
+tunnel_exit:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, 1                     ; i
+.step:
+    mov     edi, ebx
+    sub     edi, r14d
+    mov     esi, r12d
+    call    gen_height
+    lea     ecx, [r13 + r14 + 1]        ; Yf + 1: where the player's feet would stand
+    cmp     eax, ecx
+    jge     .next                       ; the ground is above the floor: keep digging
+    lea     edi, [rbx - 1]
+    sub     edi, r14d                   ; the next column west, where the player walks out
+    mov     esi, r12d
+    call    gen_height
+    lea     ecx, [r13 + r14 + 1]
+    cmp     eax, ecx
+    jl      .found                      ; both at or below the floor: we are out
+.next:
+    inc     r14d
+    cmp     r14d, TUNNEL_STEPS
+    jbe     .step
+    xor     r14d, r14d                  ; still under the ground: no way out
+.found:
+    mov     eax, r14d
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; tunnel_ok(edi sx, esi sz, edx floor) -> eax 1 when the stair tunnel that leaves a site with the
+; floor y `floor` at x = sx (y0 = floor - 1, as the builders call stair_tunnel) comes out within
+; TUNNEL_STEPS columns and the feet of the exit (floor + i) are higher than SEA_LEVEL: the way out
+; is neither sealed in the rock nor flooded by a sea, a lake or a river. Pure.
+tunnel_ok:
+    push    rbx
+    mov     ebx, edx
+    dec     edx
+    call    tunnel_exit
+    test    eax, eax
+    jz      .ret                        ; no way out
+    add     eax, ebx                    ; the feet of the exit: y0 + i + 1
+    cmp     eax, SEA_LEVEL
+    setg    al
+    movzx   eax, al
+.ret:
+    pop     rbx
+    ret
+
 ; dungeon_try(edi arx, esi arz, edx k, rcx out3) -> eax 1 when candidate k (x, z 80 .. 431 into the
-; region) lies in a land biome (not OCEAN or RIVER) and the ground at (0, 0), (14, 0) and (14, 14)
-; reaches 12 above the floor y = clamp(ground - 24, 20, 80); out3 = x, floor y, z.
+; region) lies in a land biome (not OCEAN or RIVER), the ground at (0, 0), (14, 0) and (14, 14)
+; reaches 12 above the floor y = clamp(ground - 24, 20, 80) and its stair tunnel comes out above the
+; sea (tunnel_ok); out3 = x, floor y, z.
 ; Frame: [rsp] z, [rsp+4] floor, [rsp+8] key, [rsp+12] the height the corners must reach.
 dungeon_try:
     push    rbp
@@ -532,6 +599,12 @@ dungeon_try:
     call    gen_height
     cmp     eax, [rsp + 12]
     jl      .no
+    lea     edi, [rbx - DUNGEON_TUNNEL] ; the way out must exist and stay dry
+    mov     esi, [rsp]
+    mov     edx, [rsp + 4]
+    call    tunnel_ok
+    test    eax, eax
+    jz      .no
     mov     [r14], ebx
     mov     eax, [rsp + 4]
     mov     [r14 + 4], eax
@@ -552,8 +625,9 @@ dungeon_try:
     ret
 
 ; crypt_try(edi arx, esi arz, edx k, rcx out3) -> eax 1 when candidate k (x, z 80 .. 431 into the
-; region) has ground reaching 14 above the floor y = clamp(ground - 30, 15, 70) at its centre and
-; at (+-8, +-8); out3 = x, floor y, z.
+; region) lies in a land biome (not OCEAN or RIVER), has ground reaching 14 above the floor y =
+; clamp(ground - 30, 15, 70) at its centre and at (+-8, +-8) and its stair tunnel comes out above
+; the sea (tunnel_ok); out3 = x, floor y, z.
 ; Frame: [rsp] z, [rsp+4] floor, [rsp+8] key, [rsp+12] the height the ground must reach.
 crypt_try:
     push    rbp
@@ -583,6 +657,13 @@ crypt_try:
     mov     [rsp], ecx                  ; z
     mov     edi, ebx
     mov     esi, ecx
+    call    gen_biome
+    cmp     eax, BIOME_OCEAN
+    je      .no
+    cmp     eax, BIOME_RIVER
+    je      .no
+    mov     edi, ebx
+    mov     esi, [rsp]
     call    gen_height
     lea     ecx, [rax - 30]
     mov     edx, 15
@@ -609,6 +690,12 @@ crypt_try:
     inc     r12d
     cmp     r12d, 4
     jb      .corner
+    lea     edi, [rbx - CRYPT_TUNNEL]   ; the way out must exist and stay dry
+    mov     esi, [rsp]
+    mov     edx, [rsp + 4]
+    call    tunnel_ok
+    test    eax, eax
+    jz      .no
     mov     [r14], ebx
     mov     eax, [rsp + 4]
     mov     [r14 + 4], eax
@@ -764,11 +851,12 @@ camp_plan:
 
 ; region_plan(edi arx, esi arz, rdx SITE* out) -> eax count: the sites of region (arx, arz), blocks
 ; arx * 512 .. arx * 512 + 511, in absolute coordinates, at most MAX_REGION_SITES, in this order:
-; the village (0 or 1), the dungeons (1 or 2: the first valid of 32 candidates, then a second one in
-; half of the regions, both at least 48 from the other sites), the crypt (only in regions with
-; even arx and arz: the first valid of 32 candidates at least 48 from the other sites) and the
-; camps whose centre lies in the region (SITE_CAMP, index = faction, in faction order). Every
-; record carries its region and its slot (its index in the output). Pure: it reads the world
+; the village (0 or 1), the dungeons (1 or 2: the first valid dungeon_try of 32 candidates, then a
+; second one in half of the regions, both at least 48 from the other sites), the crypt (only in
+; regions with even arx and arz: the first valid crypt_try of 32 candidates at least 48 from the
+; other sites) and the camps whose centre lies in the region (SITE_CAMP, index = faction, in
+; faction order). A dungeon or crypt is valid only when its stair tunnel comes out above the sea.
+; Every record carries its region and its slot (its index in the output). Pure: it reads the world
 ; seed through hash32, gen_height and gen_biome and writes only out.
 ; Frame: [rsp] pos3 (x, y, z), [rsp+16] camps in the super-region, [rsp+20] want a second dungeon,
 ; [rsp+24] dungeons found, [rsp+32] the super-region's camps (5 SITE records).
@@ -1203,10 +1291,10 @@ run_boxes:
     ret
 
 ; stair_tunnel(edi sx, esi sz, edx y0): from an opening in the wall at x = sx a 3 x 3 passage
-; climbs west one block per column (floor y0 + i at x = sx - i) until the terrain (gen_height) of
-; the column and of the next one west is at or below the floor, so the exit is walkable without a
-; jump; then an entrance frame closes it. The decision depends on the seed alone, so every column
-; of the site's footprint reaches the same tunnel.
+; climbs west one block per column (floor y0 + i at x = sx - i) up to the column tunnel_exit finds,
+; where an entrance frame closes it. The way out depends on the seed alone, so every column of the
+; site's footprint reaches the same tunnel. The planner only accepts sites whose tunnel comes out
+; (tunnel_ok), so a call without a way out (tunnel_exit 0) builds nothing.
 stair_tunnel:
     push    rbp
     mov     rbp, rsp
@@ -1219,23 +1307,14 @@ stair_tunnel:
     mov     ebx, edi
     mov     r12d, esi
     mov     r13d, edx
+    call    tunnel_exit                 ; edi, esi and edx are still the arguments
+    mov     r15d, eax                   ; the exit column
+    test    eax, eax
+    jz      .ret
     mov     r14d, 1                     ; i
-.step:
-    mov     edi, ebx
-    sub     edi, r14d
-    mov     esi, r12d
-    call    gen_height
-    lea     ecx, [r13 + r14 + 1]        ; Yf + 1: where the player's feet would stand
-    cmp     eax, ecx
-    jge     .dig                        ; the ground is above the floor: keep digging
-    lea     edi, [rbx - 1]
-    sub     edi, r14d                   ; the next column west, where the player walks out
-    mov     esi, r12d
-    call    gen_height
-    lea     ecx, [r13 + r14 + 1]
-    cmp     eax, ecx
-    jl      .exit                       ; both at or below the floor: we are out
 .dig:
+    cmp     r14d, r15d
+    jae     .exit
     lea     rdi, [stair_step]
     mov     esi, STAIR_STEP
     mov     edx, ebx
@@ -1244,9 +1323,7 @@ stair_tunnel:
     mov     r8d, r12d
     call    run_boxes
     inc     r14d
-    cmp     r14d, TUNNEL_STEPS
-    jbe     .step
-    jmp     .ret
+    jmp     .dig
 .exit:
     lea     rdi, [stair_exit]
     mov     esi, STAIR_EXIT
@@ -1368,7 +1445,7 @@ build_dungeon:
     mov     ecx, r14d
     mov     r8d, r13d
     call    run_boxes
-    lea     edi, [r12 - 5]
+    lea     edi, [r12 - DUNGEON_TUNNEL]
     mov     esi, r13d
     lea     edx, [r14 - 1]
     call    stair_tunnel
@@ -1406,7 +1483,7 @@ build_crypt:
     mov     ecx, r14d
     mov     r8d, r13d
     call    run_boxes
-    lea     edi, [r12 - 8]
+    lea     edi, [r12 - CRYPT_TUNNEL]
     mov     esi, r13d
     lea     edx, [r14 - 1]
     call    stair_tunnel

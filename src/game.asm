@@ -1698,11 +1698,16 @@ game_frame:
     call    rpg_on_block_mined
 .no_mined_xp:
     cmp     r12d, LEAVES
+    je      .leaves
+    cmp     r12d, PINE_LEAVES
+    je      .leaves
+    cmp     r12d, BIRCH_LEAVES
     jne     .not_leaves
+.leaves:
     call    held_id
     cmp     byte [item_tool + rax], TOOL_AXE
     jne     .leaf_roll
-    mov     ebx, LEAVES                 ; an axe takes the leaves themselves
+    mov     ebx, r12d                   ; an axe takes the leaves themselves
     jmp     .drop_ready
 .leaf_roll:
     call    rng_next
@@ -1810,7 +1815,7 @@ game_frame:
     call    hand_swing
     jmp     .pick
 .not_door:
-    movzx   eax, byte [block_base + rbx]    ; a bed: the right click sleeps in it (or sets the respawn)
+    movzx   eax, byte [block_base + rbx]    ; a bed: the right click sleeps in it (a rider leaves his boat) or sets the respawn
     cmp     eax, BED
     jne     .not_bed
     mov     edi, [game_target + RAYHIT.bx]

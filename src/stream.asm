@@ -5,6 +5,8 @@
 ; main thread owns the column table, the pool, light, meshing, GL and every region read and write.
 ; Buffer states (GENBUF.state) change under gen_mutex: FREE -> REQ (main) -> BUSY -> DONE (worker) ->
 ; FREE (main). Without a worker (selftests, or pthread_create failed) stream_update generates inline.
+; A column whose install does not fit (world_install: the container table or the pool is full) holds back
+; only itself: it is tried again BACKOFF_FRAMES frames later and every other column carries on.
 ;
 ; Radii: R = settings.render_dist (2..16); columns within Chebyshev R + 1 of the centre column are
 ; loaded, columns beyond R + 2 are unloaded (saved first when modified or holding containers).
@@ -29,7 +31,7 @@ extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
 
 %define SPIRAL_R        18              ; offsets -18..18: 37 x 37 = 1369 entries
 %define SPIRAL_MAX      (37 * 37)
-%define BACKOFF_FRAMES  60
+%define BACKOFF_FRAMES  60              ; frames until a column whose install did not fit is tried again
 %define MAX_READS       4               ; region columns decoded per stream_update
 %define MAX_INLINE      4               ; columns generated inline per stream_update
 %define MAX_LIGHT       6               ; columns lit per stream_update
@@ -50,10 +52,11 @@ gen_tid:        resq 1
 gen_quit:       resd 1
 gen_threaded:   resd 1                  ; 1 while the worker runs
 stream_session: resd 1
-inst_backoff:   resd 1                  ; frames to wait after an install that did not fit
+stream_frame:   resd 1                  ; stream_update calls so far
 msg_done:       resd 1                  ; the "full" message of this session was printed
 stream_spiral_n: resd 1
 stream_spiral:  resd SPIRAL_MAX * 2     ; (dx, dz) pairs, nearest first
+fail_until:     resd MAX_COLUMNS        ; by column slot: the stream_frame from which a failed install may be retried
 
 section .text
 
@@ -341,7 +344,10 @@ stream_begin:
     mov     edi, ebx
     call    worldgen_set_seed
     inc     dword [stream_session]
-    mov     dword [inst_backoff], 0
+    lea     rdi, [fail_until]           ; no column is backing off in the new session
+    xor     eax, eax
+    mov     ecx, MAX_COLUMNS
+    rep     stosd
     mov     dword [msg_done], 0
     mov     rdi, r12
     call    region_set_dir
@@ -390,10 +396,41 @@ stream_end:
 
 ; ---- one frame -----------------------------------------------------------------------------------------------------------
 
-; install_failed(): world_install said no - back off for BACKOFF_FRAMES and say why, once per session.
+; install_waiting(edi acx, esi acz) -> eax 1 while an install of that column that did not fit is still
+; backing off, else 0. The frame counter is compared as a signed difference, so it may wrap. Clobbers ecx.
+install_waiting:
+    mov     eax, esi
+    and     eax, 63
+    shl     eax, 6
+    mov     ecx, edi
+    and     ecx, 63
+    or      eax, ecx                    ; the column's slot
+    lea     rcx, [fail_until]
+    mov     eax, [rcx + rax*4]
+    sub     eax, [stream_frame]
+    test    eax, eax
+    jle     .no
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; install_failed(edi acx, esi acz): world_install did not take that column (the pool or the container
+; table is full). It is not tried again for BACKOFF_FRAMES frames - nothing else waits - and the reason is
+; printed once per session. Clobbers rax, rcx, rdx, rsi, rdi.
 install_failed:
     sub     rsp, 8
-    mov     dword [inst_backoff], BACKOFF_FRAMES
+    mov     eax, esi
+    and     eax, 63
+    shl     eax, 6
+    mov     ecx, edi
+    and     ecx, 63
+    or      eax, ecx                    ; the column's slot
+    mov     ecx, [stream_frame]
+    add     ecx, BACKOFF_FRAMES
+    lea     rdx, [fail_until]
+    mov     [rdx + rax*4], ecx
     cmp     dword [msg_done], 0
     jne     .ret
     mov     dword [msg_done], 1
@@ -506,8 +543,9 @@ generate_inline:
 ; stream_update(edi x, esi z, xmm0 budget_s): one frame around the local cell (x, z).
 ; 1. unload the columns beyond R + 2, 2. install the generator's finished columns, 3. start the missing
 ; columns within R + 1 nearest first (region file, worker or inline), 4. light the columns that hold
-; blocks. Steps 3 and 4 stop when budget_s seconds have passed; 1 and 2 always run. After a install
-; that did not fit steps 2 and 3 wait BACKOFF_FRAMES frames.
+; blocks. Steps 3 and 4 stop when budget_s seconds have passed; 1 and 2 always run. A column whose install
+; did not fit (world_install -1) is passed over for BACKOFF_FRAMES frames - its buffer stays DONE, or its
+; slot goes free again - and every other column carries on.
 stream_update:
     push    rbp
     mov     rbp, rsp
@@ -517,7 +555,7 @@ stream_update:
     push    r14
     push    r15
     sub     rsp, 56                     ; [0] deadline, [8] ccx, [12] ccz, [16] L, [20] K, [24] reads,
-                                        ; [28] inline, [32] spiral index, [36] lit, [40] backing off
+                                        ; [28] inline, [32] spiral index, [36] lit
     mov     r12d, edi
     mov     r13d, esi
     cvtss2sd xmm0, xmm0
@@ -546,11 +584,7 @@ stream_update:
     mov     [rsp + 16], ecx             ; L = R + 1
     add     eax, 2
     mov     [rsp + 20], eax             ; K = R + 2
-    mov     dword [rsp + 40], 0
-    cmp     dword [inst_backoff], 0
-    je      .unload
-    dec     dword [inst_backoff]
-    mov     dword [rsp + 40], 1
+    inc     dword [stream_frame]
 .unload:
     lea     r14, [columns]
     xor     r15d, r15d                  ; slot
@@ -593,8 +627,6 @@ stream_update:
     inc     r15d
     cmp     r15d, MAX_COLUMNS
     jb      .u_loop
-    cmp     dword [rsp + 40], 0
-    jne     .light
     xor     r14d, r14d                  ; buffer index
 .collect:
     cmp     r14d, GEN_SLOTS
@@ -610,13 +642,19 @@ stream_update:
     mov     eax, [r15 + GENBUF.session]
     cmp     eax, [stream_session]
     jne     .c_free                     ; a result of an old session
+    mov     edi, [r15 + GENBUF.cx]
+    mov     esi, [r15 + GENBUF.cz]
+    call    install_waiting
+    test    eax, eax
+    jnz     .c_next                     ; its install did not fit lately: later; the other buffers go on
     mov     rdi, r15
     call    world_install
     test    eax, eax
     jns     .c_free
-    call    install_failed
-    mov     dword [rsp + 40], 1
-    jmp     .light
+    mov     edi, [r15 + GENBUF.cx]
+    mov     esi, [r15 + GENBUF.cz]
+    call    install_failed              ; the buffer stays DONE: it is tried again when the backoff is over
+    jmp     .c_next
 .c_free:
     mov     rdi, r15
     mov     esi, GB_FREE
@@ -658,6 +696,11 @@ stream_update:
     jne     .d_loop                     ; loaded or on its way
     mov     edi, r14d
     mov     esi, r15d
+    call    install_waiting
+    test    eax, eax
+    jnz     .d_loop                     ; its install did not fit lately: the next column
+    mov     edi, r14d
+    mov     esi, r15d
     call    region_has_column
     test    eax, eax
     jz      .generate
@@ -670,8 +713,10 @@ stream_update:
     test    eax, eax
     jz      .generate                   ; unreadable: regenerate it
     jns     .d_check
-    call    install_failed
-    jmp     .light
+    mov     edi, r14d
+    mov     esi, r15d
+    call    install_failed              ; this column backs off; the ones after it go on
+    jmp     .d_check
 .generate:
     cmp     dword [gen_threaded], 0
     je      .inline
@@ -693,8 +738,9 @@ stream_update:
     call    generate_inline
     test    eax, eax
     jns     .d_check
+    mov     edi, r14d
+    mov     esi, r15d
     call    install_failed
-    jmp     .light
 .d_check:
     call    time_mono_ns
     cmp     rax, [rsp]

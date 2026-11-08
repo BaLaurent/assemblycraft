@@ -85,7 +85,8 @@ section .text
 ; ---- bounds ------------------------------------------------------------------------------------------------
 
 ; Columns outside the arena (cells -16..271) are not loaded, and the world is 256 tall: reads there are
-; AIR, "solid" below the world and in unloaded columns, not above it; edits there are ignored.
+; AIR, "solid" below the world and in unloaded columns, not above it; edits there are ignored. Removing a
+; column's top block lowers its top only past the whole layer (another block on it keeps the top).
 test_world_bounds:
     push    rbp
     mov     rbp, rsp
@@ -156,6 +157,26 @@ test_world_bounds:
     EXPECT  -1
     TOPY    11, 11                      ; an empty column
     EXPECT  -1
+    call    world_clear                 ; two blocks on the top layer: removing one keeps that layer the top
+    SET     3, 99, 3, STONE
+    SET     1, 100, 1, STONE
+    SET     2, 100, 2, STONE
+    SET     1, 100, 1, AIR
+    TOPY    2, 2
+    EXPECT  100
+    xor     edi, edi
+    xor     esi, esi
+    call    world_column
+    mov     eax, [rax + COLUMN.top]
+    EXPECT  100
+    SET     2, 100, 2, AIR              ; the last block of the layer goes: the top falls to the block below
+    TOPY    3, 3
+    EXPECT  99
+    xor     edi, edi
+    xor     esi, esi
+    call    world_column
+    mov     eax, [rax + COLUMN.top]
+    EXPECT  99
     xor     eax, eax
     jmp     .ret
 .fail:

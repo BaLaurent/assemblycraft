@@ -24,6 +24,7 @@ extern item_gear
 %define TG_W 8                          ; the grid of generated columns: 8 x 4 (TG_W is a shift of 3 below)
 %define TG_H 4
 %define T_REGIONS 9
+%define EXIT_SWEEP 6                    ; check_site_exits looks at the regions -6 .. 6
 
 section .rodata
 align 4
@@ -979,10 +980,11 @@ tunnel_expect:
     ret
 
 ; check_tunnel(rdi SITE*, esi back) -> eax 0 when the stair tunnel that leaves the site's west wall at
-; x - back is what the rule says (tunnel_expect): every dug column has its stair floor across the 3
-; wide passage (floor y0 + i, y0 = site y - 1) with 3 cells of air above, and the exit column carries
-; the entrance frame (mossy brick lintel and pillars) with an open way through and out
-; Frame: [rsp] sx, [rsp+4] sz, [rsp+8] y0, [rsp+12] exit column or 0, [rsp+16] columns dug.
+; x - back is what the rule says (tunnel_expect) and comes out - the planner accepts no other site:
+; every dug column has its stair floor across the 3 wide passage (floor y0 + i, y0 = site y - 1) with
+; 3 cells of air above, and the exit column carries the entrance frame (mossy brick lintel and
+; pillars) with an open way through and out
+; Frame: [rsp] sx, [rsp+4] sz, [rsp+8] y0, [rsp+12] exit column, [rsp+16] columns dug.
 check_tunnel:
     push    rbp
     mov     rbp, rsp
@@ -1005,13 +1007,11 @@ check_tunnel:
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     call    tunnel_expect
-    mov     [rsp + 12], eax
-    mov     ecx, 60
     test    eax, eax
-    jz      .have_dug
-    lea     ecx, [rax - 1]
-.have_dug:
-    mov     [rsp + 16], ecx
+    jz      .bad                        ; a planned site's tunnel always comes out
+    mov     [rsp + 12], eax
+    dec     eax
+    mov     [rsp + 16], eax             ; the columns dug before it
     mov     r12d, 1                     ; column i
 .dug:
     cmp     r12d, [rsp + 16]
@@ -1049,8 +1049,6 @@ check_tunnel:
     jmp     .dug
 .frame:
     mov     r12d, [rsp + 12]
-    test    r12d, r12d
-    jz      .ok                         ; the tunnel never came out: dug to its end
     mov     r13d, -2                    ; the lintel: dy 4, dz -2..2
 .lintel:
     mov     edi, [rsp]
@@ -2462,6 +2460,89 @@ check_super:
     pop     rbp
     ret
 
+; check_site_exits() -> eax 0 when, over the 169 regions -6 .. 6 of the current seed, no crypt stands
+; at an OCEAN or RIVER centre and the stair tunnel of every dungeon and crypt - it leaves the west
+; wall at x - 5 or x - 8 with y0 = floor - 1, as stair_tunnel is called - comes out within 60
+; columns with its feet y0 + i + 1 higher than SEA_LEVEL. Else the failures found, OR-ed: 2 a crypt
+; under an ocean or a river, 4 a tunnel that never comes out, 8 an exit at or below the sea (the
+; sweep goes on after a failure, so one run names every rule that fails).
+; Frame: [rsp] arx, [rsp+4] arz.
+check_site_exits:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    xor     r13d, r13d                  ; the failures found
+    mov     dword [rsp + 4], -EXIT_SWEEP
+.row:
+    mov     dword [rsp], -EXIT_SWEEP
+.col:
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    lea     rdx, [plan_b]
+    call    region_plan
+    mov     r14d, eax                   ; sites left
+    lea     r15, [plan_b]
+.site:
+    test    r14d, r14d
+    jz      .next
+    mov     ebx, 5                      ; where the tunnel leaves the wall: x - 5 for a dungeon
+    cmp     dword [r15 + SITE.kind], SITE_DUNGEON
+    je      .tunnel
+    cmp     dword [r15 + SITE.kind], SITE_CRYPT
+    jne     .adv
+    mov     ebx, 8                      ; x - 8 for a crypt, which must not stand under water
+    mov     edi, [r15 + SITE.x]
+    mov     esi, [r15 + SITE.z]
+    call    gen_biome
+    cmp     eax, BIOME_OCEAN
+    je      .crypt_wet
+    cmp     eax, BIOME_RIVER
+    jne     .tunnel
+.crypt_wet:
+    or      r13d, 2
+.tunnel:
+    mov     edi, [r15 + SITE.x]
+    sub     edi, ebx
+    mov     esi, [r15 + SITE.z]
+    mov     r12d, [r15 + SITE.y]
+    dec     r12d                        ; y0
+    mov     edx, r12d
+    call    tunnel_expect
+    test    eax, eax
+    jnz     .exits
+    or      r13d, 4
+    jmp     .adv
+.exits:
+    lea     eax, [rax + r12 + 1]        ; the feet of the exit
+    cmp     eax, SEA_LEVEL
+    jg      .adv
+    or      r13d, 8
+.adv:
+    add     r15, SITE_size
+    dec     r14d
+    jmp     .site
+.next:
+    inc     dword [rsp]
+    cmp     dword [rsp], EXIT_SWEEP
+    jle     .col
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], EXIT_SWEEP
+    jle     .row
+    mov     eax, r13d
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; check_camp_clearing() -> eax 0 when the first camp the plans have (regions -3..3) is built through
 ; gen_column as a clearing: one top block (grass, sand, stone or snow block) over the cells within 10 of
 ; its centre at its ground height, something solid under it, air above up to 12 blocks, and a fence
@@ -2605,7 +2686,9 @@ check_camp_clearing:
 ; seed 42: the camps of the super-regions (0, 0) and (-1, -1) obey the plan (check_super); over the 25
 ; regions -2..2 no region has more than 2 dungeons or 1 crypt, a crypt is only in regions with even
 ; arx and arz, at least 5 of the 9 such regions have one and at least 20 of the 25 regions have a
-; dungeon
+; dungeon; over the 169 regions -6..6 no crypt stands under an ocean or a river and the stair tunnel
+; of every dungeon and crypt comes out above the sea (check_site_exits; its result, 2, 4 or 8 OR-ed,
+; names the rules that fail); the first camp is a clearing (check_camp_clearing)
 ; Frame: [rsp] arx, [rsp+4] arz, [rsp+8] regions with a dungeon, [rsp+12] crypts.
 test_region_plan_camps:
     push    rbp
@@ -2683,6 +2766,9 @@ test_region_plan_camps:
     jb      .fail
     cmp     dword [rsp + 12], 5
     jb      .fail
+    call    check_site_exits
+    test    eax, eax
+    jnz     .out
     call    check_camp_clearing
     jmp     .out
 .fail:

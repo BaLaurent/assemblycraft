@@ -29,6 +29,7 @@ extern rpg_state, rpg_reset
 extern mob_set_level, mob_level_for, mob_dmg_mult, mob_resist, mob_affix_name
 extern combat_burn_t, combat_chill_t, combat_poison_t, combat_poison, rpg_stats
 extern explode_dmg_mult
+extern world_origin_x, world_origin_z
 
 section .rodata
 align 4
@@ -112,6 +113,19 @@ cells:    dd 15, 20, 15
           dd -1, 20, 0
           dd 15, 20, 16
           dd -1, 20, -1
+; zombies frozen outside the ready columns (the world_clear square is x, z -16..271): x, z (floats) and
+; the type mobs_step leaves them with when the player stands at (130.5, 10.5) (column 8, 0) and the render
+; distance is 8 (keep radius 10 columns): the ones 10 columns away or less stay, further ones are forgotten
+%define FAR_CASES 8
+far_cases:
+    dd 280.5, 10.5, MOB_ZOMBIE          ; column 17: 9 away
+    dd 296.5, 10.5, MOB_ZOMBIE          ; column 18: 10 away, the keep radius itself
+    dd 312.5, 10.5, MOB_NONE            ; column 19: 11 away
+    dd -24.5, 10.5, MOB_ZOMBIE          ; column -2: 10 away
+    dd -40.5, 10.5, MOB_NONE            ; column -3: 11 away
+    dd 130.5, 296.5, MOB_NONE           ; row 18: 18 away on z, the larger axis counts
+    dd 130.5, -40.5, MOB_ZOMBIE         ; row -3: 3 away
+    dd 130.5, -200.5, MOB_NONE          ; row -13: 13 away
 
 section .text
 
@@ -2760,16 +2774,71 @@ fire_mask:
     call    fire_remove_box
 %endmacro
 
+; far_run() -> eax 0: with the player at (130.5, 11, 10.5), render distance 8 and a time that spawns
+; nothing, one zombie is spawned at each far_cases point (slot i) and one mobs_step leaves each of them
+; as the table says
+; rbx = case, r12 = its record
+far_run:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    mobs_clear
+    xor     ebx, ebx
+.spawn:
+    lea     eax, [rbx + rbx*2]
+    lea     rcx, [far_cases]
+    lea     r12, [rcx + rax*4]
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [r12]
+    movss   xmm1, [k_11]
+    movss   xmm2, [r12 + 4]
+    call    mob_spawn
+    cmp     eax, ebx
+    jne     .fail
+    inc     ebx
+    cmp     ebx, FAR_CASES
+    jb      .spawn
+    call    mobs_step
+    xor     ebx, ebx
+.check:
+    lea     eax, [rbx + rbx*2]
+    lea     rcx, [far_cases]
+    lea     r12, [rcx + rax*4]
+    imul    eax, ebx, MOB_size
+    lea     rdx, [mobs]
+    mov     eax, [rdx + rax + MOB.type]
+    cmp     eax, [r12 + 8]
+    jne     .fail
+    inc     ebx
+    cmp     ebx, FAR_CASES
+    jb      .check
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; A column that unloads takes the mobs, drops, primed TNT and fires inside it with it: six of each
 ; stand around the inclusive box (0,0)-(15,15) (two inside it, east, west of x = 0 and south of it stay)
 ; and then around (-16,-16)-(-1,-1) (the one in the corner goes). And a mob in a column that is not ready
 ; (x = 300) stands frozen: its hurt timer does not run down and it does not move, while one in a ready
-; column carries on.
+; column carries on. Frozen for good it is not: at render distance 16 that mob is 18 columns from the
+; player (the keep radius) and stays, at 8 (radius 10) it is forgotten; around the radius, on either side
+; of x and z and with the origin moved, a frozen mob stays up to R + 2 columns away (Chebyshev) and goes
+; beyond (far_cases).
 test_entities_remove_box:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    sub     rsp, 16
+    mov     eax, [settings + SETTINGS.render_dist]
+    mov     [rsp], eax
     call    world_clear
     call    fixture
     call    reset_player
@@ -2825,6 +2894,7 @@ test_entities_remove_box:
     MASKS   0x1A                        ; and the one at (-0.5, -0.5)
     call    clear_entities
     ; frozen mobs: a zombie in a column that is not ready, one in a ready column, both mid-hurt
+    mov     dword [settings + SETTINGS.render_dist], 16     ; keep radius 18: the zombie at x = 300 is 18 columns off
     mov     dword [game_time], 40000
     SPAWN   MOB_ZOMBIE, k_10_5, k_10_5
     test    eax, eax
@@ -2851,6 +2921,29 @@ test_entities_remove_box:
     EXPECT_F [mobs + MOB_size + BODY.x], k_300_5
     EXPECT_F [mobs + MOB_size + BODY.y], k_11
     EXPECT_F [mobs + MOB_size + BODY.vy], k_5
+    cmp     dword [mobs + MOB_size + MOB.type], MOB_ZOMBIE  ; 18 columns off at distance 16: still within K
+    jne     .fail
+    mov     dword [settings + SETTINGS.render_dist], 8      ; at 8 the radius is 10: the frozen one is forgotten
+    call    mobs_step
+    cmp     dword [mobs + MOB_size + MOB.type], MOB_NONE
+    jne     .fail
+    cmp     dword [mobs + MOB.type], MOB_ZOMBIE             ; the one in a ready column is not
+    jne     .fail
+    SETF    [player + BODY.x], 130.5                        ; around the radius
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 10.5
+    call    far_run
+    test    eax, eax
+    jnz     .fail
+    mov     dword [world_origin_x], 512                     ; moving the origin moves both columns alike
+    mov     dword [world_origin_z], -1024
+    call    far_run
+    test    eax, eax
+    jnz     .fail
+    mov     dword [world_origin_x], 0
+    mov     dword [world_origin_z], 0
+    mov     eax, [rsp]
+    mov     [settings + SETTINGS.render_dist], eax
     call    mask64                      ; and the table is 64 slots long all the way
     test    eax, eax
     jnz     .fail
@@ -2860,6 +2953,12 @@ test_entities_remove_box:
     mov     ebx, 1
 .ret:
     call    clear_entities
+    mov     eax, [rsp]
+    mov     [settings + SETTINGS.render_dist], eax
+    mov     dword [world_origin_x], 0
+    mov     dword [world_origin_z], 0
+    call    reset_player
+    add     rsp, 16
     mov     eax, ebx
     pop     r12
     pop     rbx
