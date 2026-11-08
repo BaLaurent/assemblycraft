@@ -399,6 +399,34 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_DRY_GRASS_TOP  324
 %define TILE_DRY_GRASS_SIDE 325
 %define TILE_LAVA           326
+; 0.10.2 grimoire UI tiles (9-slice kinds NINE_*, one tile each, see theme.inc palette)
+%define TILE_NINE0          327         ; 327..342: NINE_* kind k is tile 327 + k
+%define TILE_COMPASS        343         ; web centre ornament, drawn at 32x32
+%define TILE_SLOT_HEAD      344         ; empty-slot glyphs, ink on transparency
+%define TILE_SLOT_CHEST     345
+%define TILE_SLOT_LEGS      346
+%define TILE_SLOT_FEET      347
+%define TILE_SLOT_RING      348
+%define TILE_SLOT_AMULET    349
+%define TILE_QUILL          351         ; quill left of a hovered button label
+%define TILE_SIL0           365         ; character silhouette: 3x6 tile block, sub-tile (r,c) = 365+16r+c
+%define NINE_PAGE           0           ; ui_nine kinds
+%define NINE_LEATHER        1
+%define NINE_SLOT           2
+%define NINE_BUTTON         3
+%define NINE_BUTTON_HOT     4
+%define NINE_BUTTON_OFF     5
+%define NINE_TOOLTIP        6
+%define NINE_RIBBON         7
+%define NINE_BAR            8
+%define NINE_RUNE           9
+%define NINE_SELECT         10
+%define NINE_NOTE           11
+%define NINE_NODE_STAT      12
+%define NINE_NODE_ABIL      13
+%define NINE_NODE_KEY       14
+%define NINE_NODE_PATH      15
+%define NINE_MAX_QUADS      2048
 ; cave column flags (caves.asm cave_flags)
 %define CF_RAVINE      1
 %define CF_PILLAR      2
@@ -538,6 +566,13 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NODE_STAT       0               ; NODEINFO.kind
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
+%define NODE_PATH       3               ; archetype path node (WEBNODE.kind)
+%define NUM_ABILITIES   16              ; ability id = (archetype-1)*4 + slot
+%define ABIL_SHADOWSTEP 12
+%define NUM_KEYSTONES   12
+%define NUM_WEB_NODES   88
+%define WEB_MAX         128
+%define KIT_COMMON_BIT  0x80
 
 %define ATTR_STR        0
 %define ATTR_DEX        1
@@ -1097,6 +1132,24 @@ struc NODEINFO
 endstruc
 %if NODEINFO_size != 24
 %error "NODEINFO must be 24 bytes"
+%endif
+
+; one node of the shared skill web (rpg_web_node)
+struc WEBNODE
+    .name:  resq 1
+    .desc:  resq 1                      ; zstr or 0
+    .kind:  resb 1                      ; NODE_STAT / ABILITY / KEYSTONE / PATH
+    .stat:  resb 1                      ; stat id / ability id / KS id / archetype 1..4
+    .max:   resb 1                      ; max rank
+    .arch:  resb 1                      ; owning archetype 1..4, 0 = bridge
+    .value: resd 1                      ; per rank
+    .x:     resb 1                      ; web cell, signed, screen axes (y down)
+    .y:     resb 1
+    .level: resb 1                      ; level required
+    .pad:   resb 5
+endstruc
+%if WEBNODE_size != 32
+%error "WEBNODE must be 32 bytes"
 %endif
 
 ; rpg_ability_info record: one class ability
