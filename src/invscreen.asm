@@ -1,4 +1,4 @@
-; invscreen.asm - the inventory screens: survival inventory with armor and a 2x2
+; invscreen.asm - the inventory screens: survival inventory with armor, jewelry and a 2x2
 ; crafting grid, the 3x3 crafting-table screen, the furnace and chest screens and the
 ; creative item palette. Immediate mode: every frame draws the panel and its slots,
 ; turns presses on hovered slots into inv_click calls, then draws the tooltip and the
@@ -7,7 +7,10 @@
 ; (recipebook.asm) on the left of the panel; the tooltip of its hovered entry (book_tip) takes the
 ; place of the slot tooltip.
 ; Slot references (inv_click): 0..35 slots, 36..44 grid cells, 45 result, 47..50 armor
-; (all at inv + ref*4), 51.. cells of the open container (inv_container).
+; (all at inv + ref*4), 51.. cells of the open container (inv_container), 78..80 the jewelry cells
+; (ring, ring, amulet; survival inventory only). Gear changes the stats, so every inv_click that
+; changed something is followed by rpg_recompute. A hovered stack shows item_tooltip's lines;
+; with Shift held the equipped item of its kind is shown beside it.
 %include "common.inc"
 default rel
 
@@ -17,13 +20,15 @@ extern game_mode, frame_input, ui_input, inv, craft_size, inv_container
 extern app_goto, app_entered
 extern ui_w, ui_h, ui_mx, ui_my
 extern ui_rect, ui_frame, ui_text, ui_text_width, ui_slot, ui_item_icon, ui_tooltip
-extern inv_click, inv_close_screen
-extern item_names, item_max_stack, i32_to_str
+extern ui_tooltip_lines
+extern inv_click, inv_close_screen, item_tooltip, gear_equipped_for, rpg_recompute
+extern item_max_stack, i32_to_str
 extern book_reset, book_draw, book_ghost_draw, book_tip
 
 %define PANEL_W     176
 %define PANEL_H     166
 %define LABEL_COL   RGBA(220, 220, 220, 255)
+%define GREY_COL    RGBA(170, 170, 170, 255)
 %define PANEL_COL   RGBA(62, 62, 68, 235)
 %define EDGE_COL    RGBA(255, 255, 255, 70)
 %define PAL_VISIBLE 6
@@ -45,15 +50,22 @@ s_creative:   db "Creative", 0
 s_hotbar:     db "Hotbar", 0
 s_arrow:      db "->", 0
 s_armor:      db "Armor", 0
+s_jewelry:    db "Jewelry", 0
+s_equipped:   db "Equipped", 0
 s_furnace:    db "Furnace", 0
 s_chest:      db "Chest", 0
 
 section .bss
-alignb 4
+alignb 8
+hover_ptr:    resq 1                    ; ITEMSTACK under the mouse this frame, 0 = none
+tip_lines:    resq 12                   ; item_tooltip lines of the hovered stack ...
+tip_cols:     resd 12
+cmp_lines:    resq 13                   ; ... and of the equipped one, under an "Equipped" line
+cmp_cols:     resd 13
 s_px:         resd 1                    ; panel origin in GUI units
 s_py:         resd 1
 show_counts:  resd 1                    ; draw stack counts on the slots
-hover_id:     resd 1                    ; item id under the mouse this frame, 0 = none
+hover_pal:    resd 1                    ; the creative palette cell under the mouse: id | 1 << 8
 pal_scroll:   resd 1                    ; creative palette: first visible row
 palette_n:    resd 1                    ; entries in palette, 0 = not built yet
 palette:      resb 256                  ; creative palette: every id with a max stack
@@ -92,7 +104,7 @@ screen_begin:
     sub     rsp, 8
     mov     ebx, esi
     mov     [show_counts], edi
-    mov     dword [hover_id], 0
+    mov     qword [hover_ptr], 0
     mov     byte [book_tip], 0
     mov     eax, [ui_w]
     sub     eax, PANEL_W
@@ -247,11 +259,13 @@ slot_cell:
     mov     edi, r12d
     mov     edx, [ui_input + UIINPUT.shift]
     call    inv_click
+    test    eax, eax
+    jz      .after
+    call    rpg_recompute               ; the click may have moved gear
 .after:
     cmp     byte [rbx + ITEMSTACK.count], 0
     je      .ret
-    movzx   eax, byte [rbx + ITEMSTACK.id]
-    mov     [hover_id], eax
+    mov     [hover_ptr], rbx
 .ret:
     pop     r12
     pop     rbx
@@ -277,7 +291,10 @@ pal_cell:
     call    draw_cell
     test    eax, eax
     jz      .ret
-    mov     [hover_id], r12d
+    mov     eax, [rsp]                  ; the palette cell's stack {id, 1, 0}
+    mov     [hover_pal], eax
+    lea     rax, [hover_pal]
+    mov     [hover_ptr], rax
     cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
     je      .not_left
     xor     ebx, ebx
@@ -491,13 +508,15 @@ container_begin:
     pop     rbp
     ret
 
-; draw_overlay(): the recipe book's tooltip or the hovered slot's (empty cursor only), or the
-; stack carried on the cursor
+; draw_overlay(): the recipe book's tooltip or the hovered stack's item_tooltip (empty cursor
+; only), plus with Shift held the equipped item of its kind on the left of the mouse (drawn first,
+; so the hovered stack's panel stays whole where the two meet), or the stack carried on the cursor
 draw_overlay:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    sub     rsp, 24                     ; [rsp] count text
+    push    r12
+    sub     rsp, 16                     ; [rsp] count text
     lea     rbx, [inv + INVENTORY.cursor]
     cmp     byte [rbx + ITEMSTACK.count], 0
     jne     .cursor
@@ -507,14 +526,42 @@ draw_overlay:
     call    ui_tooltip
     jmp     .ret
 .hover:
-    mov     eax, [hover_id]
+    mov     rbx, [hover_ptr]
+    test    rbx, rbx
+    jz      .ret
+    mov     rdi, rbx
+    lea     rsi, [tip_lines]
+    lea     rdx, [tip_cols]
+    call    item_tooltip
     test    eax, eax
     jz      .ret
-    lea     rcx, [item_names]
-    mov     rdi, [rcx + rax*8]
-    test    rdi, rdi
-    jz      .ret
-    call    ui_tooltip
+    mov     r12d, eax                   ; the hovered stack's lines
+    cmp     dword [ui_input + UIINPUT.shift], 0
+    je      .draw
+    movzx   edi, byte [rbx + ITEMSTACK.id]
+    call    gear_equipped_for
+    test    rax, rax
+    jz      .draw
+    cmp     rax, rbx
+    je      .draw                       ; the hovered stack is the equipped one
+    mov     rdi, rax
+    lea     rsi, [cmp_lines + 8]
+    lea     rdx, [cmp_cols + 4]
+    call    item_tooltip                ; its text lives in the other buffer: the hovered lines stay valid
+    lea     rcx, [s_equipped]
+    mov     [cmp_lines], rcx
+    mov     dword [cmp_cols], GREY_COL
+    lea     esi, [rax + 1]
+    lea     rdi, [cmp_lines]
+    lea     rdx, [cmp_cols]
+    mov     ecx, 1
+    call    ui_tooltip_lines
+.draw:
+    lea     rdi, [tip_lines]
+    mov     esi, r12d
+    lea     rdx, [tip_cols]
+    xor     ecx, ecx
+    call    ui_tooltip_lines
     jmp     .ret
 .cursor:
     movzx   edi, byte [rbx + ITEMSTACK.id]
@@ -550,13 +597,14 @@ draw_overlay:
     mov     r8d, 1
     call    ui_text
 .ret:
-    add     rsp, 24
+    add     rsp, 16
+    pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; screen_inventory(): survival 2x2 inventory with the recipe book, or the creative palette in
-; creative mode
+; screen_inventory(): survival 2x2 inventory with armor and jewelry cells and the recipe book, or
+; the creative palette in creative mode
 screen_inventory:
     push    rbp
     mov     rbp, rsp
@@ -621,6 +669,21 @@ screen_inventory:
     inc     ebx
     cmp     ebx, 4
     jb      .armor
+    lea     rdi, [s_jewelry]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 38]
+    call    label
+    xor     ebx, ebx
+.jewelry:
+    lea     ecx, [rbx + SLOTREF_JEWELRY]
+    lea     rdi, [inv + INVENTORY.jewelry + rbx*4]
+    imul    eax, ebx, 18
+    lea     esi, [r12 + rax + 8]
+    lea     edx, [r13 + 48]
+    call    slot_cell
+    inc     ebx
+    cmp     ebx, 3
+    jb      .jewelry
     mov     edi, r12d
     mov     esi, r13d
     call    draw_player_inv

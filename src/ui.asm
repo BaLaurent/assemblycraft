@@ -11,7 +11,7 @@ global ui_w, ui_h, ui_scale, ui_mx, ui_my, ui_focus
 global ui_init, ui_begin, ui_rect, ui_frame, ui_panel
 global ui_text, ui_text_width, ui_text_centered
 global ui_button, ui_slider, ui_textfield, ui_slot
-global ui_item_icon, ui_icon9, ui_tooltip, ui_tile_icon
+global ui_item_icon, ui_icon9, ui_tooltip, ui_tooltip_lines, ui_tile_icon
 
 extern settings, ui_input, audio_play, tex_id
 extern font8x8, item_icon, item_max_stack, item_durability
@@ -1285,6 +1285,99 @@ ui_tooltip:
     call    ui_text
 .ret:
     add     rsp, 200
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_tooltip_lines(rdi lines qword[n], esi n, rdx colours dword[n], ecx side): a panel of n
+; one-line texts, each in its own colour. The panel is the widest line + 6 wide and 11 * n + 3
+; high and sits at y = my - 12; side 0 puts it right of the mouse (x = mx + 12), side 1 left of
+; it (its right edge at mx - 12). It stays inside the screen. Nothing is drawn for n = 0.
+; Frame: [rsp] panel x, +4 y, +8 width, +12 height, +16 line index.
+ui_tooltip_lines:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24
+    mov     rbx, rdi                    ; lines
+    mov     r12d, esi                   ; n
+    mov     r13, rdx                    ; colours
+    mov     r14d, ecx                   ; side
+    xor     r15d, r15d                  ; widest line
+    test    r12d, r12d
+    jz      .ret
+    mov     dword [rsp + 16], 0
+.measure:
+    mov     eax, [rsp + 16]
+    mov     rdi, [rbx + rax*8]
+    mov     esi, 1
+    call    ui_text_width
+    cmp     eax, r15d
+    cmova   r15d, eax
+    inc     dword [rsp + 16]
+    mov     eax, [rsp + 16]
+    cmp     eax, r12d
+    jb      .measure
+    add     r15d, 6                     ; text + 3 padding each side
+    mov     [rsp + 8], r15d
+    imul    eax, r12d, 11
+    add     eax, 3
+    mov     [rsp + 12], eax
+    mov     eax, [ui_mx]
+    sub     eax, 12
+    sub     eax, r15d                   ; side 1: the panel ends at mx - 12
+    lea     ecx, [rax + r15 + 24]       ; side 0: x = mx + 12
+    test    r14d, r14d
+    cmovz   eax, ecx
+    mov     ecx, [ui_w]
+    sub     ecx, r15d
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     [rsp], eax
+    mov     eax, [ui_my]
+    sub     eax, 12
+    mov     ecx, [ui_h]
+    sub     ecx, [rsp + 12]
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
+    mov     [rsp + 4], eax
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    mov     edx, [rsp + 8]
+    mov     ecx, [rsp + 12]
+    call    ui_panel
+    mov     dword [rsp + 16], 0
+.line:
+    mov     eax, [rsp + 16]
+    mov     rdi, [rbx + rax*8]
+    mov     ecx, [r13 + rax*4]
+    imul    edx, eax, 11
+    add     edx, [rsp + 4]
+    add     edx, 3
+    mov     esi, [rsp]
+    add     esi, 3
+    mov     r8d, 1
+    call    ui_text
+    inc     dword [rsp + 16]
+    mov     eax, [rsp + 16]
+    cmp     eax, r12d
+    jb      .line
+.ret:
+    add     rsp, 24
     pop     r15
     pop     r14
     pop     r13

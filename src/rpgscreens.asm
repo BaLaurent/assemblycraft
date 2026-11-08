@@ -1,28 +1,33 @@
-; rpgscreens.asm - the RPG screens: class selection, skill tree, merchant trade and the
-; elder's quest dialog. Immediate mode like invscreen.asm / menus.asm: every screen_*() runs
-; once per frame after ui_begin (app.asm draw_frame), reads ui_input / frame_input and changes
-; state with app_goto. A screen that acts returns at once, so one click never reaches two
+; rpgscreens.asm - the RPG screens: class selection, skill tree, character sheet, merchant trade
+; and the elder's quest dialog. Immediate mode like invscreen.asm / menus.asm: every screen_*()
+; runs once per frame after ui_begin (app.asm draw_frame), reads ui_input / frame_input and
+; changes state with app_goto. A screen that acts returns at once, so one click never reaches two
 ; widgets.
-;  - ST_SKILLS, ST_TRADE and ST_DIALOG close (back to ST_PLAYING) on Escape, the inventory
-;    key or the skills key. The first frame after a state change only clears app_entered:
-;    the key edge that opened the screen is still set in that frame and must not close it.
+;  - ST_SKILLS, ST_CHARACTER, ST_TRADE and ST_DIALOG close (back to ST_PLAYING) on Escape, the
+;    inventory key or the skills key. The first frame after a state change only clears
+;    app_entered: the key edge that opened the screen is still set in that frame and must not
+;    close it. Tab switches between the skill tree and the character sheet.
 ;  - ST_CLASS cannot be closed: Escape saves and quits to the title, a card's button picks
 ;    the class (rpg_set_class) and starts playing.
-; All progression data (class cards, node texts, branch names, quests, trades) comes from
-; rpg.asm / quests.asm (Module API); the only text owned here is the UI wording.
+; All progression data (class cards, node texts, branch names, stats, attributes, quests, trades)
+; comes from rpg.asm / quests.asm (Module API); the only text owned here is the UI wording.
 %include "common.inc"
+%include "gl.inc"
 default rel
 
-global screen_class, screen_skills, screen_trade, screen_dialog
+global screen_class, screen_skills, screen_character, screen_trade, screen_dialog
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
 extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_centered
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
 extern app_goto, app_quit_to_title, key_name
-extern item_names, inv_count, i32_to_str, str_append
-extern rpg_state, rpg_class, rpg_level, rpg_points, rpg_xp_need, rpg_rank
+extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_points
+extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
+extern rpg_state, rpg_stats, rpg_class, rpg_level, rpg_points, rpg_xp_need, rpg_rank
 extern rpg_can_spend, rpg_spend, rpg_set_class, rpg_class_info, rpg_node_info
-extern rpg_ability_info, rpg_ability_unlocked, rpg_branch_name
+extern rpg_branch_name, rpg_stat_info, rpg_format_stat, rpg_recompute
+extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
+extern rpg_respec_cost, rpg_respec
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 extern trade_offer, trade_can, trade_execute
 
@@ -41,6 +46,7 @@ extern trade_offer, trade_can, trade_execute
 %define COL_SPEND   RGBA(255, 255, 255, 200)
 %define COL_LOCKED  RGBA(90, 90, 90, 255)
 %define XP_COL      RGBA(120, 220, 60, 255)
+%define COL_KEYSTONE RGBA(255, 200, 60, 255)
 
 ; ---- geometry (GUI units) -----------------------------------------------------------------
 %define CARD_W      100                 ; class cards
@@ -49,45 +55,97 @@ extern trade_offer, trade_can, trade_execute
 %define CARD_STEP   105
 %define CARD_X0     210                 ; card 0 is at cx - CARD_X0
 
-; The skill panel is wider than the plan's 260 so the longest ability footer
-; ("Q: Shadowstep  G: Smoke Bomb  V: Blade Dance", 281 units) fits on one line; everything the
-; plan positions relative to the 260 panel is shifted right by half the difference.
-%define SK_W        292
-%define SK_H        210
-%define SK_SHIFT    ((SK_W - 260) / 2)
-%define SK_NX       (38 + SK_SHIFT)     ; node column 0 x offset (columns are 80 apart)
-%define SK_NY       44                  ; node row 0 y offset (rows are 40 apart)
-%define SK_CONN_X   (49 + SK_SHIFT)
-%define SK_BRANCH_X (50 + SK_SHIFT)
-%define FOOT_GAP    8                   ; between the three ability hints
+%define SK_W        270                 ; skill panel: 3 branches (SK_DX apart) of 6 tiers (SK_DY
+%define SK_H        232                 ; apart) of 24 x 24 nodes, node (0, 0) at (SK_NX, SK_NY)
+%define SK_NX       33
+%define SK_NY       30
+%define SK_DX       90
+%define SK_DY       30
+
+%define CH_W        300                 ; character sheet: attributes, summary, stat list
+%define CH_H        232
+%define CH_ROWS     16                  ; stat list: rows per column (a power of two) ...
+%define CH_COL0     8                   ; ... the x of its two columns ...
+%define CH_COL1     154
+%define CH_LIST_Y   70                  ; ... and the y of its first row
+%define CH_COLW     142                 ; widest stat line a column holds (pen advance)
+
+%define SH_OFFENSE  0xF0                ; sheet_order entries beyond the stat ids: group headers, end
+%define SH_DEFENSE  0xF1
+%define SH_UTILITY  0xF2
+%define SH_END      0xFF
 
 %define TR_W        220                 ; merchant panel
-%define TR_H        200
+%define TR_H        236
 %define DL_W        260                 ; elder panel
-%define DL_H        120
+%define DL_H        144
 
 %define TIP_MAXW    320                 ; skill tooltip wraps here
 %define HINT_COL    RGBA(255, 150, 110, 255)
 
 section .rodata
 align 4
-tier_req:       dd 1, 4, 9, 15          ; level needed by tier t (skill-tree rule, rpg.asm)
+tier_req:       dd 1, 4, 9, 15, 22, 30  ; level needed by tier t (skill-tree rule, rpg.asm)
+attr_tiles:     db TILE_ATTR_STR, TILE_ATTR_DEX, TILE_ATTR_INT, TILE_ATTR_VIT
+
+; the stat list in display order: group header markers and stat ids
+sheet_order:
+    db SH_OFFENSE, STAT_MELEE_DMG, STAT_RANGED_DMG, STAT_SPELL_DMG, STAT_ALL_DMG, STAT_WEAPON_DMG
+    db STAT_CRIT_CHANCE, STAT_CRIT_DMG, STAT_ATTACK_SPEED
+    db STAT_FIRE_DMG, STAT_FROST_DMG, STAT_SHOCK_DMG, STAT_POISON_DMG
+    db STAT_ADD_FIRE, STAT_ADD_FROST, STAT_ADD_SHOCK, STAT_ADD_POISON
+    db STAT_BLEED_CHANCE, STAT_DOT_DMG, STAT_ELITE_DMG, STAT_AREA, STAT_BACKSTAB, STAT_LIFESTEAL
+    db STAT_LIFE_ON_KILL
+    db SH_DEFENSE, STAT_MAX_HEALTH, STAT_ARMOR_BONUS, STAT_RES_FIRE, STAT_RES_FROST
+    db STAT_RES_SHOCK, STAT_RES_POISON, STAT_LIFE_REGEN, STAT_THORNS, STAT_BLOCK_COST
+    db STAT_PARRY_WINDOW, STAT_DODGE_COST
+    db SH_UTILITY, STAT_MAX_MANA, STAT_MANA_REGEN, STAT_MAX_STAMINA, STAT_STAMINA_REGEN
+    db STAT_MOVE_SPEED, STAT_COOLDOWN_RED, STAT_ARROW_SAVE, STAT_XP_BONUS, STAT_GOLD_FIND
+    db STAT_MAGIC_FIND
+    db SH_END
+sheet_order_end:
+%if sheet_order_end - sheet_order != NUM_STATS + 4
+%error "sheet_order lists every stat once, the three headers and the end marker"
+%endif
+align 8
+sheet_head:     dq s_offense, s_defense, s_utility
 
 s_choose_class: db "Choose your class", 0
 s_choose:       db "Choose", 0
 s_level_sep:    db " - Level ", 0
 s_points:       db "Points: ", 0
+s_attr_points:  db "Attribute points: ", 0
 s_slash:        db "/", 0
 s_space:        db " ", 0
 s_colon_sp:     db ": ", 0
 s_per_rank:     db " per rank", 0
+s_keystone:     db " (Keystone)", 0
+s_key:          db " - Key: ", 0
 s_needs_level:  db "- needs level ", 0
 s_needs_prev:   db "- needs previous skill", 0
+s_tab_char:     db "Tab: Character", 0
+s_tab_skills:   db "Tab: Skills", 0
+
+s_offense:      db "Offense", 0
+s_defense:      db "Defense", 0
+s_utility:      db "Utility", 0
+s_health:       db "Health ", 0
+s_armor:        db "Armor ", 0
+s_armor_mid:    db " (-", 0
+s_armor_end:    db "% damage)", 0
+s_hit:          db "Hit ", 0
+s_crit:         db "  Crit ", 0
+s_attacks:      db "Attacks ", 0
+s_per_s:        db "/s", 0
+s_plus:         db "+", 0
+s_empty:        db 0
 
 s_merchant:     db "Merchant", 0
 s_coins:        db "Coins: ", 0
 s_trade:        db "Trade", 0
 s_arrow:        db "->", 0
+s_random:       db "Random magic+ ", 0
+s_tier_sep:     db ", tier ", 0
 
 s_elder:        db "Elder", 0
 s_saved:        db "The realm is saved. Rest, hero.", 0
@@ -96,16 +154,20 @@ s_progress:     db "Progress: ", 0
 s_accept:       db "Accept", 0
 s_leave:        db "Leave", 0
 s_complete:     db "Complete", 0
+s_reset:        db "Reset skills: ", 0
+s_coins_sfx:    db " coins", 0
 
 section .bss
 alignb 8
 s_px:           resd 1                  ; panel origin of the screen being drawn
 s_py:           resd 1
+sheet_scroll:   resd 1                  ; first listed row of the character sheet's stat list
 hdr_buf:        resb 64                 ; "<class> - Level N"
-pts_buf:        resb 32                 ; "Points: N"
-coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / counts
+pts_buf:        resb 32                 ; "Points: N" / "Attribute points: N"
+coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / counts / summary lines
 rank_buf:       resb 16                 ; "r/m" on a skill node
-seg_buf:        resb 3 * 64             ; "<key>: <ability>" footer hints
+fmt_buf:        resb 48                 ; one formatted stat
+sheet_rows:     resb 64                 ; the stat list's visible rows (sheet_build)
 tip_buf:        resb 256                ; skill tooltip text
 tip_hint:       resb 64                 ; ... and its requirement hint
 tip_row:        resb 128                ; one wrapped tooltip row
@@ -639,17 +701,60 @@ screen_class:
 
 ; ---- skill tree -----------------------------------------------------------------------------------
 
-; screen_skills(): header, xp bar, three branches of four nodes, the ability hints and a
-; tooltip for the hovered node. A click on a node spends a skill point (rpg_spend).
-; Locals: [rsp] hovered node or -1, [rsp+4] class, [rsp+8] points, [rsp+16] can_spend result
-; of the node being drawn, [rsp+20] its border colour, [rsp+24] node x, [rsp+28] node y,
-; [rsp+32] its rank, [rsp+40..48] widths of the three ability hints, [rsp+52] tier,
-; [rsp+56] level required by the tier
+; screen_header(edi class, rsi points label, edx points, ecx panel width): "<class> - Level N" at
+; the top left of the panel being drawn, "<label><points>" right aligned at its top right (green
+; while there are points). Locals: [rsp] points, [rsp+4] panel width
+screen_header:
+    ENTER_FRAME 24
+    mov     [rsp], edx
+    mov     [rsp + 4], ecx
+    mov     r14, rsi
+    lea     r15, [hdr_buf]
+    call    rpg_class_info
+    APPP    [rax + CLASSINFO.name]
+    APPZ    s_level_sep
+    call    rpg_level
+    APPN    eax
+    mov     byte [r15], 0
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    TXTL    hdr_buf, r12, 8, r13, 5, WHITE
+    lea     r15, [pts_buf]
+    APPP    r14
+    APPN    dword [rsp]
+    mov     byte [r15], 0
+    lea     rdi, [pts_buf]
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, [rsp + 4]
+    lea     esi, [r12 + rsi - 8 + 1]    ; right aligned at px + width - 8
+    sub     esi, eax
+    mov     ecx, GREY
+    mov     eax, GREEN
+    cmp     dword [rsp], 0
+    cmovg   ecx, eax
+    lea     rdi, [pts_buf]
+    lea     edx, [r13 + 5]
+    mov     r8d, 1
+    call    ui_text
+    LEAVE_FRAME 24
+
+; screen_skills(): header, xp bar, three branches of six nodes and a tooltip for the hovered node.
+; A click on a node spends a skill point (rpg_spend); Tab opens the character sheet.
+; Locals: [rsp] hovered node or -1, [rsp+4] class, [rsp+8] points, [rsp+16] can_spend result of the
+; node being drawn, [rsp+20] its border colour, [rsp+24] node x, [rsp+28] node y, [rsp+32] its
+; rank, [rsp+36] tier, [rsp+40] level required by the tier
 screen_skills:
-    ENTER_FRAME 72
+    ENTER_FRAME 56
     call    close_check
     test    eax, eax
     jnz     .ret
+    cmp     dword [ui_input + UIINPUT.key_pressed], KEY_TAB
+    jne     .no_tab
+    mov     edi, ST_CHARACTER
+    call    app_goto
+    jmp     .ret
+.no_tab:
     call    rpg_class
     mov     [rsp + 4], eax
     lea     ecx, [rax - 1]
@@ -664,32 +769,33 @@ screen_skills:
     call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
-    ; ---- hovered node (column = dx / 80, tier = dy / 40, each node 24 wide) and the click
+    ; ---- hovered node (branch = dx / SK_DX, tier = dy / SK_DY, each node 24 wide) and the click
     mov     dword [rsp], -1
     mov     eax, [ui_mx]
     sub     eax, r12d
     sub     eax, SK_NX
     js      .hover_done
     xor     edx, edx
-    mov     ecx, 80
+    mov     ecx, SK_DX
     div     ecx
     cmp     edx, 24
     jae     .hover_done
     cmp     eax, 2
     ja      .hover_done
-    mov     esi, eax                    ; column
+    mov     esi, eax                    ; branch
     mov     eax, [ui_my]
     sub     eax, r13d
     sub     eax, SK_NY
     js      .hover_done
     xor     edx, edx
-    mov     ecx, 40
+    mov     ecx, SK_DY
     div     ecx
     cmp     edx, 24
     jae     .hover_done
-    cmp     eax, 3
+    cmp     eax, NODES_PER_BRANCH - 1
     ja      .hover_done
-    lea     eax, [rax + rsi*4]          ; node = branch * 4 + tier
+    imul    esi, esi, NODES_PER_BRANCH
+    add     eax, esi                    ; node = branch * 6 + tier
     mov     [rsp], eax
     cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
     je      .hover_done
@@ -697,37 +803,16 @@ screen_skills:
     call    rpg_spend
 .hover_done:
     ; ---- header: "<class> - Level N" and "Points: N"
-    lea     r15, [hdr_buf]
-    mov     edi, [rsp + 4]
-    call    rpg_class_info
-    APPP    [rax + CLASSINFO.name]
-    APPZ    s_level_sep
-    call    rpg_level
-    APPN    eax
-    mov     byte [r15], 0
-    TXTL    hdr_buf, r12, 8, r13, 6, WHITE
-    lea     r15, [pts_buf]
-    APPZ    s_points
     call    rpg_points
     mov     [rsp + 8], eax
-    APPN    eax
-    mov     byte [r15], 0
-    lea     rdi, [pts_buf]
-    mov     esi, 1
-    call    ui_text_width
-    lea     esi, [r12 + SK_W - 8 + 1]   ; right aligned at px + SK_W - 8
-    sub     esi, eax
-    mov     ecx, GREY
-    mov     eax, GREEN
-    cmp     dword [rsp + 8], 0
-    cmovg   ecx, eax
-    lea     rdi, [pts_buf]
-    lea     edx, [r13 + 6]
-    mov     r8d, 1
-    call    ui_text
+    mov     edx, eax
+    mov     edi, [rsp + 4]
+    lea     rsi, [s_points]
+    mov     ecx, SK_W
+    call    screen_header
     ; ---- xp bar: full at the maximum level
     lea     edi, [r12 + 8]
-    lea     esi, [r13 + 18]
+    lea     esi, [r13 + 15]
     mov     edx, SK_W - 16
     mov     ecx, 3
     mov     r8d, RGBA(0, 0, 0, 160)
@@ -750,22 +835,22 @@ screen_skills:
     test    ecx, ecx
     jz      .xp_done
     lea     edi, [r12 + 8]
-    lea     esi, [r13 + 18]
+    lea     esi, [r13 + 15]
     mov     edx, ecx
     mov     ecx, 3
     mov     r8d, XP_COL
     call    ui_rect
 .xp_done:
-    ; ---- branch names
+    ; ---- branch names, centred over their column of nodes
     xor     ebx, ebx
 .branch:
     mov     edi, [rsp + 4]
     mov     esi, ebx
     call    rpg_branch_name
     mov     rdi, rax
-    imul    esi, ebx, 80
-    lea     esi, [rsi + r12 + SK_BRANCH_X]
-    lea     edx, [r13 + 28]
+    imul    esi, ebx, SK_DX
+    lea     esi, [rsi + r12 + SK_NX + 12]
+    lea     edx, [r13 + 21]
     mov     ecx, LABEL_COL
     mov     r8d, 1
     call    ui_text_centered
@@ -776,29 +861,29 @@ screen_skills:
     xor     ebx, ebx
 .conn:
     mov     eax, ebx
-    and     eax, 3
-    cmp     eax, 3
+    xor     edx, edx
+    mov     ecx, NODES_PER_BRANCH
+    div     ecx                         ; eax = branch, edx = tier
+    cmp     edx, NODES_PER_BRANCH - 1
     je      .conn_next                  ; the last tier has nothing below it
+    mov     r14d, eax
+    mov     r15d, edx
     mov     edi, ebx
     call    rpg_rank
     mov     r8d, COL_LOCKED
     mov     edx, COL_SPEND
     test    eax, eax
     cmovnz  r8d, edx
-    mov     eax, ebx
-    shr     eax, 2
-    imul    edi, eax, 80
-    lea     edi, [rdi + r12 + SK_CONN_X]
-    mov     eax, ebx
-    and     eax, 3
-    imul    esi, eax, 40
-    lea     esi, [rsi + r13 + 24 + SK_NY]
+    imul    edi, r14d, SK_DX
+    lea     edi, [rdi + r12 + SK_NX + 11]
+    imul    esi, r15d, SK_DY
+    lea     esi, [rsi + r13 + SK_NY + 24]
     mov     edx, 2
-    mov     ecx, 16
+    mov     ecx, SK_DY - 24
     call    ui_rect
 .conn_next:
     inc     ebx
-    cmp     ebx, V4_NODES
+    cmp     ebx, NUM_NODES
     jb      .conn
     ; ---- nodes
     xor     ebx, ebx
@@ -814,16 +899,16 @@ screen_skills:
     call    rpg_can_spend
     mov     [rsp + 16], eax             ; 0 = a point can be spent here now
     mov     eax, ebx
-    shr     eax, 2
-    imul    eax, eax, 80
+    xor     edx, edx
+    mov     ecx, NODES_PER_BRANCH
+    div     ecx                         ; eax = branch, edx = tier
+    imul    eax, eax, SK_DX
     lea     eax, [rax + r12 + SK_NX]
     mov     [rsp + 24], eax
-    mov     eax, ebx
-    and     eax, 3
-    imul    eax, eax, 40
-    lea     eax, [rax + r13 + SK_NY]
-    mov     [rsp + 28], eax
-    ; border: maxed, ranked, spendable, locked (in that priority)
+    imul    edx, edx, SK_DY
+    lea     edx, [rdx + r13 + SK_NY]
+    mov     [rsp + 28], edx
+    ; border: maxed, ranked, spendable, locked (in that priority); a keystone is always gold
     movzx   ecx, byte [r14 + NODEINFO.max]
     mov     eax, COL_LOCKED
     mov     edx, COL_SPEND
@@ -837,6 +922,9 @@ screen_skills:
     cmp     edx, ecx
     cmovae  eax, esi
 .border_set:
+    mov     edx, COL_KEYSTONE
+    cmp     byte [r14 + NODEINFO.kind], NODE_KEYSTONE
+    cmove   eax, edx
     mov     [rsp + 20], eax
     mov     edi, [rsp + 24]
     mov     esi, [rsp + 28]
@@ -859,19 +947,42 @@ screen_skills:
     mov     ecx, 24
     mov     r8d, [rsp + 20]
     call    ui_frame
-    ; icon: the stat's glyph, or for an ability node (stat = its slot) the class's ability icon
+    cmp     byte [r14 + NODEINFO.kind], NODE_KEYSTONE
+    jne     .icon_sel
+    mov     edi, [rsp + 24]             ; a keystone's frame is two units thick
+    inc     edi
+    mov     esi, [rsp + 28]
+    inc     esi
+    mov     edx, 22
+    mov     ecx, 22
+    mov     r8d, [rsp + 20]
+    call    ui_frame
+    ; icon: a stat node shows its stat's glyph, an ability node its class's ability icon (slots
+    ; 1 and 2 follow the 0.7 ability tiles, slot 3 has its own row), a keystone its star
+.icon_sel:
     movzx   eax, byte [r14 + NODEINFO.kind]
-    test    eax, eax
-    jnz     .ability_icon
-    movzx   eax, byte [r14 + NODEINFO.stat]
-    add     eax, TILE_STAT0
+    cmp     eax, NODE_ABILITY
+    je      .ability_icon
+    cmp     eax, NODE_KEYSTONE
+    je      .keystone_icon
+    movzx   edi, byte [r14 + NODEINFO.stat]
+    call    rpg_stat_info
+    movzx   eax, byte [rax + STATINFO.icon]
+    jmp     .icon
+.keystone_icon:
+    mov     eax, TILE_KEYSTONE
     jmp     .icon
 .ability_icon:
-    movzx   eax, byte [r14 + NODEINFO.stat]
+    movzx   eax, byte [r14 + NODEINFO.stat]     ; the ability slot
     mov     ecx, [rsp + 4]
-    dec     ecx
+    dec     ecx                         ; class - 1
+    cmp     eax, 2
+    ja      .slot3
     lea     ecx, [rcx + rcx*2]
     lea     eax, [rax + rcx + TILE_ABILITY0]
+    jmp     .icon
+.slot3:
+    lea     eax, [rcx + TILE_ABILITY3_0]
 .icon:
     mov     edi, eax
     mov     esi, [rsp + 24]
@@ -908,62 +1019,12 @@ screen_skills:
     mov     r8d, 1
     call    ui_text
     inc     ebx
-    cmp     ebx, V4_NODES
+    cmp     ebx, NUM_NODES
     jb      .node
-    ; ---- footer: "<key>: <ability>" for the three slots, centred, locked ones grey
-    xor     ebx, ebx
-.seg:
-    lea     rcx, [settings + SETTINGS.keys]
-    lea     eax, [rbx + BIND_ABILITY1]
-    mov     edi, [rcx + rax*4]
-    imul    eax, ebx, 64
-    lea     rsi, [seg_buf]
-    add     rsi, rax
-    call    key_name
-    mov     r15, rax
-    APPZ    s_colon_sp
-    mov     edi, [rsp + 4]
-    mov     esi, ebx
-    call    rpg_ability_info
-    APPP    [rax + ABILINFO.name]
-    mov     byte [r15], 0
-    imul    eax, ebx, 64
-    lea     rdi, [seg_buf]
-    add     rdi, rax
-    mov     esi, 1
-    call    ui_text_width
-    mov     [rsp + 40 + rbx*4], eax
-    inc     ebx
-    cmp     ebx, 3
-    jb      .seg
-    mov     eax, [rsp + 40]
-    add     eax, [rsp + 44]
-    add     eax, [rsp + 48]
-    sub     eax, 3                      ; trailing gaps
-    add     eax, 2 * FOOT_GAP
-    shr     eax, 1
-    lea     r15d, [r12 + SK_W / 2]
-    sub     r15d, eax                   ; x of the first hint
-    xor     ebx, ebx
-.fdraw:
-    mov     edi, ebx
-    call    rpg_ability_unlocked
-    mov     ecx, GREY
-    mov     edx, WHITE
-    test    eax, eax
-    cmovnz  ecx, edx
-    imul    eax, ebx, 64
-    lea     rdi, [seg_buf]
-    add     rdi, rax
-    mov     esi, r15d
-    lea     edx, [r13 + 196]
-    mov     r8d, 1
-    call    ui_text
-    lea     r15d, [r15 + rax + FOOT_GAP - 1]
-    inc     ebx
-    cmp     ebx, 3
-    jb      .fdraw
-    ; ---- tooltip: "<name> r/m: <desc>[ per rank][ - needs level N | - needs previous skill]"
+    TXTC    s_tab_char, r12, SK_W / 2, r13, 214, GREY
+    ; ---- tooltip: "<name>[ (Keystone)] r/m: <text>", the text being the stat's value per rank,
+    ; the ability's description and its key, or the keystone's description; then
+    ; "- needs level N" or "- needs previous skill" when the node is still out of reach
     mov     eax, [rsp]
     test    eax, eax
     js      .ret
@@ -973,6 +1034,10 @@ screen_skills:
     mov     r14, rax
     lea     r15, [tip_buf]
     APPP    [r14 + NODEINFO.name]
+    cmp     byte [r14 + NODEINFO.kind], NODE_KEYSTONE
+    jne     .tip_rank
+    APPZ    s_keystone
+.tip_rank:
     APPZ    s_space
     mov     edi, [rsp]
     call    rpg_rank
@@ -981,31 +1046,53 @@ screen_skills:
     movzx   eax, byte [r14 + NODEINFO.max]
     APPN    eax
     APPZ    s_colon_sp
-    APPP    [r14 + NODEINFO.desc]
-    cmp     byte [r14 + NODEINFO.kind], 0
-    jne     .no_per_rank
+    cmp     byte [r14 + NODEINFO.kind], NODE_STAT
+    jne     .tip_desc
+    movzx   edi, byte [r14 + NODEINFO.stat]     ; a stat node has no text of its own
+    mov     esi, [r14 + NODEINFO.value]
+    lea     rdx, [fmt_buf]
+    call    rpg_format_stat
+    APPP    rax
     APPZ    s_per_rank
-.no_per_rank:
+    jmp     .tip_done
+.tip_desc:
+    APPP    [r14 + NODEINFO.desc]
+    cmp     byte [r14 + NODEINFO.kind], NODE_ABILITY
+    jne     .tip_done
+    APPZ    s_key
+    movzx   eax, byte [r14 + NODEINFO.stat]     ; slots 1 and 2 follow ability key 1, slot 3 has its own
+    lea     edx, [rax + BIND_ABILITY1]
+    mov     ecx, BIND_ABILITY4
+    cmp     eax, 3
+    cmove   edx, ecx
+    lea     rcx, [settings + SETTINGS.keys]
+    mov     edi, [rcx + rdx*4]
+    mov     rsi, r15
+    call    key_name
+    mov     r15, rax
+.tip_done:
     mov     byte [r15], 0
     lea     r15, [tip_hint]
     mov     byte [r15], 0               ; empty unless a requirement is missing
     mov     eax, [rsp]
-    and     eax, 3
-    mov     [rsp + 52], eax             ; tier
+    xor     edx, edx
+    mov     ecx, NODES_PER_BRANCH
+    div     ecx
+    mov     [rsp + 36], edx             ; tier
     lea     rcx, [tier_req]
-    mov     eax, [rcx + rax*4]
-    mov     [rsp + 56], eax             ; level the tier asks for
+    mov     eax, [rcx + rdx*4]
+    mov     [rsp + 40], eax             ; level the tier asks for
     call    rpg_level
-    cmp     eax, [rsp + 56]
+    cmp     eax, [rsp + 40]
     jae     .level_ok
     APPZ    s_needs_level
-    APPN    dword [rsp + 56]
+    APPN    dword [rsp + 40]
     jmp     .hint_done
 .level_ok:
-    cmp     dword [rsp + 52], 0
+    cmp     dword [rsp + 36], 0
     je      .hint_done
     mov     edi, [rsp]
-    dec     edi                         ; the node above in the same branch
+    dec     edi                         ; the previous node of the same branch
     call    rpg_rank
     test    eax, eax
     jnz     .hint_done
@@ -1016,13 +1103,388 @@ screen_skills:
     lea     rsi, [tip_hint]
     call    tooltip_wrapped
 .ret:
-    LEAVE_FRAME 72
+    LEAVE_FRAME 56
+
+; ---- character sheet --------------------------------------------------------------------------------
+
+; sheet_build() -> eax rows: the visible rows of the stat list in display order, in sheet_rows: a
+; group header marker (SH_OFFENSE..SH_UTILITY) or a stat id. A stat is listed when its value is
+; not 0, or it is max health, crit chance or max stamina (leaf)
+sheet_build:
+    lea     r8, [rpg_stats]
+    lea     rsi, [sheet_order]
+    lea     rdi, [sheet_rows]
+    xor     ecx, ecx
+.next:
+    movzx   eax, byte [rsi]
+    inc     rsi
+    cmp     eax, SH_END
+    je      .done
+    cmp     eax, SH_OFFENSE
+    jae     .keep
+    cmp     dword [r8 + rax*4], 0
+    jne     .keep
+    cmp     eax, STAT_MAX_HEALTH
+    je      .keep
+    cmp     eax, STAT_CRIT_CHANCE
+    je      .keep
+    cmp     eax, STAT_MAX_STAMINA
+    jne     .next
+.keep:
+    mov     [rdi + rcx], al
+    inc     ecx
+    jmp     .next
+.done:
+    mov     eax, ecx
+    ret
+
+; stat_compact(edi stat, rsi formatted, rdx out) -> rax out: "<label>: <number>[%]" for a stat whose
+; rpg_format_stat text (sign, number, then a suffix that starts with '%' or a space) does not fit a
+; column. The number is copied up to the first space, so a '%' stays with it.
+stat_compact:
+    ENTER_FRAME 8
+    mov     r12, rdx
+    mov     r13, rsi
+    call    rpg_stat_info
+    mov     r15, r12
+    APPP    [rax + STATINFO.label]
+    APPZ    s_colon_sp
+.copy:
+    mov     al, [r13]
+    test    al, al
+    jz      .done
+    cmp     al, ' '
+    je      .done
+    mov     [r15], al
+    inc     r15
+    inc     r13
+    jmp     .copy
+.done:
+    mov     byte [r15], 0
+    mov     rax, r12
+    LEAVE_FRAME 8
+
+; plus_box(edi x, esi y, edx enabled) -> eax 1 when clicked: a 9 x 9 "+" button (the click sound is
+; played by whatever the click does)
+plus_box:
+    ENTER_FRAME 24
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    xor     ebx, ebx                    ; hovered (a disabled button never is)
+    test    r14d, r14d
+    jz      .draw
+    mov     edx, 9
+    mov     ecx, 9
+    call    hit
+    mov     ebx, eax
+.draw:
+    mov     r8d, RGBA(255, 255, 255, 16)
+    mov     eax, RGBA(255, 255, 255, 38)
+    mov     ecx, RGBA(255, 255, 255, 77)
+    test    r14d, r14d
+    cmovnz  r8d, eax
+    test    ebx, ebx
+    cmovnz  r8d, ecx
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, 9
+    mov     ecx, 9
+    call    ui_rect
+    test    ebx, ebx
+    jz      .plus
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, 9
+    mov     ecx, 9
+    mov     r8d, RGBA(255, 255, 255, 128)
+    call    ui_frame
+.plus:
+    lea     rdi, [s_plus]
+    lea     esi, [r12 + 4]
+    lea     edx, [r13 + 1]
+    mov     ecx, WHITE
+    mov     eax, GREY
+    test    r14d, r14d
+    cmovz   ecx, eax
+    mov     r8d, 1
+    call    ui_text_centered
+    xor     eax, eax
+    test    ebx, ebx
+    jz      .ret
+    cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
+    setne   al
+.ret:
+    LEAVE_FRAME 24
+
+; screen_character(): attribute rows (a "+" box spends an attribute point, Shift up to five), a
+; summary of health, armor and the held weapon, and every stat in two columns that the wheel
+; scrolls; Tab opens the skill tree. The stats are recomputed first: gear changes them.
+; Locals: [rsp] hovered attribute or -1, [rsp+4] class, [rsp+8] attribute points, [rsp+12]
+; combat_weapon_preview {hit, crit hit, attacks per 10 s}, and of the stat row being drawn: [rsp+24]
+; x, [rsp+28] y, [rsp+32] stat, [rsp+36] width of its text
+screen_character:
+    ENTER_FRAME 40
+    cmp     dword [app_entered], 0
+    je      .seen
+    mov     dword [sheet_scroll], 0     ; a fresh visit starts at the top of the list
+.seen:
+    call    close_check
+    test    eax, eax
+    jnz     .ret
+    cmp     dword [ui_input + UIINPUT.key_pressed], KEY_TAB
+    jne     .no_tab
+    mov     edi, ST_SKILLS
+    call    app_goto
+    jmp     .ret
+.no_tab:
+    call    rpg_class
+    mov     [rsp + 4], eax
+    lea     ecx, [rax - 1]
+    cmp     ecx, NUM_CLASSES
+    jb      .have_class
+    mov     edi, ST_PLAYING             ; no class yet: nothing to show
+    call    app_goto
+    jmp     .ret
+.have_class:
+    call    rpg_recompute
+    mov     edi, CH_W
+    mov     esi, CH_H
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    call    rpg_attr_points
+    mov     [rsp + 8], eax
+    mov     edx, eax
+    mov     edi, [rsp + 4]
+    lea     rsi, [s_attr_points]
+    mov     ecx, CH_W
+    call    screen_header
+    ; ---- attribute rows: icon, name, points spent, "+" box; the hovered row's effect is the tooltip
+    mov     dword [rsp], -1
+    xor     ebx, ebx
+.attr:
+    imul    r14d, ebx, 12
+    lea     r14d, [r14 + r13 + 18]      ; row y
+    lea     edi, [r12 + 8]
+    mov     esi, r14d
+    mov     edx, 117
+    mov     ecx, 12
+    call    hit
+    test    eax, eax
+    jz      .attr_draw
+    mov     [rsp], ebx
+.attr_draw:
+    lea     rax, [attr_tiles]
+    movzx   edi, byte [rax + rbx]
+    lea     esi, [r12 + 8]
+    lea     edx, [r14 + 1]
+    mov     ecx, 10
+    mov     r8d, WHITE
+    call    ui_tile_icon
+    mov     edi, ebx
+    call    rpg_attr_info
+    mov     rdi, rax
+    lea     esi, [r12 + 22]
+    lea     edx, [r14 + 2]
+    mov     ecx, LABEL_COL
+    mov     r8d, 1
+    call    ui_text
+    mov     edi, ebx
+    call    rpg_attr
+    mov     edi, eax
+    lea     rsi, [coin_buf]
+    call    i32_to_str
+    mov     byte [rax], 0
+    lea     rdi, [coin_buf]
+    mov     esi, 1
+    call    ui_text_width
+    lea     esi, [r12 + 112 + 1]        ; right aligned at px + 112
+    sub     esi, eax
+    lea     rdi, [coin_buf]
+    lea     edx, [r14 + 2]
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text
+    lea     edi, [r12 + 116]
+    lea     esi, [r14 + 1]
+    xor     edx, edx
+    cmp     dword [rsp + 8], 0
+    setg    dl                          ; enabled while attribute points are left
+    call    plus_box
+    test    eax, eax
+    jz      .attr_next
+    mov     edi, ebx
+    call    rpg_spend_attr
+    cmp     dword [ui_input + UIINPUT.shift], 0
+    je      .attr_next
+    mov     r15d, 4                     ; Shift: up to five points in all
+.shift:
+    mov     edi, ebx
+    call    rpg_spend_attr
+    test    eax, eax
+    jz      .attr_next
+    dec     r15d
+    jnz     .shift
+.attr_next:
+    inc     ebx
+    cmp     ebx, NUM_ATTRS
+    jb      .attr
+    ; ---- summary: health, armor (what the damage formula uses: at most 20, 4% each), the held
+    ; weapon's hit, crit hit and attack rate
+    lea     rdi, [rsp + 12]
+    call    combat_weapon_preview
+    lea     r15, [coin_buf]
+    APPZ    s_health
+    APPN    dword [surv + SURVIVAL.health]
+    APPZ    s_slash
+    APPN    dword [surv_max_health]
+    mov     byte [r15], 0
+    TXTL    coin_buf, r12, 140, r13, 18, LABEL_COL
+    call    armor_points
+    add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     ebx, eax
+    lea     r15, [coin_buf]
+    APPZ    s_armor
+    APPN    ebx
+    APPZ    s_armor_mid
+    lea     eax, [rbx*4]
+    APPN    eax
+    APPZ    s_armor_end
+    mov     byte [r15], 0
+    TXTL    coin_buf, r12, 140, r13, 27, LABEL_COL
+    lea     r15, [coin_buf]
+    APPZ    s_hit
+    APPN    dword [rsp + 12]
+    APPZ    s_crit
+    APPN    dword [rsp + 16]
+    mov     byte [r15], 0
+    TXTL    coin_buf, r12, 140, r13, 36, LABEL_COL
+    mov     eax, [rsp + 20]
+    xor     edx, edx
+    mov     ecx, 10
+    div     ecx
+    mov     r14d, eax                   ; whole attacks per second
+    mov     ebx, edx                    ; and the tenth
+    lea     r15, [coin_buf]
+    APPZ    s_attacks
+    APPN    r14d
+    mov     byte [r15], '.'
+    add     bl, '0'
+    mov     [r15 + 1], bl
+    add     r15, 2
+    APPZ    s_per_s
+    mov     byte [r15], 0
+    TXTL    coin_buf, r12, 140, r13, 45, LABEL_COL
+    ; ---- divider and the stat list
+    lea     edi, [r12 + 8]
+    lea     esi, [r13 + 66]
+    mov     edx, CH_W - 16
+    mov     ecx, 1
+    mov     r8d, EDGE_COL
+    call    ui_rect
+    call    sheet_build
+    mov     ebx, eax                    ; rows listed
+    lea     edi, [r12 + CH_COL0]
+    lea     esi, [r13 + CH_LIST_Y]
+    mov     edx, CH_W - 16
+    mov     ecx, CH_ROWS * 9 + 6
+    call    hit
+    mov     ecx, [sheet_scroll]
+    test    eax, eax
+    jz      .clamp
+    sub     ecx, [ui_input + UIINPUT.scroll]    ; wheel up scrolls towards the top
+.clamp:
+    lea     eax, [rbx - 2 * CH_ROWS]    ; the largest first row: the window stays full
+    xor     edx, edx
+    test    eax, eax
+    cmovs   eax, edx
+    cmp     ecx, eax
+    cmovg   ecx, eax
+    test    ecx, ecx
+    cmovs   ecx, edx
+    mov     [sheet_scroll], ecx
+    mov     r14d, ecx                   ; first listed row
+    xor     r15d, r15d                  ; position in the window: column = r15 / CH_ROWS
+.row:
+    lea     eax, [r14 + r15]
+    cmp     eax, ebx
+    jae     .list_done
+    lea     rdx, [sheet_rows]
+    movzx   edi, byte [rdx + rax]
+    mov     ecx, r15d
+    shr     ecx, 4
+    imul    ecx, ecx, CH_COL1 - CH_COL0
+    lea     eax, [r12 + rcx + CH_COL0]
+    mov     [rsp + 24], eax             ; x
+    mov     edx, r15d
+    and     edx, CH_ROWS - 1
+    imul    edx, edx, 9
+    lea     eax, [rdx + r13 + CH_LIST_Y]
+    mov     [rsp + 28], eax             ; y
+    cmp     edi, SH_OFFENSE
+    jae     .head
+    lea     rax, [rpg_stats]
+    mov     esi, [rax + rdi*4]
+    mov     [rsp + 32], edi
+    lea     rdx, [fmt_buf]
+    call    rpg_format_stat
+    lea     rdi, [fmt_buf]
+    mov     esi, 1
+    call    ui_text_width
+    mov     [rsp + 36], eax             ; the sentence's width
+    lea     rdi, [fmt_buf]
+    cmp     eax, CH_COLW
+    jbe     .fits
+    mov     edi, [rsp + 32]             ; too wide for its column: "<label>: <number>" if that is shorter
+    lea     rsi, [fmt_buf]
+    lea     rdx, [coin_buf]
+    call    stat_compact
+    lea     rdi, [coin_buf]
+    mov     esi, 1
+    call    ui_text_width
+    lea     rdi, [fmt_buf]
+    cmp     eax, [rsp + 36]
+    jae     .fits
+    lea     rdi, [coin_buf]
+.fits:
+    mov     ecx, LABEL_COL
+    jmp     .text
+.head:
+    sub     edi, SH_OFFENSE
+    lea     rax, [sheet_head]
+    mov     rdi, [rax + rdi*8]
+    mov     ecx, GOLD
+.text:
+    mov     esi, [rsp + 24]
+    mov     edx, [rsp + 28]
+    mov     r8d, 1
+    call    ui_text
+    inc     r15d
+    cmp     r15d, 2 * CH_ROWS
+    jb      .row
+.list_done:
+    TXTC    s_tab_skills, r12, CH_W / 2, r13, 221, GREY
+    mov     eax, [rsp]
+    test    eax, eax
+    js      .ret
+    mov     edi, eax
+    call    rpg_attr_desc
+    mov     rdi, rax
+    lea     rsi, [s_empty]
+    call    tooltip_wrapped
+.ret:
+    LEAVE_FRAME 40
 
 ; ---- merchant ------------------------------------------------------------------------------------
 
-; screen_trade(): the 8 trade offers as "give -> get" rows with a Trade button each (enabled
-; while trade_can); hovering an icon names the item. Locals: [rsp] item id under the mouse
-; (0 = none), [rsp+4] trade_can of the row
+; screen_trade(): the 10 trade offers as "give -> get" rows with a Trade button each (enabled
+; while trade_can); hovering an icon names the item, or for a gear offer says what it rolls.
+; Locals: [rsp] item id under the mouse (0 = none), [rsp+4] trade_can of the row, [rsp+8] 1 when
+; that icon is the "get" side
 screen_trade:
     ENTER_FRAME 24
     call    close_check
@@ -1081,6 +1543,7 @@ screen_trade:
     jz      .no_give_tip
     mov     eax, [r15 + TRADEOFFER.give]
     mov     [rsp], eax
+    mov     dword [rsp + 8], 0
 .no_give_tip:
     mov     edi, [r15 + TRADEOFFER.give_n]
     lea     rsi, [coin_buf]
@@ -1110,6 +1573,7 @@ screen_trade:
     jz      .no_get_tip
     mov     eax, [r15 + TRADEOFFER.get]
     mov     [rsp], eax
+    mov     dword [rsp + 8], 1
 .no_get_tip:
     mov     edi, [r15 + TRADEOFFER.get_n]
     lea     rsi, [coin_buf]
@@ -1140,6 +1604,26 @@ screen_trade:
     jz      .ret
     cmp     eax, NUM_ITEMS
     jae     .ret
+    cmp     dword [rsp + 8], 0
+    je      .plain
+    lea     rcx, [item_gear]
+    cmp     byte [rcx + rax], 0
+    je      .plain
+    mov     ebx, eax                    ; gear is rolled on purchase: "Random magic+ <item>, tier T"
+    lea     r15, [tip_buf]
+    APPZ    s_random
+    lea     rcx, [item_names]
+    APPP    [rcx + rbx*8]
+    APPZ    s_tier_sep
+    call    rpg_level
+    mov     edi, eax
+    call    gear_tier_for_level
+    APPN    eax
+    mov     byte [r15], 0
+    lea     rdi, [tip_buf]
+    call    ui_tooltip
+    jmp     .ret
+.plain:
     lea     rcx, [item_names]
     mov     rdi, [rcx + rax*8]
     test    rdi, rdi
@@ -1151,7 +1635,8 @@ screen_trade:
 ; ---- elder -----------------------------------------------------------------------------------------
 
 ; screen_dialog(): the current quest of the chain (rpg_state.quest) with Accept / Complete /
-; Leave; when the chain is finished a farewell. Locals: [rsp] quest accepted, [rsp+4] progress
+; Leave; when the chain is finished a farewell. Below it always "Reset skills: N coins"
+; (rpg_respec). Locals: [rsp] quest accepted, [rsp+4] progress
 screen_dialog:
     ENTER_FRAME 24
     call    close_check
@@ -1170,7 +1655,7 @@ screen_dialog:
     BTN     s_farewell, r12, (DL_W - 118) / 2, r13, 92, 118
     test    eax, eax
     jnz     .close
-    jmp     .ret
+    jmp     .respec
 .quest:
     mov     r14, rax
     movzx   eax, byte [rpg_state + RPGSAVE.quest_state]
@@ -1240,9 +1725,36 @@ screen_dialog:
     BTN     s_leave, r12, (DL_W - 118) / 2, r13, 92, 118
 .leave_done:
     test    eax, eax
-    jz      .ret
+    jz      .respec
 .close:
     mov     edi, ST_PLAYING
     call    app_goto
+    jmp     .ret
+.respec:                                ; enabled with a class and the coins in the pack
+    call    rpg_respec_cost
+    mov     ebx, eax
+    lea     r15, [coin_buf]
+    APPZ    s_reset
+    APPN    ebx
+    APPZ    s_coins_sfx
+    mov     byte [r15], 0
+    xor     r14d, r14d
+    call    rpg_class
+    test    eax, eax
+    jz      .reset_btn
+    mov     edi, GOLD_COIN
+    call    inv_count
+    cmp     eax, ebx
+    setae   r14b
+.reset_btn:
+    lea     rdi, [coin_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 118]
+    mov     ecx, DL_W - 16
+    mov     r8d, r14d
+    call    ui_button
+    test    eax, eax
+    jz      .ret
+    call    rpg_respec
 .ret:
     LEAVE_FRAME 24

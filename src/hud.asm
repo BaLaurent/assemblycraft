@@ -1,13 +1,14 @@
-; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, stealth tint, health bars and
-; name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and level, hearts / armor /
-; food, mana and stamina bars, ability bar, held-item name, firearm ammunition and reload bar, boss
-; bar, quest tracker, banner and the F3 debug lines. GUI units; hud_draw runs after ui_begin. The
-; hotbar sits at x0 = ui_w/2 - 91, y0 = ui_h - 22.
+; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, stealth tint, health bars,
+; levels, status pips and name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and
+; level, ten hearts with the health number / armor / food, mana and stamina bars, player status pips,
+; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, banner and
+; the F3 debug lines. GUI units; hud_draw runs after ui_begin. The hotbar sits at x0 = ui_w/2 - 91,
+; y0 = ui_h - 22.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global hud_draw, hud_dt, hud_banner
+global hud_draw, hud_dt, hud_banner, hud_heart_level
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon
@@ -22,6 +23,9 @@ extern rpg_state, rpg_class, rpg_level, rpg_xp_need, rpg_stat, rpg_ability_unloc
 extern rpg_class_info, rpg_ability_info, quests_current, quests_progress
 extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
 extern abilities_cd, abilities_cd_total, structures_nearest
+extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
+extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_attr_points
+extern mob_affix_name
 
 %define WHITE   0xFFFFFFFF
 
@@ -43,8 +47,18 @@ f_22_5:     dd 22.5
 f_45:       dd 45.0
 f_360:      dd 360.0
 f_2_5:      dd 2.5                      ; seconds a banner stays
+f_half:     dd 0.5                      ; seconds LMB must be held for the gold heavy-attack crosshair
+s_level_l:  db "Level ", 0
+s_hint_l:   db " (", 0
+; mob status pips under the health bar: MOB timer offset, colour
+pip_tab:
+    dd MOB.burn_t, RGBA(255, 120, 30, 255)
+    dd MOB.chill_t, RGBA(120, 190, 255, 255)
+    dd MOB.shock_t, RGBA(255, 240, 80, 255)
+    dd MOB.poison_t, RGBA(110, 220, 70, 255)
+    dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.7  ", 0
+s_dbg_title: db "AssemblyCraft 0.8  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -134,7 +148,7 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_hotbar
-    lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar,
+    lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar
     call    rpg_class
     test    eax, eax
     jz      .no_class
@@ -144,10 +158,12 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_abilities
-    lea     r13d, [r12 - 24]            ; over the level number once there is a class,
 .no_class:
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .name
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_status_pips
     mov     edi, ebx
     mov     esi, r12d
     call    hud_bars                    ; eax = top of the left stack
@@ -230,43 +246,66 @@ hud_flash:
     add     rsp, 8
     ret
 
-; hud_crosshair(): a colour-inverting cross at the screen centre while playing
+%macro CROSS_COLOUR 0                   ; r8d = white, or gold while r13d is set
+    mov     r8d, WHITE
+    mov     eax, RGBA(255, 200, 60, 255)
+    test    r13d, r13d
+    cmovnz  r8d, eax
+%endmacro
+
+; hud_crosshair(): a colour-inverting cross at the screen centre while playing; a plain gold one
+; once the left button has been held long enough for a heavy attack (game_heavy_s >= 0.5)
+; ebx = cx, r12d = cy, r13d = 1 for the gold cross
 hud_crosshair:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    push    r13
+    sub     rsp, 8
     cmp     dword [app_state], ST_PLAYING
     jne     .ret
     mov     ebx, [ui_w]
     shr     ebx, 1                      ; cx
     mov     r12d, [ui_h]
     shr     r12d, 1                     ; cy
+    xor     r13d, r13d
+    movss   xmm0, [game_heavy_s]
+    comiss  xmm0, [f_half]
+    jb      .invert
+    mov     r13d, 1
+    jmp     .draw
+.invert:
     mov     edi, GL_ONE_MINUS_DST_COLOR
     mov     esi, GL_ZERO
     call    glBlendFunc
+.draw:
     lea     edi, [rbx - 5]
     mov     esi, r12d
     mov     edx, 11
     mov     ecx, 1
-    mov     r8d, WHITE
+    CROSS_COLOUR
     call    ui_rect
     mov     edi, ebx
     lea     esi, [r12 - 5]
     mov     edx, 1
     mov     ecx, 5
-    mov     r8d, WHITE
+    CROSS_COLOUR
     call    ui_rect
     mov     edi, ebx
     lea     esi, [r12 + 1]
     mov     edx, 1
     mov     ecx, 5
-    mov     r8d, WHITE
+    CROSS_COLOUR
     call    ui_rect
+    test    r13d, r13d
+    jnz     .ret
     mov     edi, GL_SRC_ALPHA
     mov     esi, GL_ONE_MINUS_SRC_ALPHA
     call    glBlendFunc
 .ret:
+    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
@@ -415,56 +454,83 @@ bar_tile:
 .ret:
     ret
 
+; hud_heart_level(edi i 0..9, esi health, edx max health) -> eax 2 full, 1 half, 0 empty: heart i is
+; full when health >= (i + 1) * max / 10 and half when health >= (i + 0.5) * max / 10
+hud_heart_level:
+    lea     eax, [rdi + 1]
+    imul    eax, edx
+    imul    ecx, esi, 10
+    cmp     ecx, eax
+    jge     .full
+    lea     eax, [rdi + rdi + 1]
+    imul    eax, edx
+    imul    ecx, esi, 20
+    cmp     ecx, eax
+    jge     .half
+    xor     eax, eax
+    ret
+.half:
+    mov     eax, 1
+    ret
+.full:
+    mov     eax, 2
+    ret
+
 ; hud_bars(edi x0, esi y0) -> eax y of the top of the left stack
-; Hearts (one per two points of maximum health, a second row above the first once there are more
-; than ten) at the left, food icons at the right, then stacked over the hearts the mana bar (when the
-; class has mana) and the armor row (worn armor plus the skill-tree bonus); the stamina bar sits over
-; the food.
-; r12d = x0, r13d = y0, ebx = icon, r14d = hearts, r15d = top of the stack; [rsp] armor points
+; Ten hearts at the left (each full, half or empty by its tenth of the maximum health) with the
+; "health/max" number right-aligned just left of them, food icons at the right, then stacked over the
+; hearts the mana bar (when the class has mana) and the armor row (worn armor plus the skill-tree
+; bonus); the stamina bar sits over the food.
+; r12d = x0, r13d = y0, ebx = icon, r15d = top of the stack; [rsp] armor points, [rsp+8] health text
 hud_bars:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    push    r14
     push    r15
-    sub     rsp, 8
+    sub     rsp, 48
     mov     r12d, edi
     mov     r13d, esi
-    mov     eax, [surv_max_health]
-    inc     eax
-    sar     eax, 1                      ; hearts = ceil(max / 2), kept within 0..15
-    xor     ecx, ecx
-    test    eax, eax
-    cmovs   eax, ecx
-    mov     ecx, 15
-    cmp     eax, ecx
-    cmovg   eax, ecx
-    mov     r14d, eax
     xor     ebx, ebx
 .heart:
-    cmp     ebx, r14d
-    jge     .food
-    mov     edi, [surv + SURVIVAL.health]
-    lea     eax, [rbx + rbx]
-    sub     edi, eax                    ; half hearts left for this icon
+    cmp     ebx, 10
+    jge     .number
+    mov     edi, ebx
+    mov     esi, [surv + SURVIVAL.health]
+    mov     edx, [surv_max_health]
+    call    hud_heart_level
+    mov     edi, eax
     mov     esi, TILE_HEART_FULL
     call    bar_tile
     mov     edi, eax
-    mov     eax, ebx
-    xor     edx, edx
-    mov     ecx, 10
-    div     ecx                         ; eax = row, edx = column
-    lea     esi, [r12 + rdx*8]
-    imul    eax, eax, 10
-    mov     edx, r13d
-    sub     edx, 15
-    sub     edx, eax                    ; y0 - 15 - 10 * row
+    lea     esi, [r12 + rbx*8]
+    lea     edx, [r13 - 15]
     call    ui_icon9
     inc     ebx
     jmp     .heart
-.food:
+.number:
+    mov     edi, [surv + SURVIVAL.health]
+    lea     rsi, [rsp + 8]
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     edi, [surv_max_health]
+    mov     rsi, rax
+    call    i32_to_str
+    mov     byte [rax], 0
+    lea     rdi, [rsp + 8]
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, r12d
+    sub     esi, 3
+    sub     esi, eax                    ; right-aligned, ending 3 left of the first heart
+    lea     rdi, [rsp + 8]
+    lea     edx, [r13 - 15]
+    mov     ecx, RGBA(255, 120, 120, 255)
+    mov     r8d, 1
+    call    ui_text
     xor     ebx, ebx
 .food_icon:
     mov     edi, [surv + SURVIVAL.food]
@@ -483,10 +549,6 @@ hud_bars:
     cmp     ebx, 10
     jb      .food_icon
     lea     r15d, [r13 - 15]            ; the top of the hearts
-    cmp     r14d, 10
-    jle     .mana
-    sub     r15d, 10                    ; or of the second row
-.mana:
     call    combat_max_mana
     xorps   xmm1, xmm1
     comiss  xmm0, xmm1
@@ -541,21 +603,60 @@ hud_bars:
     mov     ecx, 4
     call    bar_draw
     mov     eax, r15d
-    add     rsp, 8
+    add     rsp, 48
     pop     r15
-    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; hud_held_name(edi y): the held item's name centred above the hotbar at y, fading out
+%macro PIP 2                            ; a 6 x 6 pip for the player timer %1 in colour %2, next slot
+    cmp     dword [%1], 0
+    jle     %%skip
+    lea     edi, [rbx + r13*8 + 102]
+    lea     esi, [r12 - 29]
+    mov     edx, 6
+    mov     ecx, 6
+    mov     r8d, %2
+    call    ui_rect
+    inc     r13d
+%%skip:
+%endmacro
+
+; hud_status_pips(edi x0, esi y0): over the stamina bar, one 6 x 6 square, 8 px apart, for each
+; active player status: burn (orange), chill (blue), poison (green)
+; ebx = x0, r12d = y0, r13d = pips drawn
+hud_status_pips:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    xor     r13d, r13d
+    PIP     combat_burn_t, RGBA(255, 120, 30, 255)
+    PIP     combat_chill_t, RGBA(120, 190, 255, 255)
+    PIP     combat_poison_t, RGBA(110, 220, 70, 255)
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_held_name(edi y): the held item's name centred above the hotbar at y, fading out; a gear item
+; shows its rolled name (gear_name) in its rarity colour
+; r12d = y, ebx = id, r13d = alpha << 24; [rsp] gear name (48), [rsp+48] dmg of the held stack
 hud_held_name:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
+    push    r13
+    sub     rsp, 56
     mov     r12d, edi
     mov     eax, [inv_sel]
     lea     rcx, [inv + rax*4]
@@ -589,17 +690,42 @@ hud_held_name:
     mulss   xmm0, [f_two]               ; timer / 0.5
     minss   xmm0, [f_one]
     mulss   xmm0, [f_255]
-    cvttss2si ecx, xmm0                 ; alpha = min(1, timer / 0.5) * 255
-    shl     ecx, 24
-    or      ecx, 0x00FFFFFF
-    mov     edx, r12d
+    cvttss2si r13d, xmm0                ; alpha = min(1, timer / 0.5) * 255
+    shl     r13d, 24
+    lea     rax, [item_gear]
+    cmp     byte [rax + rbx], 0
+    je      .plain
+    mov     eax, [inv_sel]
+    lea     rcx, [inv + rax*4]
+    movzx   esi, word [rcx + ITEMSTACK.dmg]
+    mov     [rsp + 48], esi
+    mov     edi, ebx
+    mov     rdx, rsp
+    call    gear_name
+    mov     edi, ebx
+    mov     esi, [rsp + 48]
+    call    gear_rarity
+    mov     edi, eax
+    call    gear_rarity_color
+    and     eax, 0x00FFFFFF
+    or      eax, r13d
+    mov     ecx, eax
+    mov     rdi, rsp
+    jmp     .draw
+.plain:
     lea     rax, [item_names]
     mov     rdi, [rax + rbx*8]
+    mov     ecx, r13d
+    or      ecx, 0x00FFFFFF
+.draw:
+    mov     edx, r12d
     mov     esi, [ui_w]
     shr     esi, 1
     mov     r8d, 1
     call    ui_text_centered
 .ret:
+    add     rsp, 56
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
@@ -657,7 +783,7 @@ hud_gun:
     mov     byte [rax], 0
     mov     rdi, rsp
     lea     esi, [r12 + 186]
-    lea     edx, [r13 + 7]
+    lea     edx, [r13 + 13]             ; under the level text
     mov     ecx, WHITE
     mov     r8d, 1
     call    ui_text
@@ -775,16 +901,17 @@ armor_effective:
     add     rsp, 8
     ret
 
-; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and the level number between the hearts
-; and the food icons
-; ebx = x0, r12d = y0, r13d = level; [rsp] level text
+; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and "Level N" right of the hotbar, followed
+; by " (<skills key>)" while skill or attribute points are unspent
+; ebx = x0, r12d = y0, r13d = level, r14 = end of the level text; [rsp] level text (64)
 hud_xp:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 24
+    push    r14
+    sub     rsp, 64
     mov     ebx, edi
     mov     r12d, esi
     call    rpg_level
@@ -808,25 +935,46 @@ hud_xp:
     mov     ecx, 3
     mov     r9d, RGBA(120, 220, 60, 255)
     call    bar_draw
-    mov     edi, r13d
-    mov     rsi, rsp
-    call    i32_to_str
-    mov     byte [rax], 0
     mov     rdi, rsp
-    mov     esi, [ui_w]
-    shr     esi, 1
-    lea     edx, [r12 - 15]
+    lea     rsi, [s_level_l]
+    call    str_append
+    mov     edi, r13d
+    mov     rsi, rax
+    call    i32_to_str
+    mov     r14, rax
+    call    rpg_points
+    test    eax, eax
+    jnz     .hint
+    call    rpg_attr_points
+    test    eax, eax
+    jz      .plain
+.hint:
+    mov     rdi, r14
+    lea     rsi, [s_hint_l]
+    call    str_append
+    mov     edi, [settings + SETTINGS.keys + 4*BIND_SKILLS]
+    mov     rsi, rax
+    call    key_name
+    mov     word [rax], ')'             ; ')' and the NUL
+    jmp     .draw
+.plain:
+    mov     byte [r14], 0
+.draw:
+    mov     rdi, rsp
+    lea     esi, [rbx + 186]
+    lea     edx, [r12 + 2]
     mov     ecx, RGBA(140, 255, 90, 255)
     mov     r8d, 1
-    call    ui_text_centered
-    add     rsp, 24
+    call    ui_text
+    add     rsp, 64
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; hud_abilities(edi x0, esi y0): the three ability slots left of the hotbar: the icon (dimmed while
+; hud_abilities(edi x0, esi y0): the four ability slots left of the hotbar: the icon (dimmed while
 ; locked, red while the resource is short), the cooldown sweeping down from the top, and the key
 ; ebx = x0, r12d = y0, r13d = slot, r14d = class, r15d = slot x
 ; [rsp] icon tint, [rsp+4] sweep height, [rsp+16] key label
@@ -846,7 +994,7 @@ hud_abilities:
     xor     r13d, r13d
 .slot:
     imul    r15d, r13d, 23
-    lea     r15d, [r15 + rbx - 70]      ; slot x = x0 - 70 + 23 * slot
+    lea     r15d, [r15 + rbx - 93]      ; slot x = x0 - 93 + 23 * slot
     mov     edi, r15d
     lea     esi, [r12 + 1]              ; slot y = y0 + 1
     mov     edx, 20
@@ -893,10 +1041,14 @@ hud_abilities:
     cmova   eax, edx
     mov     [rsp + 4], eax              ; 20 * left / total
 .icon:
+    lea     edi, [r14 + TILE_ABILITY3_0 - 1]    ; slot 3: TILE_ABILITY3_0 + class - 1
+    cmp     r13d, 3
+    jae     .tile
     lea     eax, [r14 - 1]
     lea     eax, [rax + rax*2]
     add     eax, r13d
     lea     edi, [rax + TILE_ABILITY0]  ; TILE_ABILITY0 + (class - 1) * 3 + slot
+.tile:
     lea     esi, [r15 + 2]
     lea     edx, [r12 + 3]
     mov     ecx, 16
@@ -911,8 +1063,12 @@ hud_abilities:
     mov     r8d, RGBA(0, 0, 0, 170)
     call    ui_rect                     ; ecx = the swept height
 .label:
-    lea     rax, [settings + SETTINGS.keys + 4 * BIND_ABILITY1]
-    mov     edi, [rax + r13*4]
+    lea     eax, [r13 + BIND_ABILITY1]  ; binds 11, 12, 13 and 15
+    mov     ecx, BIND_ABILITY4
+    cmp     r13d, 3
+    cmove   eax, ecx
+    lea     rcx, [settings + SETTINGS.keys]
+    mov     edi, [rcx + rax*4]
     lea     rsi, [rsp + 16]
     call    key_name
     mov     byte [rsp + 19], 0          ; at most three characters fit over a slot
@@ -923,7 +1079,7 @@ hud_abilities:
     mov     r8d, 1
     call    ui_text
     inc     r13d
-    cmp     r13d, 3
+    cmp     r13d, NUM_ABILITY_SLOTS
     jb      .slot
     add     rsp, 56
     pop     r15
@@ -965,10 +1121,12 @@ hud_stealth:
     call    world_to_ui
 %endmacro
 
-; hud_mobs(): things pinned to mobs with world_to_ui: a health bar over every hostile mob that was
-; hurt lately (MOB.bar) or is elite, within 24 blocks (elites get a gold frame), and the name of the
-; villagers within 10 blocks
-; rbx = mob, r12d = index, r13d = type, r14d = bar fill / name; [rsp] anchor, [rsp+16] out x, y
+; hud_mobs(): things pinned to mobs with world_to_ui: over every hostile mob that was hurt lately
+; (MOB.bar) or is elite, within 24 blocks, a health bar (elites get a gold frame, a marked mob a red
+; one around it), "Lv N" over the bar, an elite's affix names over that, and a 3 x 3 pip under the bar
+; for each status; the name of the villagers within 10 blocks
+; rbx = mob, r12d = index, r13d = type, r14d = bar fill / bit / pips; [rsp] anchor, [rsp+16] out x, y,
+; [rsp+24] pip index / affix cursor, [rsp+32] "Lv N" text (16), [rsp+48] affix text (80)
 hud_mobs:
     push    rbp
     mov     rbp, rsp
@@ -976,7 +1134,7 @@ hud_mobs:
     push    r12
     push    r13
     push    r14
-    sub     rsp, 32
+    sub     rsp, 128
     lea     rbx, [mobs]
     xor     r12d, r12d
 .mob:
@@ -1038,7 +1196,7 @@ hud_mobs:
     call    ui_rect
 .frame:
     cmp     dword [rbx + MOB.elite], 0
-    je      .next
+    je      .mark
     mov     edi, [rsp + 16]
     sub     edi, 11
     mov     esi, [rsp + 20]
@@ -1047,7 +1205,93 @@ hud_mobs:
     mov     ecx, 4
     mov     r8d, RGBA(255, 200, 60, 255)
     call    ui_frame
-    jmp     .next
+.mark:
+    cmp     dword [rbx + MOB.mark_t], 0
+    jle     .level
+    mov     edi, [rsp + 16]
+    sub     edi, 12
+    mov     esi, [rsp + 20]
+    sub     esi, 3
+    mov     edx, 24
+    mov     ecx, 6
+    mov     r8d, RGBA(230, 40, 40, 255)
+    call    ui_frame                    ; 1 px outside the bar's backing
+.level:
+    mov     dword [rsp + 32], 0x0020764C ; "Lv " and the NUL
+    mov     edi, [rbx + MOB.level]
+    lea     rsi, [rsp + 35]
+    call    i32_to_str
+    mov     byte [rax], 0
+    mov     ecx, RGBA(200, 200, 200, 255)
+    mov     eax, RGBA(255, 200, 80, 255)
+    cmp     dword [rbx + MOB.elite], 0
+    cmovne  ecx, eax
+    lea     rdi, [rsp + 32]
+    mov     esi, [rsp + 16]
+    mov     edx, [rsp + 20]
+    sub     edx, 11                     ; 9 above the top of the bar
+    mov     r8d, 1
+    call    ui_text_centered
+    cmp     dword [rbx + MOB.elite], 0
+    je      .pips
+    cmp     dword [rbx + MOB.affix], 0
+    je      .pips
+    lea     rax, [rsp + 48]
+    mov     [rsp + 24], rax             ; write cursor
+    xor     r14d, r14d
+.affix:
+    bt      dword [rbx + MOB.affix], r14d
+    jnc     .affix_next
+    mov     edi, r14d
+    call    mob_affix_name
+    mov     rsi, rax
+    mov     rdi, [rsp + 24]
+    lea     rcx, [rsp + 48]
+    cmp     rdi, rcx
+    je      .first
+    mov     byte [rdi], ' '
+    inc     rdi
+.first:
+    call    str_append
+    mov     [rsp + 24], rax
+.affix_next:
+    inc     r14d
+    cmp     r14d, NUM_AFFIX_KINDS
+    jb      .affix
+    mov     rax, [rsp + 24]
+    mov     byte [rax], 0
+    lea     rdi, [rsp + 48]
+    mov     esi, [rsp + 16]
+    mov     edx, [rsp + 20]
+    sub     edx, 20                     ; 9 above "Lv N"
+    mov     ecx, RGBA(255, 140, 60, 255)
+    mov     r8d, 1
+    call    ui_text_centered
+.pips:
+    xor     r14d, r14d                  ; pips drawn
+    mov     dword [rsp + 24], 0         ; pip_tab row
+.pip:
+    mov     eax, [rsp + 24]
+    cmp     eax, 5
+    jae     .next
+    lea     rcx, [pip_tab]
+    mov     edx, [rcx + rax*8]          ; offset of the timer in the MOB
+    cmp     dword [rbx + rdx], 0
+    jle     .pip_next
+    mov     r8d, [rcx + rax*8 + 4]
+    mov     edi, r14d
+    shl     edi, 2
+    add     edi, [rsp + 16]
+    sub     edi, 11                     ; 4 px apart from the left edge of the bar
+    mov     esi, [rsp + 20]
+    add     esi, 3                      ; just under the bar
+    mov     edx, 3
+    mov     ecx, 3
+    call    ui_rect
+    inc     r14d
+.pip_next:
+    inc     dword [rsp + 24]
+    jmp     .pip
 .villager:
     comiss  xmm0, [f_10sq]
     ja      .next
@@ -1070,7 +1314,7 @@ hud_mobs:
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
-    add     rsp, 32
+    add     rsp, 128
     pop     r14
     pop     r13
     pop     r12
@@ -1269,8 +1513,12 @@ hud_banner:
     add     rsp, 8
     ret
 
-; hud_banner_draw(): the banner at (ui_w/2, ui_h/2 - 50), scale 2; hud_dt counts it down
+; hud_banner_draw(): the banner at (ui_w/2, ui_h/2 - 50), scale 2 or the largest smaller scale whose
+; text fits in ui_w - 16 (never below 1); hud_dt counts it down
+; ebx = alpha and colour, r12d = scale
 hud_banner_draw:
+    push    rbx
+    push    r12
     sub     rsp, 8
     movss   xmm0, [banner_timer]
     xorps   xmm1, xmm1
@@ -1290,16 +1538,34 @@ hud_banner_draw:
     mov     eax, [banner_rgba]
     and     eax, 0x00FFFFFF
     or      ecx, eax
+    mov     ebx, ecx
+    mov     r12d, 2
+.fit:
+    lea     rdi, [banner_text]
+    mov     esi, r12d
+    call    ui_text_width
+    mov     ecx, [ui_w]
+    sub     ecx, 16
+    cmp     eax, ecx
+    jbe     .fits
+    cmp     r12d, 1
+    jbe     .fits
+    dec     r12d
+    jmp     .fit
+.fits:
     lea     rdi, [banner_text]
     mov     esi, [ui_w]
     shr     esi, 1
     mov     edx, [ui_h]
     shr     edx, 1
     sub     edx, 50
-    mov     r8d, 2
+    mov     ecx, ebx
+    mov     r8d, r12d
     call    ui_text_centered
 .ret:
     add     rsp, 8
+    pop     r12
+    pop     rbx
     ret
 
 ; put2(edi value 0..99, rsi buf) -> rax past the two digits

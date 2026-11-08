@@ -22,8 +22,8 @@ extern screen_crafting, screen_death, screen_loading, screen_furnace, screen_che
 extern audio_update, player, body_init, world_generate, world_top_y, world_header
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
-extern fire_clear, fx_clear, game_aim
-extern screen_trade, screen_dialog, screen_class, screen_skills
+extern fire_clear, fx_clear, game_aim, game_heavy_s
+extern screen_trade, screen_dialog, screen_class, screen_skills, screen_character
 extern rpg_class, rpg_reset, combat_reset, dmgnum_clear, light_update
 
 section .rodata
@@ -59,7 +59,7 @@ screens:
     dq screen_title, screen_worlds, screen_create, screen_rename, screen_delete
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
-    dq screen_trade, screen_dialog, screen_class, screen_skills
+    dq screen_trade, screen_dialog, screen_class, screen_skills, screen_character
 
 section .data
 align 4
@@ -108,6 +108,9 @@ app_goto:
     xor     esi, esi
     cmp     ebx, ST_PLAYING
     sete    sil
+    je      .captured
+    mov     dword [game_heavy_s], __float32__(-1.0) ; any screen or pause drops a heavy charge
+.captured:
     cmp     esi, [input_captured]
     je      .ret
     mov     rdi, [app_window]
@@ -509,6 +512,8 @@ update_state:
     je      .screen
     cmp     eax, ST_SKILLS
     je      .screen
+    cmp     eax, ST_CHARACTER
+    je      .screen
     jmp     .ret                        ; paused, death, settings, class choice: nothing simulates
 
 .playing:
@@ -639,6 +644,8 @@ draw_frame:
     cmp     eax, ST_DIALOG
     je      .in_view
     cmp     eax, ST_SKILLS
+    je      .in_view
+    cmp     eax, ST_CHARACTER
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -655,7 +662,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_SKILLS
+    cmp     eax, ST_CHARACTER
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax

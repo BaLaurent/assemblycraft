@@ -419,8 +419,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NODE_STAT       0               ; NODEINFO.kind
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
-%define V4_NODES        12              ; 0.7 tree layout, removed in wave 2
-%define V4_MAX_LEVEL    30              ; 0.7 tree layout, removed in wave 2
 
 %define ATTR_STR        0
 %define ATTR_DEX        1
@@ -911,7 +909,7 @@ struc RPGSAVE
     .quest:          resb 1             ; next quest index 0..8 (8 = chain finished)
     .quest_state:    resb 1             ; 0 not accepted, 1 accepted
     .xp:             resd 1             ; into the current level
-    .ranks_v4:       resb V4_NODES      ; 0.7 ranks (unused once RPGEXT lands)
+    .ranks_v4:       resb 12            ; 0.7 ranks, unused since 0.8 (RPGEXT.ranks)
     .cleared:        resb 1             ; bit d = dungeon d cleared
     .flags:          resb 1             ; bit0 = boss defeated
     .quest_progress: resw 1

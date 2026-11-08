@@ -1,4 +1,5 @@
-; test_hud.asm - the HUD's anchor in the world (world_to_ui) and the floating combat text (dmgnum).
+; test_hud.asm - the HUD's anchor in the world (world_to_ui), the floating combat text (dmgnum: rise,
+; expiry, colour / size / alpha by element, crit and DoT, the new words) and the heart levels.
 %include "common.inc"
 default rel
 
@@ -6,12 +7,13 @@ global test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
 
 extern world_clear, player, body_init, player_eye, player_forward
 extern settings, game_aim, ui_w, ui_h, world_to_ui
-extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list
+extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list, dmgnum_style
+extern hud_heart_level
 
 ; layout of one dmgnum_list entry (struc DMGNUM in dmgnum.asm)
 %define DN_Y        4
 %define DN_VALUE    20
-%define DN_SIZE     24
+%define DN_SIZE     28
 
 section .rodata
 align 4
@@ -32,6 +34,49 @@ k_0:      dd 0.0
 k_pt05:   dd 0.05
 k_pt15:   dd 0.15
 k_one:    dd 1.0
+
+; dmgnum_style cases: flags passed to dmgnum_spawn, expected rgb (alpha 0), scale, alpha cap
+%define STYLE_ROWS 11
+style_rows:
+    dd 0, RGBA(255, 255, 255, 0), 1, 255                                ; plain physical: white
+    dd 1 << HF_ELEM_SHIFT, RGBA(255, 140, 40, 0), 1, 255                ; fire
+    dd (2 << HF_ELEM_SHIFT) | HF_CRIT, RGBA(130, 200, 255, 0), 2, 255   ; frost crit: frost colour, big
+    dd 3 << HF_ELEM_SHIFT, RGBA(255, 240, 90, 0), 1, 255                ; shock
+    dd 4 << HF_ELEM_SHIFT, RGBA(120, 220, 80, 0), 1, 255                ; poison
+    dd HF_CRIT, RGBA(255, 220, 60, 0), 2, 255                           ; physical crit: gold
+    dd HF_DOT, RGBA(220, 50, 50, 0), 1, 217                             ; bleed tick: red, 85%
+    dd HF_DOT | (1 << HF_ELEM_SHIFT), RGBA(255, 140, 40, 0), 1, 217    ; burn tick
+    dd HF_DOT | HF_CRIT | (4 << HF_ELEM_SHIFT), RGBA(120, 220, 80, 0), 1, 217   ; a DoT never grows
+    dd 7 << HF_ELEM_SHIFT, RGBA(255, 255, 255, 0), 1, 255               ; unknown element: physical
+    dd HF_PLAYER | (2 << HF_ELEM_SHIFT), RGBA(130, 200, 255, 0), 1, 255 ; other flag bits do not matter
+
+; word cases: TXT_* id, expected rgb, scale
+%define WORD_ROWS 6
+word_rows:
+    dd TXT_PARRY, RGBA(255, 215, 0, 0), 2
+    dd TXT_BLOCKED, RGBA(180, 180, 200, 0), 1
+    dd TXT_DODGED, RGBA(150, 220, 255, 0), 1
+    dd TXT_STUNNED, RGBA(255, 160, 60, 0), 1
+    dd TXT_FROZEN, RGBA(130, 200, 255, 0), 1
+    dd TXT_IMMUNE, RGBA(200, 200, 200, 0), 1
+
+; hud_heart_level cases: heart index, health, max health, expected 2 full / 1 half / 0 empty
+%define HEART_ROWS 14
+heart_rows:
+    dd 0, 2, 20, 2
+    dd 0, 1, 20, 1
+    dd 0, 0, 20, 0
+    dd 4, 9, 20, 1
+    dd 4, 10, 20, 2
+    dd 0, 1, 10, 2
+    dd 9, 10, 10, 2
+    dd 9, 9, 10, 0
+    dd 2, 25, 100, 1
+    dd 2, 30, 100, 2
+    dd 2, 24, 100, 0
+    dd 1, 5, 40, 0
+    dd 1, 6, 40, 1
+    dd 9, 44, 44, 2
 
 section .bss
 alignb 4
@@ -362,7 +407,10 @@ test_dmgnum_rises_and_expires:
     jne     .fail7                      ; the oldest (amount 1) was replaced
     cmp     dword [dmgnum_list + DN_SIZE + DN_VALUE], 2
     jne     .fail7
-    xor     eax, eax
+    call    check_dmgnum_styles
+    test    eax, eax
+    jnz     .out
+    call    check_heart_levels
     jmp     .out
 .fail1:
     mov     eax, 1
@@ -388,6 +436,129 @@ test_dmgnum_rises_and_expires:
     mov     ebx, eax
     call    dmgnum_clear
     mov     eax, ebx
+    add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_dmgnum_styles() -> eax 0, else 100 + the failing style row, 200 + the failing word row, or 300
+; (an unknown word id was not ignored)
+; ebx = row, r12 = row pointer
+check_dmgnum_styles:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    call    dmgnum_clear
+    xor     ebx, ebx
+.row:
+    cmp     ebx, STYLE_ROWS
+    jae     .words
+    imul    eax, ebx, 16
+    lea     r12, [style_rows]
+    add     r12, rax
+    movss   xmm0, [k_5]
+    movss   xmm1, [k_10]
+    movss   xmm2, [k_5]
+    mov     edi, ebx
+    mov     esi, [r12]
+    call    dmgnum_spawn
+    imul    eax, ebx, DN_SIZE
+    lea     rdi, [dmgnum_list]
+    add     rdi, rax                    ; spawn order = slot order in a cleared list
+    call    dmgnum_style
+    cmp     eax, [r12 + 4]
+    jne     .bad_row
+    cmp     edx, [r12 + 8]
+    jne     .bad_row
+    cmp     ecx, [r12 + 12]
+    jne     .bad_row
+    inc     ebx
+    jmp     .row
+.bad_row:
+    lea     eax, [rbx + 100]
+    jmp     .ret
+.words:
+    call    dmgnum_clear
+    xor     ebx, ebx
+.word:
+    cmp     ebx, WORD_ROWS
+    jae     .unknown
+    imul    eax, ebx, 12
+    lea     r12, [word_rows]
+    add     r12, rax
+    movss   xmm0, [k_5]
+    movss   xmm1, [k_10]
+    movss   xmm2, [k_5]
+    mov     edi, [r12]
+    call    dmgnum_text
+    imul    eax, ebx, DN_SIZE
+    lea     rdi, [dmgnum_list]
+    add     rdi, rax
+    call    dmgnum_style
+    cmp     eax, [r12 + 4]
+    jne     .bad_word
+    cmp     edx, [r12 + 8]
+    jne     .bad_word
+    cmp     ecx, 255
+    jne     .bad_word
+    inc     ebx
+    jmp     .word
+.bad_word:
+    lea     eax, [rbx + 200]
+    jmp     .ret
+.unknown:
+    movss   xmm0, [k_5]
+    movss   xmm1, [k_10]
+    movss   xmm2, [k_5]
+    mov     edi, TXT_IMMUNE + 1
+    call    dmgnum_text                 ; one past the last word: ignored
+    call    dmgnum_count
+    cmp     eax, WORD_ROWS
+    mov     eax, 300
+    jne     .ret
+    xor     eax, eax
+.ret:
+    mov     ebx, eax
+    call    dmgnum_clear
+    mov     eax, ebx
+    add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_heart_levels() -> eax 0, else 400 + the failing heart_rows row
+; ebx = row, r12 = row pointer
+check_heart_levels:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    xor     ebx, ebx
+.row:
+    cmp     ebx, HEART_ROWS
+    jae     .ok
+    imul    eax, ebx, 16
+    lea     r12, [heart_rows]
+    add     r12, rax
+    mov     edi, [r12]
+    mov     esi, [r12 + 4]
+    mov     edx, [r12 + 8]
+    call    hud_heart_level
+    cmp     eax, [r12 + 12]
+    jne     .bad
+    inc     ebx
+    jmp     .row
+.bad:
+    lea     eax, [rbx + 400]
+    jmp     .ret
+.ok:
+    xor     eax, eax
+.ret:
     add     rsp, 16
     pop     r12
     pop     rbx
