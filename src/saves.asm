@@ -1,13 +1,15 @@
-; saves.asm - data directory, world list (scan/rename/delete) and file-name helpers.
+; saves.asm - data directory, world list (scan, create, rename, delete over 0.9 world directories; worlds
+; of 0.8 and earlier are listed but never opened) and file-name helpers.
 %include "common.inc"
 default rel
 
 global data_dir, worlds_dir, settings_path, world_list, world_count
 global saves_init, saves_scan, saves_entry_path, saves_name_to_file
-global saves_new_file_path, saves_delete, saves_rename, fmt_ago
+global saves_new_world_dir, saves_delete, saves_rename, fmt_ago
 
 extern str_len, str_copy, str_append, i32_to_str
 extern file_read, file_stat_mtime, file_patch, file_unlink, time_now
+extern mkdir_p, dir_remove_tree
 
 %define MAX_WORLDS  64
 %define DIR_MAX     3800                ; longest base dir; keeps every derived path < 4096
@@ -28,6 +30,8 @@ s_hour:     db " h ago", 0
 s_day:      db " day ago", 0
 s_days:     db " days ago", 0
 m_v6:       db "ACRAFT06"
+s_hdr_name: db "/world.hdr", 0
+s_regions:  db "/regions", 0
 
 section .bss
 align 8
@@ -70,56 +74,6 @@ env_get:
     jmp     .entry
 .none:
     xor     eax, eax
-    ret
-
-; mkdir_p(rdi path, writable) -> eax 0 or the first -errno other than -EEXIST.
-; Creates every prefix of the path (mode 0755).
-mkdir_p:
-    push    rbx
-    push    r12
-    push    r13
-    mov     rbx, rdi
-    xor     r12d, r12d                  ; first error
-    mov     r13d, 1                     ; index (skip a leading '/')
-.scan:
-    mov     al, [rbx + r13]
-    test    al, al
-    jz      .final
-    cmp     al, '/'
-    jne     .adv
-    mov     byte [rbx + r13], 0
-    mov     eax, SYS_MKDIR
-    mov     rdi, rbx
-    mov     esi, 493                    ; 0755
-    syscall
-    mov     byte [rbx + r13], '/'
-    test    rax, rax
-    jz      .adv
-    cmp     rax, -EEXIST
-    je      .adv
-    test    r12, r12
-    jnz     .adv
-    mov     r12, rax
-.adv:
-    inc     r13
-    jmp     .scan
-.final:
-    mov     eax, SYS_MKDIR
-    mov     rdi, rbx
-    mov     esi, 493
-    syscall
-    test    rax, rax
-    jz      .done
-    cmp     rax, -EEXIST
-    je      .done
-    test    r12, r12
-    jnz     .done
-    mov     r12, rax
-.done:
-    mov     eax, r12d
-    pop     r13
-    pop     r12
-    pop     rbx
     ret
 
 ; saves_init(rdi envp or 0, rsi override_dir or 0) -> eax 0 / -errno
@@ -204,34 +158,51 @@ saves_init:
     pop     rbp
     ret
 
-; add_entry(rdi dirent name, esi count) -> eax 1 if a world entry was inserted into world_list
-; (kept sorted newest first), else 0.
+; stat_info(rdi path) -> rax mtime seconds or -errno, edx st_mode (valid when rax >= 0); follows links
+stat_info:
+    sub     rsp, 152
+    mov     eax, SYS_STAT
+    mov     rsi, rsp
+    syscall
+    test    rax, rax
+    js      .ret
+    mov     edx, [rsp + 24]             ; st_mode
+    mov     rax, [rsp + 88]             ; st_mtime
+.ret:
+    add     rsp, 152
+    ret
+
+; add_entry(rdi dirent name, esi count, edx d_type) -> eax 1 if a world entry was inserted into
+; world_list (kept sorted newest first), else 0. A directory whose world.hdr starts with a good 0.9
+; header is a world (valid 1); a regular <stem>.acw file is a world of 0.8 or earlier (valid 2: listed,
+; never opened); nothing else is listed. A type the dirent does not settle (DT_UNKNOWN, a link) is
+; looked up with stat.
 add_entry:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 8
+    push    r14
+    sub     rsp, 16                     ; [rsp] end of the path in path_buf
     mov     rbx, rdi                    ; name
     mov     r12d, esi                   ; count
+    mov     r14d, edx                   ; d_type
+    cmp     byte [rbx], '.'
+    jne     .named
+    cmp     byte [rbx + 1], 0
+    je      .skip                       ; "."
+    cmp     word [rbx + 1], '.'
+    je      .skip                       ; ".." (the bytes '.', 0)
+.named:
+    mov     rdi, rbx
     call    str_len
-    cmp     rax, 4
-    jbe     .skip
+    test    rax, rax
+    jz      .skip
     cmp     rax, 63
-    ja      .skip
-    cmp     dword [rbx + rax - 4], 0x7763612E   ; ".acw"
-    jne     .skip
+    ja      .skip                       ; WORLDENTRY.file holds 63 characters
     mov     r13, rax                    ; name length
-    lea     rdi, [tmp_entry]
-    xor     eax, eax
-    mov     ecx, WORLDENTRY_size / 8
-    rep     stosq
-    lea     rdi, [tmp_entry + WORLDENTRY.file]
-    mov     rsi, rbx
-    mov     edx, 63
-    call    str_copy
-    lea     rdi, [path_buf]
+    lea     rdi, [path_buf]             ; path = worlds_dir/name
     lea     rsi, [worlds_dir]
     mov     edx, 4000
     call    str_copy
@@ -240,12 +211,40 @@ add_entry:
     mov     rsi, rbx
     call    str_append
     mov     byte [rax], 0
+    mov     [rsp], rax
+    lea     rdi, [tmp_entry]
+    xor     eax, eax
+    mov     ecx, WORLDENTRY_size / 8
+    rep     stosq
+    lea     rdi, [tmp_entry + WORLDENTRY.file]
+    mov     rsi, rbx
+    mov     edx, 63
+    call    str_copy
+    cmp     r14d, DT_DIR
+    je      .dir
+    cmp     r14d, DT_REG
+    je      .file
+    lea     rdi, [path_buf]             ; anything else: stat decides
+    call    stat_info
+    test    rax, rax
+    js      .skip
+    and     edx, 0xF000
+    cmp     edx, 0x4000
+    je      .dir
+    cmp     edx, 0x8000
+    jne     .skip
+.file:
+    cmp     r13, 4
+    jbe     .skip
+    cmp     dword [rbx + r13 - 4], 0x7763612E   ; ".acw"
+    jne     .skip
     lea     rdi, [path_buf]
-    call    file_stat_mtime
+    call    stat_info
     test    rax, rax
     js      .skip
     mov     [tmp_entry + WORLDENTRY.mtime], rax
-    lea     rdi, [tmp_entry + WORLDENTRY.name]  ; default name = file stem (<= 32 chars)
+    mov     dword [tmp_entry + WORLDENTRY.valid], 2
+    lea     rdi, [tmp_entry + WORLDENTRY.name]  ; its name is the file stem (<= 32 chars)
     mov     rsi, rbx
     lea     rdx, [r13 - 4]
     cmp     rdx, 32
@@ -253,26 +252,39 @@ add_entry:
     mov     edx, 32
 .stem:
     call    str_copy
+    jmp     .insert
+.dir:
+    mov     rdi, [rsp]                  ; <dir>/world.hdr: a world only with a readable 0.9 header
+    lea     rsi, [s_hdr_name]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [path_buf]
+    call    stat_info
+    test    rax, rax
+    js      .skip
+    mov     [tmp_entry + WORLDENTRY.mtime], rax
     lea     rdi, [path_buf]
     lea     rsi, [hdr_buf]
     mov     edx, 1024
     call    file_read
     cmp     rax, 1024
-    jl      .insert
+    jl      .skip
     mov     rdx, [hdr_buf]
     cmp     rdx, [m_v6]
-    jne     .insert
+    jne     .skip
     mov     eax, [hdr_buf + WORLDHDR.mode]
     cmp     eax, MODE_CREATIVE
-    ja      .insert                     ; garbage mode: unreadable
+    ja      .skip                       ; garbage mode: not a world
     mov     [tmp_entry + WORLDENTRY.mode], eax
     mov     eax, [hdr_buf + WORLDHDR.seed]
     mov     [tmp_entry + WORLDENTRY.seed], eax
     mov     dword [tmp_entry + WORLDENTRY.valid], 1
-    cmp     byte [hdr_buf + WORLDHDR.name], 0
-    je      .insert
-    lea     rdi, [tmp_entry + WORLDENTRY.name]
+    lea     rdi, [tmp_entry + WORLDENTRY.name]  ; the header's name, else the directory's
     lea     rsi, [hdr_buf + WORLDHDR.name]
+    cmp     byte [rsi], 0
+    jne     .have_name
+    mov     rsi, rbx
+.have_name:
     mov     edx, 32
     call    str_copy
 .insert:
@@ -315,7 +327,8 @@ add_entry:
 .skip:
     xor     eax, eax
 .ret:
-    add     rsp, 8
+    add     rsp, 16
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -367,6 +380,7 @@ saves_scan:
     jae     .close
     lea     rdi, [r15 + 19]             ; d_name
     mov     esi, r14d
+    movzx   edx, byte [r15 + 18]        ; d_type
     call    add_entry
     add     r14d, eax
     jmp     .ent
@@ -481,11 +495,16 @@ saves_name_to_file:
     mov     rax, rsi
     ret
 
-; saves_new_file_path(rdi name, rsi out) -> eax 0 / -1 (all of <stem>.acw, <stem>-2..99.acw exist)
-saves_new_file_path:
+; saves_new_world_dir(rdi name, rsi out) -> eax 0 / -1 (<stem>, <stem>-2 .. <stem>-99 are all taken) /
+; -errno (the directory could not be made)
+; out = worlds_dir/<stem>[-N]: a name that is neither a directory nor a world of 0.8 or earlier
+; (<stem>[-N].acw); the directory is made together with its regions/ directory.
+saves_new_world_dir:
     push    rbx
     push    r12
     push    r13
+    push    r14
+    sub     rsp, 8
     mov     rbx, rdi
     mov     r12, rsi
     mov     rdi, r12
@@ -496,62 +515,102 @@ saves_new_file_path:
     lea     rsi, [rax + 1]
     mov     rdi, rbx
     call    saves_name_to_file
-    mov     r13, rax                    ; end of stem
-    mov     rdi, r13
-    lea     rsi, [s_ext]
-    call    str_append
-    mov     byte [rax], 0
-    mov     rdi, r12
-    call    file_stat_mtime
-    test    rax, rax
-    js      .ok
-    mov     ebx, 2
+    mov     r13, rax                    ; end of the stem
+    xor     ebx, ebx                    ; 0, then the suffixes 2 .. 99
 .try:
+    mov     r14, r13
+    test    ebx, ebx
+    jz      .name_ok
     cmp     ebx, 99
     ja      .full
     mov     byte [r13], '-'
     lea     rsi, [r13 + 1]
     mov     edi, ebx
     call    i32_to_str
-    mov     rdi, rax
+    mov     r14, rax                    ; end of the candidate
+.name_ok:
+    mov     byte [r14], 0
+    mov     rdi, r12                    ; taken as a directory ...
+    call    file_stat_mtime
+    test    rax, rax
+    jns     .taken
+    mov     rdi, r14                    ; ... or as a world of 0.8 or earlier
     lea     rsi, [s_ext]
     call    str_append
     mov     byte [rax], 0
     mov     rdi, r12
     call    file_stat_mtime
+    mov     byte [r14], 0               ; the extension off again
     test    rax, rax
-    js      .ok
+    jns     .taken
+    mov     rdi, r12                    ; free: make it and its regions/
+    call    mkdir_p
+    test    eax, eax
+    jnz     .ret
+    mov     rdi, r14
+    lea     rsi, [s_regions]
+    call    str_append
+    mov     byte [rax], 0
+    mov     rdi, r12
+    call    mkdir_p
+    mov     byte [r14], 0
+    jmp     .ret                        ; 0, or the -errno of regions/
+.taken:
     inc     ebx
+    cmp     ebx, 2
+    jae     .try
+    mov     ebx, 2
     jmp     .try
 .full:
     mov     eax, -1
-    jmp     .ret
-.ok:
-    xor     eax, eax
 .ret:
+    add     rsp, 8
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     ret
 
-; saves_delete(edi idx) -> eax 0 / -errno (-1 for a bad index). The list is not updated: rescan.
+; saves_delete(edi idx) -> eax 0 / -errno (-1 for a bad index or an entry that is not valid 1 or 2)
+; A 0.9 world goes with its whole directory (dir_remove_tree), a world of 0.8 or earlier is one file.
+; The list is not updated: rescan.
 saves_delete:
+    push    rbx
+    push    r12
     sub     rsp, 8
+    mov     r12d, edi
     cmp     edi, [world_count]
     jae     .bad
+    mov     eax, edi
+    shl     rax, 7
+    lea     rcx, [world_list]
+    mov     ebx, [rcx + rax + WORLDENTRY.valid]
+    cmp     ebx, 1
+    je      .path
+    cmp     ebx, 2
+    jne     .bad
+.path:
+    mov     edi, r12d
     lea     rsi, [path_buf]
     call    saves_entry_path
     lea     rdi, [path_buf]
+    cmp     ebx, 1
+    jne     .file
+    call    dir_remove_tree
+    jmp     .ret
+.file:
     call    file_unlink
     jmp     .ret
 .bad:
     mov     eax, -1
 .ret:
     add     rsp, 8
+    pop     r12
+    pop     rbx
     ret
 
-; saves_rename(edi idx, rsi new_name) -> eax 0 / -errno / -1 (entry is not a valid v2 world).
-; Patches the 33-byte name field of the header in place.
+; saves_rename(edi idx, rsi new_name) -> eax 0 / -errno / -1 (the entry is not a valid 0.9 world).
+; Patches the 33-byte name field of <dir>/world.hdr in place.
 saves_rename:
     push    rbx
     push    r12
@@ -562,8 +621,8 @@ saves_rename:
     shl     rax, 7
     lea     rbx, [world_list]
     add     rbx, rax                    ; entry
-    cmp     dword [rbx + WORLDENTRY.valid], 0
-    je      .bad
+    cmp     dword [rbx + WORLDENTRY.valid], 1
+    jne     .bad
     cmp     dword [rbx + WORLDENTRY.mode], MODE_CREATIVE
     ja      .bad
     mov     r12, rsi
@@ -579,6 +638,13 @@ saves_rename:
     mov     edi, r13d
     lea     rsi, [path_buf]
     call    saves_entry_path
+    lea     rdi, [path_buf]
+    call    str_len
+    lea     rdi, [path_buf]
+    add     rdi, rax
+    lea     rsi, [s_hdr_name]
+    call    str_append
+    mov     byte [rax], 0
     lea     rdi, [path_buf]
     mov     esi, WORLDHDR.name
     lea     rdx, [name_buf]

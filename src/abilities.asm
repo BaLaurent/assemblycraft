@@ -14,7 +14,8 @@
 default rel
 
 global abilities_cd, abilities_cd_total, abilities_bolt_cd
-global abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
+global abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
+global meteor_tgt, rain_tgt                 ; read by test_mobs (entities_rebase)
 
 extern player, mobs
 extern mobs_raycast, mob_is_hostile, yaw_from, ray_aabb
@@ -148,7 +149,7 @@ abilities_cd_total: resd NUM_ABILITY_SLOTS  ; the cooldown each was started with
 abilities_bolt_cd:  resd 1              ; steps until the next staff bolt
 bolt_n:       resd 1                    ; bolts under the Archmage's power since the last fireball
 charge_t:     resd 1                    ; steps of charge left
-charge_mask:  resd 1                    ; bit i = mob i was already struck by this charge
+charge_mask:  resq 1                    ; bit i = mob i was already struck by this charge (MAX_MOBS = 64)
 charge_dx:    resd 1                    ; float: the charge's horizontal heading
 charge_dz:    resd 1
 whirl_t:      resd 1                    ; steps of whirlwind left
@@ -455,12 +456,12 @@ ab_crit:
     add     rsp, 8
     ret
 
-; ab_sweep(xmm0 base, xmm1 radius, xmm2 dy limit, xmm3 push, edi src, esi flags, edx rolls) -> eax
+; ab_sweep(xmm0 base, xmm1 radius, xmm2 dy limit, xmm3 push, edi src, esi flags, edx rolls) -> rax
 ; mask: every hostile mob whose horizontal distance from the player is below radius and whose
 ; feet are less than the dy limit above or below his takes combat_hit_mob(src, flags, base,
-; outward * push); with rolls non-zero each hit rolls its own critical (HITF_CRIT). Bit i of eax is
-; set for every mob i that was struck.
-; rbx = mob, r12d = index, r13d = mask, r14d = flags
+; outward * push); with rolls non-zero each hit rolls its own critical (HITF_CRIT). Bit i of rax is
+; set for every mob i that was struck (64 bits: MAX_MOBS is 64).
+; rbx = mob, r12d = index, r13 = mask, r14d = flags
 %define S_BASE          0               ; frame: floats base, radius^2, dy limit, push, ...
 %define S_R2            4
 %define S_DY            8
@@ -547,13 +548,13 @@ ab_sweep:
     call    combat_hit_mob
     test    eax, eax
     jz      .next
-    bts     r13d, r12d
+    bts     r13, r12
 .next:
     add     rbx, MOB_size
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
-    mov     eax, r13d
+    mov     rax, r13
     add     rsp, S_FRAME
     pop     r14
     pop     r13
@@ -971,7 +972,7 @@ ab_charge:
     mulss   xmm0, [k_charge_kb]
     movss   [player + BODY.kbz], xmm0
     mov     dword [charge_t], CHARGE_STEPS
-    mov     dword [charge_mask], 0
+    mov     qword [charge_mask], 0
     mov     edi, SND_WARCRY
     movss   xmm0, [k_vol]
     call    audio_play
@@ -1082,10 +1083,10 @@ ab_slam:
     mov     esi, ELEM_PHYS
     mov     edx, 1
     call    ab_sweep
-    mov     ebx, eax
+    mov     rbx, rax
     xor     r12d, r12d
 .mob:
-    bt      ebx, r12d
+    bt      rbx, r12
     jnc     .next
     imul    r13d, r12d, MOB_size
     lea     rax, [mobs]
@@ -1503,7 +1504,7 @@ ab_knives:
 ; ab_charge_step(): while the charge lasts, every hostile mob the player touches (horizontal
 ; distance < its half width + 0.9, within 1.5 blocks in height) and has not struck yet takes a
 ; 6 point physical melee-skill hit along the charge and is stunned 30 steps
-; rbx = mob, r12d = index, r13d = mask of the struck
+; rbx = mob, r12d = index, r13 = mask of the struck
 ab_charge_step:
     push    rbp
     mov     rbp, rsp
@@ -1514,13 +1515,13 @@ ab_charge_step:
     cmp     dword [charge_t], 0
     jle     .done
     dec     dword [charge_t]
-    mov     r13d, [charge_mask]
+    mov     r13, [charge_mask]
     lea     rbx, [mobs]
     xor     r12d, r12d
 .mob:
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next
-    bt      r13d, r12d
+    bt      r13, r12
     jc      .next
     movss   xmm0, [rbx + BODY.x]
     subss   xmm0, [player + BODY.x]
@@ -1553,7 +1554,7 @@ ab_charge_step:
     movss   xmm2, [charge_dz]
     mulss   xmm2, [k_charge_hit]
     call    combat_hit_mob
-    bts     r13d, r12d
+    bts     r13, r12
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next                       ; it died
     test    dword [rbx + MOB.affix], AFX_JUGGERNAUT
@@ -1566,7 +1567,7 @@ ab_charge_step:
     inc     r12d
     cmp     r12d, MAX_MOBS
     jb      .mob
-    mov     [charge_mask], r13d
+    mov     [charge_mask], r13
 .done:
     add     rsp, 8
     pop     r13
@@ -1721,4 +1722,24 @@ ab_rain_step:
     mov     dword [rain_t], RAIN_GAP
 .done:
     leave
+    ret
+
+; abilities_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: the local x and z of the
+; meteor storm's and the arrow rain's target drop by that much (exact: multiples of 512). Nothing
+; else here is a position: charge_dx / charge_dz are a heading.
+abilities_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    movss   xmm2, [meteor_tgt]
+    subss   xmm2, xmm0
+    movss   [meteor_tgt], xmm2
+    movss   xmm2, [meteor_tgt + 8]
+    subss   xmm2, xmm1
+    movss   [meteor_tgt + 8], xmm2
+    movss   xmm2, [rain_tgt]
+    subss   xmm2, xmm0
+    movss   [rain_tgt], xmm2
+    movss   xmm2, [rain_tgt + 8]
+    subss   xmm2, xmm1
+    movss   [rain_tgt + 8], xmm2
     ret

@@ -1,5 +1,6 @@
-; app.asm - application state machine: main loop, screen dispatch, world open/create/
-; quit, autosave, window title.
+; app.asm - application state machine: main loop (the world streams around the player or the title's
+; camera every frame), screen dispatch, world open/create/quit/respawn behind loading screens,
+; autosave, window title.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -7,28 +8,35 @@ default rel
 global app_state, app_entered, app_settings_parent, app_selected, app_in_world
 global app_fps, app_show_debug, app_window, app_message, app_message_timer
 global app_run, app_goto, app_play_world, app_create_world, app_quit_to_title
-global app_respawn, app_request_quit
+global app_respawn, app_request_quit, app_wait_area
 
 extern sys_print, str_append, str_copy, i32_to_str, floor_i
 extern input_poll, input_set_captured, input_captured, frame_input, ui_input
 extern game_new, game_load, game_save, game_frame, game_respawn, game_mode, game_time
+extern game_on_area_ready
 extern game_open_screen, game_open_cont, game_has_target, game_break_progress
 extern settings, settings_apply, settings_save, settings_path
-extern saves_scan, saves_entry_path, saves_new_file_path, world_list
+extern saves_scan, saves_entry_path, saves_new_world_dir, world_list
 extern render_world, render_update_chunks, ui_begin, ui_focus, hud_draw, hud_dt
 extern screen_title, screen_worlds, screen_create, screen_rename, screen_delete
 extern screen_settings, screen_controls, screen_pause, screen_inventory
 extern screen_crafting, screen_death, screen_loading, screen_furnace, screen_chest
-extern audio_update, player, body_init, world_generate, world_top_y, world_header
+extern audio_update, player, body_init, world_origin_x, world_origin_z, world_header
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim, game_heavy_s
 extern screen_trade, screen_dialog, screen_class, screen_skills, screen_character
 extern rpg_class, rpg_reset, combat_reset, dmgnum_clear, light_update
+extern boats_clear
+extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
+extern dir_remove_tree
 
 section .rodata
-s_loading:    db "Loading world...", 0
-s_generating: db "Generating world...", 0
+s_loading:    db "Loading world", 0
+s_generating: db "Generating terrain", 0
+s_pano:       db "Generating", 0
+s_respawning: db "Respawning", 0
+s_pct:        db "%", 0
 s_saving:     db "Saving world...", 0
 s_cant_load:  db "Could not load '", 0
 s_quote:      db "'", 0
@@ -51,6 +59,10 @@ f_pano_rate:  dd 3.0
 f_360:        dd 360.0
 f_autosave:   dd 120.0
 f_msg_time:   dd 5.0
+f_half:       dd 0.5
+f_wait_budget: dd 0.030                ; seconds of streaming per frame behind a loading screen
+f_stream_budget: dd 0.004              ; ... and while the world is on screen
+f_mesh_budget: dd 0.006
 align 8
 d_max_dt:     dq 0.25
 d_title_every: dq 0.5
@@ -89,6 +101,8 @@ panorama_cam:   resb BODY_size
 app_message:    resb 128
 world_path:     resb 4096
 title_buf:      resb 256
+wait_text:      resb 160               ; "<text> N%" of the loading screen
+pano_spawn:     resd 4                 ; the panorama world's spawn cell (absolute x, y, z)
 
 section .text
 
@@ -221,6 +235,143 @@ show_loading:
     pop     rbp
     ret
 
+; wait_percent(edi x, esi z) -> eax 0..100: 4 for each of the 5 x 5 columns around the block (x, z)
+; that are lit and meshed
+wait_percent:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     r12d, edi
+    mov     r13d, esi
+    xor     ebx, ebx
+    mov     r14d, -2                    ; column row
+.row:
+    mov     r15d, -2                    ; column
+.col:
+    mov     eax, r15d
+    shl     eax, 4
+    lea     edi, [r12 + rax]
+    mov     eax, r14d
+    shl     eax, 4
+    lea     esi, [r13 + rax]
+    xor     edx, edx
+    call    stream_area_ready
+    add     ebx, eax
+    inc     r15d
+    cmp     r15d, 2
+    jle     .col
+    inc     r14d
+    cmp     r14d, 2
+    jle     .row
+    lea     eax, [rbx * 4]
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; show_wait(rdi text, esi percent): one loading frame saying "<text> N%"
+show_wait:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, esi
+    mov     rsi, rdi
+    lea     rdi, [wait_text]
+    mov     edx, 120
+    call    str_copy
+    mov     byte [rax], ' '
+    lea     rsi, [rax + 1]
+    mov     edi, ebx
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_pct]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [wait_text]
+    call    show_loading
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; app_wait_area(rdi text, rsi BODY* centre) -> eax 0 ready / 1 the window was closed
+; Streams the world around the centre behind a loading screen ("<text> N%") until the 5 x 5 columns
+; around it are lit and meshed. With the player as the centre, game_on_area_ready then settles a new
+; world or a respawn (stands the player on the ground, populates, finds the bed); when that moves the
+; player to another area (a vanished bed), wait again.
+app_wait_area:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     rbx, rdi                    ; text
+    mov     r12, rsi                    ; centre
+    xor     esi, esi
+    call    show_wait
+.loop:
+    call    glfwPollEvents
+    mov     rdi, [app_window]
+    call    glfwWindowShouldClose
+    test    eax, eax
+    jnz     .closed
+    movss   xmm0, [r12 + BODY.x]
+    call    floor_i
+    mov     r13d, eax
+    movss   xmm0, [r12 + BODY.z]
+    call    floor_i
+    mov     r14d, eax
+    mov     edi, r13d
+    mov     esi, r14d
+    movss   xmm0, [f_wait_budget]
+    call    stream_update
+    call    light_update
+    movss   xmm0, [f_wait_budget]
+    call    render_update_chunks
+    mov     edi, r13d
+    mov     esi, r14d
+    mov     edx, 2
+    call    stream_area_ready
+    test    eax, eax
+    jnz     .ready
+    mov     edi, r13d
+    mov     esi, r14d
+    call    wait_percent
+    mov     esi, eax
+    mov     rdi, rbx
+    call    show_wait
+    jmp     .loop
+.ready:
+    lea     rax, [player]
+    cmp     r12, rax
+    jne     .done
+    call    game_on_area_ready
+    test    eax, eax
+    jnz     .loop                       ; the player moved on to another area: wait for it too
+.done:
+    xor     eax, eax
+    jmp     .ret
+.closed:
+    mov     eax, 1
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; enter_world(): start playing the loaded/created world; a character without a class picks
 ; one first
 enter_world:
@@ -238,7 +389,7 @@ enter_world:
     pop     rbp
     ret
 
-; app_play_world(edi idx)
+; app_play_world(edi idx): only a valid 0.9 world (entry.valid 1) opens
 app_play_world:
     push    rbp
     mov     rbp, rsp
@@ -248,8 +399,11 @@ app_play_world:
     mov     eax, ebx
     shl     eax, 7                      ; * WORLDENTRY_size
     lea     r12, [world_list + rax]
+    cmp     dword [r12 + WORLDENTRY.valid], 1
+    jne     .cant
     lea     rdi, [s_loading]
-    call    show_loading
+    xor     esi, esi
+    call    show_wait
     mov     edi, ebx
     lea     rsi, [world_path]
     call    saves_entry_path
@@ -257,6 +411,7 @@ app_play_world:
     call    game_load
     test    eax, eax
     jz      .loaded
+.cant:
     lea     rdi, [s_cant_load]
     lea     rsi, [r12 + WORLDENTRY.name]
     lea     rdx, [s_quote]
@@ -265,6 +420,11 @@ app_play_world:
     call    app_goto
     jmp     .ret
 .loaded:
+    lea     rdi, [s_loading]
+    lea     rsi, [player]
+    call    app_wait_area
+    test    eax, eax
+    jnz     .ret                        ; the window was closed: the main loop leaves
     call    enter_world
 .ret:
     pop     r12
@@ -273,6 +433,8 @@ app_play_world:
     ret
 
 ; app_create_world(rdi name, esi mode, edx seed)
+; A new directory world: header and spawn first, then the terrain around the spawn is generated behind
+; the loading screen, then everything is saved once (the player stands on the surface by then).
 app_create_world:
     push    rbp
     mov     rbp, rsp
@@ -284,23 +446,36 @@ app_create_world:
     mov     r12d, esi
     mov     r13d, edx
     lea     rdi, [s_generating]
-    call    show_loading
+    xor     esi, esi
+    call    show_wait
     mov     rdi, rbx
     lea     rsi, [world_path]
-    call    saves_new_file_path
+    call    saves_new_world_dir
     test    eax, eax
     jz      .path_ok
     lea     rdi, [s_too_many]
+    cmp     eax, -1
+    je      .fail
+    lea     rdi, [s_cant_save]
     jmp     .fail
 .path_ok:
     mov     edi, r13d
     mov     esi, r12d
     mov     rdx, rbx
+    lea     rcx, [world_path]
     call    game_new
+    lea     rdi, [s_generating]
+    lea     rsi, [player]
+    call    app_wait_area
+    test    eax, eax
+    jnz     .abandon                    ; the window was closed: leave no empty world behind
     lea     rdi, [world_path]
     call    game_save
     test    eax, eax
     jz      .saved
+    lea     rdi, [world_path]           ; could not save: the half-made world goes, the title world returns
+    call    dir_remove_tree
+    call    load_panorama
     lea     rdi, [s_cant_save]
 .fail:
     xor     esi, esi
@@ -309,6 +484,10 @@ app_create_world:
     call    saves_scan
     mov     edi, ST_WORLDS
     call    app_goto
+    jmp     .ret
+.abandon:
+    lea     rdi, [world_path]
+    call    dir_remove_tree
     jmp     .ret
 .saved:
     call    enter_world
@@ -320,12 +499,22 @@ app_create_world:
     pop     rbp
     ret
 
-; load_panorama(): the title-screen world and its camera
+; load_panorama(): the title-screen world (a streamed world of its own seed) and its camera, then
+; the area around the camera is generated behind a loading screen
 load_panorama:
     push    rbp
     mov     rbp, rsp
     mov     edi, PANORAMA_SEED
-    call    world_generate
+    xor     esi, esi                    ; no directory: the panorama is never saved
+    call    stream_begin
+    lea     rdi, [pano_spawn]
+    call    gen_find_spawn
+    mov     eax, [pano_spawn]
+    and     eax, -REBASE_STEP
+    mov     [world_origin_x], eax
+    mov     eax, [pano_spawn + 8]
+    and     eax, -REBASE_STEP
+    mov     [world_origin_z], eax
     call    mobs_clear
     call    drops_clear
     call    arrows_clear
@@ -333,6 +522,7 @@ load_panorama:
     call    fire_clear
     call    fx_clear
     call    dmgnum_clear
+    call    boats_clear
     call    rpg_reset
     call    combat_reset
     mov     dword [game_aim], 0
@@ -344,15 +534,24 @@ load_panorama:
     movss   xmm1, [f_height]
     movss   xmm2, [f_speed]
     call    body_init
-    mov     edi, 128
-    mov     esi, 128
-    call    world_top_y
-    add     eax, 12
+    mov     eax, [pano_spawn]
+    sub     eax, [world_origin_x]
+    cvtsi2ss xmm0, eax
+    addss   xmm0, [f_half]
+    movss   [panorama_cam + BODY.x], xmm0
+    mov     eax, [pano_spawn + 4]
+    add     eax, 12                     ; the camera hovers above the spawn
     cvtsi2ss xmm0, eax
     movss   [panorama_cam + BODY.y], xmm0
-    mov     dword [panorama_cam + BODY.x], __float32__(128.5)
-    mov     dword [panorama_cam + BODY.z], __float32__(128.5)
+    mov     eax, [pano_spawn + 8]
+    sub     eax, [world_origin_z]
+    cvtsi2ss xmm0, eax
+    addss   xmm0, [f_half]
+    movss   [panorama_cam + BODY.z], xmm0
     mov     dword [panorama_cam + BODY.pitch], __float32__(20.0)
+    lea     rdi, [s_pano]
+    lea     rsi, [panorama_cam]
+    call    app_wait_area
     pop     rbp
     ret
 
@@ -364,6 +563,8 @@ app_quit_to_title:
     call    show_loading
     call    inv_close_screen            ; cursor and grid items go back before the save
     call    save_world
+    mov     edi, 1
+    call    stream_end                  ; the modified columns are written, every column unloads
     mov     dword [app_in_world], 0
     call    load_panorama
     call    saves_scan
@@ -372,7 +573,8 @@ app_quit_to_title:
     pop     rbp
     ret
 
-; app_respawn(edi to_title)
+; app_respawn(edi to_title): back at the bed or the world spawn; the terrain around is waited for
+; ("Respawning"), then the game goes on (or the world is left for the title screen)
 app_respawn:
     push    rbp
     mov     rbp, rsp
@@ -380,6 +582,11 @@ app_respawn:
     sub     rsp, 8
     mov     ebx, edi
     call    game_respawn
+    lea     rdi, [s_respawning]
+    lea     rsi, [player]
+    call    app_wait_area
+    test    eax, eax
+    jnz     .ret                        ; the window was closed: the main loop leaves
     test    ebx, ebx
     jz      .play
     call    app_quit_to_title
@@ -416,20 +623,23 @@ update_title:
     lea     rsi, [s_fps]
     call    str_append
     mov     rbx, rax
-%macro TITLE_COORD 2                    ; field, separator
+%macro TITLE_COORD 3                    ; field, origin symbol or none, separator
     movss   xmm0, [player + BODY.%1]
     call    floor_i
+%ifnidn %2, none
+    add     eax, [%2]                   ; absolute: the local cell plus the origin
+%endif
     mov     edi, eax
     mov     rsi, rbx
     call    i32_to_str
     mov     rdi, rax
-    lea     rsi, [%2]
+    lea     rsi, [%3]
     call    str_append
     mov     rbx, rax
 %endmacro
-    TITLE_COORD x, s_space
-    TITLE_COORD y, s_space
-    TITLE_COORD z, s_sep
+    TITLE_COORD x, world_origin_x, s_space
+    TITLE_COORD y, none, s_space
+    TITLE_COORD z, world_origin_z, s_sep
     mov     eax, [inv_sel]
     lea     rcx, [inv + INVENTORY.slots + rax*4]
     lea     rsi, [s_empty]
@@ -681,6 +891,11 @@ app_run:
     lea     rdi, [world_path]
     mov     edx, 4095
     call    str_copy
+    lea     rdi, [s_loading]
+    lea     rsi, [player]
+    call    app_wait_area
+    test    eax, eax
+    jnz     .start                      ; the window was closed while loading: the loop leaves
     call    enter_world
     jmp     .start
 .title:
@@ -737,7 +952,21 @@ app_run:
 .same_state:
     movss   xmm0, [frame_dt]
     call    audio_update
+    lea     rbx, [panorama_cam]         ; the world is streamed around the player, or the title's camera
+    lea     rax, [player]
+    cmp     dword [app_in_world], 0
+    cmovne  rbx, rax
+    movss   xmm0, [rbx + BODY.x]
+    call    floor_i
+    mov     [rsp], eax
+    movss   xmm0, [rbx + BODY.z]
+    call    floor_i
+    mov     esi, eax
+    mov     edi, [rsp]
+    movss   xmm0, [f_stream_budget]
+    call    stream_update               ; unload, collect, dispatch, install, light
     call    light_update                ; queued light changes first: they dirty chunks
+    movss   xmm0, [f_mesh_budget]
     call    render_update_chunks
     movss   xmm0, [app_message_timer]
     subss   xmm0, [frame_dt]
@@ -770,6 +999,8 @@ app_run:
     call    inv_close_screen            ; cursor and grid items go back before the save
     call    save_world
     mov     [exit_code], eax
+    mov     edi, 1
+    call    stream_end                  ; the modified columns are written, every column unloads
 .done:
     mov     eax, [exit_code]
     add     rsp, 8

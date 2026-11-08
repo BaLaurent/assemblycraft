@@ -1,13 +1,13 @@
 ; fire.asm - fire: burning cells that hurt, spread to flammable blocks, ignite TNT and burn out.
 ; The world holds a FIRE block in every burning cell; the fires table records its age and the
-; steps to its next spread/burn roll. The table is not saved: fire_rebuild re-reads it from
-; the world after a load.
+; steps to its next spread/burn roll. The table is never saved (a column writes its FIRE blocks
+; as air), holds LOCAL cells, and a slot is free while its y is -1 (x and z are signed now).
 %include "common.inc"
 default rel
 
-global fires, fire_clear, fire_place, fire_step, fire_render, fire_rebuild
+global fires, fire_clear, fire_place, fire_step, fire_render, fire_shift, fire_remove_box
 
-extern world_get, world_set, blocks, rng_next, block_flammable
+extern world_get, world_set, world_column_ready, rng_next, block_flammable
 extern survival_damage, mobs, mob_hurt, player
 extern tnt_prime, cont_block_removed, block_removed
 extern game_time, render_box, light_bind_at, light_bind_index
@@ -29,7 +29,7 @@ dirs:        dd 1, 0, 0,  -1, 0, 0,  0, 1, 0,  0, -1, 0,  0, 0, 1,  0, 0, -1
 section .data
 align 16
 fires:
-    times MAX_FIRES dd -1, 0, 0, 0, 0   ; x = -1: free slot
+    times MAX_FIRES dd 0, -1, 0, 0, 0   ; y = -1: free slot
 
 section .text
 
@@ -38,7 +38,7 @@ fire_clear:
     lea     rdi, [fires]
     mov     ecx, MAX_FIRES
 .l:
-    mov     dword [rdi + FIREENT.x], -1
+    mov     dword [rdi + FIREENT.y], -1
     add     rdi, FIREENT_size
     dec     ecx
     jnz     .l
@@ -55,9 +55,9 @@ rng_mod:
     pop     rbx
     ret
 
-; fire_place(edi x, esi y, edx z) -> eax 1 when fire was placed: the cell must be in the
-; world, air, and a slot must be free. The block becomes FIRE; its first roll comes in
-; 20 + rng % 20 steps.
+; fire_place(edi x, esi y, edx z) -> eax 1 when fire was placed: the (local) cell must lie in a
+; ready column with 0 <= y <= 255, hold air, and a slot must be free. The block becomes FIRE; its
+; first roll comes in 20 + rng % 20 steps.
 fire_place:
     push    rbp
     mov     rbp, rsp
@@ -65,22 +65,25 @@ fire_place:
     push    r12
     push    r13
     push    r14
-    cmp     edi, WORLD_X - 1
-    ja      .no
-    cmp     esi, WORLD_Y - 1
-    ja      .no
-    cmp     edx, WORLD_Z - 1
+    cmp     esi, WORLD_H - 1
     ja      .no
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx
+    mov     esi, edx
+    call    world_column_ready          ; (edi x, esi z)
+    test    eax, eax
+    jz      .no
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, r14d
     call    world_get
     test    eax, eax                    ; AIR
     jnz     .no
     lea     rbx, [fires]
     mov     ecx, MAX_FIRES
 .find:
-    cmp     dword [rbx + FIREENT.x], -1
+    cmp     dword [rbx + FIREENT.y], -1
     je      .got
     add     rbx, FIREENT_size
     dec     ecx
@@ -201,7 +204,7 @@ fire_step:
     lea     rbx, [fires]
     mov     r12d, MAX_FIRES
 .l:
-    cmp     dword [rbx + FIREENT.x], -1
+    cmp     dword [rbx + FIREENT.y], -1
     je      .next
     mov     rdi, rbx
     call    fire_one
@@ -393,7 +396,7 @@ fire_one:
     xor     ecx, ecx
     call    world_set
 .free:
-    mov     dword [rbx + FIREENT.x], -1
+    mov     dword [rbx + FIREENT.y], -1
 .done:
     add     rsp, 24
     pop     r15
@@ -418,7 +421,7 @@ fire_render:
     lea     rbx, [fires]
     xor     r12d, r12d
 .l:
-    cmp     dword [rbx + FIREENT.x], -1
+    cmp     dword [rbx + FIREENT.y], -1
     je      .next
     cvtsi2ss xmm0, dword [rbx + FIREENT.x] ; lit by the cell the flames stand in
     addss   xmm0, [c_half]
@@ -493,69 +496,41 @@ draw_slab:
     add     rsp, 8
     ret
 
-; fire_rebuild(): after a world load, forget the table and record every FIRE block in the
-; world (a full scan). FIRE blocks beyond MAX_FIRES become air.
-; rbx = scan position, r12 = end, r13d = fires recorded, r14d = found cell index.
-fire_rebuild:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 8
-    call    fire_clear
-    lea     rbx, [blocks]
-    lea     r12, [blocks + WORLD_VOLUME]
-    xor     r13d, r13d
-.scan:
-    mov     rdi, rbx
-    mov     rcx, r12
-    sub     rcx, rbx
-    jz      .done
-    mov     al, FIRE
-    repne scasb
-    jne     .done
-    mov     rbx, rdi                    ; one past the match
-    lea     r14, [blocks]
-    mov     rax, rdi
-    sub     rax, r14
-    dec     eax
-    mov     r14d, eax                   ; index = y << 16 | z << 8 | x
-    mov     edi, r14d
-    and     edi, 255
-    mov     esi, r14d
-    shr     esi, 16
-    mov     edx, r14d
-    shr     edx, 8
-    and     edx, 255
-    cmp     r13d, MAX_FIRES
-    jae     .overflow
-    mov     r15d, r13d
-    imul    r15d, FIREENT_size
+; fire_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every burning cell's local x
+; and z drop by that much
+fire_shift:
     lea     rax, [fires]
-    add     r15, rax
-    mov     [r15 + FIREENT.x], edi
-    mov     [r15 + FIREENT.y], esi
-    mov     [r15 + FIREENT.z], edx
-    mov     dword [r15 + FIREENT.age], 0
-    mov     edi, 20
-    call    rng_mod
-    add     eax, 20
-    mov     [r15 + FIREENT.tick], eax
-    inc     r13d
-    jmp     .scan
-.overflow:
-    xor     ecx, ecx
-    call    world_set                   ; edi, esi, edx are the cell
-    jmp     .scan
-.done:
-    add     rsp, 8
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    pop     rbp
+    lea     rcx, [fires + MAX_FIRES * FIREENT_size]
+.l:
+    cmp     dword [rax + FIREENT.y], -1
+    je      .next
+    sub     [rax + FIREENT.x], edi
+    sub     [rax + FIREENT.z], esi
+.next:
+    add     rax, FIREENT_size
+    cmp     rax, rcx
+    jb      .l
+    ret
+
+; fire_remove_box(edi x0, esi z0, edx x1, ecx z1): every fire whose cell lies in the inclusive local
+; box x0..x1, z0..z1 (any y) is forgotten. The blocks are not touched: the column is going away.
+fire_remove_box:
+    lea     rax, [fires]
+    lea     r8, [fires + MAX_FIRES * FIREENT_size]
+.l:
+    cmp     dword [rax + FIREENT.y], -1
+    je      .next
+    cmp     [rax + FIREENT.x], edi
+    jl      .next
+    cmp     [rax + FIREENT.x], edx
+    jg      .next
+    cmp     [rax + FIREENT.z], esi
+    jl      .next
+    cmp     [rax + FIREENT.z], ecx
+    jg      .next
+    mov     dword [rax + FIREENT.y], -1
+.next:
+    add     rax, FIREENT_size
+    cmp     rax, r8
+    jb      .l
     ret

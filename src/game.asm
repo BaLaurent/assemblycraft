@@ -1,14 +1,20 @@
-; game.asm - world session: new/load/save glue, fixed-step simulation, block and mob
-; interaction for both game modes.
+; game.asm - world session: new/load/save glue (a world is a directory with world.hdr), the floating
+; origin (rebase), the area hooks of the streamed world, fixed-step simulation, block, mob, boat and
+; bed interaction for both game modes.
 %include "common.inc"
 default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
 global game_open_screen, game_open_cont, game_bow_charge, game_aim, game_open_npc, game_heavy_s
 global game_new, game_load, game_save, game_frame, game_respawn
+global game_rebase, game_shift_origin, game_unload_box, game_on_area_ready
+global brk_x, brk_y, brk_z              ; the dig cell (the rebase test reads and sets it)
 
-extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
-extern player, player_spawn, body_step, player_look, player_eye, player_forward
+extern world_header, world_get, world_set, world_top_y
+extern world_origin_x, world_origin_z, world_rebase, world_save_dirty
+extern stream_begin, gen_find_spawn, floor_i
+extern file_read, file_write_atomic, str_append
+extern player, player_shift, body_init, body_step, player_look, player_eye, player_forward
 extern raycast, frame_input, settings
 extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_held
 extern inv_consume_held, inv_damage_held, inv_find_hotbar, inv_container
@@ -19,21 +25,27 @@ extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
 extern mobs, mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
-extern mobs_save, mobs_load
+extern mobs_save, mobs_load, mobs_shift, mobs_remove_box
 extern audio_play, audio_play_at, rng_next, str_copy, input_captured
-extern drops_clear, drops_spawn, drops_step, hand_swing
-extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
-extern cont_at, cont_create, cont_block_removed, conts_step, conts_validate
+extern drops_clear, drops_spawn, drops_step, drops_shift, drops_remove_box, hand_swing
+extern arrows_clear, arrows_step, arrows_spawn, arrows_shift
+extern tnt_clear, tnt_step, tnt_prime, tnt_shift, tnt_remove_box
+extern cont_at, cont_create, cont_block_removed, conts_step
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
-extern fire_clear, fire_place, fire_step, fire_rebuild, fx_clear, fx_step
+extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box
+extern fx_clear, fx_step, fx_shift
 extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_class, rpg_stat
 extern rpg_recompute, rpg_stats, rpg_keystones, status_step
 extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_heavy, combat_step, combat_heal
 extern combat_speed_mult, combat_crit_roll, combat_max_mana
 extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
-extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
-extern dmgnum_clear, dmgnum_step
-extern structures_plan, structures_reset, structures_spawn_npcs, structures_step
+extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
+extern dmgnum_clear, dmgnum_step, dmgnum_shift
+extern structures_reset, structures_step, structures_refresh, structures_shift
+extern boats_clear, boats_step, boats_raycast, boats_place, boats_mount, boats_dismount
+extern boats_break, boats_save, boats_load, boats_shift, boat_riding
+extern sleep_use_bed, sleep_step, sleep_cancel, sleep_respawn_target, sleep_place_at_bed, sleep_active
+extern app_state, app_goto
 extern surv_max_health
 extern place_block, block_use, block_removed, block_is_usable, block_base
 
@@ -73,6 +85,12 @@ sin6:         dd 0.10452846            ; sin and cos of 6 degrees: Barrage's spr
 cos6:         dd 0.9945219
 mana_potion:  dd 50.0
 vol_drink:    dd 0.8
+f_p_half_w:   dd 0.3                   ; the player's box (the walking speed is walk_speed)
+f_p_height:   dd 1.8
+lim_pos:      dd 65536.0               ; a saved position beyond this (or no number at all) is unusable
+lim_y:        dd 256.0
+m_v6:         db "ACRAFT06"
+s_hdr_name:   db "/world.hdr", 0
 
 section .data
 align 4
@@ -99,6 +117,14 @@ step_dist:       resd 1                 ; walked distance since the last footste
 brk_x:           resd 1                 ; block being broken
 brk_y:           resd 1
 brk_z:           resd 1
+pending_new:     resd 1                 ; a new world: stand on the surface and populate once the area is ready
+pending_respawn: resd 1                 ; bit 0: stand on the ground, bit 1: find the bed; 0: nothing pending
+region_x:        resd 1                 ; the player's region (absolute 512-block cell) at the last check
+region_z:        resd 1
+boat_hit:        resd 1                 ; the boat under the crosshair (nearer than any block) or -1
+alignb 8
+hdr_buf:         resb WORLD_HDR_SIZE + 64   ; game_load reads the header here before committing it
+path_buf:        resb 4096              ; <dir>/world.hdr
 
 section .text
 
@@ -122,14 +148,32 @@ reset_session:
     mov     [game_aim], eax
     mov     dword [game_heavy_s], __float32__(-1.0)
     mov     dword [brk_y], -1
+    mov     dword [boat_hit], -1
+    call    sleep_cancel
     call    combat_reset
     call    abilities_reset
     call    dmgnum_clear
     pop     rbp
     jmp     gun_reset                   ; and the firearm's cooldown, reload and recoil
 
-; game_new(edi seed, esi mode, rdx name)
-game_new:
+; hdr_path(rdi dir) -> rax path_buf holding "<dir>/world.hdr" (a dir over 4000 bytes is cut)
+hdr_path:
+    sub     rsp, 8
+    mov     rsi, rdi
+    lea     rdi, [path_buf]
+    mov     edx, 4000
+    call    str_copy
+    mov     rdi, rax
+    lea     rsi, [s_hdr_name]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rax, [path_buf]
+    add     rsp, 8
+    ret
+
+; player_place(edi x, esi y, edx z): a new player body standing in the middle of that absolute cell
+; (feet on its floor), looking a little down; world_origin_x/z must already be set
+player_place:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -138,29 +182,82 @@ game_new:
     sub     rsp, 8
     mov     ebx, edi
     mov     r12d, esi
+    mov     r13d, edx
+    lea     rdi, [player]
+    movss   xmm0, [f_p_half_w]
+    movss   xmm1, [f_p_height]
+    movss   xmm2, [walk_speed]
+    call    body_init
+    sub     ebx, [world_origin_x]
+    cvtsi2ss xmm0, ebx
+    addss   xmm0, [f_half]
+    movss   [player + BODY.x], xmm0
+    cvtsi2ss xmm0, r12d
+    movss   [player + BODY.y], xmm0
+    sub     r13d, [world_origin_z]
+    cvtsi2ss xmm0, r13d
+    addss   xmm0, [f_half]
+    movss   [player + BODY.z], xmm0
+    mov     dword [player + BODY.pitch], __float32__(30.0)
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; game_new(edi seed, esi mode, rdx name, rcx dir or 0)
+; A new world: header, character and session reset. The spawn comes from the generator; the terrain
+; streams in afterwards (app_wait_area), then game_on_area_ready stands the player on the surface and
+; populates the world. dir is where its regions are saved (0: nowhere).
+game_new:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16                     ; [rsp] spawn x, y, z (absolute)
+    mov     ebx, edi
+    mov     r12d, esi
     mov     r13, rdx
+    mov     r14, rcx
     lea     rdi, [world_header]
-    mov     ecx, WORLD_HDR_SIZE
+    mov     ecx, WORLD_HDR_SIZE / 8
     xor     eax, eax
-    rep     stosb
-    mov     edi, ebx
-    call    world_generate
+    rep     stosq
+    mov     rax, [m_v6]
+    mov     [world_header + WORLDHDR.magic], rax
+    mov     [world_header + WORLDHDR.seed], ebx
     mov     [world_header + WORLDHDR.mode], r12d
     mov     dword [world_header + WORLDHDR.time], NEW_WORLD_TIME
     lea     rdi, [world_header + WORLDHDR.name]
     mov     rsi, r13
     mov     edx, 32
     call    str_copy
-    mov     edi, 128
-    mov     esi, 128
-    call    world_top_y
-    inc     eax
-    mov     dword [world_header + WORLDHDR.spawn_x], 128
+    mov     edi, ebx                    ; the new session first: it drops the old world and sets
+    mov     rsi, r14                    ; the seed the spawn search needs
+    call    stream_begin
+    mov     rdi, rsp
+    call    gen_find_spawn
+    mov     eax, [rsp]
+    mov     [world_header + WORLDHDR.spawn_x], eax
+    and     eax, -REBASE_STEP           ; the origin: the spawn's 512-block cell
+    mov     [world_origin_x], eax
+    mov     [world_header + WORLDHDR.origin_x], eax
+    mov     eax, [rsp + 4]
     mov     [world_header + WORLDHDR.spawn_y], eax
-    mov     dword [world_header + WORLDHDR.spawn_z], 128
+    mov     eax, [rsp + 8]
+    mov     [world_header + WORLDHDR.spawn_z], eax
+    and     eax, -REBASE_STEP
+    mov     [world_origin_z], eax
+    mov     [world_header + WORLDHDR.origin_z], eax
     mov     [game_mode], r12d
     mov     dword [game_time], NEW_WORLD_TIME
-    call    player_spawn
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    mov     edx, [rsp + 8]
+    call    player_place
     call    survival_reset
     call    inv_clear
     cmp     r12d, MODE_CREATIVE
@@ -174,29 +271,73 @@ game_new:
     call    tnt_clear
     call    fire_clear
     call    fx_clear
+    call    boats_clear
     mov     qword [inv_container], 0
-    call    rpg_reset                   ; first: new mobs take the (fresh) character's level
-    call    mobs_populate
+    call    rpg_reset                   ; the animals that come with the area take the fresh character's level
     call    structures_reset
-    call    structures_spawn_npcs
+    mov     dword [pending_new], 1
+    mov     dword [pending_respawn], 0
     call    reset_session
-    add     rsp, 8
+    add     rsp, 16
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; game_load(rdi path) -> eax as world_load (0 ok / 1 missing / 2 invalid / 3 I/O)
+%macro POS_LIMIT 2                      ; jump to .bad_pos unless |player.%1| < the float at %2 (xmm2 = abs mask)
+    movss   xmm0, [player + BODY.%1]
+    andps   xmm0, xmm2
+    movss   xmm1, [%2]
+    ucomiss xmm1, xmm0
+    jbe     .bad_pos
+%endmacro
+
+; game_load(rdi dir) -> eax 0 ok / 1 missing / 2 invalid / 3 I/O error
+; Reads <dir>/world.hdr (exactly WORLD_HDR_SIZE bytes, magic "ACRAFT06"); nothing changes unless it is
+; good. Then the streaming session of the world starts and the character, the origin, the mobs and the
+; boats are restored (bed, sites and spawn stay in the header image world_header). A player who is
+; dead or has no usable position respawns at the bed or the world spawn. The terrain streams in
+; afterwards (app_wait_area, then game_on_area_ready).
 game_load:
     push    rbp
     mov     rbp, rsp
     push    rbx
+    push    r12
+    push    r13
     sub     rsp, 8
-    call    world_load
-    test    eax, eax
-    jnz     .ret
+    mov     r12, rdi
+    call    hdr_path
+    mov     rdi, rax
+    lea     rsi, [hdr_buf]
+    mov     edx, WORLD_HDR_SIZE + 1
+    call    file_read
+    cmp     rax, -ENOENT
+    je      .missing
+    test    rax, rax
+    js      .ioerr
+    cmp     rax, WORLD_HDR_SIZE
+    jne     .invalid
+    mov     rax, [hdr_buf]
+    cmp     rax, [m_v6]
+    jne     .invalid
+    lea     rsi, [hdr_buf]
+    lea     rdi, [world_header]
+    mov     ecx, WORLD_HDR_SIZE / 8
+    rep     movsq
     lea     rbx, [world_header]
+    mov     edi, [rbx + WORLDHDR.seed]  ; the world's session: the old world goes, the seed is set
+    mov     rsi, r12
+    call    stream_begin
+    mov     eax, [rbx + WORLDHDR.origin_x]  ; the origin: multiples of REBASE_STEP only
+    and     eax, -REBASE_STEP
+    mov     [rbx + WORLDHDR.origin_x], eax
+    mov     [world_origin_x], eax
+    mov     eax, [rbx + WORLDHDR.origin_z]
+    and     eax, -REBASE_STEP
+    mov     [rbx + WORLDHDR.origin_z], eax
+    mov     [world_origin_z], eax
     ; mode
     mov     eax, [rbx + WORLDHDR.mode]
     cmp     eax, MODE_CREATIVE
@@ -228,6 +369,21 @@ game_load:
     jne     .fly_ok
     mov     dword [player + BODY.flying], 0
 .fly_ok:
+    xor     r13d, r13d                  ; 1: the saved position cannot be used (dead player, garbage)
+    movss   xmm2, [abs_mask]
+    POS_LIMIT x, lim_pos
+    POS_LIMIT z, lim_pos
+    movss   xmm0, [player + BODY.y]
+    xorps   xmm1, xmm1
+    ucomiss xmm0, xmm1
+    jb      .bad_pos                    ; below 0 or not a number
+    movss   xmm1, [lim_y]
+    ucomiss xmm1, xmm0
+    jbe     .bad_pos
+    jmp     .pos_ok
+.bad_pos:
+    mov     r13d, 1
+.pos_ok:
     ; hotbar selection
     mov     eax, [rbx + WORLDHDR.sel]
     xor     ecx, ecx
@@ -320,34 +476,64 @@ game_load:
     mov     [surv + SURVIVAL.saturation], eax
     mov     eax, [rbx + WORLDHDR.exhaustion]
     mov     [surv + SURVIVAL.exhaustion], eax
+    mov     eax, [rbx + WORLDHDR.breath]    ; air left: 0..MAX_BREATH (anything else is a full lung)
+    mov     ecx, MAX_BREATH
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [surv + SURVIVAL.breath], eax
     cmp     dword [surv + SURVIVAL.health], 0
     jne     .alive
     call    survival_reset
-    call    player_spawn
     call    rpg_on_death                ; died, then quit from the death screen: same XP loss
+    mov     r13d, 1                     ; ... and back at the bed or the spawn
 .alive:
-    call    conts_validate
-    call    fire_rebuild                ; the table of the FIRE blocks just loaded
+    cmp     dword [rbx + WORLDHDR.bed_set], 1   ; header state that must be sane: bed flag, site count
+    jbe     .bed_ok
+    mov     dword [rbx + WORLDHDR.bed_set], 0
+.bed_ok:
+    cmp     dword [rbx + WORLDHDR.site_count], MAX_SITESTATES
+    jbe     .sites_ok
+    mov     dword [rbx + WORLDHDR.site_count], 0
+.sites_ok:
     mov     rdi, rbx
     call    mobs_load
-    mov     edi, [rbx + WORLDHDR.seed]  ; the sites are planned again from the seed
-    call    structures_plan
-    call    structures_reset
-    call    structures_spawn_npcs
     call    drops_clear
     call    arrows_clear
     call    tnt_clear
+    call    fire_clear                  ; fires are not saved
     call    fx_clear
+    call    boats_clear
+    mov     rdi, rbx
+    call    boats_load
+    call    structures_reset
     mov     qword [inv_container], 0
+    mov     dword [pending_new], 0
+    mov     dword [pending_respawn], 0
     call    reset_session
+    test    r13d, r13d
+    jz      .done
+    call    respawn_at_target           ; after the mobs and boats are in: the origin shift moves them too
+.done:
     xor     eax, eax
 .ret:
     add     rsp, 8
+    pop     r13
+    pop     r12
     pop     rbx
     pop     rbp
     ret
+.missing:
+    mov     eax, 1
+    jmp     .ret
+.invalid:
+    mov     eax, 2
+    jmp     .ret
+.ioerr:
+    mov     eax, 3
+    jmp     .ret
 
-; game_save(rdi path) -> eax as world_save
+; game_save(rdi dir) -> eax 0 or the first -errno
+; Writes <dir>/world.hdr (atomically) from the live state, then every modified column of the world.
 game_save:
     push    rbp
     mov     rbp, rsp
@@ -355,6 +541,8 @@ game_save:
     push    r12
     mov     r12, rdi
     lea     rbx, [world_header]
+    mov     rax, [m_v6]
+    mov     [rbx + WORLDHDR.magic], rax
     lea     rsi, [player]
     lea     rdi, [rbx + WORLDHDR.player]
     mov     ecx, BODY_size
@@ -367,6 +555,8 @@ game_save:
     mov     [rbx + WORLDHDR.saturation], eax
     mov     eax, [surv + SURVIVAL.exhaustion]
     mov     [rbx + WORLDHDR.exhaustion], eax
+    mov     eax, [surv + SURVIVAL.breath]
+    mov     [rbx + WORLDHDR.breath], eax
     mov     eax, [inv_sel]
     mov     [rbx + WORLDHDR.sel], eax
     lea     rsi, [inv + INVENTORY.slots]
@@ -385,26 +575,345 @@ game_save:
     mov     [rbx + WORLDHDR.time], eax
     mov     eax, [game_mode]
     mov     [rbx + WORLDHDR.mode], eax
+    mov     eax, [world_origin_x]
+    mov     [rbx + WORLDHDR.origin_x], eax
+    mov     eax, [world_origin_z]
+    mov     [rbx + WORLDHDR.origin_z], eax
+    mov     rdi, rbx
+    call    boats_save
     mov     rdi, rbx
     call    mobs_save
     mov     rdi, rbx
     call    rpg_save
     mov     rdi, r12
-    call    world_save
+    call    hdr_path
+    mov     rdi, rax
+    lea     rsi, [world_header]
+    mov     edx, WORLD_HDR_SIZE
+    call    file_write_atomic
+    mov     ebx, eax                    ; the header's result: the columns are written regardless
+    mov     rdi, r12
+    call    world_save_dirty
+    test    ebx, ebx
+    cmovnz  eax, ebx                    ; the first error wins
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; game_respawn(): full stats, back at the world spawn
+; respawn_at_target(): the player goes to the bed when one is set, else to the world spawn. The
+; origin moves to the target's 512-block cell (game_shift_origin: every entity follows), the body is
+; made new there, and pending_respawn asks game_on_area_ready to settle the player once the area
+; around has loaded (bit 0: stand on the ground; bit 1: a bed: sleep_place_at_bed).
+respawn_at_target:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 24                     ; [rsp] target x, y, z (absolute)
+    cmp     dword [boat_riding], 0
+    je      .afoot
+    call    boats_dismount
+.afoot:
+    mov     rdi, rsp
+    call    sleep_respawn_target        ; eax 1 and the bed's foot cell (local) when a bed is set
+    mov     ebx, eax
+    test    ebx, ebx
+    jz      .spawn
+    mov     eax, [world_origin_x]
+    add     [rsp], eax
+    mov     eax, [world_origin_z]
+    add     [rsp + 8], eax
+    jmp     .target
+.spawn:
+    mov     eax, [world_header + WORLDHDR.spawn_x]
+    mov     [rsp], eax
+    mov     eax, [world_header + WORLDHDR.spawn_y]
+    mov     [rsp + 4], eax
+    mov     eax, [world_header + WORLDHDR.spawn_z]
+    mov     [rsp + 8], eax
+.target:
+    mov     edi, [rsp]
+    and     edi, -REBASE_STEP
+    sub     edi, [world_origin_x]
+    mov     esi, [rsp + 8]
+    and     esi, -REBASE_STEP
+    sub     esi, [world_origin_z]
+    mov     eax, edi
+    or      eax, esi
+    jz      .in_cell
+    call    game_shift_origin
+.in_cell:
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    mov     edx, [rsp + 8]
+    call    player_place
+    mov     eax, 1
+    test    ebx, ebx
+    jz      .pending
+    or      eax, 2
+.pending:
+    mov     [pending_respawn], eax
+    add     rsp, 24
+    pop     rbx
+    pop     rbp
+    ret
+
+; game_respawn(): full stats, back at the bed (or the world spawn); the app then waits for the area
 game_respawn:
     push    rbp
     mov     rbp, rsp
     call    survival_reset
-    call    player_spawn
     call    rpg_on_death
-    call    reset_session               ; combat state too
+    call    reset_session               ; combat state too, and any sleep
+    call    respawn_at_target
     pop     rbp
+    ret
+
+; game_rebase(): when the player is REBASE_AT blocks or more from the local origin on an axis, the
+; origin moves by a multiple of REBASE_STEP (the player's cell floored to it), so coordinates stay
+; small; every position follows (game_shift_origin). An axis still within bounds stays as it is.
+game_rebase:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     eax, REBASE_AT
+    cvtsi2ss xmm3, eax
+    movss   xmm2, [abs_mask]
+    xor     ebx, ebx                    ; dx
+    xor     r12d, r12d                  ; dz
+    movss   xmm0, [player + BODY.x]
+    movaps  xmm1, xmm0
+    andps   xmm1, xmm2
+    comiss  xmm1, xmm3
+    jb      .x_done                     ; (also when it is not a number)
+    roundss xmm0, xmm0, 9
+    cvttss2si ebx, xmm0
+    and     ebx, -REBASE_STEP
+.x_done:
+    movss   xmm0, [player + BODY.z]
+    movaps  xmm1, xmm0
+    andps   xmm1, xmm2
+    comiss  xmm1, xmm3
+    jb      .z_done
+    roundss xmm0, xmm0, 9
+    cvttss2si r12d, xmm0
+    and     r12d, -REBASE_STEP
+.z_done:
+    mov     eax, ebx
+    or      eax, r12d
+    jz      .ret
+    mov     edi, ebx
+    mov     esi, r12d
+    call    game_shift_origin
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+%macro SHIFT_CALL 1                     ; %1(dx, dz) with the pair kept in ebx / r12d
+    mov     edi, ebx
+    mov     esi, r12d
+    call    %1
+%endmacro
+
+; game_shift_origin(edi dx, esi dz): the local frame's origin moves by (dx, dz), multiples of
+; REBASE_STEP: the world keeps its data, every stored position (player, mobs, drops, arrows, TNT,
+; fires, particles, damage numbers, ability targets, boats, this module's target and dig cells)
+; drops by (dx, dz), and the site cache is rebuilt.
+game_shift_origin:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     ebx, edi
+    mov     r12d, esi
+    call    world_rebase
+    SHIFT_CALL player_shift
+    SHIFT_CALL mobs_shift
+    SHIFT_CALL drops_shift
+    SHIFT_CALL arrows_shift
+    SHIFT_CALL tnt_shift
+    SHIFT_CALL fire_shift
+    SHIFT_CALL fx_shift
+    SHIFT_CALL dmgnum_shift
+    SHIFT_CALL abilities_shift
+    SHIFT_CALL boats_shift
+    sub     [game_target + RAYHIT.bx], ebx
+    sub     [game_target + RAYHIT.px], ebx
+    sub     [game_target + RAYHIT.bz], r12d
+    sub     [game_target + RAYHIT.pz], r12d
+    cmp     dword [brk_y], -1
+    je      .no_dig
+    sub     [brk_x], ebx
+    sub     [brk_z], r12d
+.no_dig:
+    SHIFT_CALL structures_shift
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; game_unload_box(edi x0, esi z0, edx x1, ecx z1): a column is going away (local cell box, inclusive).
+; An open merchant or elder screen whose NPC stands in it closes first; then the mobs, drops, primed
+; TNT and fires inside the box are removed.
+game_unload_box:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    mov     eax, [app_state]
+    cmp     eax, ST_TRADE
+    je      .talking
+    cmp     eax, ST_DIALOG
+    jne     .remove
+.talking:
+    mov     eax, [game_open_npc]
+    cmp     eax, MAX_MOBS
+    jae     .remove
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    movss   xmm0, [rcx + rax + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si edx, xmm0
+    movss   xmm0, [rcx + rax + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    cmp     edx, ebx
+    jl      .remove
+    cmp     edx, r13d
+    jg      .remove
+    cmp     eax, r12d
+    jl      .remove
+    cmp     eax, r14d
+    jg      .remove
+    mov     edi, ST_PLAYING             ; the NPC goes with the column: back to the game
+    call    app_goto
+.remove:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    mobs_remove_box
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    drops_remove_box
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    tnt_remove_box
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    fire_remove_box
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; game_on_area_ready() -> eax 1 when the area around the player must be waited for again
+; The columns around the player are lit and meshed: settle what the entry into the world was waiting
+; for. A respawn at a bed asks sleep_place_at_bed (a bed that is gone sends the player to the world
+; spawn, which is another area: eax = 1); a new world or a respawn at the spawn stands the player on
+; the surface; a new world is populated. The site cache is rebuilt.
+game_on_area_ready:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    test    dword [pending_respawn], 2
+    jz      .ground
+    call    sleep_place_at_bed
+    test    eax, eax
+    jnz     .placed
+    call    respawn_at_target           ; sleep_place_at_bed cleared the bed: now the world spawn
+    mov     eax, 1
+    jmp     .ret
+.placed:
+    mov     dword [pending_respawn], 0
+.ground:
+    mov     eax, [pending_new]
+    or      eax, [pending_respawn]
+    jz      .done
+    movss   xmm0, [player + BODY.x]
+    call    floor_i
+    mov     ebx, eax
+    movss   xmm0, [player + BODY.z]
+    call    floor_i
+    mov     esi, eax
+    mov     edi, ebx
+    call    world_top_y
+    inc     eax                         ; the cell above the surface
+    cvtsi2ss xmm0, eax
+    movss   [player + BODY.y], xmm0
+    cmp     dword [pending_new], 0
+    je      .done
+    call    mobs_populate
+.done:
+    mov     dword [pending_new], 0
+    mov     dword [pending_respawn], 0
+    call    structures_refresh
+    call    note_region
+    xor     eax, eax
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; player_region() -> eax rx, edx rz: the player's 512 x 512 block region (absolute)
+player_region:
+    sub     rsp, 8
+    movss   xmm0, [player + BODY.x]
+    call    floor_i
+    add     eax, [world_origin_x]
+    sar     eax, 9
+    mov     [rsp], eax
+    movss   xmm0, [player + BODY.z]
+    call    floor_i
+    add     eax, [world_origin_z]
+    sar     eax, 9
+    mov     edx, eax
+    mov     eax, [rsp]
+    add     rsp, 8
+    ret
+
+; note_region(): remember the player's region as the one the site cache was built for
+note_region:
+    sub     rsp, 8
+    call    player_region
+    mov     [region_x], eax
+    mov     [region_z], edx
+    add     rsp, 8
+    ret
+
+; check_region(): rebuild the site cache when the player has crossed into another region
+check_region:
+    sub     rsp, 8
+    call    player_region
+    cmp     eax, [region_x]
+    jne     .changed
+    cmp     edx, [region_z]
+    je      .ret
+.changed:
+    mov     [region_x], eax
+    mov     [region_z], edx
+    call    structures_refresh
+.ret:
+    add     rsp, 8
     ret
 
 ; repeat_fire(edi held, esi pressed, rdx float* timer, xmm0 dt) -> eax fire
@@ -573,6 +1082,11 @@ want_guard:
     cmp     ecx, MOB_ELDER
     je      .no
 .block:
+    cmp     dword [boat_hit], 0
+    jl      .at_block
+    cmp     dword [boat_riding], 0
+    je      .no                         ; the press boards the boat: no guard
+.at_block:
     cmp     dword [game_has_target], 0
     je      .ret
     call    target_block
@@ -714,12 +1228,10 @@ heavy_track:
 %define F_DT     24                     ; float
 %define F_MOB    28                     ; int: targeted mob or -1
 %define F_HIT    32                     ; RAYHIT scratch (24)
-%define F_INP    56                     ; INPUT copy (20)
-%define F_X0     76
-%define F_Z0     80
-%define F_WAS    84
-%define F_LAND   88
-%define F_DIST   92
+%define F_BOAT   56                     ; int: the boat under the crosshair (nearer than any block) or -1
+%define F_TBLK   60                     ; float: distance to the block hit
+%define F_TMOB   64                     ; float: distance to the mob hit
+%define F_TBOAT  68                     ; float: distance to the boat hit
 %define F_SCR    96                     ; scratch: screen to open / bow power
 %define F_FORCE  112                    ; int: 1 when Deadeye forces the arrow's crit
 %define F_SIZE   128
@@ -893,6 +1405,7 @@ game_frame:
     lea     rdx, [game_target]
     call    raycast
     mov     [game_has_target], eax
+    movss   [rsp + F_TBLK], xmm0        ; how far the block hit is (the reach when there is none)
     call    held_id                     ; a spear reaches 4.5 blocks, everything else 3.5
     movss   xmm0, [mob_reach]
     lea     rcx, [item_tool]
@@ -904,6 +1417,7 @@ game_frame:
     lea     rsi, [rsp + F_DIR]
     call    mobs_raycast
     mov     [rsp + F_MOB], eax
+    movss   [rsp + F_TMOB], xmm0
     test    eax, eax
     js      .mob_done
     lea     rdi, [rsp + F_EYE]          ; a block in front of the mob hides it
@@ -914,6 +1428,22 @@ game_frame:
     jz      .mob_done
     mov     dword [rsp + F_MOB], -1
 .mob_done:
+    lea     rdi, [rsp + F_EYE]          ; a boat in reach, unless a block is in front of it
+    lea     rsi, [rsp + F_DIR]
+    movss   xmm0, [reach_surv]
+    call    boats_raycast
+    mov     [rsp + F_BOAT], eax
+    movss   [rsp + F_TBOAT], xmm0
+    test    eax, eax
+    js      .boat_done
+    cmp     dword [game_has_target], 0
+    je      .boat_done
+    comiss  xmm0, [rsp + F_TBLK]
+    jb      .boat_done                  ; nearer than the block
+    mov     dword [rsp + F_BOAT], -1
+.boat_done:
+    mov     eax, [rsp + F_BOAT]
+    mov     [boat_hit], eax
 
     ; 5b. combat input while playing: guard (RMB with a melee weapon), dodge, abilities
     cmp     dword [input_captured], 1
@@ -1005,6 +1535,28 @@ game_frame:
     call    abilities_staff_bolt
     jmp     .pick
 .melee:
+    cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
+    je      .no_boat_break              ; a click on a boat nearer than the block and mob hits
+    mov     eax, [rsp + F_BOAT]         ; breaks it (not the one the player rides)
+    test    eax, eax
+    js      .no_boat_break
+    lea     ecx, [rax + 1]
+    cmp     ecx, [boat_riding]
+    je      .no_boat_break
+    cmp     dword [rsp + F_MOB], 0
+    jl      .boat_first
+    movss   xmm0, [rsp + F_TBOAT]
+    comiss  xmm0, [rsp + F_TMOB]
+    jae     .no_boat_break              ; the mob is nearer
+.boat_first:
+    mov     edi, eax
+    call    boats_break
+    call    hand_swing
+    mov     dword [game_heavy_s], __float32__(-1.0)
+    mov     dword [game_break_progress], 0
+    mov     dword [brk_y], -1
+    jmp     .place
+.no_boat_break:
     mov     edi, [rsp + F_MOB]
     lea     rsi, [rsp + F_DIR]
     movss   xmm0, [rsp + F_DT]
@@ -1212,6 +1764,32 @@ game_frame:
     call    repeat_fire
     test    eax, eax
     jz      .pick
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .no_boat_click              ; a boat is put down or boarded by a fresh click only
+    call    held_id
+    cmp     eax, BOAT
+    jne     .not_boat_item
+    lea     rdi, [rsp + F_EYE]
+    lea     rsi, [rsp + F_DIR]
+    call    boats_place
+    test    eax, eax
+    jz      .not_boat_item              ; no water to put it on: the click goes on as an ordinary use
+    call    hand_swing
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .pick
+    mov     edi, 1
+    call    inv_consume_held
+    jmp     .pick
+.not_boat_item:
+    cmp     dword [boat_riding], 0
+    jne     .no_boat_click
+    mov     eax, [rsp + F_BOAT]
+    test    eax, eax
+    js      .no_boat_click
+    mov     edi, eax
+    call    boats_mount
+    jmp     .pick
+.no_boat_click:
     cmp     dword [game_has_target], 0
     jne     .use
     call    try_potion
@@ -1232,6 +1810,16 @@ game_frame:
     call    hand_swing
     jmp     .pick
 .not_door:
+    movzx   eax, byte [block_base + rbx]    ; a bed: the right click sleeps in it (or sets the respawn)
+    cmp     eax, BED
+    jne     .not_bed
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    call    sleep_use_bed
+    call    hand_swing
+    jmp     .pick
+.not_bed:
     cmp     ebx, CRAFTING_TABLE
     jne     .not_table
     mov     dword [game_open_screen], ST_CRAFTING
@@ -1557,19 +2145,41 @@ game_frame:
     pop     rbp
     ret
 
-; sim_step(): one fixed step of player physics, survival, footsteps, mobs and time
+; sim_step(): one fixed step of player physics (or of the boat he rides), survival, footsteps, the
+; other boats, mobs and time
 sim_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 56                     ; [rsp] INPUT copy, [rsp+20] was_on_ground,
                                         ; [rsp+24] x0, [rsp+28] z0, [rsp+32] dist,
-                                        ; [rsp+40] sprinting (drains stamina)
+                                        ; [rsp+36] landed fall distance, [rsp+40] sprinting
+                                        ; (drains stamina), [rsp+44] 1 when the step began in a boat
     call    rpg_recompute               ; the character first: gear, ranks and attributes may have changed
     lea     rsi, [frame_input + FRAMEINPUT.move]
     mov     rdi, rsp
     mov     ecx, INPUT_size
     rep     movsb
+    cmp     dword [sleep_active], 0     ; asleep: moving, jumping or sneaking wakes the player up,
+    je      .awake                      ; otherwise nothing moves
+    mov     eax, [rsp + INPUT.fwd]
+    or      eax, [rsp + INPUT.strafe]
+    or      eax, [rsp + INPUT.jump]
+    or      eax, [rsp + INPUT.down]
+    jnz     .wake
+    mov     dword [rsp + INPUT.sprint], 0
+    jmp     .awake
+.wake:
+    call    sleep_cancel
+.awake:
+    xor     eax, eax                    ; in a boat the boat does the moving: no sprinting
+    cmp     dword [boat_riding], 0
+    setne   al
+    mov     [rsp + 44], eax
+    test    eax, eax
+    jz      .afoot
+    mov     dword [rsp + INPUT.sprint], 0
+.afoot:
     call    survival_can_sprint
     test    eax, eax
     jnz     .sprint_ok
@@ -1601,9 +2211,17 @@ sim_step:
     mov     [rsp + 24], eax
     mov     eax, [player + BODY.z]
     mov     [rsp + 28], eax
+    cmp     dword [rsp + 44], 0
+    jne     .ride
     lea     rdi, [player]
     mov     rsi, rsp
     call    body_step
+    jmp     .stepped
+.ride:
+    mov     rdi, rsp
+    call    boats_step                  ; the boat sails on and carries the player with it
+    xorps   xmm0, xmm0
+.stepped:
     movss   [rsp + 36], xmm0            ; landed fall distance
     movss   xmm1, [player + BODY.x]
     subss   xmm1, [rsp + 24]
@@ -1613,9 +2231,16 @@ sim_step:
     mulss   xmm2, xmm2
     addss   xmm1, xmm2
     sqrtss  xmm1, xmm1
+    cmp     dword [rsp + 44], 0
+    je      .walked
+    xorps   xmm1, xmm1                  ; carried by a boat: no exhaustion, no footsteps
+.walked:
     movss   [rsp + 32], xmm1
-    ; jumped = was_on_ground && jump && !flying
+    call    game_rebase                 ; 1024 blocks from the origin on an axis: move the origin
+    ; jumped = was_on_ground && jump && !flying && not carried by a boat
     xor     ebx, ebx
+    cmp     dword [rsp + 44], 0
+    jne     .jump_done
     cmp     dword [rsp + 20], 0
     je      .jump_done
     cmp     dword [rsp + INPUT.jump], 0
@@ -1678,11 +2303,18 @@ sim_step:
     call    combat_step
     call    abilities_step
     call    dmgnum_step
+    cmp     dword [rsp + 44], 0         ; the boats the player does not ride sail on too
+    jne     .boats_done
+    mov     rdi, rsp
+    call    boats_step
+.boats_done:
+    call    check_region                ; the site cache follows the player across regions
     call    structures_step
     call    fire_step
     call    fx_step
     call    conts_step
     inc     dword [game_time]
+    call    sleep_step
     add     rsp, 56
     pop     rbx
     pop     rbp

@@ -6,14 +6,17 @@ global test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_l
 global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
+global test_new_blocks_tables
 
 extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
 extern inv_clear, inv_add, inv_click, craft_update
 extern recipes, recipes_end, recipe_sets, recipe_fits, recipe_fill
 extern item_break_time, item_harvest_drop
-extern world_clear, world_set, world_header
+extern world_clear, world_set, world_header, conts
 extern cont_create, cont_fill_from_inv
+extern block_flags, block_shape, block_tiles, block_hardness, block_tool, block_drop, block_base
+extern item_max_stack, item_icon, item_names
 
 section .rodata
 align 16
@@ -345,6 +348,13 @@ craft_cases:
     CASE DIAMOND_HAMMER, 1,   DIAMOND, DIAMOND, DIAMOND,  DIAMOND, STICK, DIAMOND,  0, STICK, 0
     CASE IRON_SPEAR, 1,       0, 0, IRON_INGOT,  0, STICK, 0,  STICK, 0, 0
     CASE DIAMOND_SPEAR, 1,    0, 0, DIAMOND,  0, STICK, 0,  STICK, 0, 0
+    ; 0.9: planks from the new logs, bed, boat
+    CASE PLANKS, 4,           0, 0, 0,  0, PINE_LOG, 0,  0, 0, 0
+    CASE PLANKS, 4,           0, 0, 0,  0, 0, 0,  BIRCH_LOG, 0, 0
+    CASE BED, 1,              WOOL, WOOL, WOOL,  PLANKS, PLANKS, PLANKS,  0, 0, 0
+    CASE BED, 1,              0, 0, 0,  WOOL, WOOL, WOOL,  PLANKS, PLANKS, PLANKS
+    CASE BOAT, 1,             PLANKS, 0, PLANKS,  PLANKS, PLANKS, PLANKS,  0, 0, 0
+    CASE BOAT, 1,             0, 0, 0,  PLANKS, 0, PLANKS,  PLANKS, PLANKS, PLANKS
     ; near misses craft nothing
     CASE 0, 0,          COBBLE, COBBLE, COBBLE,    COBBLE, COBBLE, COBBLE,  COBBLE, COBBLE, COBBLE
     CASE 0, 0,          0, IRON_INGOT, 0,          0, FLINT, 0,          0, 0, 0
@@ -358,6 +368,8 @@ craft_cases:
     CASE 0, 0,          IRON_INGOT, IRON_INGOT, 0,  IRON_INGOT, IRON_INGOT, 0,  0, 0, 0
     CASE 0, 0,          IRON_INGOT, IRON_INGOT, IRON_INGOT,  IRON_INGOT, STICK, IRON_INGOT,  0, 0, 0
     CASE 0, 0,          IRON_INGOT, 0, 0,  0, STICK, 0,  0, 0, STICK
+    CASE 0, 0,          WOOL, WOOL, WOOL,  PLANKS, 0, PLANKS,  0, 0, 0
+    CASE 0, 0,          PLANKS, 0, PLANKS,  PLANKS, 0, PLANKS,  0, 0, 0
 craft_cases_end:
 
 section .text
@@ -444,10 +456,10 @@ test_craft_advanced_recipes:
     call    cont_create
 %endmacro
 
-; zero_conts() - empties the container table in the world header
+; zero_conts() - empties the runtime container table
 zero_conts:
-    lea     rdi, [world_header + WORLDHDR.containers_v5]
-    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
+    lea     rdi, [conts]
+    mov     ecx, MAX_CONTAINERS * CONTAINER_size
     xor     eax, eax
     rep     stosb
     ret
@@ -1075,6 +1087,180 @@ test_furnace_book_fill:
     mov     qword [inv_container], 0
     call    zero_conts
     mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- 0.9 block and item tables ---------------------------------------------------------
+; BROW id, flags, shape, top, side, bottom, tool, drop, max stack, hardness
+%macro BROW 10
+    db %1, %2, %3, %4, %5, %6, %7, %8, %9
+    dd %10
+%endmacro
+%define BROW_SIZE 13
+
+section .rodata
+new_block_rows:
+    BROW WATER,        FLAG_TRANSLUCENT, SHAPE_LIQUID, TILE_WATER, TILE_WATER, TILE_WATER, 0, 0, 0, -1.0
+    BROW ICE,          FLAG_SOLID | FLAG_TRANSLUCENT, SHAPE_CUBE, TILE_ICE, TILE_ICE, TILE_ICE, TOOL_PICKAXE, 0, 64, 0.5
+    BROW SNOW_LAYER,   0, SHAPE_SNOW, TILE_SNOW, TILE_SNOW, TILE_SNOW, 0, 0, 0, 0.1
+    BROW SNOW_BLOCK,   FLAG_SOLID | FLAG_OPAQUE, SHAPE_CUBE, TILE_SNOW, TILE_SNOW, TILE_SNOW, TOOL_SHOVEL, SNOW_BLOCK, 64, 0.4
+    BROW MUD,          FLAG_SOLID | FLAG_OPAQUE, SHAPE_CUBE, TILE_MUD, TILE_MUD, TILE_MUD, TOOL_SHOVEL, MUD, 64, 0.6
+    BROW TALL_GRASS,   0, SHAPE_CROSS, TILE_TALL_GRASS, TILE_TALL_GRASS, TILE_TALL_GRASS, 0, 0, 0, 0.0
+    BROW CACTUS,       FLAG_SOLID, SHAPE_CACTUS, TILE_CACTUS_TOP, TILE_CACTUS_SIDE, TILE_CACTUS_TOP, 0, CACTUS, 64, 0.4
+    BROW PINE_LOG,     FLAG_SOLID | FLAG_OPAQUE, SHAPE_CUBE, TILE_PINE_LOG_TOP, TILE_PINE_LOG, TILE_PINE_LOG_TOP, TOOL_AXE, PINE_LOG, 64, 2.0
+    BROW PINE_LEAVES,  FLAG_SOLID, SHAPE_CUBE, TILE_PINE_LEAVES, TILE_PINE_LEAVES, TILE_PINE_LEAVES, 0, 0, 64, 0.2
+    BROW BIRCH_LOG,    FLAG_SOLID | FLAG_OPAQUE, SHAPE_CUBE, 7, TILE_BIRCH_LOG, 7, TOOL_AXE, BIRCH_LOG, 64, 2.0
+    BROW BIRCH_LEAVES, FLAG_SOLID, SHAPE_CUBE, TILE_BIRCH_LEAVES, TILE_BIRCH_LEAVES, TILE_BIRCH_LEAVES, 0, 0, 64, 0.2
+    BROW BED + 0,      FLAG_SOLID, SHAPE_BED, TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5, 0, BED, 1, 0.2
+    BROW BED + 1,      FLAG_SOLID, SHAPE_BED, TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 2,      FLAG_SOLID, SHAPE_BED, TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 3,      FLAG_SOLID, SHAPE_BED, TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 4,      FLAG_SOLID, SHAPE_BED, TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 5,      FLAG_SOLID, SHAPE_BED, TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 6,      FLAG_SOLID, SHAPE_BED, TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5, 0, BED, 0, 0.2
+    BROW BED + 7,      FLAG_SOLID, SHAPE_BED, TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5, 0, BED, 0, 0.2
+new_block_rows_end:
+
+nm_bed:     db "Bed", 0
+nm_boat:    db "Boat", 0
+nm_plog:    db "Pine Log", 0
+nm_blog:    db "Birch Log", 0
+nm_snowblk: db "Snow Block", 0
+nm_mud:     db "Mud", 0
+nm_cactus:  db "Cactus", 0
+nm_ice:     db "Ice", 0
+; id byte, then the name pointer table index
+name_rows:
+    db BED
+    dq nm_bed
+    db BOAT
+    dq nm_boat
+    db PINE_LOG
+    dq nm_plog
+    db BIRCH_LOG
+    dq nm_blog
+    db SNOW_BLOCK
+    dq nm_snowblk
+    db MUD
+    dq nm_mud
+    db CACTUS
+    dq nm_cactus
+    db ICE
+    dq nm_ice
+name_rows_end:
+
+section .text
+
+; nb_streq(rdi a, rsi b) -> eax 1 when the C strings are equal
+nb_streq:
+.l:
+    mov     al, [rdi]
+    cmp     al, [rsi]
+    jne     .no
+    test    al, al
+    jz      .yes
+    inc     rdi
+    inc     rsi
+    jmp     .l
+.yes:
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; test_new_blocks_tables() -> eax 0 pass
+;   every 0.9 block row (ids 111..129) matches the plan's table: flags, shape, tiles, tool,
+;   drop, item max stack and hardness; the new item names, icons and BOAT's stack size
+test_new_blocks_tables:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    TEST_INIT
+    lea     rbx, [new_block_rows]
+.row:
+    movzx   ecx, byte [rbx]
+    lea     rdx, [block_flags]
+    mov     al, [rdx + rcx]
+    cmp     al, [rbx + 1]
+    jne     .fail
+    lea     rdx, [block_shape]
+    mov     al, [rdx + rcx]
+    cmp     al, [rbx + 2]
+    jne     .fail
+    lea     rdx, [block_tiles]
+    lea     rsi, [rcx + rcx*2]
+    mov     al, [rdx + rsi]
+    cmp     al, [rbx + 3]
+    jne     .fail
+    mov     al, [rdx + rsi + 1]
+    cmp     al, [rbx + 4]
+    jne     .fail
+    mov     al, [rdx + rsi + 2]
+    cmp     al, [rbx + 5]
+    jne     .fail
+    lea     rdx, [block_tool]
+    mov     al, [rdx + rcx]
+    cmp     al, [rbx + 6]
+    jne     .fail
+    lea     rdx, [block_drop]
+    mov     al, [rdx + rcx]
+    cmp     al, [rbx + 7]
+    jne     .fail
+    lea     rdx, [item_max_stack]
+    mov     al, [rdx + rcx]
+    cmp     al, [rbx + 8]
+    jne     .fail
+    lea     rdx, [block_hardness]
+    movss   xmm0, [rdx + rcx*4]
+    ucomiss xmm0, [rbx + 9]
+    jne     .fail
+    jp      .fail
+    add     rbx, BROW_SIZE
+    lea     rax, [new_block_rows_end]
+    cmp     rbx, rax
+    jb      .row
+    ; variant bases: the bed is one group, ICE/SNOW_BLOCK/MUD/CACTUS/logs/leaves are own items
+    movzx   eax, byte [block_base + BED + 6]
+    cmp     eax, BED
+    jne     .fail
+    movzx   eax, byte [block_base + BED]
+    cmp     eax, BED
+    jne     .fail
+    movzx   eax, byte [block_base + BIRCH_LEAVES]
+    cmp     eax, BIRCH_LEAVES
+    jne     .fail
+    ; items: BOAT stacks to 1, icons, names
+    movzx   eax, byte [item_max_stack + BOAT]
+    cmp     eax, 1
+    jne     .fail
+    movzx   eax, byte [item_icon + BED]
+    cmp     eax, TILE_ICON_BED
+    jne     .fail
+    movzx   eax, byte [item_icon + BOAT]
+    cmp     eax, TILE_ICON_BOAT
+    jne     .fail
+    lea     rbx, [name_rows]
+.name:
+    movzx   ecx, byte [rbx]
+    lea     rdx, [item_names]
+    mov     rdi, [rdx + rcx*8]
+    mov     rsi, [rbx + 1]
+    call    nb_streq
+    test    eax, eax
+    jz      .fail
+    add     rbx, 9
+    lea     rax, [name_rows_end]
+    cmp     rbx, rax
+    jb      .name
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
     pop     r12
     pop     rbx
     pop     rbp

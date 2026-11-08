@@ -8,7 +8,7 @@ default rel
 global shape_boxes, cell_boxes, block_sel_bounds, block_facing_from_yaw
 global dir_dx, dir_dz
 
-extern block_shape, block_base, block_flags, world_get
+extern block_shape, block_base, block_flags, world_get, world_column_ready
 
 section .rodata
 dir_dx: db 0, 1, 0, -1                  ; DIR_N, DIR_E, DIR_S, DIR_W
@@ -53,6 +53,10 @@ b_pane_arm:    db 7, 0, 0, 9, 16, 7
                db 9, 0, 7, 16, 16, 9
                db 7, 0, 9, 9, 16, 16
                db 0, 0, 7, 7, 16, 9
+b_bed:         db 0, 0, 0, 16, 9, 16
+b_cross_sel:   db 2, 0, 2, 14, 13, 14
+b_snow:        db 0, 0, 0, 16, 2, 16
+b_cactus:      db 1, 0, 1, 15, 16, 15
 
 align 4
 f_sixteenth:   dd 0.0625
@@ -90,7 +94,7 @@ shape_boxes:
     sub     ecx, eax
     mov     [rsp + 4], ecx              ; param
     movzx   eax, byte [block_shape + rdi]
-    cmp     eax, SHAPE_PANE
+    cmp     eax, SHAPE_CACTUS
     ja      .done
     lea     rcx, [shape_jump]
     jmp     [rcx + rax*8]
@@ -226,6 +230,26 @@ shape_boxes:
     inc     r15d
     cmp     r15d, 4
     jb      .arm
+    jmp     .done
+.bed:
+    lea     rsi, [b_bed]
+    call    .emit
+    jmp     .done
+.cross:                                 ; drawn by the mesher: only the selection box
+    cmp     r13d, BOXES_SELECT
+    jne     .done
+    lea     rsi, [b_cross_sel]
+    call    .emit
+    jmp     .done
+.snow:                                  ; a 2/16 layer you walk through
+    cmp     r13d, BOXES_COLLIDE
+    je      .done
+    lea     rsi, [b_snow]
+    call    .emit
+    jmp     .done
+.cactus:
+    lea     rsi, [b_cactus]
+    call    .emit
 .done:
     mov     eax, ebx
     add     rsp, 24
@@ -303,13 +327,18 @@ shape_jump:
     dq shape_boxes.torch
     dq shape_boxes.fence
     dq shape_boxes.pane
+    dq shape_boxes.bed
+    dq shape_boxes.cross
+    dq shape_boxes.done                 ; SHAPE_LIQUID: the mesher's water path draws it
+    dq shape_boxes.snow
+    dq shape_boxes.cactus
 
 section .text
 
 ; cell_boxes(edi x, esi y, edx z, rcx out float[6*MAX_SHAPE_BOXES], r8d purpose) -> eax count
 ;   the boxes of the block in the cell, in world floats (x0,y0,z0,x1,y1,z1 each). For
-;   BOXES_COLLIDE a cell with x or z outside the world, or y < 0, is one full solid box and
-;   y >= WORLD_Y is empty; other purposes see AIR outside the world.
+;   BOXES_COLLIDE a cell with y < 0 or whose column is not ready (world_column_ready = 0) is
+;   one full solid box and y >= WORLD_H is empty; other purposes see AIR there (world_get).
 ; Frame: [rsp] byte boxes (54), [rsp+56] x, [rsp+60] y, [rsp+64] z.
 cell_boxes:
     push    rbp
@@ -321,18 +350,21 @@ cell_boxes:
     mov     [rsp + 56], edi
     mov     [rsp + 60], esi
     mov     [rsp + 64], edx
+    mov     r12d, r8d
     cmp     r8d, BOXES_COLLIDE
     jne     .lookup
-    cmp     esi, WORLD_Y
+    cmp     esi, WORLD_H
     jge     .empty
     test    esi, esi
     js      .wall
-    cmp     edi, WORLD_X - 1
-    ja      .wall
-    cmp     edx, WORLD_Z - 1
-    ja      .wall
+    mov     esi, edx                    ; world_column_ready(x, z)
+    call    world_column_ready
+    test    eax, eax
+    jz      .wall
+    mov     edi, [rsp + 56]
+    mov     esi, [rsp + 60]
+    mov     edx, [rsp + 64]
 .lookup:
-    mov     r12d, r8d
     call    world_get
     mov     edi, eax
     mov     esi, [rsp + 56]
@@ -368,9 +400,9 @@ cell_boxes:
     mov     eax, r12d
     jmp     .ret
 .wall:
-    cvtsi2ss xmm0, edi
-    cvtsi2ss xmm1, esi
-    cvtsi2ss xmm2, edx
+    cvtsi2ss xmm0, dword [rsp + 56]
+    cvtsi2ss xmm1, dword [rsp + 60]
+    cvtsi2ss xmm2, dword [rsp + 64]
     movss   [rbx], xmm0
     movss   [rbx + 4], xmm1
     movss   [rbx + 8], xmm2

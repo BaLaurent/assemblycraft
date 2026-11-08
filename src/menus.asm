@@ -105,7 +105,7 @@ f_zero:         dd 0.0
 
 t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
-t_version:      db "AssemblyCraft 0.8", 0
+t_version:      db "AssemblyCraft 0.9", 0
 t_singleplayer: db "Singleplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
@@ -120,7 +120,7 @@ t_delete_btn:   db "Delete", 0
 t_cancel:       db "Cancel", 0
 s_survival:     db "Survival", 0
 s_creative:     db "Creative", 0
-s_creative_old: db "Creative (old format)", 0
+t_old_world:    db "(0.8 world - can't open)", 0
 s_seed:         db " - seed ", 0
 s_dash:         db " - ", 0
 
@@ -158,6 +158,7 @@ c_spider:       db "You were slain by a Spider", 0
 c_fire:         db "You burned to death", 0
 c_boss:         db "You were crushed by the Fallen King", 0
 c_poison:       db "You succumbed to poison", 0
+c_drown:        db "Drowned", 0
 
 m_rename_fail:  db "Could not rename the world", 0
 m_delete_fail:  db "Could not delete the world", 0
@@ -165,7 +166,7 @@ m_delete_fail:  db "Could not delete the world", 0
 align 8
 death_causes:   dq c_none, c_fall, c_zombie, c_starve, c_suffocate
                 dq c_skeleton, c_explosion, c_spider, c_fire, c_boss
-                dq c_poison
+                dq c_poison, c_drown
 
 section .bss
 alignb 8
@@ -281,13 +282,9 @@ build_info:
     lea     rdi, [line_buf]
     mov     eax, [rbx + WORLDENTRY.mode]
     lea     rsi, [s_survival]
+    lea     rcx, [s_creative]
     test    eax, eax
-    jz      .mode
-    lea     rsi, [s_creative]
-    cmp     eax, 1
-    je      .mode
-    lea     rsi, [s_creative_old]
-.mode:
+    cmovnz  rsi, rcx
     call    str_append
     mov     rdi, rax
     lea     rsi, [s_seed]
@@ -461,8 +458,8 @@ screen_worlds:
     cmp     dword [ui_input + UIINPUT.double_click], 0
     je      .no_click
     mov     rdx, [rsp]
-    cmp     dword [rdx + WORLDENTRY.valid], 0
-    je      .no_click
+    cmp     dword [rdx + WORLDENTRY.valid], 1
+    jne     .no_click                   ; only a 0.9 world opens
     mov     edi, ebx
     call    app_play_world
     jmp     .ret
@@ -491,15 +488,19 @@ screen_worlds:
     mov     r8d, 1
     call    ui_text
     mov     rdi, [rsp]
-    cmp     dword [rdi + WORLDENTRY.valid], 0
-    je      .invalid
+    mov     eax, [rdi + WORLDENTRY.valid]
+    cmp     eax, 1
+    je      .valid
+    lea     rdi, [t_unreadable]
+    lea     rdx, [t_old_world]
+    cmp     eax, 2
+    cmove   rdi, rdx                    ; a pre-0.9 world file
+    mov     ecx, RED
+    jmp     .info
+.valid:
     call    build_info
     lea     rdi, [line_buf]
     mov     ecx, GREY
-    jmp     .info
-.invalid:
-    lea     rdi, [t_unreadable]
-    mov     ecx, RED
 .info:
     lea     esi, [r12 - 146]
     mov     edx, [rsp + 8]
@@ -509,8 +510,8 @@ screen_worlds:
     inc     ebx
     jmp     .row
 .rows_done:
-    xor     r14d, r14d                  ; play enabled: a valid selection
-    xor     r15d, r15d                  ; rename enabled: a valid v2 world
+    xor     r14d, r14d                  ; play enabled: a readable 0.9 world
+    xor     r15d, r15d                  ; rename enabled: the same
     xor     ebx, ebx                    ; delete enabled: any selection
     call    sel_valid
     test    eax, eax
@@ -518,12 +519,10 @@ screen_worlds:
     mov     ebx, 1
     mov     edi, [app_selected]
     call    entry_ptr
-    cmp     dword [rax + WORLDENTRY.valid], 0
-    je      .buttons
+    cmp     dword [rax + WORLDENTRY.valid], 1
+    jne     .buttons                    ; an unreadable or pre-0.9 world: delete only
     mov     r14d, 1
-    cmp     dword [rax + WORLDENTRY.mode], 1
-    setbe   r15b
-    movzx   r15d, r15b
+    mov     r15d, 1
 .buttons:
     BTN     t_play, r12, -155, r13, -52, 150, r14d
     test    eax, eax
@@ -890,7 +889,7 @@ screen_death:
     TXTC    t_died, r12, 0, r14, 0, WHITE, 2
     mov     eax, [surv + SURVIVAL.death_cause]
     xor ecx, ecx
-    cmp     eax, CAUSE_POISON           ; unknown causes show no line
+    cmp     eax, CAUSE_DROWN            ; unknown causes show no line
     cmova   eax, ecx
     lea     rdx, [death_causes]
     mov     rdi, [rdx + rax*8]

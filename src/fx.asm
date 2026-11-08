@@ -1,6 +1,6 @@
 ; fx.asm - effect particles: explosion fireballs and smoke, flying block debris, the sparks, magic
 ; motes and gold glitter of combat, camera shake and a screen flash. Particles are not saved with
-; the world; everything lives in fx_particles.
+; the world; everything lives in fx_particles, in local coordinates (fx_shift follows the origin).
 ;
 ; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC, FX_GOLD or
 ; FX_FROST. Velocities are in blocks per second and every position moves v / 60 per fixed step.
@@ -11,7 +11,7 @@
 default rel
 
 global fx_clear, fx_explosion, fx_debris, fx_burst, fx_step, fx_render, fx_count
-global fx_particles, fx_shake, fx_shake_yaw, fx_shake_pitch, fx_flash
+global fx_particles, fx_shake, fx_shake_yaw, fx_shake_pitch, fx_flash, fx_shift
 
 extern rng_next, player_eye, world_is_solid, block_tiles, render_box
 extern glIsEnabled, glGetFloatv
@@ -1011,4 +1011,26 @@ fx_render:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; fx_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every live particle's local x and
+; z drop by that much (exact: dx and dz are multiples of 512)
+fx_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [fx_particles]
+    lea     rcx, [fx_particles_end]
+.l:
+    cmp     dword [rax + PARTICLE.kind], 0
+    je      .next
+    movss   xmm2, [rax + PARTICLE.x]
+    subss   xmm2, xmm0
+    movss   [rax + PARTICLE.x], xmm2
+    movss   xmm2, [rax + PARTICLE.z]
+    subss   xmm2, xmm1
+    movss   [rax + PARTICLE.z], xmm2
+.next:
+    add     rax, PARTICLE_size
+    cmp     rax, rcx
+    jb      .l
     ret

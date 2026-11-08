@@ -1301,8 +1301,9 @@ rpg_save:
 ; trees) loses its ranks and attribute points with a banner: everything is refunded. Ranks above
 ; a node's maximum, adding up to more than the level, or in a node whose predecessor in its branch
 ; has none are dropped; attribute points adding up to more than 3 per level above the first are
-; dropped; xp is kept below the bar; quest, quest_state, cleared and flags are masked to their
-; ranges.
+; dropped; xp is kept below the bar; quest and quest_state are masked to their ranges. The old
+; cleared and flags bytes of the record are not read any more (0.9: the dungeons and the crypt keep
+; their state in WORLDHDR.sites).
 rpg_load:
     push    rbp
     mov     rbp, rsp
@@ -1406,8 +1407,6 @@ rpg_load:
     jbe     .state_ok
     mov     byte [rpg_state + RPGSAVE.quest_state], 0
 .state_ok:
-    and     byte [rpg_state + RPGSAVE.cleared], 0x3F
-    and     byte [rpg_state + RPGSAVE.flags], 1
     call    rpg_recompute
     jmp     .ret
 .reset:

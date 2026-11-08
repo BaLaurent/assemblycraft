@@ -5,12 +5,17 @@ default rel
 global test_fall_damage, test_exhaustion_drains, test_regen_when_fed
 global test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
 global test_armor_reduces_damage
+global test_breath_and_drowning, test_sleep_rules
 
 extern surv, survival_reset, survival_damage, survival_land, survival_exhaust, survival_step
 extern surv_max_health
 extern sky_brightness, sky_is_night
 extern game_mode, settings, world_clear
 extern inv, inv_clear, armor_points
+extern player, world_set, world_header, game_time
+extern mobs_clear, mob_spawn
+extern sleep_use_bed, sleep_step, sleep_cancel, sleep_active, sleep_fade
+extern banner_text, str_eq, hud_bubble_tiles
 
 section .rodata
 align 4
@@ -43,6 +48,34 @@ section .text
 section .rodata
 align 16
 absmask: dd 0x7FFFFFFF, 0, 0, 0
+align 4
+k_5_5:   dd 5.5
+k_10_5625: dd 10.5625
+s_b_day:   db "Respawn set. You can only sleep at night", 0
+s_b_mobs:  db "Respawn set. Monsters are nearby", 0
+s_b_sleep: db "Respawn set. Sleeping...", 0
+
+%define TB TILE_BUBBLE
+%define TP TILE_BUBBLE_POP
+; hud_bubble_tiles cases: breath, then the ten tiles (bubble 0 is the rightmost), two pad bytes
+%define BUBBLE_ROWS 8
+bubble_rows:
+    dd 600
+    db TB, TB, TB, TB, TB, TB, TB, TB, TB, TB, 0, 0
+    dd 330
+    db TB, TB, TB, TB, TB, TP, 0, 0, 0, 0, 0, 0
+    dd 599
+    db TB, TB, TB, TB, TB, TB, TB, TB, TB, TP, 0, 0
+    dd 540
+    db TB, TB, TB, TB, TB, TB, TB, TB, TB, 0, 0, 0
+    dd 60
+    db TB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    dd 59
+    db TP, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    dd 1
+    db TP, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    dd 0
+    db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 section .text
 
 ; setup(): empty world, survival mode, normal difficulty, fresh state, zero input
@@ -337,6 +370,346 @@ test_armor_reduces_damage:
     mov     eax, 1
 .ret:
     add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; SETF mem, float literal
+%macro SETF 2
+    mov     dword %1, __float32__(%2)
+%endmacro
+
+; ---- breath and drowning ---------------------------------------------------------
+
+; Under water (the eye cell is WATER) the breath runs 600 -> 0 over 600 steps without harm; then 1
+; drowning damage every 60 steps (the first on step 659). In the air it comes back 5 a step up to
+; 600. Drowning is environmental damage (scaled to the maximum health: 2 at 40) and kills with
+; CAUSE_DROWN. survival_reset fills the lung. hud_bubble_tiles: 330 -> 5 bubbles, 1 pop, 4 none.
+test_breath_and_drowning:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 24                     ; [rsp] the ten tiles of hud_bubble_tiles
+    call    setup
+    SETF    [player + BODY.x], 8.5
+    SETF    [player + BODY.y], 10.0
+    SETF    [player + BODY.z], 8.5
+    cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
+    jne     .fail
+    mov     edi, 100                    ; dry: nothing changes
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
+    jne     .fail
+    mov     edi, 8
+    mov     esi, 11
+    mov     edx, 8
+    mov     ecx, WATER
+    call    world_set                   ; the eye (y 11.62) is in water
+    mov     edi, 599
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], 1
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.health], 20
+    jne     .fail
+    mov     edi, 1
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], 0
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.health], 20
+    jne     .fail
+    mov     edi, 60                     ; 660 steps: the first damage has landed
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 19
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.dead], 0
+    jne     .fail
+    mov     edi, 60                     ; 720: the second
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 18
+    jne     .fail
+    mov     edi, 8
+    mov     esi, 11
+    mov     edx, 8
+    xor     ecx, ecx
+    call    world_set                   ; the head comes out: 5 a step, capped at 600
+    mov     edi, 1
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], 5
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.drown_timer], 0
+    jne     .fail
+    mov     edi, 10
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], 55
+    jne     .fail
+    mov     edi, 200
+    call    steps
+    cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
+    jne     .fail
+    ; environmental damage: scaled to the maximum health (40: a tick is 2)
+    mov     dword [surv_max_health], 40
+    call    survival_reset
+    mov     dword [surv + SURVIVAL.breath], 0
+    mov     edi, 8
+    mov     esi, 11
+    mov     edx, 8
+    mov     ecx, WATER
+    call    world_set
+    mov     edi, 59
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 40
+    jne     .fail
+    mov     edi, 1
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 38
+    jne     .fail
+    ; and it kills: with 1 health left the next tick is fatal, by drowning
+    mov     dword [surv_max_health], 20
+    call    survival_reset
+    mov     dword [surv + SURVIVAL.health], 1
+    mov     dword [surv + SURVIVAL.breath], 0
+    mov     edi, 60
+    call    steps
+    cmp     dword [surv + SURVIVAL.dead], 1
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.death_cause], CAUSE_DROWN
+    jne     .fail
+    call    survival_reset              ; a reset fills the lung again
+    cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.drown_timer], 0
+    jne     .fail
+    xor     ebx, ebx                    ; the bubble tiles
+.row:
+    imul    eax, ebx, 16
+    lea     rcx, [bubble_rows]
+    add     rcx, rax
+    mov     edi, [rcx]
+    lea     rsi, [rsp]
+    mov     [rsp + 16], rcx
+    call    hud_bubble_tiles
+    mov     rcx, [rsp + 16]
+    lea     rsi, [rsp]
+    lea     rdi, [rcx + 4]
+    mov     ecx, 10
+    repe cmpsb
+    jne     .fail
+    inc     ebx
+    cmp     ebx, BUBBLE_ROWS
+    jb      .row
+    mov     dword [surv_max_health], 20
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     dword [surv_max_health], 20
+    mov     eax, 1
+.out:
+    add     rsp, 24
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- sleeping --------------------------------------------------------------------
+
+; fail unless the banner text is the string %1
+%macro BANNER_IS 1
+    lea     rdi, [banner_text]
+    lea     rsi, [%1]
+    call    str_eq
+    test    eax, eax
+    jz      .fail
+%endmacro
+
+; sleep_use_bed(%1, %2, %3) must answer 1
+%macro USE_BED 3
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, %3
+    call    sleep_use_bed
+    cmp     eax, 1
+    jne     .fail
+%endmacro
+
+; mob_spawn(type %1) at (%2, %3, %4)
+%macro SPAWN 4
+    mov     edi, %1
+    mov     eax, __float32__(%2)
+    movd    xmm0, eax
+    mov     eax, __float32__(%3)
+    movd    xmm1, eax
+    mov     eax, __float32__(%4)
+    movd    xmm2, eax
+    call    mob_spawn
+%endmacro
+
+; sleeps(edi n): n times sleep_step
+sleeps:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+.loop:
+    call    sleep_step
+    dec     ebx
+    jnz     .loop
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; make_bed(): a bed with its foot at (5, 10, 5) facing east, its head at (6, 10, 5)
+make_bed:
+    sub     rsp, 8
+    mov     edi, 5
+    mov     esi, 10
+    mov     edx, 5
+    mov     ecx, BED + DIR_E
+    call    world_set
+    mov     edi, 6
+    mov     esi, 10
+    mov     edx, 5
+    mov     ecx, BED + 4 + DIR_E
+    call    world_set
+    add     rsp, 8
+    ret
+
+; Sleep rules. By day a click on the bed (foot or head) sets the respawn point (the absolute foot
+; cell) and only says so. At night a hostile mob within 8 blocks horizontally (and 5 vertically) says
+; "Monsters are nearby"; a zombie 12 blocks away, a pig beside the bed and a zombie 7 blocks above do
+; not stop the sleep: the player lies on the bed (5.5, 10.5625, 5.5). After 120 steps it is morning
+; (time -> the next 06:00: 54000 -> 72000, 126000 -> 144000), the fade climbs to 1 over 90 steps and
+; falls over the 30 after waking. Damage on step 60 wakes the sleeper with the time unchanged. The
+; rules are the same in Creative.
+; Frame: [rsp] the caller's game_time.
+test_sleep_rules:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 24
+    mov     eax, [game_time]
+    mov     [rsp], eax
+    call    setup
+    call    mobs_clear
+    call    sleep_cancel
+    mov     dword [world_header + WORLDHDR.bed_set], 0
+    call    make_bed
+    SETF    [player + BODY.x], 20.5
+    SETF    [player + BODY.y], 10.0
+    SETF    [player + BODY.z], 20.5
+    ; 1. by day: the respawn point only
+    mov     dword [game_time], 6000
+    USE_BED 5, 10, 5
+    cmp     dword [sleep_active], 0
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.bed_set], 1
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.bed_x], 5
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.bed_y], 10
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.bed_z], 5
+    jne     .fail
+    BANNER_IS s_b_day
+    mov     dword [world_header + WORLDHDR.bed_x], 0
+    mov     dword [world_header + WORLDHDR.bed_z], 0
+    USE_BED 6, 10, 5                    ; the head resolves to the foot
+    cmp     dword [world_header + WORLDHDR.bed_x], 5
+    jne     .fail
+    cmp     dword [world_header + WORLDHDR.bed_z], 5
+    jne     .fail
+    ; 2. at night with a zombie 5 blocks away
+    mov     dword [game_time], 54000
+    SPAWN   MOB_ZOMBIE, 10.5, 10.0, 5.5
+    USE_BED 5, 10, 5
+    cmp     dword [sleep_active], 0
+    jne     .fail
+    BANNER_IS s_b_mobs
+    ; 3. a zombie 12 blocks away, a pig beside the bed, a zombie 7 blocks above: asleep
+    call    mobs_clear
+    SPAWN   MOB_ZOMBIE, 17.5, 10.0, 5.5
+    SPAWN   MOB_PIG, 6.5, 10.0, 6.5
+    SPAWN   MOB_ZOMBIE, 7.5, 17.0, 5.5
+    USE_BED 5, 10, 5
+    cmp     dword [sleep_active], 1
+    jne     .fail
+    BANNER_IS s_b_sleep
+    FNEAR   [player + BODY.x], k_5_5
+    FNEAR   [player + BODY.y], k_10_5625
+    FNEAR   [player + BODY.z], k_5_5
+    ; 4. the night passes in 120 steps
+    mov     edi, 45
+    call    sleeps
+    FNEAR   [sleep_fade], k_0_5         ; 45 / 90
+    mov     edi, 74
+    call    sleeps                      ; step 119: still asleep, time as before
+    cmp     dword [sleep_active], 1
+    jne     .fail
+    cmp     dword [game_time], 54000
+    jne     .fail
+    mov     edi, 1
+    call    sleeps                      ; step 120: the morning
+    cmp     dword [sleep_active], 0
+    jne     .fail
+    cmp     dword [game_time], 72000
+    jne     .fail
+    FNEAR   [sleep_fade], k_1_0
+    mov     edi, 30
+    call    sleeps                      ; the fade lifts again
+    cmp     dword [sleep_fade], 0
+    jne     .fail
+    mov     dword [game_time], 126000   ; and the second night
+    USE_BED 5, 10, 5
+    mov     edi, 120
+    call    sleeps
+    cmp     dword [game_time], 144000
+    jne     .fail
+    ; 5. damage on step 60 wakes the sleeper; the time stays
+    mov     dword [game_time], 54000
+    USE_BED 5, 10, 5
+    cmp     dword [sleep_active], 1
+    jne     .fail
+    mov     edi, 60
+    call    sleeps
+    mov     edi, 2
+    mov     esi, CAUSE_ZOMBIE
+    call    survival_damage
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [sleep_active], 0
+    jne     .fail
+    cmp     dword [sleep_fade], 0
+    jne     .fail
+    mov     edi, 120
+    call    sleeps
+    cmp     dword [game_time], 54000
+    jne     .fail
+    ; 6. the same rules in Creative; sleep_cancel leaves the time alone
+    mov     dword [game_mode], MODE_CREATIVE
+    USE_BED 5, 10, 5
+    cmp     dword [sleep_active], 1
+    jne     .fail
+    mov     edi, 20
+    call    sleeps
+    call    sleep_cancel
+    cmp     dword [sleep_active], 0
+    jne     .fail
+    cmp     dword [game_time], 54000
+    jne     .fail
+    mov     dword [game_mode], MODE_SURVIVAL
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    sleep_cancel
+    call    mobs_clear
+    mov     dword [world_header + WORLDHDR.bed_set], 0
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     eax, [rsp]
+    mov     [game_time], eax
+    mov     eax, ebx
+    add     rsp, 24
     pop     rbx
     pop     rbp
     ret

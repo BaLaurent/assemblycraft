@@ -1,31 +1,55 @@
-; structures.asm - villages, dungeons and the crypt: site planning from the world seed (pure),
-; their blocks (stone-brick dungeons with chests, loot and rolled gear, the crypt, flattened
-; villages), NPC spawns, the dungeon spawner, the boss trigger and the dungeon kill counters.
+; structures.asm - the sites of the world: villages, dungeons, crypts and faction camps.
+; region_plan decides the sites of one 512 x 512 region from the seed alone (pure, reentrant,
+; absolute coordinates). structures_stamp builds the part of every nearby site that falls in one
+; generated column (generator thread; every write goes through gb_set / gb_get, clipped to the
+; column). structures_fill_chest rolls the loot of a generated chest when its column is installed.
+; At run time the sites around the player live in sites[] (local coordinates, rebuilt by
+; structures_refresh), their persistent state (dungeon kills, cleared dungeons, the crypt boss) in
+; WORLDHDR.sites (site_state), and structures_step re-creates the village NPCs, spawns the dungeon
+; elites and wakes the crypt boss.
 %include "common.inc"
 default rel
 
 global sites, site_count
-global structures_plan, structures_generate, structures_spawn_npcs
-global structures_reset, structures_step, structures_on_mob_killed, structures_nearest
+global region_plan, structures_stamp, structures_fill_chest, structures_refresh
+global structures_reset, structures_step, structures_nearest
+global structures_on_mob_killed, structures_on_boss_killed, structures_shift, site_state
 
-extern hash32, worldgen_set_seed, worldgen_height
-extern world_get, world_set, world_top_y, world_header
-extern cont_create
-extern mobs, mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_count_type
-extern mob_set_level, mob_level_for, gear_fill_chest
+extern hash32, gen_height, gen_biome
+extern world_header, world_get, world_column_ready, world_origin_x, world_origin_z
+extern mobs, mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_count_type, mob_set_level
+extern gear_fill_chest, gear_tier_for_level
 extern rng_next, floor_i
 extern game_mode, settings, player
-extern rpg_state, rpg_add_xp, quests_on_dungeon_cleared
+extern rpg_state, rpg_level, rpg_add_xp, quests_on_dungeon_cleared
 extern hud_banner, audio_play
 
 %define OP_SHELL     255                ; box id: stone or mossy brick picked by the cell's hash
 %define OP_IFAIR     1                  ; box flag: only replace AIR
 %define OP_IFSOLID   2                  ; box flag: only replace what is not AIR
 %define SPAWN_PERIOD 90                 ; steps between the spawn attempts of a dungeon
+%define NPC_PERIOD   60                 ; steps between the checks for missing village NPCs
 %define MAX_LIVE     3                  ; live mobs of one dungeon at a time
 %define TUNNEL_STEPS 60                 ; columns a stair tunnel climbs at most
-%define ORIGIN_CRYPT 99                 ; MOB.origin of the crypt boss
-%define MAX_VILLAGES 2
+%define PLAN_ENTRIES 16                 ; region plans a cache remembers
+
+; a region plan remembered by plan_get; seed identifies the world seed (hash32(0, 0, 0))
+struc PLANENT
+    .valid: resd 1
+    .seed:  resd 1
+    .arx:   resd 1
+    .arz:   resd 1
+    .count: resd 1
+    .age:   resd 1                      ; cache tick of the last use
+    .pad:   resd 2
+    .sites: resb MAX_REGION_SITES * SITE_size
+endstruc
+
+struc PLANCACHE
+    .tick: resd 1
+    .pad:  resd 3
+    .ents: resb PLAN_ENTRIES * PLANENT_size
+endstruc
 
 ; a box record: signed offsets from the origin (x, z) and y relative to the y origin, then the
 ; block id (0..254, or OP_SHELL) and the OP_IF* flags
@@ -33,26 +57,49 @@ extern hud_banner, audio_play
     db %1, %2, %3, %4, %5, %6, %7, %8
 %endmacro
 
+; CANDC key, salt, modulus: eax = hash32(candidate k in r15d, key, salt) % modulus
+%macro CANDC 3
+    mov     edi, r15d
+    mov     esi, %1
+    mov     edx, %2
+    mov     ecx, %3
+    call    cand_mod
+%endmacro
+
 section .rodata
 align 4
 ; trigger box of a site relative to its (x, y, z): lo dx, dy, dz, then hi dx, dy, dz, by kind - 1
 site_box:
-    dd -16, 0, -16,  16, 10, 16         ; village: x and z +-16, ground .. ground + 10
-    dd  -5, -1, -5,  19,  5, 19         ; dungeon (y = 8): 7 .. 13 above its three rooms
-    dd  -7, 0,  -7,   7,  7,  7         ; crypt (y = 6): 6 .. 13
+    dd -16,  0, -16,  16, 10,  16       ; village: x and z +-16, ground .. ground + 10
+    dd  -5, -1,  -5,  19,  5,  19       ; dungeon: floor - 1 .. floor + 5 over its three rooms
+    dd  -7,  0,  -7,   7,  7,   7       ; crypt: floor .. floor + 7
+    dd -10, -2, -10,  10,  8,  10       ; camp: ground - 2 .. ground + 8
 
-v_tol:    dd 3, 6                       ; village flatness tolerance by pass
-v_hmin:   dd 25, 23                     ; and its minimum ground height
-c_range:  dd 3600, 12100, 1600, 16900   ; crypt distance^2 from the spawn by pass: 60..110, 40..130
-c_pts:    dd 0, 0, -8, -8, 8, -8, -8, 8, 8, 8 ; crypt height samples: centre and the four corners
+; what a site's builder can touch relative to its (x, z): lo dx, lo dz, hi dx, hi dz, by kind - 1
+foot_box:
+    dd -16, -16, 16, 16                 ; village
+    dd -66,  -6, 20, 20                 ; dungeon: the three rooms and the tunnel running west
+    dd -69,  -9,  9,  9                 ; crypt: the hall and its tunnel
+    dd -11, -11, 11, 11                 ; camp: the clearing
+
+; the biomes a faction's camp may stand in, by faction: a bit per BIOME_*
+camp_homes:
+    dd (1 << BIOME_PLAINS) | (1 << BIOME_FOREST)        ; villagers
+    dd (1 << BIOME_FOREST) | (1 << BIOME_MOUNTAINS)     ; bandits
+    dd (1 << BIOME_SWAMP)                               ; cult
+    dd (1 << BIOME_SNOW) | (1 << BIOME_MOUNTAINS)       ; beastfolk
+    dd (1 << BIOME_MOUNTAINS)                           ; stonekin
+
+c_pts:    dd -8, -8, 8, -8, -8, 8, 8, 8 ; crypt height samples: the four corners
 
 c_half:   dd 0.5
 c_one:    dd 1.0
-c_6_5:    dd 6.5
-c_5_5:    dd 5.5
 c_eps:    dd 0.01                       ; feet standing exactly on a block top still count
 c_36:     dd 36.0                       ; dungeon mobs spawn at least 6 blocks from the player
 c_big:    dd 1.0e30
+c_npc_r2: dd 9216.0
+align 16
+c_absmask: dd 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF
 
 s_awakens: db "The Fallen King awakens!", 0
 s_cleared: db "Dungeon cleared!", 0
@@ -60,53 +107,54 @@ s_cleared: db "Dungeon cleared!", 0
 spawn_types: db MOB_ZOMBIE, MOB_SKELETON, MOB_SPIDER
 
 ; ---- building blocks: boxes relative to a site origin -----------------------------------------
-; dungeon, relative to (ox, oz) with absolute y: rooms R0 (0, 0), R1 (14, 0), R2 (14, 14) and the
-; corridors A (R0 - R1) and B (R1 - R2): shells, then interiors, then the openings
+; dungeon, relative to (x, floor, z): rooms R0 (0, 0), R1 (14, 0), R2 (14, 14) and the corridors
+; A (R0 - R1) and B (R1 - R2): shells, then interiors, then the openings. The floor is the cell a
+; player's feet stand in, the shell's bottom is one below it.
 dungeon_boxes:
-    BOX  -5,  7,  -5,   5, 13,   5, OP_SHELL
-    BOX   9,  7,  -5,  19, 13,   5, OP_SHELL
-    BOX   9,  7,   9,  19, 13,  19, OP_SHELL
-    BOX   5,  7,  -2,   9, 11,   2, OP_SHELL
-    BOX  12,  7,   5,  16, 11,   9, OP_SHELL
-    BOX  -4,  8,  -4,   4, 12,   4, AIR
-    BOX  10,  8,  -4,  18, 12,   4, AIR
-    BOX  10,  8,  10,  18, 12,  18, AIR
-    BOX   6,  8,  -1,   8, 10,   1, AIR
-    BOX  13,  8,   6,  15, 10,   8, AIR
-    BOX   5,  8,  -1,   5, 10,   1, AIR
-    BOX   9,  8,  -1,   9, 10,   1, AIR
-    BOX  13,  8,   5,  15, 10,   5, AIR
-    BOX  13,  8,   9,  15, 10,   9, AIR
-    BOX  -5,  8,  -1,  -5, 10,   1, AIR
-    BOX   0, 10,  -4,   0, 10,  -4, TORCH_WALL + DIR_N ; torches on the walls, lit rooms
-    BOX  14, 10,  -4,  14, 10,  -4, TORCH_WALL + DIR_N
-    BOX  14, 10,  18,  14, 10,  18, TORCH_WALL + DIR_S
+    BOX  -5, -1,  -5,   5,  5,   5, OP_SHELL
+    BOX   9, -1,  -5,  19,  5,   5, OP_SHELL
+    BOX   9, -1,   9,  19,  5,  19, OP_SHELL
+    BOX   5, -1,  -2,   9,  3,   2, OP_SHELL
+    BOX  12, -1,   5,  16,  3,   9, OP_SHELL
+    BOX  -4,  0,  -4,   4,  4,   4, AIR
+    BOX  10,  0,  -4,  18,  4,   4, AIR
+    BOX  10,  0,  10,  18,  4,  18, AIR
+    BOX   6,  0,  -1,   8,  2,   1, AIR
+    BOX  13,  0,   6,  15,  2,   8, AIR
+    BOX   5,  0,  -1,   5,  2,   1, AIR
+    BOX   9,  0,  -1,   9,  2,   1, AIR
+    BOX  13,  0,   5,  15,  2,   5, AIR
+    BOX  13,  0,   9,  15,  2,   9, AIR
+    BOX  -5,  0,  -1,  -5,  2,   1, AIR
+    BOX   0,  2,  -4,   0,  2,  -4, TORCH_WALL + DIR_N ; torches on the walls, lit rooms
+    BOX  14,  2,  -4,  14,  2,  -4, TORCH_WALL + DIR_N
+    BOX  14,  2,  18,  14,  2,  18, TORCH_WALL + DIR_S
 %define DUNGEON_BOXES ((dungeon_boxes_end - dungeon_boxes) / 8)
 dungeon_boxes_end:
 
-; chests: dx, y, dz, loot table (0 dungeon, 1 crypt)
+; chests: dx, dy from the floor, dz, loot table (0 dungeon, 1 crypt)
 dungeon_chests:
-    db   3, 8,   3, 0
-    db  17, 8,  -3, 0
-    db  11, 8,  17, 0
-    db  17, 8,  17, 0
+    db   3, 0,   3, 0
+    db  17, 0,  -3, 0
+    db  11, 0,  17, 0
+    db  17, 0,  17, 0
 crypt_chests:
-    db   6, 6,  -6, 1
-    db   6, 6,   6, 1
+    db   6, 0,  -6, 1
+    db   6, 0,   6, 1
 
-; crypt, relative to (cx, cz) with absolute y
+; crypt, relative to (x, floor, z)
 crypt_boxes:
-    BOX  -8,  5,  -8,   8, 14,   8, OP_SHELL
-    BOX  -7,  6,  -7,   7, 13,   7, AIR
-    BOX  -4,  6,  -4,  -4, 13,  -4, STONE_BRICK
-    BOX   4,  6,  -4,   4, 13,  -4, STONE_BRICK
-    BOX  -4,  6,   4,  -4, 13,   4, STONE_BRICK
-    BOX   4,  6,   4,   4, 13,   4, STONE_BRICK
-    BOX   3,  9,  -4,   3,  9,  -4, TORCH_WALL + DIR_E ; torches on the pillars
-    BOX   3,  9,   4,   3,  9,   4, TORCH_WALL + DIR_E
-    BOX  -3,  9,  -4,  -3,  9,  -4, TORCH_WALL + DIR_W
-    BOX  -3,  9,   4,  -3,  9,   4, TORCH_WALL + DIR_W
-    BOX  -8,  6,  -1,  -8,  8,   1, AIR
+    BOX  -8, -1,  -8,   8,  8,   8, OP_SHELL
+    BOX  -7,  0,  -7,   7,  7,   7, AIR
+    BOX  -4,  0,  -4,  -4,  7,  -4, STONE_BRICK
+    BOX   4,  0,  -4,   4,  7,  -4, STONE_BRICK
+    BOX  -4,  0,   4,  -4,  7,   4, STONE_BRICK
+    BOX   4,  0,   4,   4,  7,   4, STONE_BRICK
+    BOX   3,  3,  -4,   3,  3,  -4, TORCH_WALL + DIR_E ; torches on the pillars
+    BOX   3,  3,   4,   3,  3,   4, TORCH_WALL + DIR_E
+    BOX  -3,  3,  -4,  -3,  3,  -4, TORCH_WALL + DIR_W
+    BOX  -3,  3,   4,  -3,  3,   4, TORCH_WALL + DIR_W
+    BOX  -8,  0,  -1,  -8,  2,   1, AIR
 %define CRYPT_BOXES ((crypt_boxes_end - crypt_boxes) / 8)
 crypt_boxes_end:
 
@@ -200,124 +248,125 @@ align 8
 loot_tabs:   dq loot_dungeon, loot_crypt
 loot_counts: db (loot_crypt - loot_dungeon) / 4, (loot_end - loot_crypt) / 4
 align 8
-build_fns:   dq build_village, build_dungeon, build_crypt ; by site kind - 1
+build_fns:   dq build_village, build_dungeon, build_crypt, build_camp ; by site kind - 1
 
 section .bss
 alignb 16
-sites:      resb MAX_SITES * SITE_size
+sites:      resb MAX_SITES * SITE_size  ; the sites around the player, local coordinates
 site_count: resd 1
-st_kills:   resd NUM_DUNGEONS           ; deaths of dungeon mobs since the last reset
 st_timer:   resd 1                      ; steps to the next dungeon spawn attempt
+st_npc:     resd 1                      ; steps to the next check for missing village NPCs
 pcell:      resd 3                      ; the player's cell, set by structures_step
+gb_buf:     resq 1                      ; the GENBUF being stamped (generator thread only)
+gb_x0:      resd 1                      ; its first absolute x and z
+gb_z0:      resd 1
+alignb 16
+plan_gen:   resb PLANCACHE_size         ; region plans of the generator thread (structures_stamp)
+plan_main:  resb PLANCACHE_size         ; region plans of the main thread (structures_refresh)
 
 section .text
 
-; ---- planning ---------------------------------------------------------------------------------
+; ---- planning (pure, reentrant: stack only, read-only seed) -----------------------------------
 
-; min_dist2(edi kind, esi x, edx z) -> eax squared horizontal distance from (x, z) to the nearest
-; planned site of that kind, 0x7FFFFFFF when there is none (leaf function)
-min_dist2:
-    mov     eax, 0x7FFFFFFF
-    mov     r8d, [site_count]
-    test    r8d, r8d
-    jz      .ret
-    lea     rcx, [sites]
-.l:
-    cmp     [rcx + SITE.kind], edi
-    jne     .n
-    mov     r9d, [rcx + SITE.x]
-    sub     r9d, esi
-    imul    r9d, r9d
-    mov     r10d, [rcx + SITE.z]
-    sub     r10d, edx
-    imul    r10d, r10d
-    add     r9d, r10d
-    cmp     r9d, eax
-    cmovb   eax, r9d
-.n:
-    add     rcx, SITE_size
-    dec     r8d
-    jnz     .l
+; cand_mod(edi k, esi key, edx salt, ecx modulus) -> eax hash32(k, key, salt) % modulus
+cand_mod:
+    push    rbx
+    mov     ebx, ecx
+    call    hash32
+    xor     edx, edx
+    div     ebx
+    mov     eax, edx
+    pop     rbx
+    ret
+
+; floor_div3(eax n) -> eax floor(n / 3) (leaf; clobbers ecx, edx)
+floor_div3:
+    cdq
+    mov     ecx, 3
+    idiv    ecx
+    test    edx, edx
+    jns     .ret
+    dec     eax
 .ret:
     ret
 
-; add_site(edi kind, esi index, edx x, ecx y, r8d z): appends a site, its trigger box taken from
-; site_box (leaf function)
-add_site:
-    mov     eax, [site_count]
-    cmp     eax, MAX_SITES
-    jae     .ret
-    inc     dword [site_count]
-    imul    eax, eax, SITE_size
-    lea     r9, [sites]
-    add     r9, rax
-    mov     [r9 + SITE.kind], edi
-    mov     [r9 + SITE.index], esi
-    mov     [r9 + SITE.x], edx
-    mov     [r9 + SITE.y], ecx
-    mov     [r9 + SITE.z], r8d
-    lea     eax, [rdi - 1]
+; site_add(rdi SITE* dst, esi kind, edx index, ecx x, r8d y, r9d z): kind, index, position and the
+; trigger box (site_box by kind); rx, rz and slot are set by tag_sites (leaf)
+site_add:
+    mov     [rdi + SITE.kind], esi
+    mov     [rdi + SITE.index], edx
+    mov     [rdi + SITE.x], ecx
+    mov     [rdi + SITE.y], r8d
+    mov     [rdi + SITE.z], r9d
+    lea     eax, [rsi - 1]
     imul    eax, eax, 24
     lea     r10, [site_box]
     add     r10, rax
     mov     eax, [r10]
-    add     eax, edx
-    mov     [r9 + SITE.lo_x], eax
+    add     eax, ecx
+    mov     [rdi + SITE.lo_x], eax
     mov     eax, [r10 + 4]
-    add     eax, ecx
-    mov     [r9 + SITE.lo_y], eax
+    add     eax, r8d
+    mov     [rdi + SITE.lo_y], eax
     mov     eax, [r10 + 8]
-    add     eax, r8d
-    mov     [r9 + SITE.lo_z], eax
+    add     eax, r9d
+    mov     [rdi + SITE.lo_z], eax
     mov     eax, [r10 + 12]
-    add     eax, edx
-    mov     [r9 + SITE.hi_x], eax
-    mov     eax, [r10 + 16]
     add     eax, ecx
-    mov     [r9 + SITE.hi_y], eax
-    mov     eax, [r10 + 20]
+    mov     [rdi + SITE.hi_x], eax
+    mov     eax, [r10 + 16]
     add     eax, r8d
-    mov     [r9 + SITE.hi_z], eax
+    mov     [rdi + SITE.hi_y], eax
+    mov     eax, [r10 + 20]
+    add     eax, r9d
+    mov     [rdi + SITE.hi_z], eax
+    ret
+
+; tag_sites(rdi SITE* base, esi count, edx arx, ecx arz): rx, rz and the slot (index) of each (leaf)
+tag_sites:
+    xor     eax, eax
+.l:
+    cmp     eax, esi
+    jae     .ret
+    mov     [rdi + SITE.rx], edx
+    mov     [rdi + SITE.rz], ecx
+    mov     [rdi + SITE.slot], eax
+    add     rdi, SITE_size
+    inc     eax
+    jmp     .l
 .ret:
     ret
 
-; CAND salt, base x, modulus x, base z, modulus z: candidate k (r12d) of a site search ->
-; ebx = base x + hash32(k, 0, salt) % modulus x, r13d = base z + hash32(k, 1, salt) % modulus z
-%macro CAND 5
-    mov     edi, r12d
-    xor     esi, esi
-    mov     edx, %1
-    call    hash32
-    xor     edx, edx
-    mov     ecx, %3
-    div     ecx
-    lea     ebx, [rdx + %2]
-    mov     edi, r12d
-    mov     esi, 1
-    mov     edx, %1
-    call    hash32
-    xor     edx, edx
-    mov     ecx, %5
-    div     ecx
-    lea     r13d, [rdx + %4]
-%endmacro
+; far_from(rdi SITE* base, esi count, edx x, ecx z, r8d min_d2) -> eax 1 when every site of
+; base[0..count) is at least sqrt(min_d2) blocks from (x, z) horizontally (leaf)
+far_from:
+    mov     eax, 1
+.l:
+    test    esi, esi
+    jz      .ret
+    mov     r9d, [rdi + SITE.x]
+    sub     r9d, edx
+    imul    r9d, r9d
+    mov     r10d, [rdi + SITE.z]
+    sub     r10d, ecx
+    imul    r10d, r10d
+    add     r9d, r10d
+    cmp     r9d, r8d
+    jb      .near
+    add     rdi, SITE_size
+    dec     esi
+    jmp     .l
+.near:
+    xor     eax, eax
+.ret:
+    ret
 
-; D2C: eax = squared distance of (ebx, r13d) from the middle of the world (128, 128)
-%macro D2C 0
-    mov     eax, ebx
-    sub     eax, 128
-    imul    eax, eax
-    mov     ecx, r13d
-    sub     ecx, 128
-    imul    ecx, ecx
-    add     eax, ecx
-%endmacro
-
-; structures_plan(edi seed): decides every site from the seed alone: up to two villages (index =
-; order), up to six dungeons (index = bit of the cleared mask) and the crypt. No block is written,
-; so a loaded world plans the sites it was built with. Heights come from worldgen_height.
-; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] flatness tolerance.
-structures_plan:
+; village_find(edi arx, esi arz, rdx out3) -> eax 1 when the region has a village: out3 = x,
+; ground y, z. 70 % of the regions try; of 16 candidates (x, z 48 .. 463 into the region) the first
+; in a PLAINS or FOREST biome (DESERT or SNOW for half of the candidates) whose ground is at least
+; 98 high at the centre and within 4 of it at 25 samples (5 apart, +-10) is the village.
+; Frame: [rsp] z, [rsp+4] centre height, [rsp+8] key, [rsp+12] sample dx, [rsp+16] sample dz.
+village_find:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -326,179 +375,91 @@ structures_plan:
     push    r14
     push    r15
     sub     rsp, 24
-    call    worldgen_set_seed
-    mov     dword [site_count], 0
-    lea     rdi, [sites]
-    mov     ecx, MAX_SITES * SITE_size
-    xor     eax, eax
-    rep     stosb
-    ; ---- villages: pass 0 wants flat ground (|dh| <= 3, h >= 25), pass 1 settles for less
-    xor     r14d, r14d                  ; pass
-.v_pass:
-    xor     r12d, r12d                  ; candidate k
-.v_cand:
-    cmp     dword [site_count], MAX_VILLAGES
-    jae     .v_done
-    CAND    600, 24, 208, 24, 208
-    D2C
-    cmp     eax, 900                    ; 30..100 blocks from the middle
-    jb      .v_next
-    cmp     eax, 10000
-    ja      .v_next
-    mov     edi, SITE_VILLAGE
-    mov     esi, ebx
-    mov     edx, r13d
-    call    min_dist2
-    cmp     eax, 3600                   ; at least 60 from the other village
-    jb      .v_next
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14, rdx
+    mov     eax, esi
+    shl     eax, 16
+    xor     eax, edi
+    mov     [rsp + 8], eax              ; key = arx ^ (arz << 16)
+    mov     edx, 700
+    call    hash32                      ; (edi, esi still arx, arz)
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    cmp     edx, 70
+    jae     .none
+    xor     r15d, r15d
+.cand:
+    CANDC   [rsp + 8], 701, 416
+    mov     ebx, r12d
+    shl     ebx, 9
+    lea     ebx, [rbx + rax + 48]       ; x
+    CANDC   [rsp + 8], 702, 416
+    mov     ecx, r13d
+    shl     ecx, 9
+    lea     ecx, [rcx + rax + 48]
+    mov     [rsp], ecx                  ; z
     mov     edi, ebx
+    mov     esi, ecx
+    call    gen_biome
+    cmp     eax, BIOME_PLAINS
+    je      .biome_ok
+    cmp     eax, BIOME_FOREST
+    je      .biome_ok
+    cmp     eax, BIOME_DESERT
+    je      .alt
+    cmp     eax, BIOME_SNOW
+    jne     .next
+.alt:
+    mov     edi, r15d                   ; DESERT and SNOW villages for half of the candidates
     mov     esi, r13d
-    call    worldgen_height
-    mov     r15d, eax                   ; ground height at the centre
-    lea     rcx, [v_hmin]
-    cmp     r15d, [rcx + r14*4]
-    jl      .v_next
-    lea     rcx, [v_tol]
-    mov     eax, [rcx + r14*4]
-    mov     [rsp + 8], eax
-    mov     dword [rsp + 4], -15
-.v_fz:
-    mov     dword [rsp], -15
-.v_fx:
+    mov     edx, 703
+    call    hash32
+    test    al, 1
+    jz      .next
+.biome_ok:
     mov     edi, ebx
-    add     edi, [rsp]
-    mov     esi, r13d
-    add     esi, [rsp + 4]
-    call    worldgen_height
-    sub     eax, r15d
+    mov     esi, [rsp]
+    call    gen_height
+    mov     [rsp + 4], eax
+    cmp     eax, 98
+    jl      .next
+    mov     dword [rsp + 16], -10
+.gz:
+    mov     dword [rsp + 12], -10
+.gx:
+    mov     edi, ebx
+    add     edi, [rsp + 12]
+    mov     esi, [rsp]
+    add     esi, [rsp + 16]
+    call    gen_height
+    sub     eax, [rsp + 4]
     cdq
     xor     eax, edx
     sub     eax, edx                    ; |dh|
-    cmp     eax, [rsp + 8]
-    jg      .v_next
-    add     dword [rsp], 5
-    cmp     dword [rsp], 15
-    jle     .v_fx
-    add     dword [rsp + 4], 5
-    cmp     dword [rsp + 4], 15
-    jle     .v_fz
-    mov     edi, SITE_VILLAGE
-    mov     esi, [site_count]
-    mov     edx, ebx
-    mov     ecx, r15d
-    mov     r8d, r13d
-    call    add_site
-.v_next:
-    inc     r12d
-    cmp     r12d, 96
-    jb      .v_cand
-    inc     r14d
-    cmp     r14d, 2
-    jb      .v_pass
-.v_done:
-    ; ---- dungeons: ground >= 16 at three corners of the footprint, 30 from the middle of the
-    ; world, 40 from each other, 32 from the villages
-    xor     r14d, r14d                  ; dungeons found
-    xor     r12d, r12d
-.d_cand:
-    cmp     r14d, NUM_DUNGEONS
-    jae     .d_done
-    CAND    610, 60, 170, 8, 226
-    D2C
-    cmp     eax, 900
-    jb      .d_next
-    mov     edi, SITE_DUNGEON
-    mov     esi, ebx
-    mov     edx, r13d
-    call    min_dist2
-    cmp     eax, 1600
-    jb      .d_next
-    mov     edi, SITE_VILLAGE
-    mov     esi, ebx
-    mov     edx, r13d
-    call    min_dist2
-    cmp     eax, 1024
-    jb      .d_next
-    mov     edi, ebx
-    mov     esi, r13d
-    call    worldgen_height
-    cmp     eax, 16
-    jl      .d_next
-    lea     edi, [rbx + 14]
-    mov     esi, r13d
-    call    worldgen_height
-    cmp     eax, 16
-    jl      .d_next
-    lea     edi, [rbx + 14]
-    lea     esi, [r13 + 14]
-    call    worldgen_height
-    cmp     eax, 16
-    jl      .d_next
-    mov     edi, SITE_DUNGEON
-    mov     esi, r14d
-    mov     edx, ebx
-    mov     ecx, 8
-    mov     r8d, r13d
-    call    add_site
-    inc     r14d
-.d_next:
-    inc     r12d
-    cmp     r12d, 192
-    jb      .d_cand
-.d_done:
-    ; ---- crypt: pass 0 wants it 60..110 blocks from the spawn, pass 1 40..130; ground >= 18 at
-    ; its middle and corners, 40 from the dungeons and the villages
-    xor     r14d, r14d                  ; pass
-.c_pass:
-    xor     r12d, r12d
-.c_cand:
-    CAND    620, 66, 160, 10, 236
-    D2C
-    lea     rcx, [c_range]
-    cmp     eax, [rcx + r14*8]
-    jb      .c_next
-    cmp     eax, [rcx + r14*8 + 4]
-    ja      .c_next
-    mov     edi, SITE_DUNGEON
-    mov     esi, ebx
-    mov     edx, r13d
-    call    min_dist2
-    cmp     eax, 1600
-    jb      .c_next
-    mov     edi, SITE_VILLAGE
-    mov     esi, ebx
-    mov     edx, r13d
-    call    min_dist2
-    cmp     eax, 1600
-    jb      .c_next
-    xor     r15d, r15d
-.c_h:
-    lea     rcx, [c_pts]
-    mov     edi, ebx
-    add     edi, [rcx + r15*8]
-    mov     esi, r13d
-    add     esi, [rcx + r15*8 + 4]
-    call    worldgen_height
-    cmp     eax, 18
-    jl      .c_next
+    cmp     eax, 4
+    jg      .next
+    add     dword [rsp + 12], 5
+    cmp     dword [rsp + 12], 10
+    jle     .gx
+    add     dword [rsp + 16], 5
+    cmp     dword [rsp + 16], 10
+    jle     .gz
+    mov     [r14], ebx                  ; flat enough: this is the village
+    mov     eax, [rsp + 4]
+    mov     [r14 + 4], eax
+    mov     eax, [rsp]
+    mov     [r14 + 8], eax
+    mov     eax, 1
+    jmp     .ret
+.next:
     inc     r15d
-    cmp     r15d, 5
-    jb      .c_h
-    mov     edi, SITE_CRYPT
-    xor     esi, esi
-    mov     edx, ebx
-    mov     ecx, 6
-    mov     r8d, r13d
-    call    add_site
-    jmp     .done
-.c_next:
-    inc     r12d
-    cmp     r12d, 192
-    jb      .c_cand
-    inc     r14d
-    cmp     r14d, 2
-    jb      .c_pass
-.done:
+    cmp     r15d, 16
+    jb      .cand
+.none:
+    xor     eax, eax
+.ret:
     add     rsp, 24
     pop     r15
     pop     r14
@@ -508,12 +469,592 @@ structures_plan:
     pop     rbp
     ret
 
-; ---- building ---------------------------------------------------------------------------------
+; dungeon_try(edi arx, esi arz, edx k, rcx out3) -> eax 1 when candidate k (x, z 80 .. 431 into the
+; region) lies in a land biome (not OCEAN or RIVER) and the ground at (0, 0), (14, 0) and (14, 14)
+; reaches 12 above the floor y = clamp(ground - 24, 20, 80); out3 = x, floor y, z.
+; Frame: [rsp] z, [rsp+4] floor, [rsp+8] key, [rsp+12] the height the corners must reach.
+dungeon_try:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r15d, edx
+    mov     r14, rcx
+    mov     eax, esi
+    shl     eax, 16
+    xor     eax, edi
+    mov     [rsp + 8], eax
+    CANDC   [rsp + 8], 711, 352
+    mov     ebx, r12d
+    shl     ebx, 9
+    lea     ebx, [rbx + rax + 80]       ; x
+    CANDC   [rsp + 8], 712, 352
+    mov     ecx, r13d
+    shl     ecx, 9
+    lea     ecx, [rcx + rax + 80]
+    mov     [rsp], ecx                  ; z
+    mov     edi, ebx
+    mov     esi, ecx
+    call    gen_biome
+    cmp     eax, BIOME_OCEAN
+    je      .no
+    cmp     eax, BIOME_RIVER
+    je      .no
+    mov     edi, ebx
+    mov     esi, [rsp]
+    call    gen_height
+    lea     ecx, [rax - 24]
+    mov     edx, 20
+    cmp     ecx, edx
+    cmovl   ecx, edx
+    mov     edx, 80
+    cmp     ecx, edx
+    cmovg   ecx, edx
+    mov     [rsp + 4], ecx              ; floor y
+    add     ecx, 12
+    mov     [rsp + 12], ecx
+    cmp     eax, ecx
+    jl      .no
+    lea     edi, [rbx + 14]
+    mov     esi, [rsp]
+    call    gen_height
+    cmp     eax, [rsp + 12]
+    jl      .no
+    lea     edi, [rbx + 14]
+    mov     esi, [rsp]
+    add     esi, 14
+    call    gen_height
+    cmp     eax, [rsp + 12]
+    jl      .no
+    mov     [r14], ebx
+    mov     eax, [rsp + 4]
+    mov     [r14 + 4], eax
+    mov     eax, [rsp]
+    mov     [r14 + 8], eax
+    mov     eax, 1
+    jmp     .ret
+.no:
+    xor     eax, eax
+.ret:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; crypt_try(edi arx, esi arz, edx k, rcx out3) -> eax 1 when candidate k (x, z 80 .. 431 into the
+; region) has ground reaching 14 above the floor y = clamp(ground - 30, 15, 70) at its centre and
+; at (+-8, +-8); out3 = x, floor y, z.
+; Frame: [rsp] z, [rsp+4] floor, [rsp+8] key, [rsp+12] the height the ground must reach.
+crypt_try:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r15d, edx
+    mov     r14, rcx
+    mov     eax, esi
+    shl     eax, 16
+    xor     eax, edi
+    mov     [rsp + 8], eax
+    CANDC   [rsp + 8], 721, 352
+    mov     ebx, r12d
+    shl     ebx, 9
+    lea     ebx, [rbx + rax + 80]       ; x
+    CANDC   [rsp + 8], 722, 352
+    mov     ecx, r13d
+    shl     ecx, 9
+    lea     ecx, [rcx + rax + 80]
+    mov     [rsp], ecx                  ; z
+    mov     edi, ebx
+    mov     esi, ecx
+    call    gen_height
+    lea     ecx, [rax - 30]
+    mov     edx, 15
+    cmp     ecx, edx
+    cmovl   ecx, edx
+    mov     edx, 70
+    cmp     ecx, edx
+    cmovg   ecx, edx
+    mov     [rsp + 4], ecx              ; floor y
+    add     ecx, 14
+    mov     [rsp + 12], ecx
+    cmp     eax, ecx
+    jl      .no
+    xor     r12d, r12d                  ; corner
+.corner:
+    lea     rcx, [c_pts]
+    mov     edi, ebx
+    add     edi, [rcx + r12*8]
+    mov     esi, [rsp]
+    add     esi, [rcx + r12*8 + 4]
+    call    gen_height
+    cmp     eax, [rsp + 12]
+    jl      .no
+    inc     r12d
+    cmp     r12d, 4
+    jb      .corner
+    mov     [r14], ebx
+    mov     eax, [rsp + 4]
+    mov     [r14 + 4], eax
+    mov     eax, [rsp]
+    mov     [r14 + 8], eax
+    mov     eax, 1
+    jmp     .ret
+.no:
+    xor     eax, eax
+.ret:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; camp_plan(edi sx, esi sz, rdx out) -> eax camps placed in the 1536 x 1536 super-region (sx, sz):
+; SITE records at out (5 at most, in faction order; rx, rz and slot unset). For each faction 24
+; candidates (x, z 64 .. 1471 into the super-region) are tried in order; the first that stands in
+; one of its home biomes, at least 128 from the camps already placed, on ground within 5 of its
+; centre at the 8 samples around it (+-10) and at least 96 from the village of the region it
+; falls in is the faction's camp. A faction without one has no camp here.
+; Frame: [rsp] x, [rsp+4] z, [rsp+8] ground, [rsp+12] key, [rsp+16] faction, [rsp+20] unused,
+; [rsp+24] village out3, [rsp+40] sample dz, [rsp+44] sample dx.
+camp_plan:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14, rdx
+    xor     ebx, ebx                    ; camps so far
+    mov     eax, esi
+    shl     eax, 16
+    xor     eax, edi
+    mov     [rsp + 12], eax             ; key = sx ^ (sz << 16)
+    mov     dword [rsp + 16], 0
+.faction:
+    xor     r15d, r15d
+.cand:
+    mov     edi, r15d
+    mov     esi, [rsp + 12]
+    mov     edx, [rsp + 16]
+    add     edx, 800
+    mov     ecx, 1408
+    call    cand_mod
+    imul    ecx, r12d, 1536
+    lea     ecx, [rcx + rax + 64]
+    mov     [rsp], ecx                  ; x
+    mov     edi, r15d
+    mov     esi, [rsp + 12]
+    mov     edx, [rsp + 16]
+    add     edx, 810
+    mov     ecx, 1408
+    call    cand_mod
+    imul    ecx, r13d, 1536
+    lea     ecx, [rcx + rax + 64]
+    mov     [rsp + 4], ecx              ; z
+    mov     edi, [rsp]
+    mov     esi, ecx
+    call    gen_biome
+    mov     ecx, [rsp + 16]
+    lea     rdx, [camp_homes]
+    mov     edx, [rdx + rcx*4]
+    bt      edx, eax
+    jnc     .next
+    mov     rdi, r14                    ; at least 128 from the camps placed before
+    mov     esi, ebx
+    mov     edx, [rsp]
+    mov     ecx, [rsp + 4]
+    mov     r8d, 128 * 128
+    call    far_from
+    test    eax, eax
+    jz      .next
+    mov     edi, [rsp]
+    mov     esi, [rsp + 4]
+    call    gen_height
+    mov     [rsp + 8], eax
+    mov     dword [rsp + 40], -10
+.gz:
+    mov     dword [rsp + 44], -10
+.gx:
+    mov     edi, [rsp]
+    add     edi, [rsp + 44]
+    mov     esi, [rsp + 4]
+    add     esi, [rsp + 40]
+    call    gen_height
+    sub     eax, [rsp + 8]
+    cdq
+    xor     eax, edx
+    sub     eax, edx
+    cmp     eax, 5
+    jg      .next
+    add     dword [rsp + 44], 10
+    cmp     dword [rsp + 44], 10
+    jle     .gx
+    add     dword [rsp + 40], 10
+    cmp     dword [rsp + 40], 10
+    jle     .gz
+    mov     edi, [rsp]                  ; at least 96 from the village of its region
+    sar     edi, 9
+    mov     esi, [rsp + 4]
+    sar     esi, 9
+    lea     rdx, [rsp + 24]
+    call    village_find
+    test    eax, eax
+    jz      .accept
+    mov     eax, [rsp + 24]
+    sub     eax, [rsp]
+    imul    eax, eax
+    mov     ecx, [rsp + 32]
+    sub     ecx, [rsp + 4]
+    imul    ecx, ecx
+    add     eax, ecx
+    cmp     eax, 96 * 96
+    jb      .next
+.accept:
+    imul    eax, ebx, SITE_size
+    lea     rdi, [r14 + rax]
+    mov     esi, SITE_CAMP
+    mov     edx, [rsp + 16]
+    mov     ecx, [rsp]
+    mov     r8d, [rsp + 8]
+    mov     r9d, [rsp + 4]
+    call    site_add
+    inc     ebx
+    jmp     .done_faction
+.next:
+    inc     r15d
+    cmp     r15d, 24
+    jb      .cand
+.done_faction:
+    inc     dword [rsp + 16]
+    cmp     dword [rsp + 16], NUM_FACTIONS
+    jb      .faction
+    mov     eax, ebx
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; region_plan(edi arx, esi arz, rdx SITE* out) -> eax count: the sites of region (arx, arz), blocks
+; arx * 512 .. arx * 512 + 511, in absolute coordinates, at most MAX_REGION_SITES, in this order:
+; the village (0 or 1), the dungeons (1 or 2: the first valid of 32 candidates, then a second one in
+; half of the regions, both at least 48 from the other sites), the crypt (only in regions with
+; even arx and arz: the first valid of 32 candidates at least 48 from the other sites) and the
+; camps whose centre lies in the region (SITE_CAMP, index = faction, in faction order). Every
+; record carries its region and its slot (its index in the output). Pure: it reads the world
+; seed through hash32, gen_height and gen_biome and writes only out.
+; Frame: [rsp] pos3 (x, y, z), [rsp+16] camps in the super-region, [rsp+20] want a second dungeon,
+; [rsp+24] dungeons found, [rsp+32] the super-region's camps (5 SITE records).
+region_plan:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 312
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14, rdx
+    xor     r15d, r15d                  ; sites written
+    mov     edi, r12d                   ; ---- the village
+    mov     esi, r13d
+    lea     rdx, [rsp]
+    call    village_find
+    test    eax, eax
+    jz      .dungeons
+    mov     rdi, r14
+    mov     esi, SITE_VILLAGE
+    xor     edx, edx
+    mov     ecx, [rsp]
+    mov     r8d, [rsp + 4]
+    mov     r9d, [rsp + 8]
+    call    site_add
+    inc     r15d
+.dungeons:
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, 713
+    call    hash32
+    and     eax, 1
+    mov     [rsp + 20], eax             ; a second dungeon in half of the regions
+    mov     dword [rsp + 24], 0
+    xor     ebx, ebx                    ; candidate k
+.d_cand:
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, ebx
+    lea     rcx, [rsp]
+    call    dungeon_try
+    test    eax, eax
+    jz      .d_next
+    mov     rdi, r14                    ; at least 48 from the village and the other dungeon
+    mov     esi, r15d
+    mov     edx, [rsp]
+    mov     ecx, [rsp + 8]
+    mov     r8d, 48 * 48
+    call    far_from
+    test    eax, eax
+    jz      .d_next
+    imul    eax, r15d, SITE_size
+    lea     rdi, [r14 + rax]
+    mov     esi, SITE_DUNGEON
+    mov     edx, [rsp + 24]             ; index: the dungeon's order in the region
+    mov     ecx, [rsp]
+    mov     r8d, [rsp + 4]
+    mov     r9d, [rsp + 8]
+    call    site_add
+    inc     r15d
+    inc     dword [rsp + 24]
+    cmp     dword [rsp + 24], 2
+    jae     .crypt
+    cmp     dword [rsp + 20], 0
+    je      .crypt
+.d_next:
+    inc     ebx
+    cmp     ebx, 32
+    jb      .d_cand
+.crypt:
+    test    r12d, 1                     ; one crypt per 2 x 2 regions: even arx and arz only
+    jnz     .camps
+    test    r13d, 1
+    jnz     .camps
+    xor     ebx, ebx
+.c_cand:
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, ebx
+    lea     rcx, [rsp]
+    call    crypt_try
+    test    eax, eax
+    jz      .c_next
+    mov     rdi, r14
+    mov     esi, r15d
+    mov     edx, [rsp]
+    mov     ecx, [rsp + 8]
+    mov     r8d, 48 * 48
+    call    far_from
+    test    eax, eax
+    jz      .c_next
+    imul    eax, r15d, SITE_size
+    lea     rdi, [r14 + rax]
+    mov     esi, SITE_CRYPT
+    xor     edx, edx
+    mov     ecx, [rsp]
+    mov     r8d, [rsp + 4]
+    mov     r9d, [rsp + 8]
+    call    site_add
+    inc     r15d
+    jmp     .camps
+.c_next:
+    inc     ebx
+    cmp     ebx, 32
+    jb      .c_cand
+.camps:
+    mov     eax, r12d                   ; the super-region of 3 x 3 regions
+    call    floor_div3
+    mov     edi, eax
+    mov     eax, r13d
+    call    floor_div3
+    mov     esi, eax
+    lea     rdx, [rsp + 32]
+    call    camp_plan
+    mov     [rsp + 16], eax
+    xor     ebx, ebx
+.camp:
+    cmp     ebx, [rsp + 16]
+    jae     .tag
+    imul    eax, ebx, SITE_size
+    lea     rsi, [rsp + 32]
+    add     rsi, rax
+    mov     eax, [rsi + SITE.x]
+    sar     eax, 9
+    cmp     eax, r12d
+    jne     .camp_next
+    mov     eax, [rsi + SITE.z]
+    sar     eax, 9
+    cmp     eax, r13d
+    jne     .camp_next
+    imul    eax, r15d, SITE_size
+    lea     rdi, [r14 + rax]
+    mov     ecx, SITE_size / 8
+    rep     movsq
+    inc     r15d
+.camp_next:
+    inc     ebx
+    jmp     .camp
+.tag:
+    mov     rdi, r14
+    mov     esi, r15d
+    mov     edx, r12d
+    mov     ecx, r13d
+    call    tag_sites
+    mov     eax, r15d
+    add     rsp, 312
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; plan_get(rdi PLANCACHE* cache, esi arx, edx arz) -> rax the PLANENT of that region for the current
+; world seed. A miss plans the region (region_plan) into the least recently used entry.
+plan_get:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    call    hash32
+    mov     r14d, eax                   ; fingerprint of the seed
+    inc     dword [rbx + PLANCACHE.tick]
+    mov     r15d, [rbx + PLANCACHE.tick]
+    lea     rax, [rbx + PLANCACHE.ents]
+    mov     ecx, PLAN_ENTRIES
+.hit:
+    cmp     dword [rax + PLANENT.valid], 0
+    je      .hit_next
+    cmp     [rax + PLANENT.seed], r14d
+    jne     .hit_next
+    cmp     [rax + PLANENT.arx], r12d
+    jne     .hit_next
+    cmp     [rax + PLANENT.arz], r13d
+    jne     .hit_next
+    mov     [rax + PLANENT.age], r15d
+    jmp     .ret
+.hit_next:
+    add     rax, PLANENT_size
+    dec     ecx
+    jnz     .hit
+    lea     rax, [rbx + PLANCACHE.ents]
+    mov     rdx, rax                    ; victim: an empty entry, else the least recently used
+    mov     esi, -1
+    mov     ecx, PLAN_ENTRIES
+.victim:
+    cmp     dword [rax + PLANENT.valid], 0
+    je      .empty
+    mov     edi, [rax + PLANENT.age]
+    cmp     edi, esi
+    jae     .victim_next
+    mov     esi, edi
+    mov     rdx, rax
+.victim_next:
+    add     rax, PLANENT_size
+    dec     ecx
+    jnz     .victim
+    jmp     .plan
+.empty:
+    mov     rdx, rax
+.plan:
+    mov     rbx, rdx
+    mov     dword [rbx + PLANENT.valid], 0
+    mov     [rbx + PLANENT.seed], r14d
+    mov     [rbx + PLANENT.arx], r12d
+    mov     [rbx + PLANENT.arz], r13d
+    mov     [rbx + PLANENT.age], r15d
+    mov     edi, r12d
+    mov     esi, r13d
+    lea     rdx, [rbx + PLANENT.sites]
+    call    region_plan
+    mov     [rbx + PLANENT.count], eax
+    mov     dword [rbx + PLANENT.valid], 1
+    mov     rax, rbx
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- stamping (generator thread, or the main thread in selftests: file statics are safe) ------
+
+; gb_set(edi x, esi y, edx z, ecx id): the cell (absolute x, z) of the column being stamped;
+; anything outside it, or outside y 0..255, is dropped (leaf)
+gb_set:
+    sub     edi, [gb_x0]
+    cmp     edi, 15
+    ja      .ret
+    sub     edx, [gb_z0]
+    cmp     edx, 15
+    ja      .ret
+    cmp     esi, 255
+    ja      .ret
+    shl     esi, 8
+    shl     edx, 4
+    or      esi, edx
+    or      esi, edi
+    mov     rax, [gb_buf]
+    mov     [rax + rsi + GENBUF.blocks], cl
+.ret:
+    ret
+
+; gb_get(edi x, esi y, edx z) -> eax the block there, AIR outside the column being stamped (leaf)
+gb_get:
+    xor     eax, eax
+    sub     edi, [gb_x0]
+    cmp     edi, 15
+    ja      .ret
+    sub     edx, [gb_z0]
+    cmp     edx, 15
+    ja      .ret
+    cmp     esi, 255
+    ja      .ret
+    shl     esi, 8
+    shl     edx, 4
+    or      esi, edx
+    or      esi, edi
+    mov     rax, [gb_buf]
+    movzx   eax, byte [rax + rsi + GENBUF.blocks]
+.ret:
+    ret
 
 ; box_fill(edi x0, esi y0, edx z0, ecx x1, r8d y1, r9d z1, eax op): applies op to every cell of the
-; inclusive box (world_set skips cells outside the world). op = id | flags << 8: the block id,
-; or OP_SHELL for a stone brick (mossy with 3 in 10) chosen by hash of the cell; flag OP_IFAIR
-; places only where the cell is AIR, OP_IFSOLID only where it is not.
+; inclusive box that lies in the column being stamped (gb_get / gb_set drop the rest, and the
+; loops are clipped to it). op = id | flags << 8: the block id, or OP_SHELL for a stone brick
+; (mossy with 3 in 10) chosen by hash of the cell; flag OP_IFAIR places only where the cell is
+; AIR, OP_IFSOLID only where it is not.
 ; Frame: [rsp] x1, [rsp+4] y1, [rsp+8] z1, [rsp+12] op, [rsp+16] x0, [rsp+20] z0.
 box_fill:
     push    rbp
@@ -524,6 +1065,30 @@ box_fill:
     push    r14
     push    r15
     sub     rsp, 24
+    mov     r10d, [gb_x0]               ; clip to the column and to y 0..255
+    cmp     edi, r10d
+    cmovl   edi, r10d
+    add     r10d, 15
+    cmp     ecx, r10d
+    cmovg   ecx, r10d
+    cmp     edi, ecx
+    jg      .done
+    mov     r10d, [gb_z0]
+    cmp     edx, r10d
+    cmovl   edx, r10d
+    add     r10d, 15
+    cmp     r9d, r10d
+    cmovg   r9d, r10d
+    cmp     edx, r9d
+    jg      .done
+    xor     r10d, r10d
+    cmp     esi, r10d
+    cmovl   esi, r10d
+    mov     r10d, 255
+    cmp     r8d, r10d
+    cmovg   r8d, r10d
+    cmp     esi, r8d
+    jg      .done
     mov     [rsp], ecx
     mov     [rsp + 4], r8d
     mov     [rsp + 8], r9d
@@ -544,7 +1109,7 @@ box_fill:
     mov     edi, r12d
     mov     esi, r13d
     mov     edx, r14d
-    call    world_get
+    call    gb_get
     test    r15d, OP_IFAIR << 8
     jz      .need_solid
     test    eax, eax
@@ -573,7 +1138,7 @@ box_fill:
     mov     esi, r13d
     mov     edx, r14d
     mov     ecx, ebx
-    call    world_set
+    call    gb_set
 .next:
     inc     r12d
     cmp     r12d, [rsp]
@@ -584,6 +1149,7 @@ box_fill:
     inc     r13d
     cmp     r13d, [rsp + 4]
     jle     .y
+.done:
     add     rsp, 24
     pop     r15
     pop     r14
@@ -637,9 +1203,10 @@ run_boxes:
     ret
 
 ; stair_tunnel(edi sx, esi sz, edx y0): from an opening in the wall at x = sx a 3 x 3 passage
-; climbs west one block per column (floor y0 + i at x = sx - i) until the ground of the column
-; and of the next one west is at or below the floor, so the exit is walkable without a jump;
-; then an entrance frame closes it. The ground test reads world_top_y before the column is touched.
+; climbs west one block per column (floor y0 + i at x = sx - i) until the terrain (gen_height) of
+; the column and of the next one west is at or below the floor, so the exit is walkable without a
+; jump; then an entrance frame closes it. The decision depends on the seed alone, so every column
+; of the site's footprint reaches the same tunnel.
 stair_tunnel:
     push    rbp
     mov     rbp, rsp
@@ -657,14 +1224,14 @@ stair_tunnel:
     mov     edi, ebx
     sub     edi, r14d
     mov     esi, r12d
-    call    world_top_y
+    call    gen_height
     lea     ecx, [r13 + r14 + 1]        ; Yf + 1: where the player's feet would stand
     cmp     eax, ecx
     jge     .dig                        ; the ground is above the floor: keep digging
     lea     edi, [rbx - 1]
     sub     edi, r14d                   ; the next column west, where the player walks out
     mov     esi, r12d
-    call    world_top_y
+    call    gen_height
     lea     ecx, [r13 + r14 + 1]
     cmp     eax, ecx
     jl      .exit                       ; both at or below the floor: we are out
@@ -698,13 +1265,9 @@ stair_tunnel:
     pop     rbp
     ret
 
-; place_chest(edi x, esi y, edx z, ecx table, r8d dungeon): a CHEST block with its container and
-; 4..6 loot rolls from the loot table (0 dungeon, 1 crypt). Roll r: h = hash32(x*31 + r, z*17 + y,
-; 640); the entry is the weighted pick h % total, count = min + (h >> 16) % (max - min + 1), cell =
-; (h >> 8) % 27 or the next free cell. Then its rolled gear (gear_fill_chest, seed hash32(x, z,
-; 650)): a dungeon's chest gets one LOOT_CHEST piece of tier 2 + 2 * dungeon, the crypt's two
-; LOOT_BOSS pieces of tier 13.
-; Frame: [rsp] r, [rsp+4] rolls, [rsp+8] h, [rsp+12] dungeon.
+; place_chest(edi x, esi y, edx z, ecx table): a CHEST block (absolute cell) and, when the cell is
+; in the column being stamped, its GENCHEST record; the loot is rolled when the column is installed
+; (structures_fill_chest). table: 0 dungeon, 1 crypt.
 place_chest:
     push    rbp
     mov     rbp, rsp
@@ -712,115 +1275,34 @@ place_chest:
     push    r12
     push    r13
     push    r14
-    push    r15
-    sub     rsp, 24
-    mov     [rsp + 12], r8d
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx
-    mov     r15d, ecx
+    mov     ebx, ecx
     mov     ecx, CHEST
-    call    world_set
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, CONT_CHEST
-    call    cont_create
-    test    rax, rax
-    jz      .ret                        ; every container record is in use
-    mov     rbx, rax
-    mov     edi, r12d
-    mov     esi, r14d
-    mov     edx, 641
-    call    hash32
-    xor     edx, edx
-    mov     ecx, 3
-    div     ecx
-    add     edx, 4
-    mov     [rsp + 4], edx              ; rolls
-    mov     dword [rsp], 0
-.roll:
-    imul    edi, r12d, 31
-    add     edi, [rsp]
-    imul    esi, r14d, 17
-    add     esi, r13d
-    mov     edx, 640
-    call    hash32
-    mov     [rsp + 8], eax
-    lea     rax, [loot_tabs]
-    mov     rsi, [rax + r15*8]          ; first entry
-    lea     rax, [loot_counts]
-    movzx   ecx, byte [rax + r15]       ; entries
-    mov     r8, rsi
-    xor     edx, edx                    ; total weight
-.sum:
-    movzx   eax, byte [r8]
-    add     edx, eax
-    add     r8, 4
-    dec     ecx
-    jnz     .sum
-    mov     ecx, edx
-    mov     eax, [rsp + 8]
-    xor     edx, edx
-    div     ecx                         ; edx = h % total
-.find:
-    movzx   eax, byte [rsi]
-    cmp     edx, eax
-    jb      .found
-    sub     edx, eax
-    add     rsi, 4
-    jmp     .find
-.found:
-    movzx   r9d, byte [rsi + 1]         ; item
-    movzx   ecx, byte [rsi + 3]
-    movzx   r8d, byte [rsi + 2]
-    sub     ecx, r8d
-    inc     ecx                         ; max - min + 1
-    mov     eax, [rsp + 8]
-    shr     eax, 16
-    xor     edx, edx
-    div     ecx
-    add     r8d, edx                    ; count
-    mov     eax, [rsp + 8]
-    shr     eax, 8
-    xor     edx, edx
-    mov     ecx, 27
-    div     ecx                         ; edx = first cell to try
-.cell:
-    cmp     byte [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.id], 0
-    je      .free
-    inc     edx
-    cmp     edx, 27
-    jb      .cell
-    xor     edx, edx
-    jmp     .cell
-.free:
-    mov     [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.id], r9b
-    mov     [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.count], r8b
-    inc     dword [rsp]
-    mov     eax, [rsp]
-    cmp     eax, [rsp + 4]
-    jb      .roll
-    mov     edi, r12d                   ; the gear: seed hash32(x, z, 650)
-    mov     esi, r14d
-    mov     edx, 650
-    call    hash32
-    mov     r8d, eax
-    mov     rdi, rbx
-    mov     esi, LOOT_CHEST
-    mov     edx, [rsp + 12]
-    lea     edx, [rdx*2 + 2]            ; tier 2 + 2 * dungeon
-    mov     ecx, 1
-    test    r15d, r15d
-    jz      .gear
-    mov     esi, LOOT_BOSS              ; the crypt: two pieces of tier 13
-    mov     edx, 13
-    mov     ecx, 2
-.gear:
-    call    gear_fill_chest
+    call    gb_set
+    mov     eax, r12d
+    sub     eax, [gb_x0]
+    cmp     eax, 15
+    ja      .ret
+    mov     eax, r14d
+    sub     eax, [gb_z0]
+    cmp     eax, 15
+    ja      .ret
+    cmp     r13d, 255
+    ja      .ret
+    mov     rax, [gb_buf]
+    mov     ecx, [rax + GENBUF.nchests]
+    cmp     ecx, MAX_GEN_CHESTS
+    jae     .ret
+    inc     dword [rax + GENBUF.nchests]
+    shl     ecx, 4
+    lea     rdx, [rax + rcx + GENBUF.chests]
+    mov     [rdx + GENCHEST.x], r12d
+    mov     [rdx + GENCHEST.y], r13d
+    mov     [rdx + GENCHEST.z], r14d
+    mov     [rdx + GENCHEST.table], ebx
 .ret:
-    add     rsp, 24
-    pop     r15
     pop     r14
     pop     r13
     pop     r12
@@ -828,8 +1310,8 @@ place_chest:
     pop     rbp
     ret
 
-; place_chests(rdi table, esi count, edx ox, ecx oz, r8d dungeon): a chest per 4-byte record (dx, y,
-; dz, loot table); dungeon is the index of the dungeon the chests belong to (0 for the crypt)
+; place_chests(rdi table, esi count, edx ox, ecx oz, r8d oy): a chest per 4-byte record (dx, dy, dz,
+; loot table), relative to (ox, oy, oz)
 place_chests:
     push    rbp
     mov     rbp, rsp
@@ -847,11 +1329,11 @@ place_chests:
 .chest:
     movsx   edi, byte [rbx]
     add     edi, r13d
-    movzx   esi, byte [rbx + 1]
+    movsx   esi, byte [rbx + 1]
+    add     esi, r15d
     movsx   edx, byte [rbx + 2]
     add     edx, r14d
     movzx   ecx, byte [rbx + 3]
-    mov     r8d, r15d
     call    place_chest
     add     rbx, 4
     dec     r12d
@@ -867,7 +1349,7 @@ place_chests:
 
 ; build_dungeon(rdi SITE*): three stone-brick rooms joined by corridors, a stair tunnel climbing
 ; to the surface from the west wall of the first room, and a chest in each room (the third
-; room has two), each holding rolled gear of the dungeon's tier
+; room has two); clipped to the column being stamped
 build_dungeon:
     push    rbp
     mov     rbp, rsp
@@ -877,18 +1359,18 @@ build_dungeon:
     push    r14
     push    r15
     sub     rsp, 8
-    mov     r12d, [rdi + SITE.x]        ; ox
-    mov     r13d, [rdi + SITE.z]        ; oz
-    mov     r14d, [rdi + SITE.index]    ; dungeon index
+    mov     r12d, [rdi + SITE.x]
+    mov     r13d, [rdi + SITE.z]
+    mov     r14d, [rdi + SITE.y]        ; floor
     lea     rdi, [dungeon_boxes]
     mov     esi, DUNGEON_BOXES
     mov     edx, r12d
-    xor     ecx, ecx
+    mov     ecx, r14d
     mov     r8d, r13d
     call    run_boxes
     lea     edi, [r12 - 5]
     mov     esi, r13d
-    mov     edx, 7
+    lea     edx, [r14 - 1]
     call    stair_tunnel
     lea     rdi, [dungeon_chests]
     mov     esi, 4
@@ -915,23 +1397,24 @@ build_crypt:
     push    r14
     push    r15
     sub     rsp, 8
-    mov     r12d, [rdi + SITE.x]        ; cx
-    mov     r13d, [rdi + SITE.z]        ; cz
+    mov     r12d, [rdi + SITE.x]
+    mov     r13d, [rdi + SITE.z]
+    mov     r14d, [rdi + SITE.y]        ; floor
     lea     rdi, [crypt_boxes]
     mov     esi, CRYPT_BOXES
     mov     edx, r12d
-    xor     ecx, ecx
+    mov     ecx, r14d
     mov     r8d, r13d
     call    run_boxes
     lea     edi, [r12 - 8]
     mov     esi, r13d
-    mov     edx, 5
+    lea     edx, [r14 - 1]
     call    stair_tunnel
     lea     rdi, [crypt_chests]
     mov     esi, 2
     mov     edx, r12d
     mov     ecx, r13d
-    xor     r8d, r8d
+    mov     r8d, r14d
     call    place_chests
     add     rsp, 8
     pop     r15
@@ -1021,10 +1504,35 @@ build_village:
     pop     rbp
     ret
 
-; structures_generate(): builds every planned site (structures_plan ran first) with an empty
-; container table: villages, then dungeons, then the crypt, so a stair tunnel that crosses a
-; village still cuts through it instead of being flattened away
-structures_generate:
+; camp_ground(edi biome, esi ground y) -> eax top block, edx filler block of a camp's clearing
+; (the generator's materials: grass over dirt; sand in a desert; on a mountain stone from 150 and a
+; snow block top from 195) (leaf)
+camp_ground:
+    mov     eax, GRASS
+    mov     edx, DIRT
+    cmp     edi, BIOME_DESERT
+    jne     .not_desert
+    mov     eax, SAND
+    mov     edx, SAND
+    ret
+.not_desert:
+    cmp     edi, BIOME_MOUNTAINS
+    jne     .ret
+    cmp     esi, 150
+    jl      .ret
+    mov     eax, STONE
+    mov     edx, STONE
+    cmp     esi, 195
+    jl      .ret
+    mov     eax, SNOW_BLOCK
+.ret:
+    ret
+
+; build_camp(rdi SITE*): the clearing of a faction camp: x, z +-10 flattened to the ground height
+; h of its centre (the biome's top block at h, its filler under it down to h - 3 where there is air,
+; air from h + 1 to h + 12), a fence post with a torch on it in the middle. The camp's buildings
+; are not built yet.
+build_camp:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -1033,32 +1541,558 @@ structures_generate:
     push    r14
     push    r15
     sub     rsp, 8
-    lea     rdi, [world_header + WORLDHDR.containers_v5]
-    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
+    mov     r12d, [rdi + SITE.x]
+    mov     r13d, [rdi + SITE.y]        ; h
+    mov     r14d, [rdi + SITE.z]
+    mov     edi, r12d
+    mov     esi, r14d
+    call    gen_biome
+    mov     edi, eax
+    mov     esi, r13d
+    call    camp_ground
+    mov     ebx, eax                    ; top block
+    mov     r15d, edx                   ; filler
+    lea     edi, [r12 - 10]             ; the air above
+    lea     esi, [r13 + 1]
+    lea     edx, [r14 - 10]
+    lea     ecx, [r12 + 10]
+    lea     r8d, [r13 + 12]
+    lea     r9d, [r14 + 10]
     xor     eax, eax
-    rep     stosb
-    xor     r13d, r13d                  ; kind - 1
-.kind:
-    lea     r14, [sites]
-    mov     r12d, [site_count]
-.site:
-    test    r12d, r12d
-    jz      .next_kind
-    lea     eax, [r13 + 1]
-    cmp     [r14 + SITE.kind], eax
-    jne     .skip
-    mov     rdi, r14
-    lea     rax, [build_fns]
-    call    qword [rax + r13*8]
-.skip:
-    add     r14, SITE_size
-    dec     r12d
-    jmp     .site
-.next_kind:
-    inc     r13d
-    cmp     r13d, 3
-    jb      .kind
+    call    box_fill
+    lea     edi, [r12 - 10]             ; the filler below, where the ground was lower
+    lea     esi, [r13 - 3]
+    lea     edx, [r14 - 10]
+    lea     ecx, [r12 + 10]
+    lea     r8d, [r13 - 1]
+    lea     r9d, [r14 + 10]
+    lea     eax, [r15 + (OP_IFAIR << 8)]
+    call    box_fill
+    lea     edi, [r12 - 10]             ; the top
+    mov     esi, r13d
+    lea     edx, [r14 - 10]
+    lea     ecx, [r12 + 10]
+    mov     r8d, r13d
+    lea     r9d, [r14 + 10]
+    mov     eax, ebx
+    call    box_fill
+    mov     edi, r12d                   ; the post
+    lea     esi, [r13 + 1]
+    mov     edx, r14d
+    mov     ecx, edi
+    mov     r8d, esi
+    mov     r9d, edx
+    mov     eax, FENCE
+    call    box_fill
+    mov     edi, r12d
+    lea     esi, [r13 + 2]
+    mov     edx, r14d
+    mov     ecx, edi
+    mov     r8d, esi
+    mov     r9d, edx
+    mov     eax, TORCH
+    call    box_fill
     add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; structures_stamp(rdi GENBUF*): builds the part of every site that falls in the column (GENBUF.cx,
+; .cz): the plans of the column's region and the eight around it (plan_get, 16-entry cache private to
+; the generator thread) in the order village, dungeon, crypt, camp, so a stair tunnel that crosses
+; a village still cuts through it; each site whose footprint (foot_box) meets the column is built
+; by its builder, clipped to the column. Resets GENBUF.nchests; chests are appended by place_chest.
+; Generator thread only (or the main thread while no generator runs).
+; Frame: [rsp + i*8] the plan of region (rx + i % 3 - 1, rz + i / 3 - 1).
+structures_stamp:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 72
+    mov     [gb_buf], rdi
+    mov     eax, [rdi + GENBUF.cx]
+    mov     r12d, eax
+    shl     eax, 4
+    mov     [gb_x0], eax
+    mov     eax, [rdi + GENBUF.cz]
+    mov     r13d, eax
+    shl     eax, 4
+    mov     [gb_z0], eax
+    mov     dword [rdi + GENBUF.nchests], 0
+    sar     r12d, 5                     ; the column's region
+    sar     r13d, 5
+    xor     r14d, r14d
+.fetch:
+    mov     eax, r14d
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx                         ; eax = row, edx = column of the 3 x 3 block
+    lea     esi, [r12 + rdx - 1]
+    lea     edx, [r13 + rax - 1]
+    lea     rdi, [plan_gen]
+    call    plan_get
+    mov     [rsp + r14*8], rax
+    inc     r14d
+    cmp     r14d, 9
+    jb      .fetch
+    mov     r15d, 1                     ; site kind
+.kind:
+    xor     r14d, r14d                  ; plan
+.plan:
+    mov     rbx, [rsp + r14*8]
+    xor     r12d, r12d                  ; site
+.site:
+    cmp     r12d, [rbx + PLANENT.count]
+    jae     .next_plan
+    imul    eax, r12d, SITE_size
+    lea     r13, [rbx + PLANENT.sites]
+    add     r13, rax
+    cmp     [r13 + SITE.kind], r15d
+    jne     .next_site
+    lea     eax, [r15 - 1]
+    shl     eax, 4
+    lea     rcx, [foot_box]
+    add     rcx, rax
+    mov     eax, [r13 + SITE.x]
+    add     eax, [rcx + 8]
+    cmp     eax, [gb_x0]
+    jl      .next_site                  ; the footprint ends west of the column
+    mov     eax, [r13 + SITE.x]
+    add     eax, [rcx]
+    mov     edx, [gb_x0]
+    add     edx, 15
+    cmp     eax, edx
+    jg      .next_site                  ; or starts east of it
+    mov     eax, [r13 + SITE.z]
+    add     eax, [rcx + 12]
+    cmp     eax, [gb_z0]
+    jl      .next_site
+    mov     eax, [r13 + SITE.z]
+    add     eax, [rcx + 4]
+    mov     edx, [gb_z0]
+    add     edx, 15
+    cmp     eax, edx
+    jg      .next_site
+    mov     rdi, r13
+    lea     rax, [build_fns]
+    mov     ecx, r15d
+    call    [rax + rcx*8 - 8]
+.next_site:
+    inc     r12d
+    jmp     .site
+.next_plan:
+    inc     r14d
+    cmp     r14d, 9
+    jb      .plan
+    inc     r15d
+    cmp     r15d, SITE_CAMP
+    jbe     .kind
+    add     rsp, 72
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; structures_fill_chest(rdi CONTAINER*, rsi GENCHEST*): makes the record the generated chest's
+; container (its cell and kind CONT_CHEST are set, the cells cleared) and rolls its loot, a pure
+; function of the chest (cell, table) and the world seed. 4..6 rolls from the loot table (0 dungeon,
+; 1 crypt): roll r: h = hash32(x*31 + r, z*17 + y, 640); the entry is the weighted pick h % total,
+; count = min + (h >> 16) % (max - min + 1), cell = (h >> 8) % 27 or the next free cell. Then
+; rolled gear (gear_fill_chest, seed hash32(x, z, 650)): a dungeon's chest gets one LOOT_CHEST piece
+; of tier max(2, gear_tier_for_level(rpg_level)), the crypt's two LOOT_BOSS pieces of tier 13.
+; Frame: [rsp] r, [rsp+4] rolls, [rsp+8] h.
+structures_fill_chest:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24
+    mov     rbx, rdi
+    mov     r15d, [rsi + GENCHEST.table]
+    mov     r12d, [rsi + GENCHEST.x]
+    mov     r13d, [rsi + GENCHEST.y]
+    mov     r14d, [rsi + GENCHEST.z]
+    mov     [rbx + CONTAINER.x], r12d
+    mov     [rbx + CONTAINER.y], r13d
+    mov     [rbx + CONTAINER.z], r14d
+    mov     byte [rbx + CONTAINER.kind], CONT_CHEST
+    lea     rdi, [rbx + CONTAINER.slots]
+    mov     ecx, (CONTAINER_size - CONTAINER.slots) / 4
+    xor     eax, eax
+    rep     stosd
+    mov     edi, r12d
+    mov     esi, r14d
+    mov     edx, 641
+    call    hash32
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    add     edx, 4
+    mov     [rsp + 4], edx              ; rolls
+    mov     dword [rsp], 0
+.roll:
+    imul    edi, r12d, 31
+    add     edi, [rsp]
+    imul    esi, r14d, 17
+    add     esi, r13d
+    mov     edx, 640
+    call    hash32
+    mov     [rsp + 8], eax
+    lea     rax, [loot_tabs]
+    mov     rsi, [rax + r15*8]          ; first entry
+    lea     rax, [loot_counts]
+    movzx   ecx, byte [rax + r15]       ; entries
+    mov     r8, rsi
+    xor     edx, edx                    ; total weight
+.sum:
+    movzx   eax, byte [r8]
+    add     edx, eax
+    add     r8, 4
+    dec     ecx
+    jnz     .sum
+    mov     ecx, edx
+    mov     eax, [rsp + 8]
+    xor     edx, edx
+    div     ecx                         ; edx = h % total
+.find:
+    movzx   eax, byte [rsi]
+    cmp     edx, eax
+    jb      .found
+    sub     edx, eax
+    add     rsi, 4
+    jmp     .find
+.found:
+    movzx   r9d, byte [rsi + 1]         ; item
+    movzx   ecx, byte [rsi + 3]
+    movzx   r8d, byte [rsi + 2]
+    sub     ecx, r8d
+    inc     ecx                         ; max - min + 1
+    mov     eax, [rsp + 8]
+    shr     eax, 16
+    xor     edx, edx
+    div     ecx
+    add     r8d, edx                    ; count
+    mov     eax, [rsp + 8]
+    shr     eax, 8
+    xor     edx, edx
+    mov     ecx, 27
+    div     ecx                         ; edx = first cell to try
+.cell:
+    cmp     byte [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.id], 0
+    je      .free
+    inc     edx
+    cmp     edx, 27
+    jb      .cell
+    xor     edx, edx
+    jmp     .cell
+.free:
+    mov     [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.id], r9b
+    mov     [rbx + CONTAINER.slots + rdx*4 + ITEMSTACK.count], r8b
+    inc     dword [rsp]
+    mov     eax, [rsp]
+    cmp     eax, [rsp + 4]
+    jb      .roll
+    mov     edi, r12d                   ; the gear: seed hash32(x, z, 650)
+    mov     esi, r14d
+    mov     edx, 650
+    call    hash32
+    mov     r14d, eax
+    test    r15d, r15d
+    jnz     .crypt
+    call    rpg_level
+    mov     edi, eax
+    call    gear_tier_for_level
+    mov     edx, 2
+    cmp     eax, edx
+    cmovl   eax, edx
+    mov     edx, eax                    ; tier max(2, tier for the player's level)
+    mov     esi, LOOT_CHEST
+    mov     ecx, 1
+    jmp     .gear
+.crypt:
+    mov     esi, LOOT_BOSS              ; the crypt: two pieces of tier 13
+    mov     edx, 13
+    mov     ecx, 2
+.gear:
+    mov     rdi, rbx
+    mov     r8d, r14d
+    call    gear_fill_chest
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- the sites around the player (local coordinates) -------------------------------------------
+
+; player_region() -> eax rx, edx rz: the region ((floor(player) + origin) sar 9) the player is in
+player_region:
+    push    rbx
+    movss   xmm0, [player + BODY.x]
+    call    floor_i
+    add     eax, [world_origin_x]
+    sar     eax, 9
+    mov     ebx, eax
+    movss   xmm0, [player + BODY.z]
+    call    floor_i
+    add     eax, [world_origin_z]
+    sar     eax, 9
+    mov     edx, eax
+    mov     eax, ebx
+    pop     rbx
+    ret
+
+; structures_refresh(): rebuilds sites[] from the plans of the 3 x 3 regions around the player's
+; region (main-thread plan cache), x and z fields minus the world origin. Call it when the
+; player's region changes, after a rebase and once after a world is loaded.
+structures_refresh:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    call    player_region
+    mov     r12d, eax
+    mov     r13d, edx
+    xor     r15d, r15d                  ; sites cached
+    mov     r14d, -1                    ; dz
+.row:
+    mov     ebx, -1                     ; dx
+.col:
+    lea     rdi, [plan_main]
+    lea     esi, [r12 + rbx]
+    lea     edx, [r13 + r14]
+    call    plan_get
+    mov     ecx, [rax + PLANENT.count]
+    lea     rsi, [rax + PLANENT.sites]
+.copy:
+    test    ecx, ecx
+    jz      .next_col
+    cmp     r15d, MAX_SITES
+    jae     .next_col
+    imul    edx, r15d, SITE_size
+    lea     rdi, [sites]
+    add     rdi, rdx
+    mov     r8d, ecx
+    mov     ecx, SITE_size / 4
+    rep     movsd
+    sub     rdi, SITE_size
+    mov     eax, [world_origin_x]
+    sub     [rdi + SITE.x], eax
+    sub     [rdi + SITE.lo_x], eax
+    sub     [rdi + SITE.hi_x], eax
+    mov     eax, [world_origin_z]
+    sub     [rdi + SITE.z], eax
+    sub     [rdi + SITE.lo_z], eax
+    sub     [rdi + SITE.hi_z], eax
+    inc     r15d
+    lea     ecx, [r8 - 1]
+    jmp     .copy
+.next_col:
+    inc     ebx
+    cmp     ebx, 1
+    jle     .col
+    inc     r14d
+    cmp     r14d, 1
+    jle     .row
+    mov     [site_count], r15d
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; structures_shift(edi dx, esi dz): the world origin moved by (dx, dz) (world_rebase ran already):
+; the cached sites are rebuilt against the new origin
+structures_shift:
+    jmp     structures_refresh
+
+; structures_reset(): forget the cached sites and the spawn timers (the per-site state belongs to
+; the world: WORLDHDR.sites)
+structures_reset:
+    mov     dword [site_count], 0
+    mov     dword [st_timer], 0
+    mov     dword [st_npc], 0
+    ret
+
+; ---- per-site state, WORLDHDR.sites --------------------------------------------------------------
+
+; site_find(rdi SITE*) -> rax the SITESTATE of that site (rx, rz, slot), or 0 (leaf)
+site_find:
+    mov     ecx, [world_header + WORLDHDR.site_count]
+    mov     eax, MAX_SITESTATES
+    cmp     ecx, eax
+    cmova   ecx, eax
+    lea     rax, [world_header + WORLDHDR.sites]
+    mov     edx, [rdi + SITE.rx]
+    mov     esi, [rdi + SITE.rz]
+    mov     r8d, [rdi + SITE.slot]
+.l:
+    test    ecx, ecx
+    jz      .none
+    cmp     [rax + SITESTATE.rx], edx
+    jne     .n
+    cmp     [rax + SITESTATE.rz], esi
+    jne     .n
+    cmp     [rax + SITESTATE.slot], r8b
+    je      .ret
+.n:
+    add     rax, SITESTATE_size
+    dec     ecx
+    jmp     .l
+.none:
+    xor     eax, eax
+.ret:
+    ret
+
+; ss_by_origin(edi origin) -> rax the SITESTATE a MOB.origin (record index + 1) names, or 0 (leaf)
+ss_by_origin:
+    lea     eax, [rdi - 1]
+    mov     ecx, [world_header + WORLDHDR.site_count]
+    mov     edx, MAX_SITESTATES
+    cmp     ecx, edx
+    cmova   ecx, edx
+    cmp     eax, ecx
+    jae     .none
+    imul    eax, eax, SITESTATE_size
+    lea     rcx, [world_header + WORLDHDR.sites]
+    add     rax, rcx
+    ret
+.none:
+    xor     eax, eax
+    ret
+
+; ss_origin(rdi SITESTATE*) -> eax the MOB.origin of the site's mobs (record index + 1) (leaf)
+ss_origin:
+    lea     rax, [world_header + WORLDHDR.sites]
+    sub     rdi, rax
+    mov     eax, edi
+    xor     edx, edx
+    mov     ecx, SITESTATE_size
+    div     ecx
+    inc     eax
+    ret
+
+; site_state(rdi SITE*) -> rax the persistent state of the site, keyed by (rx, rz, slot): the
+; existing record, else a new one (kind, no kills, not cleared). When WORLDHDR.sites is full the
+; record whose region lies farthest (Chebyshev) from the player's, and that no live mob's origin
+; points at, is replaced; 0 when none can be.
+; Frame: [rsp .. +1024) one byte per record: a live mob's origin points at it; [rsp+1024] the
+; farthest distance so far, [rsp+1032] its record.
+site_state:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 1048
+    mov     rbx, rdi
+    call    site_find
+    test    rax, rax
+    jnz     .ret
+    mov     ecx, [world_header + WORLDHDR.site_count]
+    cmp     ecx, MAX_SITESTATES
+    jae     .full
+    imul    edx, ecx, SITESTATE_size    ; room left: append
+    lea     rax, [world_header + WORLDHDR.sites]
+    add     rax, rdx
+    inc     ecx
+    mov     [world_header + WORLDHDR.site_count], ecx
+    jmp     .fill
+.full:
+    lea     rdi, [rsp]
+    mov     ecx, MAX_SITESTATES / 8
+    xor     eax, eax
+    rep     stosq
+    lea     rcx, [mobs]
+    mov     edx, MAX_MOBS
+.mob:
+    cmp     dword [rcx + MOB.type], MOB_NONE
+    je      .mob_next
+    mov     eax, [rcx + MOB.origin]
+    dec     eax
+    cmp     eax, MAX_SITESTATES
+    jae     .mob_next
+    mov     byte [rsp + rax], 1
+.mob_next:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .mob
+    call    player_region
+    mov     r12d, eax
+    mov     r13d, edx
+    lea     r14, [world_header + WORLDHDR.sites]
+    xor     r15d, r15d
+    mov     dword [rsp + 1024], -1
+    mov     qword [rsp + 1032], 0
+.rec:
+    cmp     r15d, MAX_SITESTATES
+    jae     .pick
+    cmp     byte [rsp + r15], 0
+    jne     .rec_next
+    mov     eax, [r14 + SITESTATE.rx]
+    sub     eax, r12d
+    cdq
+    xor     eax, edx
+    sub     eax, edx                    ; |drx|
+    mov     ecx, [r14 + SITESTATE.rz]
+    sub     ecx, r13d
+    mov     edx, ecx
+    sar     edx, 31
+    xor     ecx, edx
+    sub     ecx, edx                    ; |drz|
+    cmp     eax, ecx
+    cmovl   eax, ecx                    ; the Chebyshev distance
+    cmp     eax, [rsp + 1024]
+    jle     .rec_next
+    mov     [rsp + 1024], eax
+    mov     [rsp + 1032], r14
+.rec_next:
+    add     r14, SITESTATE_size
+    inc     r15d
+    jmp     .rec
+.pick:
+    mov     rax, [rsp + 1032]
+    test    rax, rax
+    jz      .ret                        ; every record is in use by a live mob
+.fill:
+    mov     ecx, [rbx + SITE.rx]
+    mov     [rax + SITESTATE.rx], ecx
+    mov     ecx, [rbx + SITE.rz]
+    mov     [rax + SITESTATE.rz], ecx
+    mov     ecx, [rbx + SITE.slot]
+    mov     [rax + SITESTATE.slot], cl
+    mov     ecx, [rbx + SITE.kind]
+    mov     [rax + SITESTATE.kind], cl
+    mov     byte [rax + SITESTATE.kills], 0
+    mov     byte [rax + SITESTATE.flags], 0
+.ret:
+    add     rsp, 1048
     pop     r15
     pop     r14
     pop     r13
@@ -1069,17 +2103,77 @@ structures_generate:
 
 ; ---- NPCs, spawners, counters, queries ----------------------------------------------------------
 
-; structures_spawn_npcs(): in every village, the merchant at (vx + 6.5, vz + 0.5) and the elder at
-; (vx - 5.5, vz + 0.5), feet on the flattened ground (vy + 1): both homes sit under a house's eave,
-; so the top block there is the roof
-structures_spawn_npcs:
+; ensure_npc(edi type, esi dx, rdx SITE* village): the NPC of that type with its home in the cell
+; (village x + dx, village z), at the village's ground level + 1, is spawned unless a live one of
+; that type already has that home (within 0.01) or its column is not loaded
+; Frame: [rsp] home x, [rsp+4] y, [rsp+8] home z.
+ensure_npc:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    push    r14
-    push    r15
+    sub     rsp, 24
+    mov     r12d, edi
+    mov     r13d, [rdx + SITE.x]
+    add     r13d, esi                   ; the NPC's cell
+    mov     ebx, [rdx + SITE.z]
+    mov     eax, [rdx + SITE.y]
+    inc     eax
+    cvtsi2ss xmm1, eax
+    movss   [rsp + 4], xmm1
+    cvtsi2ss xmm0, r13d
+    addss   xmm0, [c_half]
+    movss   [rsp], xmm0
+    cvtsi2ss xmm2, ebx
+    addss   xmm2, [c_half]
+    movss   [rsp + 8], xmm2
+    lea     rcx, [mobs]
+    mov     edx, MAX_MOBS
+.find:
+    cmp     [rcx + MOB.type], r12d
+    jne     .next
+    movss   xmm3, [rcx + MOB.home_x]
+    subss   xmm3, xmm0
+    andps   xmm3, [c_absmask]
+    comiss  xmm3, [c_eps]
+    jae     .next
+    movss   xmm3, [rcx + MOB.home_z]
+    subss   xmm3, xmm2
+    andps   xmm3, [c_absmask]
+    comiss  xmm3, [c_eps]
+    jb      .ret                        ; it is there already
+.next:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .find
+    mov     edi, r13d
+    mov     esi, ebx
+    call    world_column_ready
+    test    eax, eax
+    jz      .ret
+    mov     edi, r12d
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    call    mob_spawn_npc
+.ret:
+    add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; village_npcs(): every cached village within 96 blocks of the player whose centre column is
+; loaded gets its merchant (cell x + 6) and elder (cell x - 6) at (x + 0.5, y + 1, z + 0.5) again
+; when no live one has that home: village NPCs are not saved
+village_npcs:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
     sub     rsp, 8
     lea     rbx, [sites]
     mov     r12d, [site_count]
@@ -1088,44 +2182,40 @@ structures_spawn_npcs:
     jz      .ret
     cmp     dword [rbx + SITE.kind], SITE_VILLAGE
     jne     .next
-    mov     eax, [rbx + SITE.y]
-    inc     eax
-    cvtsi2ss xmm1, eax
     cvtsi2ss xmm0, dword [rbx + SITE.x]
-    addss   xmm0, [c_6_5]
-    cvtsi2ss xmm2, dword [rbx + SITE.z]
-    addss   xmm2, [c_half]
+    addss   xmm0, [c_half]
+    subss   xmm0, [player + BODY.x]
+    mulss   xmm0, xmm0
+    cvtsi2ss xmm1, dword [rbx + SITE.z]
+    addss   xmm1, [c_half]
+    subss   xmm1, [player + BODY.z]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [c_npc_r2]
+    ja      .next
+    mov     edi, [rbx + SITE.x]
+    mov     esi, [rbx + SITE.z]
+    call    world_column_ready
+    test    eax, eax
+    jz      .next
     mov     edi, MOB_MERCHANT
-    call    mob_spawn_npc
-    mov     eax, [rbx + SITE.y]
-    inc     eax
-    cvtsi2ss xmm1, eax
-    cvtsi2ss xmm0, dword [rbx + SITE.x]
-    subss   xmm0, [c_5_5]
-    cvtsi2ss xmm2, dword [rbx + SITE.z]
-    addss   xmm2, [c_half]
+    mov     esi, 6
+    mov     rdx, rbx
+    call    ensure_npc
     mov     edi, MOB_ELDER
-    call    mob_spawn_npc
+    mov     esi, -6
+    mov     rdx, rbx
+    call    ensure_npc
 .next:
     add     rbx, SITE_size
     dec     r12d
     jmp     .site
 .ret:
     add     rsp, 8
-    pop     r15
-    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
-    ret
-
-; structures_reset(): forget the dungeon kill counts and the spawn timer
-structures_reset:
-    lea     rdi, [st_kills]
-    mov     ecx, NUM_DUNGEONS + 1
-    xor     eax, eax
-    rep     stosd
     ret
 
 ; in_box(rdi SITE*, esi grow) -> eax 1 when the player's cell (pcell) lies inside the site's
@@ -1164,10 +2254,35 @@ in_box:
     xor     eax, eax
     ret
 
-; dungeon_spawn(rdi SITE*): one attempt of a dungeon's spawner. A dungeon holds at most 3 live
-; mobs and needs 8 kills to clear, so it spawns while live + kills < 8 (a mob that vanished
-; unkilled is replaced). The mob is a random elite zombie, skeleton or spider at a random cell
-; within 3 of a random room's middle, at floor level, at least 6 blocks from the player.
+; boss_level() -> eax the level the Fallen King wakes at: the player's + 3, at least 20
+; elite_level() -> eax the level of a dungeon elite: the player's + 2 (a blank character is level 1)
+boss_level:
+    sub     rsp, 8
+    call    rpg_level
+    add     rsp, 8
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    add     eax, 3
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    ret
+elite_level:
+    sub     rsp, 8
+    call    rpg_level
+    add     rsp, 8
+    mov     ecx, 1
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    add     eax, 2
+    ret
+
+; dungeon_spawn(rdi SITE*, rsi SITESTATE*): one attempt of a dungeon's spawner. A dungeon holds at
+; most 3 live mobs and needs 8 kills to clear, so it spawns while live + kills < 8 (a mob that
+; vanished unkilled is replaced). The mob is a random elite zombie, skeleton or spider at a random
+; cell within 3 of a random room's middle, at floor level, in a loaded column, at least 6 blocks
+; from the player; its MOB.origin is the site's record index + 1 and its level the player's + 2.
 ; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] x, [rsp+12] z.
 dungeon_spawn:
     push    rbp
@@ -1179,8 +2294,10 @@ dungeon_spawn:
     push    r15
     sub     rsp, 24
     mov     rbx, rdi
-    mov     r12d, [rbx + SITE.index]
-    lea     r13d, [r12 + 1]             ; MOB.origin of this dungeon's mobs
+    mov     r12, rsi
+    mov     rdi, rsi
+    call    ss_origin
+    mov     r13d, eax                   ; MOB.origin of this dungeon's mobs
     xor     r14d, r14d                  ; live
     lea     rcx, [mobs]
     mov     edx, MAX_MOBS
@@ -1196,8 +2313,7 @@ dungeon_spawn:
     jnz     .count
     cmp     r14d, MAX_LIVE
     jae     .ret
-    lea     rcx, [st_kills]
-    mov     eax, [rcx + r12*4]
+    movzx   eax, byte [r12 + SITESTATE.kills]
     add     eax, r14d
     cmp     eax, DUNGEON_KILLS
     jae     .ret
@@ -1252,6 +2368,11 @@ dungeon_spawn:
     comiss  xmm0, [c_36]
     jb      .ret                        ; too close to the player
     mov     edi, [rsp + 8]
+    mov     esi, [rsp + 12]
+    call    world_column_ready
+    test    eax, eax
+    jz      .ret
+    mov     edi, [rsp + 8]
     mov     esi, [rbx + SITE.y]
     mov     edx, [rsp + 12]
     call    world_get
@@ -1278,8 +2399,7 @@ dungeon_spawn:
     imul    eax, eax, MOB_size
     lea     rcx, [mobs]
     mov     [rcx + rax + MOB.origin], r13d
-    mov     edi, r13d                   ; its level follows the dungeon's
-    call    mob_level_for
+    call    elite_level
     mov     edi, r14d
     mov     esi, eax
     call    mob_set_level
@@ -1293,9 +2413,55 @@ dungeon_spawn:
     pop     rbp
     ret
 
-; structures_step(): once per fixed step, Survival above Peaceful only. Every 90 steps the
-; dungeon the player is in (box grown by 2, not cleared yet) tries to spawn an elite; the crypt
-; wakes the boss when the player is inside, it is not defeated and none is alive.
+; wake_boss(rdi SITE*, rsi SITESTATE*): the Fallen King wakes in the crypt: a boss at the middle
+; of the hall with MOB.origin = the crypt's record index + 1, at least level 20, a roar and a banner
+wake_boss:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     rdi, rsi
+    call    ss_origin
+    mov     r12d, eax
+    mov     edi, MOB_BOSS
+    cvtsi2ss xmm0, dword [rbx + SITE.x]
+    addss   xmm0, [c_half]
+    cvtsi2ss xmm1, dword [rbx + SITE.y]
+    cvtsi2ss xmm2, dword [rbx + SITE.z]
+    addss   xmm2, [c_half]
+    call    mob_spawn
+    test    eax, eax
+    js      .ret                        ; no free slot: try again next step
+    mov     r13d, eax                   ; slot index
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    mov     [rcx + rax + MOB.origin], r12d
+    call    boss_level
+    mov     edi, r13d
+    mov     esi, eax
+    call    mob_set_level
+    mov     edi, SND_BOSS_ROAR
+    movss   xmm0, [c_one]
+    call    audio_play
+    lea     rdi, [s_awakens]
+    mov     esi, RGBA(255, 80, 60, 255)
+    call    hud_banner
+.ret:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; structures_step(): once per fixed step. Every 60 steps the village NPCs are checked, in every
+; mode. In Survival above Peaceful, every 90 steps the dungeon the player is in (box grown by 2,
+; not cleared yet) tries to spawn an elite, and the crypt wakes the boss when the player is inside,
+; it is not defeated and none is alive. Persistent state is created only for the sites the player
+; is inside.
 structures_step:
     push    rbp
     mov     rbp, rsp
@@ -1305,6 +2471,16 @@ structures_step:
     push    r14
     push    r15
     sub     rsp, 8
+    mov     eax, [st_npc]
+    dec     eax
+    jg      .npc_wait
+    mov     eax, NPC_PERIOD
+    mov     [st_npc], eax
+    call    village_npcs
+    jmp     .gate
+.npc_wait:
+    mov     [st_npc], eax
+.gate:
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .ret
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
@@ -1337,8 +2513,6 @@ structures_step:
     je      .dungeon
     cmp     eax, SITE_CRYPT
     jne     .next
-    test    byte [rpg_state + RPGSAVE.flags], 1
-    jnz     .next                       ; the Fallen King is dead
     mov     rdi, rbx
     xor     esi, esi
     call    in_box
@@ -1348,44 +2522,32 @@ structures_step:
     call    mob_count_type
     test    eax, eax
     jnz     .next
-    mov     edi, MOB_BOSS
-    cvtsi2ss xmm0, dword [rbx + SITE.x]
-    addss   xmm0, [c_half]
-    cvtsi2ss xmm1, dword [rbx + SITE.y]
-    cvtsi2ss xmm2, dword [rbx + SITE.z]
-    addss   xmm2, [c_half]
-    call    mob_spawn
-    test    eax, eax
-    js      .next                       ; no free slot: try again next step
-    mov     r13d, eax                   ; slot index
-    imul    eax, eax, MOB_size
-    lea     rcx, [mobs]
-    mov     dword [rcx + rax + MOB.origin], ORIGIN_CRYPT
-    mov     edi, ORIGIN_CRYPT           ; the Fallen King's level
-    call    mob_level_for
-    mov     edi, r13d
-    mov     esi, eax
-    call    mob_set_level
-    mov     edi, SND_BOSS_ROAR
-    movss   xmm0, [c_one]
-    call    audio_play
-    lea     rdi, [s_awakens]
-    mov     esi, RGBA(255, 80, 60, 255)
-    call    hud_banner
+    mov     rdi, rbx
+    call    site_state
+    test    rax, rax
+    jz      .next
+    test    byte [rax + SITESTATE.flags], SS_CLEARED
+    jnz     .next                       ; the Fallen King is dead
+    mov     rdi, rbx
+    mov     rsi, rax
+    call    wake_boss
     jmp     .next
 .dungeon:
     test    r15d, r15d
     jz      .next
-    mov     ecx, [rbx + SITE.index]
-    movzx   eax, byte [rpg_state + RPGSAVE.cleared]
-    bt      eax, ecx
-    jc      .next
     mov     rdi, rbx
     mov     esi, 2
     call    in_box
     test    eax, eax
     jz      .next
     mov     rdi, rbx
+    call    site_state
+    test    rax, rax
+    jz      .next
+    test    byte [rax + SITESTATE.flags], SS_CLEARED
+    jnz     .next
+    mov     rdi, rbx
+    mov     rsi, rax
     call    dungeon_spawn
 .next:
     add     rbx, SITE_size
@@ -1401,24 +2563,24 @@ structures_step:
     pop     rbp
     ret
 
-; structures_on_mob_killed(edi origin): a mob of dungeon origin - 1 died (origin 1..6; anything
-; else is ignored). The 8th death clears the dungeon: its bit in the cleared mask, 150 + 15 per
-; level XP, a banner, the quest hook.
+; structures_on_mob_killed(edi origin): a mob born in the dungeon with that record index + 1 died
+; (any other origin, including 0 and the crypt's, is ignored). The 8th death clears the dungeon:
+; SS_CLEARED, 150 + 15 per level XP, a banner, the quest hook.
 structures_on_mob_killed:
-    lea     eax, [rdi - 1]
-    cmp     eax, NUM_DUNGEONS - 1
-    ja      .none
-    push    rbx
-    mov     ebx, eax                    ; dungeon index
-    lea     rcx, [st_kills]
-    inc     dword [rcx + rbx*4]
-    cmp     dword [rcx + rbx*4], DUNGEON_KILLS
+    sub     rsp, 8
+    call    ss_by_origin
+    test    rax, rax
+    jz      .done
+    cmp     byte [rax + SITESTATE.kind], SITE_DUNGEON
+    jne     .done
+    test    byte [rax + SITESTATE.flags], SS_CLEARED
+    jnz     .done
+    movzx   ecx, byte [rax + SITESTATE.kills]
+    inc     ecx
+    mov     [rax + SITESTATE.kills], cl
+    cmp     ecx, DUNGEON_KILLS
     jb      .done
-    movzx   eax, byte [rpg_state + RPGSAVE.cleared]
-    bt      eax, ebx
-    jc      .done
-    bts     eax, ebx
-    mov     [rpg_state + RPGSAVE.cleared], al
+    or      byte [rax + SITESTATE.flags], SS_CLEARED
     movzx   edi, byte [rpg_state + RPGSAVE.level]
     imul    edi, edi, 15
     add     edi, 150
@@ -1431,52 +2593,82 @@ structures_on_mob_killed:
     call    audio_play
     call    quests_on_dungeon_cleared
 .done:
-    pop     rbx
-.none:
+    add     rsp, 8
     ret
 
-; structures_nearest(edi kind, esi uncleared_only) -> rax SITE* of that kind nearest to the
-; player by horizontal distance, or 0. uncleared_only skips cleared dungeons and the crypt once
-; the boss is defeated.
-structures_nearest:
-    xor     eax, eax
-    movss   xmm3, [c_big]
-    mov     r8d, [site_count]
-    test    r8d, r8d
+; structures_on_boss_killed(edi origin): the Fallen King of the crypt with that record index + 1
+; fell: the record is SS_CLEARED (any other origin is ignored)
+structures_on_boss_killed:
+    sub     rsp, 8
+    call    ss_by_origin
+    add     rsp, 8
+    test    rax, rax
     jz      .ret
-    lea     rcx, [sites]
+    cmp     byte [rax + SITESTATE.kind], SITE_CRYPT
+    jne     .ret
+    or      byte [rax + SITESTATE.flags], SS_CLEARED
+.ret:
+    ret
+
+; structures_nearest(edi kind, esi uncleared_only) -> rax SITE* of that kind in sites[] nearest to
+; the player by horizontal distance, or 0. uncleared_only skips dungeons and crypts whose state
+; says SS_CLEARED (records are read, never created).
+structures_nearest:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     r13d, edi
+    mov     r14d, esi
+    xor     r15d, r15d
+    movss   xmm3, [c_big]
+    lea     rbx, [sites]
+    mov     r12d, [site_count]
 .l:
-    cmp     [rcx + SITE.kind], edi
+    test    r12d, r12d
+    jz      .ret
+    cmp     [rbx + SITE.kind], r13d
     jne     .n
-    test    esi, esi
+    test    r14d, r14d
     jz      .measure
-    cmp     edi, SITE_DUNGEON
-    jne     .not_dungeon
-    mov     edx, [rcx + SITE.index]
-    movzx   r9d, byte [rpg_state + RPGSAVE.cleared]
-    bt      r9d, edx
-    jc      .n
-    jmp     .measure
-.not_dungeon:
-    cmp     edi, SITE_CRYPT
+    cmp     r13d, SITE_DUNGEON
+    je      .state
+    cmp     r13d, SITE_CRYPT
     jne     .measure
-    test    byte [rpg_state + RPGSAVE.flags], 1
+.state:
+    mov     rdi, rbx
+    call    site_find
+    test    rax, rax
+    jz      .measure
+    test    byte [rax + SITESTATE.flags], SS_CLEARED
     jnz     .n
 .measure:
-    cvtsi2ss xmm0, dword [rcx + SITE.x]
+    cvtsi2ss xmm0, dword [rbx + SITE.x]
     subss   xmm0, [player + BODY.x]
     mulss   xmm0, xmm0
-    cvtsi2ss xmm1, dword [rcx + SITE.z]
+    cvtsi2ss xmm1, dword [rbx + SITE.z]
     subss   xmm1, [player + BODY.z]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     comiss  xmm0, xmm3
     jae     .n
     movaps  xmm3, xmm0
-    mov     rax, rcx
+    mov     r15, rbx
 .n:
-    add     rcx, SITE_size
-    dec     r8d
-    jnz     .l
+    add     rbx, SITE_size
+    dec     r12d
+    jmp     .l
 .ret:
+    mov     rax, r15
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
     ret

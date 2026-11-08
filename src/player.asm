@@ -1,11 +1,12 @@
-; player.asm - body physics (player and mobs), the player body, view vectors.
+; player.asm - body physics (player and mobs), the player body, view vectors, swimming.
 %include "common.inc"
 default rel
 
-global player, body_init, body_step, body_intersects_block
-global player_spawn, player_look, player_eye, player_forward
+global player, body_init, body_step, body_intersects_block, move_axis
+global player_look, player_eye, player_forward
+global body_in_water, player_eye_in_water, player_shift
 
-extern sincos_deg, world_header, world_get, shape_boxes, cell_boxes, block_shape
+extern sincos_deg, world_get, shape_boxes, cell_boxes, block_shape
 
 section .rodata
 align 4
@@ -32,9 +33,12 @@ c_pitch_min: dd -89.9
 c_kb_decay:  dd 0.8
 c_kb_min:    dd 0.05
 c_abs_mask:  dd 0x7FFFFFFF             ; loaded with movss (andps needs a register here)
-c_p_half_w:  dd 0.3
-c_p_height:  dd 1.8
-c_p_speed:   dd 4.317
+c_swim_g:    dd 10.0                    ; swimming: vy falls by this per second ...
+c_swim_min:  dd -2.5                    ; ... to at most this sink speed
+c_swim_up:   dd 3.0                     ; jump held in water: rise speed
+c_swim_out:  dd 7.0                     ; ... pushing against a ledge: enough to climb out
+c_probe_lo:  dd 0.4                     ; body_in_water probes the cells at feet + 0.4 and feet + 0.05
+c_probe_hi:  dd 0.05
 
 section .bss
 alignb 16
@@ -53,27 +57,85 @@ body_init:
     movss   [rdx + BODY.speed], xmm2
     ret
 
-; player_spawn(): standard player box at the header spawn cell, looking slightly down.
-player_spawn:
+; player_shift(edi dx, esi dz): the world origin moved by (dx, dz) blocks, so the player's local
+; position drops by them (the origin steps are multiples of 512: exact in a float)
+player_shift:
+    lea     rax, [player]
+    cvtsi2ss xmm0, edi
+    movss   xmm1, [rax + BODY.x]
+    subss   xmm1, xmm0
+    movss   [rax + BODY.x], xmm1
+    cvtsi2ss xmm0, esi
+    movss   xmm1, [rax + BODY.z]
+    subss   xmm1, xmm0
+    movss   [rax + BODY.z], xmm1
+    ret
+
+; body_in_water(rdi body) -> eax 1 when the cell at (floor x, floor(y + 0.4), floor z) or the one at
+; (floor x, floor(y + 0.05), floor z) holds WATER: the feet or the lower body is under the surface
+body_in_water:
     push    rbp
     mov     rbp, rsp
-    lea     rdi, [player]
-    movss   xmm0, [c_p_half_w]
-    movss   xmm1, [c_p_height]
-    movss   xmm2, [c_p_speed]
-    call    body_init
-    lea     rdx, [player]
-    movss   xmm1, [c_half]
-    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_x]
-    addss   xmm0, xmm1
-    movss   [rdx + BODY.x], xmm0
-    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_y]
-    movss   [rdx + BODY.y], xmm0
-    cvtsi2ss xmm0, dword [world_header + WORLDHDR.spawn_z]
-    addss   xmm0, xmm1
-    movss   [rdx + BODY.z], xmm0
-    mov     dword [rdx + BODY.pitch], __float32__(30.0)
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    movss   xmm0, [rbx + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si r12d, xmm0                ; cell x
+    movss   xmm0, [rbx + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si r13d, xmm0                ; cell z
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_probe_hi]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    mov     edi, r12d
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    je      .yes
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_probe_lo]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    mov     edi, r12d
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    je      .yes
+    xor     eax, eax
+    jmp     .out
+.yes:
+    mov     eax, 1
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
     pop     rbp
+    ret
+
+; player_eye_in_water() -> eax 1 when the cell holding the player's eye (feet + 1.62) is WATER
+player_eye_in_water:
+    sub     rsp, 8
+    movss   xmm0, [player + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si edi, xmm0
+    movss   xmm0, [player + BODY.y]
+    addss   xmm0, [c_eye]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    movss   xmm0, [player + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si edx, xmm0
+    call    world_get
+    xor     ecx, ecx
+    cmp     eax, WATER
+    sete    cl
+    mov     eax, ecx
+    add     rsp, 8
     ret
 
 ; player_look(xmm0 dx, xmm1 dy): mouse pixels -> yaw wrapped into [0, 360), pitch clamped.
@@ -614,18 +676,32 @@ decay_kb:
 ; order so that resting on the ground leaves y exactly integral. A ladder cell under the box
 ; overrides the vertical speed (climb, hold or slide) and ends every fall. A body on the ground
 ; that walks into a low step (slab, stair, trapdoor) is lifted over it (step_up).
-; Frame: [rsp] y0, [rsp + 4] x0, z0, dx, dz, vx0, vz0 (what step_up needs).
+; Swimming (not flying, body_in_water at the start of the step): horizontal speed halves
+; (sprint still x1.3), vy -= 10 dt down to -2.5, jump sets vy = 3 (7 when the previous step was
+; blocked horizontally: climbs a one-block ledge out of the water). A body that is in water at
+; the end of the step lands softly: its fall count is zeroed and the landed distance is 0.
+; Frame: [rsp] y0, [rsp + 4] x0, z0, dx, dz, vx0, vz0 (what step_up needs), [rsp + 32] blocked
+; by the previous step, [rsp + 36] swimming.
 body_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 32
+    sub     rsp, 48
     mov     rbx, rdi
     mov     r12, rsi
     movss   xmm0, [rbx + BODY.y]
     movss   [rsp], xmm0
+    mov     eax, [rbx + BODY.blocked]
+    mov     [rsp + 32], eax
     mov     dword [rbx + BODY.blocked], 0
+    xor     eax, eax
+    cmp     dword [rbx + BODY.flying], 0
+    jne     .swim_known
+    mov     rdi, rbx
+    call    body_in_water
+.swim_known:
+    mov     [rsp + 36], eax
     movss   xmm0, [rbx + BODY.yaw]
     call    sincos_deg                  ; xmm0 = sin yaw, xmm1 = cos yaw
     ; wish direction m = fwd * (sin, -cos) + strafe * (cos, sin) on (x, z)
@@ -656,8 +732,12 @@ body_step:
     jne     .have_speed
     movss   xmm5, [rbx + BODY.speed]
     cmp     dword [r12 + INPUT.sprint], 0
-    je      .have_speed
+    je      .sprint_done
     mulss   xmm5, [c_sprint]            ; sprinting is 30% faster than the current walk speed
+.sprint_done:
+    cmp     dword [rsp + 36], 0
+    je      .have_speed
+    mulss   xmm5, [c_half]              ; wading and swimming are half as fast
 .have_speed:
     mulss   xmm4, xmm5
     mulss   xmm3, xmm5
@@ -671,6 +751,8 @@ body_step:
     call    decay_kb
     cmp     dword [rbx + BODY.flying], 0
     jne     .fly_vy
+    cmp     dword [rsp + 36], 0
+    jne     .swim_vy
     movss   xmm0, [rbx + BODY.vy]
     cmp     dword [r12 + INPUT.jump], 0
     je      .fall
@@ -683,6 +765,19 @@ body_step:
     mulss   xmm1, [c_dt]
     subss   xmm0, xmm1                  ; vy -= 32 * dt
     maxss   xmm0, [c_fall_min]          ; vy >= -50
+    jmp     .vy_set
+.swim_vy:
+    movss   xmm0, [rbx + BODY.vy]
+    movss   xmm1, [c_swim_g]
+    mulss   xmm1, [c_dt]
+    subss   xmm0, xmm1                  ; vy -= 10 * dt
+    maxss   xmm0, [c_swim_min]          ; sinks at 2.5 blocks/s at most
+    cmp     dword [r12 + INPUT.jump], 0
+    je      .vy_set
+    movss   xmm0, [c_swim_up]           ; jump held: swim up at 3
+    cmp     dword [rsp + 32], 0
+    je      .vy_set
+    movss   xmm0, [c_swim_out]          ; ... against a ledge: 7, enough to climb out
     jmp     .vy_set
 .fly_vy:
     xorps   xmm0, xmm0
@@ -751,10 +846,14 @@ body_step:
     lea     rsi, [rsp + 4]
     call    step_up                     ; a low step in the way: try to climb it
 .moved:
-    ; fall tracking
-    xorps   xmm0, xmm0
+    ; fall tracking: a body that ends the step in water falls softly
     cmp     dword [rbx + BODY.flying], 0
     jne     .fall_reset
+    mov     rdi, rbx
+    call    body_in_water
+    test    eax, eax
+    jnz     .fall_reset
+    xorps   xmm0, xmm0
     movss   xmm1, [rsp]                 ; y0 - y
     subss   xmm1, [rbx + BODY.y]
     cmp     dword [rbx + BODY.on_ground], 0
@@ -771,9 +870,10 @@ body_step:
     movss   [rbx + BODY.fall], xmm1
     jmp     .ret
 .fall_reset:
+    xorps   xmm0, xmm0
     movss   [rbx + BODY.fall], xmm0
 .ret:
-    add     rsp, 32
+    add     rsp, 48
     pop     r12
     pop     rbx
     pop     rbp

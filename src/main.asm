@@ -11,6 +11,7 @@ extern settings_load, settings_apply, file_stat_mtime
 extern game_load, game_new, game_save
 extern render_init, ui_init, input_init, audio_init, audio_shutdown
 extern app_run, app_window
+extern stream_thread_start, stream_thread_stop, mkdir_p
 
 section .rodata
 usage_text:
@@ -42,6 +43,8 @@ s_no_sound:   db "assemblycraft: sound disabled (cannot connect to PulseAudio)",
 s_nl:         db 10, 0
 s_slash:      db "/", 0
 s_ext:        db ".acw", 0
+s_hdr:        db "/world.hdr", 0
+s_old_world:  db " is a world from 0.8 or earlier; this version cannot open it", 10, 0
 s_glfw_fail:  db "assemblycraft: glfwInit failed", 10, 0
 s_win_fail:   db "assemblycraft: cannot create window", 10, 0
 s_app_id:     db "assemblycraft", 0
@@ -208,10 +211,15 @@ err3:
     pop     rbp
     ret
 
-; prepare_play_world() -> eax 0 ok / 1 error reported. Loads or creates play_path.
+; prepare_play_world() -> eax 0 ok / 1 error reported / 2 a world of 0.8 or earlier has that name.
+; The world is the directory worlds/<sanitized name>: loaded when it holds a world.hdr, created
+; (Survival, or Creative with --creative; the seed from --seed or the clock) when nothing of that
+; name exists.
 prepare_play_world:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
     lea     rdi, [play_path]
     lea     rsi, [worlds_dir]
     call    str_append
@@ -221,20 +229,52 @@ prepare_play_world:
     mov     rdi, [play_name]
     mov     rsi, rax
     call    saves_name_to_file
-    mov     rdi, rax
+    mov     rbx, rax                    ; end of the directory path
+    mov     byte [rbx], 0
+    mov     rdi, rbx                    ; is there a <dir>/world.hdr?
+    lea     rsi, [s_hdr]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [play_path]
+    call    file_stat_mtime
+    mov     byte [rbx], 0
+    test    rax, rax
+    jns     .load
+    mov     rdi, rbx                    ; or a <dir>.acw: a world of 0.8 or earlier
     lea     rsi, [s_ext]
     call    str_append
     mov     byte [rax], 0
     lea     rdi, [play_path]
     call    file_stat_mtime
+    mov     byte [rbx], 0
     test    rax, rax
-    js      .create
+    jns     .old
+    lea     rdi, [play_path]            ; nothing of that name: a new world
+    call    mkdir_p
+    mov     edi, [seed_value]
+    cmp     dword [seed_given], 0
+    jne     .seeded
+    rdtsc
+    mov     edi, eax
+.seeded:
+    mov     esi, [creative]
+    mov     rdx, [play_name]
+    lea     rcx, [play_path]
+    call    game_new
+    lea     rdi, [play_path]
+    call    game_save
+    test    eax, eax
+    jz      .ok
+    lea     rdi, [s_save_fail]
+    lea     rsi, [play_path]
+    lea     rdx, [s_nl]
+    call    err3
+    jmp     .fail
+.load:
     lea     rdi, [play_path]
     call    game_load
     test    eax, eax
     jz      .ok
-    cmp     eax, 1
-    je      .create
     cmp     eax, 2
     jne     .unreadable
     lea     rdi, [s_prefix]
@@ -248,30 +288,21 @@ prepare_play_world:
     lea     rdx, [s_nl]
     call    err3
     jmp     .fail
-.create:
-    mov     edi, [seed_value]
-    cmp     dword [seed_given], 0
-    jne     .seeded
-    rdtsc
-    mov     edi, eax
-.seeded:
-    mov     esi, [creative]
-    mov     rdx, [play_name]
-    call    game_new
-    lea     rdi, [play_path]
-    call    game_save
-    test    eax, eax
-    jz      .ok
-    lea     rdi, [s_save_fail]
-    lea     rsi, [play_path]
-    lea     rdx, [s_nl]
+.old:
+    mov     rdi, [play_name]
+    lea     rsi, [s_old_world]
+    xor     edx, edx
     call    err3
+    mov     eax, 2
+    jmp     .ret
 .fail:
     mov     eax, 1
-    pop     rbp
-    ret
+    jmp     .ret
 .ok:
     xor     eax, eax
+.ret:
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 
@@ -371,9 +402,11 @@ run_game:
 .sound_ok:
     mov     rdi, [window]
     call    settings_apply
+    call    stream_thread_start         ; the terrain generator runs beside the game from here on
     mov     rdi, r12
     call    app_run
     mov     ebx, eax
+    call    stream_thread_stop
     call    audio_shutdown
     mov     rdi, [window]
     call    glfwDestroyWindow

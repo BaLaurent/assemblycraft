@@ -1,12 +1,12 @@
-; placement.asm - putting blocks into the world (slab merging, facing variants, door pairs,
+; placement.asm - putting blocks into the world (slab merging, facing variants, door pairs, beds,
 ; support rules), using doors and trapdoors, and what becomes of a block's dependents
-; (the other half of a door, torches, ladders) when it goes away.
+; (the other half of a door or bed, torches, ladders) when it goes away.
 %include "common.inc"
 default rel
 
 global place_block, block_use, block_removed, block_is_usable
 
-extern world_get, world_set, world_is_solid
+extern world_get, world_set, world_is_solid, world_column_ready
 extern block_shape, block_base, block_flags, block_dig_sound, block_drop, item_max_stack
 extern block_facing_from_yaw, dir_dx, dir_dz
 extern player, body_intersects_block, mobs_intersect_block
@@ -25,10 +25,15 @@ slab_full:  db PLANKS, COBBLE, STONE_BRICK, BRICK, SANDSTONE
 
 section .text
 
-; place_block frame (rsp-relative): the cell the block goes into
+; place_block frame (rsp-relative): the cell the block goes into, a bed's head cell, and 1 when the
+; cell is a plant or snow layer the block replaces in place
 %define F_CX 0
 %define F_CY 4
 %define F_CZ 8
+%define F_HX 12
+%define F_HY 16
+%define F_HZ 20
+%define F_REPL 24
 
 ; facing() -> eax DIR_* the player is looking along
 facing:
@@ -73,21 +78,70 @@ target_flags:
     add     rsp, 8
     ret
 
+; cell_free(edi x, esi y, edx z) -> eax 1 when a block may be put into the cell: it lies at
+; 0 <= y <= 255 in a ready (lit) column and holds air, water, tall grass or a snow layer
+cell_free:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    cmp     esi, 255
+    ja      .no                         ; unsigned: y < 0 too
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     esi, edx
+    call    world_column_ready
+    test    eax, eax
+    jz      .no
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    call    world_get
+    test    eax, eax
+    jz      .yes
+    cmp     eax, WATER
+    je      .yes
+    cmp     eax, TALL_GRASS
+    je      .yes
+    cmp     eax, SNOW_LAYER
+    jne     .no
+.yes:
+    mov     eax, 1
+    jmp     .out
+.no:
+    xor     eax, eax
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; place_block(edi item, rsi RAYHIT* target) -> eax 1 placed / 0 refused
 ; Puts one block of `item` against the face the ray struck (target.p is the free cell in front
 ; of block target.b); the caller consumes the item. What goes in depends on the item's shape:
 ;  - a slab on the top face of the same slab makes the full block of its material in b;
 ;  - stairs face the way the player looks (base + facing), trapdoors likewise (base + 2 facing);
 ;  - a door (base + 4 facing, upper half above) needs a free cell above and solid ground below;
+;  - a bed goes foot first into the cell (BED + facing, facing = the way the player looks), its
+;    head (BED + 4 + facing) one cell further along the facing: both cells must be free with solid
+;    ground under each, and both must clear the player and the mobs;
 ;  - a ladder needs the side face of an opaque block and points at it (base + side);
 ;  - a torch stands on a solid block's top face, or leans on an opaque block's side face
 ;    (TORCH_WALL + side);
 ;  - everything else is the item itself.
-; Refused: not a block item, cell outside the world or not air, a placement that does not suit
-; the face, the player or a mob in the way (collision boxes of the variant), or no free
-; container record for a furnace or chest. Success plays the block's dig sound.
+; A cell is free (cell_free) when it lies at 0 <= y <= 255 in a ready column and holds air, water,
+; tall grass or a snow layer. A targeted tall grass or snow layer is replaced in place: the block
+; goes into b itself (a torch there stands on the block below; a ladder cannot hang on a plant).
+; Refused: not a block item, cell not free, a placement that does not suit the face, the player or
+; a mob in the way (collision boxes of the variant), or no free container record for a furnace or
+; chest. Success plays the block's dig sound.
 ; r13d = shape of the item, r14d = block that goes in, ebx = item, r12 = target.
-; Frame: cell x, y, z @0 (placement cell).
+; Frame: cell x, y, z @0 (placement cell), bed head x, y, z @12, replaced-plant flag @24.
 place_block:
     push    rbp
     mov     rbp, rsp
@@ -133,33 +187,46 @@ place_block:
     mov     [rsp + F_CZ], eax
     jmp     .entities
 .free_cell:
-    mov     eax, [r12 + RAYHIT.px]
-    cmp     eax, WORLD_X - 1
-    ja      .refuse
-    mov     eax, [r12 + RAYHIT.py]
-    cmp     eax, WORLD_Y - 1
-    ja      .refuse
-    mov     eax, [r12 + RAYHIT.pz]
-    cmp     eax, WORLD_Z - 1
-    ja      .refuse
+    mov     edi, [r12 + RAYHIT.bx]      ; the block goes into b itself when that is tall grass or a snow
+    mov     esi, [r12 + RAYHIT.by]      ; layer ...
+    mov     edx, [r12 + RAYHIT.bz]
+    call    world_get
+    mov     dword [rsp + F_REPL], 0
+    cmp     eax, TALL_GRASS
+    je      .replace
+    cmp     eax, SNOW_LAYER
+    jne     .in_front
+.replace:
+    mov     dword [rsp + F_REPL], 1
+    mov     eax, [r12 + RAYHIT.bx]
+    mov     [rsp + F_CX], eax
+    mov     eax, [r12 + RAYHIT.by]
+    mov     [rsp + F_CY], eax
+    mov     eax, [r12 + RAYHIT.bz]
+    mov     [rsp + F_CZ], eax
+    jmp     .shape
+.in_front:                              ; ... else into the cell in front of the face, which must be free
     mov     edi, [r12 + RAYHIT.px]
     mov     esi, [r12 + RAYHIT.py]
     mov     edx, [r12 + RAYHIT.pz]
-    call    world_get
+    call    cell_free
     test    eax, eax
-    jnz     .refuse                     ; the cell in front of the face must be air
+    jz      .refuse
     mov     eax, [r12 + RAYHIT.px]
     mov     [rsp + F_CX], eax
     mov     eax, [r12 + RAYHIT.py]
     mov     [rsp + F_CY], eax
     mov     eax, [r12 + RAYHIT.pz]
     mov     [rsp + F_CZ], eax
+.shape:
     cmp     r13d, SHAPE_STAIRS
     je      .stairs
     cmp     r13d, SHAPE_TRAPDOOR
     je      .trapdoor
     cmp     r13d, SHAPE_DOOR
     je      .door
+    cmp     r13d, SHAPE_BED
+    je      .bed
     cmp     r13d, SHAPE_LADDER
     je      .ladder
     cmp     r13d, SHAPE_TORCH
@@ -176,15 +243,13 @@ place_block:
 .door:
     call    facing
     lea     r14d, [rbx + rax*4]
+    mov     edi, [rsp + F_CX]           ; no room for the upper half: refused
     mov     esi, [rsp + F_CY]
     inc     esi
-    cmp     esi, WORLD_Y - 1
-    ja      .refuse                     ; no room for the upper half
-    mov     edi, [rsp + F_CX]
     mov     edx, [rsp + F_CZ]
-    call    world_get
+    call    cell_free
     test    eax, eax
-    jnz     .refuse
+    jz      .refuse
     mov     edi, [rsp + F_CX]
     mov     esi, [rsp + F_CY]
     dec     esi
@@ -192,6 +257,38 @@ place_block:
     call    world_is_solid
     test    eax, eax
     jz      .refuse                     ; a door stands on something solid
+    jmp     .entities
+.bed:
+    call    facing
+    lea     r14d, [rbx + rax]           ; the foot: BED + facing
+    movsx   ecx, byte [dir_dx + rax]
+    add     ecx, [rsp + F_CX]
+    mov     [rsp + F_HX], ecx           ; the head lies one cell along the facing
+    mov     ecx, [rsp + F_CY]
+    mov     [rsp + F_HY], ecx
+    movsx   ecx, byte [dir_dz + rax]
+    add     ecx, [rsp + F_CZ]
+    mov     [rsp + F_HZ], ecx
+    mov     edi, [rsp + F_HX]
+    mov     esi, [rsp + F_HY]
+    mov     edx, [rsp + F_HZ]
+    call    cell_free
+    test    eax, eax
+    jz      .refuse
+    mov     edi, [rsp + F_CX]
+    mov     esi, [rsp + F_CY]
+    dec     esi
+    mov     edx, [rsp + F_CZ]
+    call    world_is_solid
+    test    eax, eax
+    jz      .refuse                     ; both halves rest on something solid
+    mov     edi, [rsp + F_HX]
+    mov     esi, [rsp + F_HY]
+    dec     esi
+    mov     edx, [rsp + F_HZ]
+    call    world_is_solid
+    test    eax, eax
+    jz      .refuse
     jmp     .entities
 .ladder:
     mov     rdi, r12
@@ -206,6 +303,17 @@ place_block:
     lea     r14d, [rbx + r15]
     jmp     .entities
 .torch:
+    cmp     dword [rsp + F_REPL], 0
+    je      .torch_top
+    mov     edi, [rsp + F_CX]           ; it replaces a plant: it stands on the block below
+    mov     esi, [rsp + F_CY]
+    dec     esi
+    mov     edx, [rsp + F_CZ]
+    call    world_is_solid
+    test    eax, eax
+    jz      .refuse
+    jmp     .entities                   ; r14d is the standing torch
+.torch_top:
     mov     eax, [r12 + RAYHIT.px]      ; the top face of b: stands on it
     cmp     eax, [r12 + RAYHIT.bx]
     jne     .torch_wall
@@ -251,7 +359,26 @@ place_block:
     test    eax, eax
     jnz     .refuse
     cmp     r13d, SHAPE_DOOR
+    je      .upper
+    cmp     r13d, SHAPE_BED
     jne     .container
+    lea     rdi, [player]               ; the bed's head must clear the player and the mobs too
+    mov     esi, [rsp + F_HX]
+    mov     edx, [rsp + F_HY]
+    mov     ecx, [rsp + F_HZ]
+    lea     r8d, [r14 + 4]
+    call    body_intersects_block
+    test    eax, eax
+    jnz     .refuse
+    mov     edi, [rsp + F_HX]
+    mov     esi, [rsp + F_HY]
+    mov     edx, [rsp + F_HZ]
+    lea     ecx, [r14 + 4]
+    call    mobs_intersect_block
+    test    eax, eax
+    jnz     .refuse
+    jmp     .container
+.upper:
     lea     rdi, [player]               ; the upper half must clear the player and the mobs too
     mov     esi, [rsp + F_CX]
     mov     edx, [rsp + F_CY]
@@ -290,7 +417,16 @@ place_block:
     mov     ecx, r14d
     call    world_set
     cmp     r13d, SHAPE_DOOR
+    je      .set_upper
+    cmp     r13d, SHAPE_BED
     jne     .sound
+    mov     edi, [rsp + F_HX]           ; the bed's head
+    mov     esi, [rsp + F_HY]
+    mov     edx, [rsp + F_HZ]
+    lea     ecx, [r14 + 4]
+    call    world_set
+    jmp     .sound
+.set_upper:
     mov     edi, [rsp + F_CX]
     mov     esi, [rsp + F_CY]
     inc     esi
@@ -465,12 +601,12 @@ pop_cell:
     ret
 
 ; block_removed(edi x, esi y, edx z, ecx old_id): the cell (x, y, z) just became air; its
-; old block was `old_id`. A door loses its other half (no drop: the broken half drops the
-; door). What depended on the cell pops off (pop_cell): a standing torch or the lower half of
-; a door above it, and every horizontal neighbour that is a ladder or wall torch whose
-; support side points back at the cell.
-; ebx, r12d, r13d = x, y, z; r14d = old id; r15d = door param / neighbour direction.
-; Frame: neighbour x @0, z @4.
+; old block was `old_id`. A door loses its other half and a bed its other half (no drop: the
+; broken half drops the door or the bed). What depended on the cell pops off (pop_cell): a
+; standing torch or the lower half of a door above it, and every horizontal neighbour that is
+; a ladder or wall torch whose support side points back at the cell.
+; ebx, r12d, r13d = x, y, z; r14d = old id; r15d = door / bed param, neighbour direction.
+; Frame: neighbour x @0, z @4, expected bed id @8.
 block_removed:
     push    rbp
     mov     rbp, rsp
@@ -485,6 +621,8 @@ block_removed:
     mov     r13d, edx
     mov     r14d, ecx
     movzx   eax, byte [block_shape + r14]
+    cmp     eax, SHAPE_BED
+    je      .bed
     cmp     eax, SHAPE_DOOR
     jne     .above
     movzx   eax, byte [block_base + r14]
@@ -566,9 +704,43 @@ block_removed:
     pop     rbx
     pop     rbp
     ret
+.bed:                                   ; the other half of the bed goes too, without a drop
+    mov     eax, r14d
+    sub     eax, BED
+    mov     r15d, eax                   ; param: bit 2 = head, bits 0..1 = facing (foot -> head)
+    and     eax, 3
+    movsx   edi, byte [dir_dx + rax]
+    movsx   edx, byte [dir_dz + rax]
+    lea     ecx, [rax + BED + 4]        ; a foot looks for the head one cell along its facing ...
+    test    r15d, 4
+    jz      .bed_partner
+    neg     edi                         ; ... a head for the foot one cell back
+    neg     edx
+    lea     ecx, [rax + BED]
+.bed_partner:
+    add     edi, ebx
+    add     edx, r13d
+    mov     [rsp], edi
+    mov     [rsp + 4], edx
+    mov     [rsp + 8], ecx
+    mov     esi, r12d
+    call    world_get
+    cmp     eax, [rsp + 8]
+    jne     .above                      ; not this bed's other half
+    mov     edi, [rsp]
+    mov     esi, r12d
+    mov     edx, [rsp + 4]
+    xor     ecx, ecx
+    call    world_set
+    mov     edi, [rsp]
+    mov     esi, r12d
+    mov     edx, [rsp + 4]
+    mov     ecx, [rsp + 8]
+    call    block_removed               ; what rested on or leaned against that half pops too
+    jmp     .above
 
 ; block_is_usable(edi id) -> eax 1 when a right click on the block does something (it is
-; not placed against): crafting table, furnace (lit or not), chest, door, trapdoor
+; not placed against): crafting table, furnace (lit or not), chest, door, trapdoor, bed
 block_is_usable:
     mov     edi, edi
     mov     eax, 1
@@ -585,6 +757,8 @@ block_is_usable:
     jae     .ret
     movzx   ecx, byte [block_shape + rdi]
     cmp     ecx, SHAPE_DOOR
+    je      .yes
+    cmp     ecx, SHAPE_BED
     je      .yes
     cmp     ecx, SHAPE_TRAPDOOR
     jne     .ret

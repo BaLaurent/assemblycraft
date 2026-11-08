@@ -5,15 +5,21 @@ default rel
 global sys_print, str_len, str_eq, parse_u32, i32_to_str, str_append
 global file_read, file_write_atomic
 global fnv1a, str_copy, f32_to_str, file_stat_mtime, file_patch, file_unlink, time_now
+global time_mono, time_mono_ns, file_pread, mkdir_p, dir_remove_tree
 
 section .rodata
 tmp_suffix: db ".tmp", 0
 align 8
 d_half:     dq 0.5
 d_ten:      dq 10.0
+d_nano:     dq 1.0e-9
+s_regions:  db "/regions", 0
 
 section .bss
 tmp_path:   resb 4104
+alignb 8
+tm_base:    resq 1                      ; time_mono_ns epoch (ns of the first call)
+tm_init:    resd 1
 
 section .text
 
@@ -470,4 +476,283 @@ time_now:
     mov     eax, SYS_TIME
     xor     edi, edi
     syscall
+    ret
+
+; time_mono_ns() -> rax nanoseconds on CLOCK_MONOTONIC since the first call (that call returns 0).
+; Clobbers rcx, rdx, rsi, rdi, r11. Main thread only (the epoch is taken lazily).
+time_mono_ns:
+    sub     rsp, 24
+    mov     eax, SYS_CLOCK_GETTIME
+    mov     edi, CLOCK_MONOTONIC
+    mov     rsi, rsp
+    syscall
+    mov     rax, [rsp]
+    imul    rax, rax, 1000000000
+    add     rax, [rsp + 8]
+    add     rsp, 24
+    cmp     dword [tm_init], 0
+    jne     .have
+    mov     [tm_base], rax
+    mov     dword [tm_init], 1
+.have:
+    sub     rax, [tm_base]
+    ret
+
+; time_mono() -> xmm0 float seconds since the first call. float32 keeps ~0.5 ms after an hour; code
+; that measures short budgets over long runs uses time_mono_ns instead.
+time_mono:
+    sub     rsp, 8
+    call    time_mono_ns
+    cvtsi2sd xmm0, rax
+    mulsd   xmm0, [d_nano]
+    cvtsd2ss xmm0, xmm0
+    add     rsp, 8
+    ret
+
+; file_pread(rdi path, rsi buf, rdx len, rcx offset) -> rax bytes read or -errno.
+; Reads up to len bytes at offset (fewer at end of file); open errors come back as -errno.
+file_pread:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12, rsi                    ; buf
+    mov     r13, rdx                    ; len
+    mov     r15, rcx                    ; offset
+    xor     r14d, r14d                  ; total
+    mov     eax, SYS_OPEN
+    mov     esi, O_RDONLY
+    xor     edx, edx
+    syscall
+    test    rax, rax
+    js      .ret
+    mov     rbx, rax                    ; fd
+.loop:
+    cmp     r14, r13
+    jae     .close
+    mov     eax, SYS_PREAD64
+    mov     rdi, rbx
+    lea     rsi, [r12 + r14]
+    mov     rdx, r13
+    sub     rdx, r14
+    lea     r10, [r15 + r14]
+    syscall
+    cmp     rax, -EINTR
+    je      .loop
+    test    rax, rax
+    js      .fail
+    jz      .close
+    add     r14, rax
+    jmp     .loop
+.fail:
+    mov     r14, rax                    ; -errno
+.close:
+    mov     eax, SYS_CLOSE
+    mov     rdi, rbx
+    syscall
+    mov     rax, r14
+.ret:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; mkdir_p(rdi path, writable) -> eax 0 or the first -errno other than -EEXIST.
+; Creates every prefix of the path (mode 0755). The path buffer is written to (a '/' is replaced
+; by NUL while its prefix is made) and restored.
+mkdir_p:
+    push    rbx
+    push    r12
+    push    r13
+    mov     rbx, rdi
+    xor     r12d, r12d                  ; first error
+    mov     r13d, 1                     ; index (skip a leading '/')
+.scan:
+    mov     al, [rbx + r13]
+    test    al, al
+    jz      .final
+    cmp     al, '/'
+    jne     .adv
+    mov     byte [rbx + r13], 0
+    mov     eax, SYS_MKDIR
+    mov     rdi, rbx
+    mov     esi, 493                    ; 0755
+    syscall
+    mov     byte [rbx + r13], '/'
+    test    rax, rax
+    jz      .adv
+    cmp     rax, -EEXIST
+    je      .adv
+    test    r12, r12
+    jnz     .adv
+    mov     r12, rax
+.adv:
+    inc     r13
+    jmp     .scan
+.final:
+    mov     eax, SYS_MKDIR
+    mov     rdi, rbx
+    mov     esi, 493
+    syscall
+    test    rax, rax
+    jz      .done
+    cmp     rax, -EEXIST
+    je      .done
+    test    r12, r12
+    jnz     .done
+    mov     r12, rax
+.done:
+    mov     eax, r12d
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; rmdir_flat(rdi dir) -> rax 0 / -errno (the first error).
+; Unlinks every entry of dir (a subdirectory entry fails with its errno, nothing recurses), then
+; removes dir itself. -ENOENT when dir does not exist.
+rmdir_flat:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8192 + 4104 + 8        ; getdents buffer | entry path | alignment
+    mov     r12, rdi                    ; dir
+    xor     r15d, r15d                  ; first error
+    call    str_len
+    cmp     rax, 3800
+    jbe     .open
+    mov     rax, -ENAMETOOLONG
+    jmp     .out
+.open:
+    mov     eax, SYS_OPEN
+    mov     rdi, r12
+    mov     esi, O_RDONLY | O_DIRECTORY
+    xor     edx, edx
+    syscall
+    test    rax, rax
+    js      .out                        ; -errno (rax)
+    mov     rbx, rax                    ; fd
+.prefix:
+    lea     rdi, [rsp + 8192]
+    mov     rsi, r12
+    call    str_append
+    mov     byte [rax], '/'
+    inc     rax
+    mov     r14, rax                    ; names are appended here
+.batch:
+    mov     eax, SYS_GETDENTS64
+    mov     rdi, rbx
+    mov     rsi, rsp
+    mov     edx, 8192
+    syscall
+    test    rax, rax
+    jz      .done                       ; end of the directory
+    js      .readerr
+    mov     r13, rax                    ; bytes in this batch
+    xor     r8d, r8d                    ; offset of the current dirent
+.entry:
+    cmp     r8, r13
+    jae     .batch
+    lea     r9, [rsp + r8]
+    movzx   eax, word [r9 + 16]         ; d_reclen
+    add     r8, rax
+    lea     rsi, [r9 + 19]              ; d_name
+    cmp     byte [rsi], '.'
+    jne     .real
+    cmp     byte [rsi + 1], 0
+    je      .entry                      ; "."
+    cmp     byte [rsi + 1], '.'
+    jne     .real
+    cmp     byte [rsi + 2], 0
+    je      .entry                      ; ".."
+.real:
+    mov     rdi, r14
+    call    str_append
+    mov     byte [rax], 0
+    mov     eax, SYS_UNLINK
+    lea     rdi, [rsp + 8192]
+    syscall
+    test    rax, rax
+    jz      .entry
+    test    r15, r15
+    jnz     .entry
+    mov     r15, rax
+    jmp     .entry
+.readerr:
+    test    r15, r15
+    jnz     .done
+    mov     r15, rax
+.done:
+    mov     eax, SYS_CLOSE
+    mov     rdi, rbx
+    syscall
+    mov     eax, SYS_RMDIR
+    mov     rdi, r12
+    syscall
+    test    rax, rax
+    jz      .fin
+    test    r15, r15
+    jnz     .fin
+    mov     r15, rax
+.fin:
+    mov     rax, r15
+.out:
+    add     rsp, 8192 + 4104 + 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; dir_remove_tree(rdi path) -> eax 0 / -errno (the first error).
+; Removes a world directory: every entry of path/regions, that directory, every file of path, then
+; path itself. One level of subdirectory only; -ENOENT when path does not exist.
+dir_remove_tree:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 4104
+    mov     r12, rdi
+    call    str_len
+    cmp     rax, 3700
+    jbe     .ok
+    mov     eax, -ENAMETOOLONG
+    jmp     .out
+.ok:
+    mov     rdi, rsp
+    mov     rsi, r12
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_regions]
+    call    str_append
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    call    rmdir_flat                  ; regions first; no regions directory is fine
+    mov     rbx, rax
+    cmp     rbx, -ENOENT
+    jne     .top
+    xor     ebx, ebx
+.top:
+    mov     rdi, r12
+    call    rmdir_flat
+    test    rbx, rbx
+    jnz     .res
+    mov     rbx, rax
+.res:
+    mov     eax, ebx
+.out:
+    add     rsp, 4104
+    pop     r12
+    pop     rbx
+    pop     rbp
     ret

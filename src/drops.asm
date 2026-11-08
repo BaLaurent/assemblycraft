@@ -1,11 +1,13 @@
 ; drops.asm - items lying in the world: they pop out of broken blocks and dead pigs, fall,
 ; slide to a stop, spin and bob, and are picked up when the player walks over them.
-; Drops are not saved with the world.
+; Drops are not saved with the world and live in local coordinates: drops_shift follows the
+; origin, drops_remove_box removes the drops of a column that unloads.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global drops, drops_clear, drops_spawn, drops_toss, drops_step, drops_render
+global drops_shift, drops_remove_box
 
 extern player, player_eye, player_forward, world_is_solid, rng_next, sincos_deg
 extern inv_add_dmg, audio_play, surv, item_max_stack, item_model_draw, item_model_is_block
@@ -594,4 +596,55 @@ drops_beams:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; drops_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every drop's local x and z
+; drop by that much (exact: dx and dz are multiples of 512)
+drops_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [drops]
+    lea     rcx, [drops_end]
+.l:
+    cmp     byte [rax + DROP.id], 0
+    je      .next
+    movss   xmm2, [rax + DROP.x]
+    subss   xmm2, xmm0
+    movss   [rax + DROP.x], xmm2
+    movss   xmm2, [rax + DROP.z]
+    subss   xmm2, xmm1
+    movss   [rax + DROP.z], xmm2
+.next:
+    add     rax, DROP_size
+    cmp     rax, rcx
+    jb      .l
+    ret
+
+; drops_remove_box(edi x0, esi z0, edx x1, ecx z1): every drop whose cell (the floor of its x and z)
+; lies in the inclusive local box x0..x1, z0..z1 is removed
+drops_remove_box:
+    lea     rax, [drops]
+    lea     r8, [drops_end]
+.l:
+    cmp     byte [rax + DROP.id], 0
+    je      .next
+    movss   xmm0, [rax + DROP.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si r9d, xmm0
+    cmp     r9d, edi
+    jl      .next
+    cmp     r9d, edx
+    jg      .next
+    movss   xmm0, [rax + DROP.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si r9d, xmm0
+    cmp     r9d, esi
+    jl      .next
+    cmp     r9d, ecx
+    jg      .next
+    mov     byte [rax + DROP.id], 0
+.next:
+    add     rax, DROP_size
+    cmp     rax, r8
+    jb      .l
     ret

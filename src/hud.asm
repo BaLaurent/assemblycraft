@@ -9,6 +9,7 @@
 default rel
 
 global hud_draw, hud_dt, hud_banner, hud_heart_level, hud_ability_pos
+global hud_bubble_tiles, banner_text
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon
@@ -26,6 +27,7 @@ extern abilities_cd, abilities_cd_total, structures_nearest
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
 extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_attr_points
 extern mob_affix_name
+extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
 
 %define WHITE   0xFFFFFFFF
 
@@ -58,7 +60,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.8  ", 0
+s_dbg_title: db "AssemblyCraft 0.9  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -104,6 +106,30 @@ s_merchant: db "Merchant", 0
 s_elder:    db "Elder", 0
 s_boss:     db "The Fallen King", 0
 headings:   db "N", 0, 0, "NE", 0, "E", 0, 0, "SE", 0, "S", 0, 0, "SW", 0, "W", 0, 0, "NW", 0   ; 3 bytes each
+s_biome:    db "Biome: ", 0
+s_unknown:  db "unknown", 0
+s_columns:  db "Columns: ", 0
+s_col_lit:  db " lit ", 0
+s_col_pend: db " pending ", 0
+s_col_pool: db " pool ", 0
+s_col_max:  db "/24576", 0
+s_camp:     db "Camp: ", 0
+s_b_ocean:  db "Ocean", 0
+s_b_plains: db "Plains", 0
+s_b_forest: db "Forest", 0
+s_b_desert: db "Desert", 0
+s_b_snow:   db "Snow", 0
+s_b_swamp:  db "Swamp", 0
+s_b_mount:  db "Mountains", 0
+s_b_river:  db "River", 0
+s_f_vill:   db "Villagers", 0
+s_f_bandit: db "Bandits", 0
+s_f_cult:   db "Ashen Cult", 0
+s_f_beast:  db "Beastfolk", 0
+s_f_stone:  db "Stonekin", 0
+align 8
+biome_names:   dq s_b_ocean, s_b_plains, s_b_forest, s_b_desert, s_b_snow, s_b_swamp, s_b_mount, s_b_river
+faction_names: dq s_f_vill, s_f_bandit, s_f_cult, s_f_beast, s_f_stone
 
 section .data
 align 4
@@ -145,6 +171,7 @@ hud_draw:
     call    hud_mobs
     call    dmgnum_draw
 .no_overlays:
+    call    hud_sleep_fade
     call    hud_crosshair
     mov     edi, ebx
     mov     esi, r12d
@@ -156,6 +183,9 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_status_pips
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_bubbles
     mov     edi, ebx
     mov     esi, r12d
     call    hud_bars                    ; eax = top of the left stack
@@ -192,7 +222,7 @@ hud_draw:
 .tracker_y:
     cmp     dword [app_show_debug], 0
     je      .tracker
-    mov     edi, 102                    ; or under the F3 lines
+    mov     edi, 132                    ; or under the F3 lines
 .tracker:
     call    hud_quest
     call    hud_banner_draw
@@ -622,7 +652,7 @@ hud_bars:
     cmp     dword [%1], 0
     jle     %%skip
     lea     edi, [rbx + r13*8 + 102]
-    lea     esi, [r12 - 29]
+    mov     esi, r14d
     mov     edx, 6
     mov     ecx, 6
     mov     r8d, %2
@@ -632,22 +662,114 @@ hud_bars:
 %endmacro
 
 ; hud_status_pips(edi x0, esi y0): over the stamina bar, one 6 x 6 square, 8 px apart, for each
-; active player status: burn (orange), chill (blue), poison (green)
-; ebx = x0, r12d = y0, r13d = pips drawn
+; active player status: burn (orange), chill (blue), poison (green); 10 px higher while the breath
+; bubbles are shown
+; ebx = x0, r12d = y0, r13d = pips drawn, r14d = their y
 hud_status_pips:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 8
+    push    r14
     mov     ebx, edi
     mov     r12d, esi
     xor     r13d, r13d
+    lea     r14d, [r12 - 29]
+    cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
+    jge     .pips
+    sub     r14d, 10                    ; the bubbles take the row under them
+.pips:
     PIP     combat_burn_t, RGBA(255, 120, 30, 255)
     PIP     combat_chill_t, RGBA(120, 190, 255, 255)
     PIP     combat_poison_t, RGBA(110, 220, 70, 255)
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_sleep_fade(): a full-screen black rect, alpha 255 * sleep_fade (nothing while awake)
+hud_sleep_fade:
+    sub     rsp, 8
+    movss   xmm0, [sleep_fade]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .ret
+    minss   xmm0, [f_one]
+    mulss   xmm0, [f_255]
+    cvttss2si eax, xmm0
+    shl     eax, 24                     ; RGBA(0, 0, 0, alpha)
+    mov     r8d, eax
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    call    ui_rect
+.ret:
     add     rsp, 8
+    ret
+
+; hud_bubble_tiles(edi breath, rsi out byte[10]): the ten air bubbles of the HUD, bubble i from the
+; right: TILE_BUBBLE when breath >= 60 (i + 1), TILE_BUBBLE_POP when 60 i < breath < 60 (i + 1),
+; else 0 (not drawn)
+hud_bubble_tiles:
+    xor     ecx, ecx
+.bubble:
+    lea     eax, [rcx + 1]
+    imul    eax, eax, 60
+    xor     edx, edx
+    cmp     edi, eax
+    jge     .full
+    imul    eax, ecx, 60
+    cmp     edi, eax
+    jle     .store
+    mov     edx, TILE_BUBBLE_POP
+    jmp     .store
+.full:
+    mov     edx, TILE_BUBBLE
+.store:
+    mov     [rsi + rcx], dl
+    inc     ecx
+    cmp     ecx, 10
+    jb      .bubble
+    ret
+
+; hud_bubbles(edi x0, esi y0): the air bubbles over the food icons (bubble i at x0 + 173 - 8 i,
+; y0 - 31) while the breath is below MAX_BREATH
+; ebx = x0, r12d = y0, r13d = bubble; [rsp] the ten tiles
+hud_bubbles:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 24
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     edi, [surv + SURVIVAL.breath]
+    cmp     edi, MAX_BREATH
+    jge     .ret
+    lea     rsi, [rsp]
+    call    hud_bubble_tiles
+    xor     r13d, r13d
+.bubble:
+    movzx   edi, byte [rsp + r13]
+    test    edi, edi
+    jz      .next
+    mov     esi, 173
+    lea     eax, [r13*8]
+    sub     esi, eax
+    add     esi, ebx
+    lea     edx, [r12 - 31]
+    call    ui_icon9
+.next:
+    inc     r13d
+    cmp     r13d, 10
+    jb      .bubble
+.ret:
+    add     rsp, 24
     pop     r13
     pop     r12
     pop     rbx
@@ -1743,6 +1865,16 @@ debug_emit:
     call    f32_to_str
     mov     rbx, rax
 %endmacro
+%macro APPEND_ABS 2                     ; a float local coordinate and its int32 origin (memory operands): the
+    cvtss2sd xmm0, dword %1             ; absolute coordinate, 2 decimals (summed in double precision)
+    cvtsi2sd xmm1, dword %2
+    addsd   xmm0, xmm1
+    cvtsd2ss xmm0, xmm0
+    mov     rdi, rbx
+    mov     esi, 2
+    call    f32_to_str
+    mov     rbx, rax
+%endmacro
 %macro EMIT 0                           ; draw the finished line, start the next one
     mov     rdi, rbx
     mov     esi, r12d
@@ -1751,15 +1883,16 @@ debug_emit:
     lea     rbx, [dbg_buf]
 %endmacro
 
-; hud_debug(): the F3 lines. rbx = write cursor, r12d = line;
-; stack: [rsp] day, [rsp+4] hour, [rsp+8] minute
+; hud_debug(): the F3 lines (coordinates are absolute: local + world origin). rbx = write cursor,
+; r12d = line; stack: [rsp] day, [rsp+4] hour, [rsp+8] minute, [rsp+12] xp to next level,
+; [rsp+16] stream_stats: loaded, pending, lit, pool chunks
 hud_debug:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 24
+    sub     rsp, 40
     xor     r12d, r12d
     lea     rbx, [dbg_buf]
 
@@ -1769,11 +1902,41 @@ hud_debug:
     EMIT
 
     APPEND_STR s_xyz
-    APPEND_F32 [player + BODY.x], 2
+    APPEND_ABS [player + BODY.x], [world_origin_x]
     APPEND_STR s_sep
     APPEND_F32 [player + BODY.y], 2
     APPEND_STR s_sep
-    APPEND_F32 [player + BODY.z], 2
+    APPEND_ABS [player + BODY.z], [world_origin_z]
+    EMIT
+
+    APPEND_STR s_biome
+    roundss xmm0, [player + BODY.x], 9
+    cvttss2si edi, xmm0
+    roundss xmm0, [player + BODY.z], 9
+    cvttss2si esi, xmm0
+    call    world_biome_at
+    cmp     eax, NUM_BIOMES
+    lea     rsi, [s_unknown]
+    jae     .biome_named                ; -1: the column is not loaded
+    lea     rcx, [biome_names]
+    mov     rsi, [rcx + rax*8]
+.biome_named:
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+    EMIT
+
+    lea     rdi, [rsp + 16]
+    call    stream_stats
+    APPEND_STR s_columns
+    APPEND_INT [rsp + 16]
+    APPEND_STR s_col_lit
+    APPEND_INT [rsp + 24]
+    APPEND_STR s_col_pend
+    APPEND_INT [rsp + 20]
+    APPEND_STR s_col_pool
+    APPEND_INT [rsp + 28]
+    APPEND_STR s_col_max
     EMIT
 
     APPEND_STR s_facing
@@ -1804,11 +1967,15 @@ hud_debug:
     call    str_append
     mov     rbx, rax
     APPEND_STR s_at
-    APPEND_INT [game_target + RAYHIT.bx]
+    mov     eax, [game_target + RAYHIT.bx]
+    add     eax, [world_origin_x]
+    APPEND_EAX
     APPEND_STR s_space
     APPEND_INT [game_target + RAYHIT.by]
     APPEND_STR s_space
-    APPEND_INT [game_target + RAYHIT.bz]
+    mov     eax, [game_target + RAYHIT.bz]
+    add     eax, [world_origin_z]
+    APPEND_EAX
 .target_done:
     EMIT
 
@@ -1946,15 +2113,46 @@ hud_debug:
     mov     edi, SITE_CRYPT
     call    debug_site
     EMIT
-    add     rsp, 24
+
+    APPEND_STR s_camp
+    mov     edi, SITE_CAMP
+    xor     esi, esi
+    call    structures_nearest
+    test    rax, rax
+    jnz     .camp
+    APPEND_STR s_site_none
+    jmp     .camp_done
+.camp:
+    mov     r13, rax
+    mov     eax, [r13 + SITE.index]
+    cmp     eax, NUM_FACTIONS
+    lea     rsi, [s_unknown]
+    jae     .faction_named
+    lea     rcx, [faction_names]
+    mov     rsi, [rcx + rax*8]
+.faction_named:
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_space
+    mov     eax, [r13 + SITE.x]
+    add     eax, [world_origin_x]
+    APPEND_EAX
+    APPEND_STR s_space
+    mov     eax, [r13 + SITE.z]
+    add     eax, [world_origin_z]
+    APPEND_EAX
+.camp_done:
+    EMIT
+    add     rsp, 40
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
     ret
 
-; debug_site(edi kind): "x,z" of the nearest site of that kind (cleared or not) or "none",
-; appended at the cursor rbx (updated)
+; debug_site(edi kind): "x,z" (absolute) of the nearest site of that kind (cleared or not) or
+; "none", appended at the cursor rbx (updated)
 debug_site:
     push    rbp
     mov     rbp, rsp
@@ -1968,9 +2166,13 @@ debug_site:
     jmp     .ret
 .site:
     mov     r12, rax
-    APPEND_INT [r12 + SITE.x]
+    mov     eax, [r12 + SITE.x]
+    add     eax, [world_origin_x]
+    APPEND_EAX
     APPEND_STR s_comma
-    APPEND_INT [r12 + SITE.z]
+    mov     eax, [r12 + SITE.z]
+    add     eax, [world_origin_z]
+    APPEND_EAX
 .ret:
     add     rsp, 8
     pop     r12

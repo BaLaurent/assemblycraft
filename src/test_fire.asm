@@ -55,13 +55,13 @@ steps:
     pop     rbx
     ret
 
-; fires_live() -> eax number of occupied fire slots
+; fires_live() -> eax number of occupied fire slots (a free slot has y = -1)
 fires_live:
     lea     rcx, [fires]
     mov     edx, MAX_FIRES
     xor     eax, eax
 .l:
-    cmp     dword [rcx + FIREENT.x], -1
+    cmp     dword [rcx + FIREENT.y], -1
     je      .next
     inc     eax
 .next:
@@ -270,7 +270,8 @@ test_fire_ignites_tnt:
     pop     rbp
     ret
 
-; fire on a stone floor has nothing to burn: within 100 steps it is gone, nothing else caught
+; fire on a stone floor has nothing to burn: within 100 steps it is gone, nothing else caught. A fire
+; is refused (and takes no slot) in a column that is not ready (x = 300) and at a height outside 0..255.
 test_fire_dies_on_stone:
     push    rbp
     mov     rbp, rsp
@@ -281,6 +282,27 @@ test_fire_dies_on_stone:
     mov     edi, 16
     mov     esi, STONE
     call    floor_fill
+    mov     edi, 300
+    mov     esi, 11
+    mov     edx, 5
+    call    fire_place
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 5
+    mov     esi, WORLD_H
+    mov     edx, 5
+    call    fire_place
+    test    eax, eax
+    jnz     .fail
+    mov     edi, 5
+    mov     esi, -1
+    mov     edx, 5
+    call    fire_place
+    test    eax, eax
+    jnz     .fail
+    call    fires_live
+    test    eax, eax
+    jnz     .fail
     mov     edi, 5
     mov     esi, 11
     mov     edx, 5

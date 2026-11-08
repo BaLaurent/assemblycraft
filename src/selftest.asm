@@ -56,6 +56,17 @@ extern test_gear_drops_and_chests, test_gear_jewelry_and_no_wear
 extern test_damage_pipeline, test_status_effects, test_heavy_attack_and_speed
 extern test_player_statuses_and_defenses, test_new_abilities
 extern test_mob_levels_and_scaling, test_elite_affixes
+extern test_world_rebase, test_region_roundtrip, test_light_column_order, test_light_water
+extern test_stream_sync, test_stream_thread
+extern test_mesher_water, test_mesher_cross, test_render_frustum
+extern test_worldgen_biomes, test_worldgen_column_independence, test_worldgen_spawn
+extern test_worldgen_water_ice
+extern test_sitestate_eviction, test_region_plan_camps
+extern test_entities_rebase, test_entities_remove_box, test_containers_signed, test_mob_water_ai
+extern test_swim_physics, test_breath_and_drowning, test_bed_place_and_break
+extern test_sleep_rules, test_bed_respawn, test_boats
+extern test_new_blocks_tables, test_shapes_new
+extern test_game_rebase_trigger, test_saves_old_world_incompatible
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -192,6 +203,35 @@ tests:
     TEST new_abilities
     TEST mob_levels_and_scaling
     TEST elite_affixes
+    TEST world_rebase
+    TEST region_roundtrip
+    TEST light_column_order
+    TEST light_water
+    TEST stream_sync
+    TEST stream_thread
+    TEST mesher_water
+    TEST mesher_cross
+    TEST render_frustum
+    TEST worldgen_biomes
+    TEST worldgen_column_independence
+    TEST worldgen_spawn
+    TEST worldgen_water_ice
+    TEST sitestate_eviction
+    TEST region_plan_camps
+    TEST entities_rebase
+    TEST entities_remove_box
+    TEST containers_signed
+    TEST mob_water_ai
+    TEST swim_physics
+    TEST breath_and_drowning
+    TEST bed_place_and_break
+    TEST sleep_rules
+    TEST bed_respawn
+    TEST boats
+    TEST new_blocks_tables
+    TEST shapes_new
+    TEST game_rebase_trigger
+    TEST saves_old_world_incompatible
     dq 0
 
 section .rodata
@@ -320,6 +360,35 @@ section .rodata
     TESTNAME new_abilities
     TESTNAME mob_levels_and_scaling
     TESTNAME elite_affixes
+    TESTNAME world_rebase
+    TESTNAME region_roundtrip
+    TESTNAME light_column_order
+    TESTNAME light_water
+    TESTNAME stream_sync
+    TESTNAME stream_thread
+    TESTNAME mesher_water
+    TESTNAME mesher_cross
+    TESTNAME render_frustum
+    TESTNAME worldgen_biomes
+    TESTNAME worldgen_column_independence
+    TESTNAME worldgen_spawn
+    TESTNAME worldgen_water_ice
+    TESTNAME sitestate_eviction
+    TESTNAME region_plan_camps
+    TESTNAME entities_rebase
+    TESTNAME entities_remove_box
+    TESTNAME containers_signed
+    TESTNAME mob_water_ai
+    TESTNAME swim_physics
+    TESTNAME breath_and_drowning
+    TESTNAME bed_place_and_break
+    TESTNAME sleep_rules
+    TESTNAME bed_respawn
+    TESTNAME boats
+    TESTNAME new_blocks_tables
+    TESTNAME shapes_new
+    TESTNAME game_rebase_trigger
+    TESTNAME saves_old_world_incompatible
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

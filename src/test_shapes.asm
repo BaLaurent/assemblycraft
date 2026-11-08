@@ -2,7 +2,7 @@
 %include "common.inc"
 default rel
 
-global test_shapes_boxes
+global test_shapes_boxes, test_shapes_new
 
 extern shape_boxes, cell_boxes, block_sel_bounds, block_facing_from_yaw
 extern world_clear, world_set
@@ -12,8 +12,12 @@ box_stairs_e:  db 8, 8, 0, 16, 16, 16
 box_door_n:    db 0, 0, 0, 16, 16, 3
 box_door_open: db 0, 0, 0, 3, 16, 16
 box_fence_e:   db 10, 0, 6, 16, 24, 10
+box_bed:       db 0, 0, 0, 16, 9, 16
+box_cross:     db 2, 0, 2, 14, 13, 14
+box_snow:      db 0, 0, 0, 16, 2, 16
+box_cactus:    db 1, 0, 1, 15, 16, 15
 align 4
-full_box:      dd -1.0, 5.0, 0.0, 0.0, 6.0, 1.0
+full_box:      dd 1000.0, 10.0, 1000.0, 1001.0, 11.0, 1001.0
 slab_sel:      dd 3.0, 4.0, 5.0, 4.0, 4.5, 6.0
 
 section .bss
@@ -120,10 +124,10 @@ test_shapes_boxes:
     jne     .fail
     cmp     byte [bbuf], 14             ; leaning on the east wall
     jne     .fail
-    ; outside the world is one full collision box
-    mov     edi, -1
-    mov     esi, 5
-    xor     edx, edx
+    ; a cell in a column that is not ready is one full collision box
+    mov     edi, 1000
+    mov     esi, 10
+    mov     edx, 1000
     lea     rcx, [fbuf]
     mov     r8d, BOXES_COLLIDE
     call    cell_boxes
@@ -132,7 +136,7 @@ test_shapes_boxes:
     SAMEF   6, fbuf, full_box
     ; above the world nothing collides
     mov     edi, 5
-    mov     esi, WORLD_Y
+    mov     esi, WORLD_H
     mov     edx, 5
     lea     rcx, [fbuf]
     mov     r8d, BOXES_COLLIDE
@@ -185,3 +189,106 @@ test_shapes_boxes:
     mov     eax, 1
     pop     rbp
     ret
+
+; EXPECT_BOXES id, purpose, count, box: shape_boxes(id) gives `count` boxes, the first being `box`
+%macro EXPECT_BOXES 4
+    BOXES   %1, 5, 10, 5, %2
+    cmp     eax, %3
+    jne     .fail
+%if %3 > 0
+    SAME6   bbuf, %4
+%endif
+%endmacro
+
+test_shapes_new:
+    push    rbp
+    mov     rbp, rsp
+    call    world_clear
+    ; bed halves: one 9/16 box for every purpose
+    EXPECT_BOXES BED, BOXES_RENDER, 1, box_bed
+    EXPECT_BOXES BED, BOXES_COLLIDE, 1, box_bed
+    EXPECT_BOXES BED, BOXES_SELECT, 1, box_bed
+    EXPECT_BOXES BED + 3, BOXES_COLLIDE, 1, box_bed
+    EXPECT_BOXES BED + 4, BOXES_SELECT, 1, box_bed
+    EXPECT_BOXES BED + 7, BOXES_RENDER, 1, box_bed
+    ; water has no boxes
+    EXPECT_BOXES WATER, BOXES_RENDER, 0, 0
+    EXPECT_BOXES WATER, BOXES_COLLIDE, 0, 0
+    EXPECT_BOXES WATER, BOXES_SELECT, 0, 0
+    ; tall grass: only a selection box
+    EXPECT_BOXES TALL_GRASS, BOXES_COLLIDE, 0, 0
+    EXPECT_BOXES TALL_GRASS, BOXES_RENDER, 0, 0
+    EXPECT_BOXES TALL_GRASS, BOXES_SELECT, 1, box_cross
+    ; snow layer: render and select, no collision
+    EXPECT_BOXES SNOW_LAYER, BOXES_COLLIDE, 0, 0
+    EXPECT_BOXES SNOW_LAYER, BOXES_RENDER, 1, box_snow
+    EXPECT_BOXES SNOW_LAYER, BOXES_SELECT, 1, box_snow
+    ; cactus: inset on x and z for every purpose
+    EXPECT_BOXES CACTUS, BOXES_RENDER, 1, box_cactus
+    EXPECT_BOXES CACTUS, BOXES_COLLIDE, 1, box_cactus
+    EXPECT_BOXES CACTUS, BOXES_SELECT, 1, box_cactus
+    ; the new full cubes still collide (ICE is solid) and stay cubes
+    BOXES   ICE, 5, 10, 5, BOXES_COLLIDE
+    cmp     eax, 1
+    jne     .fail
+    BOXES   SNOW_BLOCK, 5, 10, 5, BOXES_COLLIDE
+    cmp     eax, 1
+    jne     .fail
+    ; cell_boxes in a ready column: a placed cactus gives the world-space inset box
+    mov     edi, 5
+    mov     esi, 10
+    mov     edx, 5
+    mov     ecx, CACTUS
+    call    world_set
+    mov     edi, 5
+    mov     esi, 10
+    mov     edx, 5
+    lea     rcx, [fbuf]
+    mov     r8d, BOXES_COLLIDE
+    call    cell_boxes
+    cmp     eax, 1
+    jne     .fail
+    movss   xmm0, [fbuf]
+    ucomiss xmm0, [f_5_0625]
+    jne     .fail
+    jp      .fail
+    ; y < 0 is solid, an air cell of a ready column is empty
+    mov     edi, 5
+    mov     esi, -1
+    mov     edx, 5
+    lea     rcx, [fbuf]
+    mov     r8d, BOXES_COLLIDE
+    call    cell_boxes
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 6
+    mov     esi, 20
+    mov     edx, 6
+    lea     rcx, [fbuf]
+    mov     r8d, BOXES_COLLIDE
+    call    cell_boxes
+    test    eax, eax
+    jnz     .fail
+    ; the render purpose in an unloaded column reads AIR: no boxes
+    mov     edi, 1000
+    mov     esi, 10
+    mov     edx, 1000
+    lea     rcx, [fbuf]
+    mov     r8d, BOXES_RENDER
+    call    cell_boxes
+    test    eax, eax
+    jnz     .fail
+    call    world_clear
+    xor     eax, eax
+    pop     rbp
+    ret
+.fail:
+    call    world_clear
+    mov     eax, 1
+    pop     rbp
+    ret
+
+section .rodata
+align 4
+f_5_0625:       dd 5.0625
+section .text

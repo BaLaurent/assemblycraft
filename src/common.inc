@@ -4,13 +4,7 @@
 
 section .note.GNU-stack noalloc noexec nowrite progbits
 
-; ---- world ----------------------------------------------------------------
-%define WORLD_X        256              ; removed at wave-1 integration
-%define WORLD_Y        64               ; removed at wave-1 integration
-%define WORLD_Z        256              ; removed at wave-1 integration
-%define WORLD_VOLUME   4194304          ; removed at wave-1 integration
-
-; infinite streamed world: 16x16 columns of 16 chunks, local = absolute - world_origin
+; ---- world: infinite, streamed; 16x16 columns of 16 chunks, local = absolute - world_origin ----
 %define WORLD_H        256
 %define CHUNK          16
 %define COL_CHUNKS     16
@@ -45,12 +39,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIOME_MOUNTAINS 6
 %define BIOME_RIVER    7
 %define NUM_BIOMES     8
-
-; ---- chunks (0.8 flat world) ------------------------------------------------
-%define CHUNKS_X       16               ; removed at wave-1 integration
-%define CHUNKS_Y       4                ; removed at wave-1 integration
-%define CHUNKS_Z       16               ; removed at wave-1 integration
-%define NUM_CHUNKS     1024             ; removed at wave-1 integration
 
 ; ---- block ids ------------------------------------------------------------
 %define AIR            0
@@ -393,7 +381,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 
 ; ---- save file ------------------------------------------------------------
 %define WORLD_HDR_SIZE  32768
-%define WORLD_FILE_SIZE 4227072          ; 32768 + 4194304; removed at wave-1 integration
 %define HOTBAR_SLOTS    9
 
 ; ---- game -----------------------------------------------------------------
@@ -658,7 +645,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FAC_BEASTFOLK   3
 %define FAC_STONEKIN    4
 %define NUM_FACTIONS    5
-%define NUM_DUNGEONS    6
 %define DUNGEON_KILLS   8
 
 %define Q_KILL          1
@@ -680,7 +666,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CONT_FURNACE    1
 %define CONT_CHEST      2
 %define MAX_CONTAINERS  256             ; runtime table conts[]
-%define MAX_CONTAINERS_V5 118           ; removed at wave-1 integration
 %define SMELT_STEPS     200
 
 ; ---- app states -----------------------------------------------------------
@@ -947,7 +932,7 @@ struc MOB
     .stun:     resd 1                   ; steps
     .elite:    resd 1                   ; 0/1
     .tagged:   resd 1                   ; steps; > 0 = a player hit counts for XP
-    .origin:   resd 1                   ; 0 none, 1..6 dungeon index + 1, 99 crypt boss
+    .origin:   resd 1                   ; 0 none, else WORLDHDR.sites index + 1 (dungeon, crypt)
     .bar:      resd 1                   ; steps the health bar stays visible
     .max_health: resd 1
     .timer_a:  resd 1                   ; boss timers, steps
@@ -1002,8 +987,7 @@ struc RPGSAVE
     .quest_state:    resb 1             ; 0 not accepted, 1 accepted
     .xp:             resd 1             ; into the current level
     .ranks_v4:       resb 12            ; 0.7 ranks, unused since 0.8 (RPGEXT.ranks)
-    .cleared:        resb 1             ; bit d = dungeon d cleared
-    .flags:          resb 1             ; bit0 = boss defeated
+    .retired:        resb 2             ; 0.8 dungeon/boss flags, unused since 0.9 (WORLDHDR.sites)
     .quest_progress: resw 1
     .pad:            resb 40
 endstruc
@@ -1238,8 +1222,7 @@ struc WORLDHDR
     .pad1:       resb 16384 - 14600
     .jewelry:    resb 16                ; @16384: 3 ITEMSTACKs + 4 spare
     .rpgx:       resb RPGEXT_size       ; @16400
-    .containers_v5: resb MAX_CONTAINERS_V5 * CONTAINER_size ; @16656; removed at wave-1 integration
-    .pad2:       resb WORLD_HDR_SIZE - 16656 - MAX_CONTAINERS_V5 * CONTAINER_size
+    .pad2:       resb WORLD_HDR_SIZE - 16656
 endstruc                                ; 32768 bytes
 %if WORLDHDR_size != WORLD_HDR_SIZE
 %error "WORLDHDR must be WORLD_HDR_SIZE bytes"
@@ -1345,8 +1328,8 @@ endstruc
 
 ; a burning cell (the world holds FIRE there)
 struc FIREENT
-    .x:    resd 1                       ; -1 = free slot
-    .y:    resd 1
+    .x:    resd 1
+    .y:    resd 1                       ; -1 = free slot
     .z:    resd 1
     .age:  resd 1                       ; steps
     .tick: resd 1                       ; steps to the next spread / burn roll

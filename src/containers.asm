@@ -1,12 +1,16 @@
-; containers.asm - furnaces and chests. The records live in the world header
-; (WORLDHDR.containers_v5: MAX_CONTAINERS_V5 x CONTAINER), so they are saved with the world.
-; A record is free while its kind byte is 0. A furnace uses cells 0 input, 1 fuel, 2 output.
+; containers.asm - furnaces and chests. The records live in the runtime table conts[]
+; (MAX_CONTAINERS x CONTAINER) with ABSOLUTE cell coordinates (local + world_origin): a column's
+; region blob carries its containers, world_install fills the table when the column is installed
+; and conts_free_column empties it again when the column unloads. A record is free while its kind
+; byte is 0. A furnace uses cells 0 input, 1 fuel, 2 output. Every function here that takes a
+; cell takes LOCAL coordinates; the table itself never changes when the origin moves.
 %include "common.inc"
 default rel
 
-global cont_at, cont_create, cont_block_removed, conts_step, conts_validate, cont_fill_from_inv
+global conts, cont_at, cont_create, conts_free_column, cont_block_removed, conts_step
+global cont_fill_from_inv
 
-extern world_header, world_get, world_set, drops_spawn
+extern world_origin_x, world_origin_z, world_get, world_set, world_column_ready, drops_spawn
 extern item_max_stack, item_burn, item_smelt
 extern inv_container, inv_count, inv_remove_one, inv_take_stack
 
@@ -18,19 +22,21 @@ section .rodata
 align 4
 c_half: dd 0.5
 
+section .bss
+alignb 16
+conts:      resb MAX_CONTAINERS * CONTAINER_size
+
 section .text
 
-; cont_at(edi x, esi y, edx z) -> rax CONTAINER* at that cell, or 0
+; cont_at(edi x, esi y, edx z) -> rax CONTAINER* at that local cell, or 0 (also for y outside 0..255)
 cont_at:
     xor     eax, eax
-    cmp     edi, WORLD_X - 1
+    cmp     esi, WORLD_H - 1
     ja      .ret
-    cmp     esi, WORLD_Y - 1
-    ja      .ret
-    cmp     edx, WORLD_Z - 1
-    ja      .ret
-    lea     rcx, [world_header + WORLDHDR.containers_v5]
-    mov     r8d, MAX_CONTAINERS_V5
+    add     edi, [world_origin_x]       ; the table holds absolute cells
+    add     edx, [world_origin_z]
+    lea     rcx, [conts]
+    mov     r8d, MAX_CONTAINERS
 .l:
     cmp     byte [rcx + CONTAINER.kind], 0
     je      .n                          ; free record
@@ -50,56 +56,110 @@ cont_at:
 .ret:
     ret
 
-; cont_create(edi x, esi y, edx z, ecx kind) -> rax CONTAINER* or 0 when all records are in
-; use (or the cell lies outside the world). A record already at the cell is reused. The
-; record is zeroed, then x, y, z and kind are set.
+; cont_create(edi x, esi y, edx z, ecx kind) -> rax CONTAINER* or 0 when the table is full, the
+; cell's column (x sar 4, z sar 4, absolute) already holds MAX_COL_CONTS records, or y lies outside
+; 0..255. A record already at the cell is always reused. The record is zeroed, then x, y, z
+; (absolute) and kind are set.
 cont_create:
+    push    rbx
+    push    r12
     xor     eax, eax
-    cmp     edi, WORLD_X - 1
+    cmp     esi, WORLD_H - 1
     ja      .ret
-    cmp     esi, WORLD_Y - 1
-    ja      .ret
-    cmp     edx, WORLD_Z - 1
-    ja      .ret
+    add     edi, [world_origin_x]       ; the absolute cell
+    add     edx, [world_origin_z]
     mov     r11d, ecx                   ; kind
-    lea     r8, [world_header + WORLDHDR.containers_v5]
+    lea     rcx, [conts]
+    mov     r8d, MAX_CONTAINERS
+.find:                                  ; a record already sits here: reuse it
+    cmp     byte [rcx + CONTAINER.kind], 0
+    je      .find_next
+    cmp     [rcx + CONTAINER.x], edi
+    jne     .find_next
+    cmp     [rcx + CONTAINER.y], esi
+    jne     .find_next
+    cmp     [rcx + CONTAINER.z], edx
+    je      .reuse
+.find_next:
+    add     rcx, CONTAINER_size
+    dec     r8d
+    jnz     .find
+    mov     r10d, edi                   ; a new record: the cell's column...
+    sar     r10d, 4
+    mov     ebx, edx
+    sar     ebx, 4
     xor     r9d, r9d                    ; first free record
-    mov     r10d, MAX_CONTAINERS_V5
+    xor     r12d, r12d                  ; records already in that column
+    lea     rcx, [conts]
+    lea     r8, [conts + MAX_CONTAINERS * CONTAINER_size]
 .scan:
-    cmp     byte [r8 + CONTAINER.kind], 0
+    cmp     byte [rcx + CONTAINER.kind], 0
     jne     .used
     test    r9, r9
     jnz     .next
-    mov     r9, r8
+    mov     r9, rcx
     jmp     .next
 .used:
-    cmp     [r8 + CONTAINER.x], edi
+    mov     eax, [rcx + CONTAINER.x]
+    sar     eax, 4
+    cmp     eax, r10d
     jne     .next
-    cmp     [r8 + CONTAINER.y], esi
+    mov     eax, [rcx + CONTAINER.z]
+    sar     eax, 4
+    cmp     eax, ebx
     jne     .next
-    cmp     [r8 + CONTAINER.z], edx
-    jne     .next
-    mov     r9, r8                      ; a record already sits here: reuse it
-    jmp     .fill
+    inc     r12d
 .next:
-    add     r8, CONTAINER_size
-    dec     r10d
-    jnz     .scan
+    add     rcx, CONTAINER_size
+    cmp     rcx, r8
+    jb      .scan
+    xor     eax, eax
     test    r9, r9
     jz      .ret                        ; table full
-.fill:
-    mov     ecx, edi
-    mov     rdi, r9
-    mov     r10d, ecx                   ; x
+    cmp     r12d, MAX_COL_CONTS
+    jae     .ret                        ; the column is full
+    mov     rcx, r9
+.reuse:                                 ; rcx = the record
+    mov     r10d, edi                   ; x (rdi is the fill's destination)
+    mov     rdi, rcx
     mov     ecx, CONTAINER_size / 8
     xor     eax, eax
     rep     stosq
-    mov     [r9 + CONTAINER.x], r10d
-    mov     [r9 + CONTAINER.y], esi
-    mov     [r9 + CONTAINER.z], edx
-    mov     [r9 + CONTAINER.kind], r11b
-    mov     rax, r9
+    lea     rax, [rdi - CONTAINER_size]
+    mov     [rax + CONTAINER.x], r10d
+    mov     [rax + CONTAINER.y], esi
+    mov     [rax + CONTAINER.z], edx
+    mov     [rax + CONTAINER.kind], r11b
 .ret:
+    pop     r12
+    pop     rbx
+    ret
+
+; conts_free_column(edi acx, esi acz): every record whose cell lies in that absolute column is
+; zeroed (the column is unloading: its region blob already carries them)
+conts_free_column:
+    lea     rcx, [conts]
+    lea     r8, [conts + MAX_CONTAINERS * CONTAINER_size]
+.l:
+    cmp     byte [rcx + CONTAINER.kind], 0
+    je      .n
+    mov     eax, [rcx + CONTAINER.x]
+    sar     eax, 4
+    cmp     eax, edi
+    jne     .n
+    mov     eax, [rcx + CONTAINER.z]
+    sar     eax, 4
+    cmp     eax, esi
+    jne     .n
+%assign i 0
+%rep CONTAINER_size / 8
+    mov     qword [rcx + i], 0
+%assign i i + 8
+%endrep
+.n:
+    add     rcx, CONTAINER_size
+    cmp     rcx, r8
+    jb      .l
     ret
 
 ; cont_block_removed(edi x, esi y, edx z) - the block at the cell is gone: every stack of its
@@ -229,13 +289,27 @@ cont_fill_from_inv:
     pop     rbp
     ret
 
-; furnace_step(rdi CONTAINER*) - one fixed step of burning and smelting
+; furnace_step(rdi CONTAINER*) - one fixed step of burning and smelting. The record holds an
+; absolute cell; its block is read and written at the local one. A furnace whose column is not
+; ready (not loaded or not lit yet) waits: nothing burns or cooks until it is.
+; r12d, r13d = the local x and z of the cell.
 furnace_step:
     push    rbp
     mov     rbp, rsp
     push    rbx
+    push    r12
+    push    r13
     sub     rsp, 8
     mov     rbx, rdi
+    mov     r12d, [rbx + CONTAINER.x]
+    sub     r12d, [world_origin_x]
+    mov     r13d, [rbx + CONTAINER.z]
+    sub     r13d, [world_origin_z]
+    mov     edi, r12d
+    mov     esi, r13d
+    call    world_column_ready
+    test    eax, eax
+    jz      .done
     ; can = the input smelts into r9d and the output takes it
     xor     r8d, r8d
     xor     r9d, r9d
@@ -299,9 +373,9 @@ furnace_step:
     mov     word [rbx + CONTAINER.cook], 0
 .block:
     ; the block shows the fire while fuel is burning
-    mov     edi, [rbx + CONTAINER.x]
+    mov     edi, r12d
     mov     esi, [rbx + CONTAINER.y]
-    mov     edx, [rbx + CONTAINER.z]
+    mov     edx, r13d
     call    world_get
     xor     ecx, ecx
     cmp     word [rbx + CONTAINER.burn], 0
@@ -315,12 +389,14 @@ furnace_step:
     jne     .done
     mov     ecx, FURNACE
 .set:
-    mov     edi, [rbx + CONTAINER.x]
+    mov     edi, r12d
     mov     esi, [rbx + CONTAINER.y]
-    mov     edx, [rbx + CONTAINER.z]
+    mov     edx, r13d
     call    world_set
 .done:
     add     rsp, 8
+    pop     r13
+    pop     r12
     pop     rbx
     pop     rbp
     ret
@@ -331,8 +407,8 @@ conts_step:
     mov     rbp, rsp
     push    rbx
     push    r12
-    lea     rbx, [world_header + WORLDHDR.containers_v5]
-    mov     r12d, MAX_CONTAINERS_V5
+    lea     rbx, [conts]
+    mov     r12d, MAX_CONTAINERS
 .l:
     cmp     byte [rbx + CONTAINER.kind], CONT_FURNACE
     jne     .n
@@ -342,80 +418,6 @@ conts_step:
     add     rbx, CONTAINER_size
     dec     r12d
     jnz     .l
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
-
-; conts_validate() - after a load: frees every record that is not a real furnace or chest
-; (bad kind, cell outside the world, wrong block there) and clears the stacks that cannot
-; exist (unknown item, count 0, count above the stack limit)
-conts_validate:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    lea     rbx, [world_header + WORLDHDR.containers_v5]
-    mov     r12d, MAX_CONTAINERS_V5
-.rec:
-    movzx   eax, byte [rbx + CONTAINER.kind]
-    cmp     eax, CONT_FURNACE
-    je      .check
-    cmp     eax, CONT_CHEST
-    jne     .zero                       ; free, or garbage
-.check:
-    mov     edi, [rbx + CONTAINER.x]
-    mov     esi, [rbx + CONTAINER.y]
-    mov     edx, [rbx + CONTAINER.z]
-    cmp     edi, WORLD_X - 1
-    ja      .zero
-    cmp     esi, WORLD_Y - 1
-    ja      .zero
-    cmp     edx, WORLD_Z - 1
-    ja      .zero
-    call    world_get
-    cmp     byte [rbx + CONTAINER.kind], CONT_CHEST
-    je      .want_chest
-    cmp     eax, FURNACE
-    je      .good
-    cmp     eax, FURNACE_LIT
-    je      .good
-    jmp     .zero
-.want_chest:
-    cmp     eax, CHEST
-    jne     .zero
-.good:
-    xor     ecx, ecx
-.stack:
-    lea     rdx, [rbx + CONTAINER.slots + rcx*4]
-    movzx   eax, byte [rdx]
-    cmp     eax, NUM_ITEMS
-    jae     .bad
-    lea     rsi, [item_max_stack]
-    movzx   esi, byte [rsi + rax]
-    test    esi, esi
-    jz      .bad                        ; not an item
-    movzx   eax, byte [rdx + 1]
-    test    eax, eax
-    jz      .bad                        ; empty: also clears a stray id and damage
-    cmp     eax, esi
-    jbe     .keep
-.bad:
-    mov     dword [rdx], 0
-.keep:
-    inc     ecx
-    cmp     ecx, 27
-    jb      .stack
-    jmp     .next
-.zero:
-    mov     rdi, rbx
-    mov     ecx, CONTAINER_size / 8
-    xor     eax, eax
-    rep     stosq
-.next:
-    add     rbx, CONTAINER_size
-    dec     r12d
-    jnz     .rec
     pop     r12
     pop     rbx
     pop     rbp

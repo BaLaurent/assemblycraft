@@ -1,11 +1,13 @@
 ; explode.asm - explosions (creepers, TNT, rockets), magic blasts (fireballs, meteors, explosive
 ; arrows) and primed TNT. Primed TNT is a physics body: it hops when lit, falls, is thrown by
-; blasts, and flashes white while it burns. It is not saved with the world.
+; blasts, and flashes white while it burns. It is not saved with the world; it lives in local
+; coordinates (tnt_shift follows the origin, tnt_remove_box drops the TNT of a column that unloads).
 %include "common.inc"
 %include "gl.inc"
 default rel
 
 global explode_at, explode_magic, explode_dmg_mult, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
+global tnt_shift, tnt_remove_box
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
 extern block_removed, light_bind_at, light_bind_index
@@ -752,4 +754,55 @@ explode_magic:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; tnt_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every primed TNT's local x and z
+; drop by that much (exact: dx and dz are multiples of 512)
+tnt_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [primed]
+    lea     rcx, [primed_end]
+.l:
+    cmp     dword [rax + PRIMED.fuse], 0
+    je      .next
+    movss   xmm2, [rax + PRIMED.body + BODY.x]
+    subss   xmm2, xmm0
+    movss   [rax + PRIMED.body + BODY.x], xmm2
+    movss   xmm2, [rax + PRIMED.body + BODY.z]
+    subss   xmm2, xmm1
+    movss   [rax + PRIMED.body + BODY.z], xmm2
+.next:
+    add     rax, PRIMED_size
+    cmp     rax, rcx
+    jb      .l
+    ret
+
+; tnt_remove_box(edi x0, esi z0, edx x1, ecx z1): every primed TNT whose cell (the floor of its x
+; and z) lies in the inclusive local box x0..x1, z0..z1 is gone, without a blast
+tnt_remove_box:
+    lea     rax, [primed]
+    lea     r8, [primed_end]
+.l:
+    cmp     dword [rax + PRIMED.fuse], 0
+    je      .next
+    movss   xmm0, [rax + PRIMED.body + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si r9d, xmm0
+    cmp     r9d, edi
+    jl      .next
+    cmp     r9d, edx
+    jg      .next
+    movss   xmm0, [rax + PRIMED.body + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si r9d, xmm0
+    cmp     r9d, esi
+    jl      .next
+    cmp     r9d, ecx
+    jg      .next
+    mov     dword [rax + PRIMED.fuse], 0
+.next:
+    add     rax, PRIMED_size
+    cmp     rax, r8
+    jb      .l
     ret

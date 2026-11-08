@@ -16,6 +16,9 @@
 ; The 0.7 building art (tiles 15, 61..63, 180..191, 200..202, 240..253) is drawn after the 0.6 art
 ; and before the font: noise tiles take one draw per pixel (NFUNC), icons copy earlier tiles.
 ; The 0.8 icons (tiles 203..207, 216..223, 232..239, 254, 255) follow the 0.7 art, draw-free bitmaps.
+; The 0.9 art (the 20 tiles 192..199, 208..215, 224..227 the font left free when it moved to
+; FONT_Y) follows the 0.8 icons and precedes the font, in tile order: noise tiles take one draw
+; per pixel (NFUNC / NFUNCA), the bitmaps (tall grass, bed and boat icons, bubbles) take none.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -266,6 +269,38 @@ shade:
 %$next:
     TILE_END
 %endmacro
+
+; NFUNC with a fixed alpha on every opaque texel (translucent tiles): tile, mbase, mask, shift,
+; func, r10d, r11d, alpha
+%macro NFUNCA 8
+    TILE_BEGIN %1
+    mov     r10d, %6
+    mov     r11d, %7
+    call    rng
+    mov     r9d, eax
+    shr     eax, %4
+    and     eax, %3
+    add     eax, %2
+    mov     r8d, eax
+    call    %5
+    test    esi, esi
+    jz      %$clear
+    mov     edx, r8d
+    call    shade
+    mov     byte [rdi + 3], %8
+    jmp     %$next
+%$clear:
+    mov     dword [rdi], 0
+%$next:
+    TILE_END
+%endmacro
+
+; 0.9 colour names
+%define C_WATER        RGB(40,90,200)
+%define C_LEAF_PINE    RGB(30,80,40)
+%define C_LEAF_BIRCH   RGB(110,170,70)
+%define C_RING_PINE    RGB(150,110,70)
+%define C_RING_PINE_DK RGB(122,86,50)
 
 texgen_build:
     push    rbp
@@ -973,6 +1008,34 @@ texgen_build:
     BMP     239, st_area_bmp, pal_st_area
     BMP     254, st_elite_bmp, pal_st_elite
     BMP     255, keystone_bmp, pal_keystone
+
+    ; ---- 0.9 art (after the 0.8 icons, before the font; the atlas outside these 20 tiles is
+    ;      untouched). Noise tiles take one draw per pixel; the bitmaps and bubbles take none. ----
+    ; 192 water (alpha 180), 193 ice (alpha 200), 194 snow, 195 mud, 196 tall grass
+    NFUNCA  192, 240, 15, 0, px_water, 0, 0, 180
+    NFUNCA  193, 236, 15, 0, px_ice, 0, 0, 200
+    NFUNC   194, 244, 11, 0, px_snow, 0, 0
+    NFUNC   195, 224, 31, 0, px_mud, 0, 0
+    BMP     196, tallgrass_bmp, pal_tallgrass
+    ; 197, 198 cactus side, top; 199, 208 pine log side, top; 209 pine leaves
+    NFUNC   197, 232, 23, 0, px_cactus_side, 0, 0
+    NFUNC   198, 232, 23, 0, px_cactus_top, 0, 0
+    NFUNC   199, 224, 31, 0, px_pine_bark, 0, 0
+    NFUNC   208, 224, 31, 0, px_ring_top, C_RING_PINE, C_RING_PINE_DK
+    NFUNC   209, 160, 95, 0, px_leaves_holes, C_LEAF_PINE, 0
+    ; 210, 211 birch log side, birch leaves
+    NFUNC   210, 232, 23, 0, px_birch, 0, 0
+    NFUNC   211, 160, 95, 0, px_leaves_holes, C_LEAF_BIRCH, 0
+    ; 212, 213 bed head top, foot top; 214, 215 bed head side, foot side
+    NFUNC   212, 244, 11, 0, px_bed_top, 1, 0
+    NFUNC   213, 244, 11, 0, px_bed_top, 0, 0
+    NFUNC   214, 240, 15, 0, px_bed_side, 1, 0
+    NFUNC   215, 240, 15, 0, px_bed_side, 0, 0
+    ; 224, 225 bed and boat icons; 226, 227 breath bubble, popping bubble
+    BMP     224, icon_bed_bmp, pal_icon_bed
+    BMP     225, icon_boat_bmp, pal_icon_boat
+    HUD     226, bubble_bmp, pal_bubble, pal_bubble, 0
+    HUD     227, bubble_pop_bmp, pal_bubble, pal_bubble, 0
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -4644,3 +4707,374 @@ icon_door:
 .none:
     xor     eax, eax
     ret
+
+; ---------------------------------------------------------------------------
+; 0.9 art. Base-colour routines for NFUNC/NFUNCA tiles: in r15d = px, r14d = py, r9d = the
+; pixel's rng draw, r10d/r11d = parameters; out esi = base colour (0 = transparent). They clobber
+; eax, ecx, edx only (px_bed_side also r8d, on purpose).
+; ---------------------------------------------------------------------------
+
+; water: blue with short light ripple dashes on every 4th row, staggered per band
+px_water:
+    mov     esi, C_WATER
+    mov     eax, r14d
+    and     eax, 3
+    cmp     eax, 1
+    jne     .done
+    mov     eax, r14d
+    shr     eax, 2
+    lea     eax, [rax + rax * 4]
+    add     eax, r15d
+    and     eax, 7
+    cmp     eax, 3
+    jae     .done
+    mov     esi, RGB(70,130,230)
+.done:
+    ret
+
+; ice: pale blue with white cracks (one diagonal each way and a short horizontal)
+px_ice:
+    mov     esi, RGB(160,200,240)
+    mov     eax, r15d
+    sub     eax, r14d
+    cmp     eax, 3
+    jne     .b
+    lea     ecx, [r15 - 5]
+    cmp     ecx, 7
+    jbe     .crack
+.b:
+    lea     eax, [r15 + r14]
+    cmp     eax, 17
+    jne     .c
+    lea     ecx, [r15 - 3]
+    cmp     ecx, 6
+    jbe     .crack
+.c:
+    cmp     r14d, 8
+    jne     .done
+    lea     ecx, [r15 - 9]
+    cmp     ecx, 4
+    jbe     .crack
+.done:
+    ret
+.crack:
+    mov     esi, RGB(238,246,255)
+    ret
+
+; snow: white with a light grey speck on 1 pixel in 8
+px_snow:
+    mov     esi, RGB(240,245,250)
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 7
+    jnz     .done
+    mov     esi, RGB(206,216,230)
+.done:
+    ret
+
+; mud: dark brown with darker and lighter clumps
+px_mud:
+    mov     esi, RGB(70,50,35)
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 7
+    jnz     .l
+    mov     esi, RGB(54,38,26)
+    ret
+.l:
+    cmp     eax, 1
+    jne     .done
+    mov     esi, RGB(86,62,44)
+.done:
+    ret
+
+; cactus side: darker rib on every 4th column, 1-px light spines between the ribs
+px_cactus_side:
+    mov     esi, RGB(40,130,50)
+    mov     eax, r15d
+    and     eax, 3
+    jz      .rib
+    cmp     eax, 2
+    jne     .done
+    mov     ecx, r15d
+    shr     ecx, 2
+    lea     ecx, [rcx + rcx * 2]
+    add     ecx, r14d
+    and     ecx, 3
+    jnz     .done
+    mov     esi, RGB(214,226,160)
+.done:
+    ret
+.rib:
+    mov     esi, RGB(26,96,38)
+    ret
+
+; cactus top: dark rim, a lighter ring 2..3 px inside it, a spine in the middle
+px_cactus_top:
+    mov     eax, r15d                   ; eax = distance to the nearest edge
+    mov     ecx, 15
+    sub     ecx, r15d
+    cmp     ecx, eax
+    cmovb   eax, ecx
+    cmp     r14d, eax
+    cmovb   eax, r14d
+    mov     ecx, 15
+    sub     ecx, r14d
+    cmp     ecx, eax
+    cmovb   eax, ecx
+    mov     esi, RGB(26,96,38)
+    test    eax, eax
+    jz      .done
+    mov     esi, RGB(40,130,50)
+    lea     ecx, [rax - 2]
+    cmp     ecx, 1
+    ja      .mid
+    mov     esi, RGB(86,172,88)
+    ret
+.mid:
+    cmp     eax, 7
+    jne     .done
+    mov     esi, RGB(214,226,160)
+.done:
+    ret
+
+; pine bark: dark brown with vertical streaks and the odd light fleck
+px_pine_bark:
+    mov     esi, RGB(60,40,25)
+    mov     eax, r15d
+    lea     eax, [rax + rax * 4]
+    mov     ecx, r15d
+    shr     ecx, 1
+    add     eax, ecx
+    and     eax, 7
+    cmp     eax, 2
+    jae     .fleck
+    mov     esi, RGB(42,28,17)
+    ret
+.fleck:
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 15
+    jnz     .done
+    mov     esi, RGB(84,58,36)
+.done:
+    ret
+
+; log top with rings (as tile 7): bark rim, then rings alternating r10d / r11d
+px_ring_top:
+    mov     esi, RGB(60,40,25)
+    test    r15d, r15d
+    jz      .done
+    cmp     r15d, 15
+    je      .done
+    test    r14d, r14d
+    jz      .done
+    cmp     r14d, 15
+    je      .done
+    lea     eax, [r15 * 2 - 15]
+    lea     ecx, [r14 * 2 - 15]
+    imul    eax, eax
+    imul    ecx, ecx
+    add     eax, ecx
+    cvtsi2ss xmm0, eax
+    sqrtss  xmm0, xmm0
+    mulss   xmm0, [half]
+    cvttss2si eax, xmm0
+    shr     eax, 1
+    and     eax, 1
+    mov     esi, r10d
+    jz      .done
+    mov     esi, r11d
+.done:
+    ret
+
+; leaves with holes (as tile 8): r10d = colour, a hole on 1 pixel in 4 (draw bits 8..9)
+px_leaves_holes:
+    mov     eax, r9d
+    shr     eax, 8
+    and     eax, 3
+    jnz     .solid
+    xor     esi, esi
+    ret
+.solid:
+    mov     esi, r10d
+    ret
+
+; birch bark: off-white, black horizontal dashes on rows 2, 6, 9, 13 (staggered per row)
+px_birch:
+    mov     esi, RGB(220,220,210)
+    mov     ecx, 0x2244                 ; rows 2, 6, 9, 13
+    bt      ecx, r14d
+    jnc     .done
+    lea     eax, [r14 + r14 * 2]
+    add     eax, r15d
+    and     eax, 7
+    cmp     eax, 3
+    jae     .done
+    mov     esi, RGB(36,34,32)
+.done:
+    ret
+
+; bed top (r10d = 1: head): head = white sheet with a 2-px red border; foot = red blanket with a
+; darker fold line 3 px inside every edge
+px_bed_top:
+    mov     eax, r15d                   ; eax = distance to the nearest edge
+    mov     ecx, 15
+    sub     ecx, r15d
+    cmp     ecx, eax
+    cmovb   eax, ecx
+    cmp     r14d, eax
+    cmovb   eax, r14d
+    mov     ecx, 15
+    sub     ecx, r14d
+    cmp     ecx, eax
+    cmovb   eax, ecx
+    test    r10d, r10d
+    jnz     .head
+    mov     esi, RGB(170,30,30)
+    cmp     eax, 3
+    jne     .done
+    mov     esi, RGB(120,20,20)
+.done:
+    ret
+.head:
+    mov     esi, RGB(170,30,30)
+    cmp     eax, 2
+    jb      .done
+    mov     esi, RGB(235,235,235)
+    ret
+
+; bed side (r10d = 1: head): rows 0..8 are the red blanket (foot) or white sheet (head) with a
+; darker hem on row 8, rows 9..15 repeat the planks tile 5 unshaded (m = 256 is the identity)
+px_bed_side:
+    cmp     r14d, 9
+    jae     .planks
+    test    r10d, r10d
+    jnz     .white
+    mov     esi, RGB(170,30,30)
+    cmp     r14d, 8
+    jne     .done
+    mov     esi, RGB(122,20,20)
+    ret
+.white:
+    mov     esi, RGB(235,235,235)
+    cmp     r14d, 8
+    jne     .done
+    mov     esi, RGB(196,196,196)
+.done:
+    ret
+.planks:
+    mov     eax, r15d
+    mov     edx, r14d
+    mov     ecx, 5
+    call    atlas_px
+    mov     esi, eax
+    mov     r8d, 256
+    ret
+
+section .rodata
+; 0.9 bitmaps. Tall grass: seven 1-px blades (heights 9, 12, 7, 14, 8, 11, 6), dark root, light tip
+pal_tallgrass:
+    PAL 'd', 52, 120, 40
+    PAL 'g', 72, 164, 46
+    PAL 'G', 108, 188, 58
+    dq 0
+tallgrass_bmp:
+    db "................"
+    db "................"
+    db "........G......."
+    db "........G......."
+    db "...G....g......."
+    db "...G....g...G..."
+    db "...g....g...G..."
+    db ".G.g....g...g..."
+    db ".G.g....g.G.g..."
+    db ".g.g.G..g.G.g..."
+    db ".g.g.G..g.g.g.G."
+    db ".g.g.g..g.g.g.G."
+    db ".g.d.g..d.g.g.g."
+    db ".d.d.g..d.g.d.g."
+    db ".d.d.d..d.d.d.d."
+    db ".d.d.d..d.d.d.d."
+
+; bed icon: side-on, red blanket and white pillow on plank legs
+pal_icon_bed:
+    PAL 'K', 40, 26, 14
+    PAL 'W', 240, 240, 240
+    PAL 'w', 200, 200, 210
+    PAL 'R', 190, 36, 36
+    PAL 'r', 130, 22, 22
+    PAL 'P', 162, 130, 78
+    PAL 'p', 110, 86, 50
+    dq 0
+icon_bed_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "..pp............"
+    db "..pP............"
+    db "..pPWWWWWw....."
+    db "..pPWWWWWwRRRR.."
+    db "..pPRRRRRRRRRRr."
+    db "..pPRRRRRRRRRRr."
+    db "..pPrrrrrrrrrrr."
+    db "..pPPPPPPPPPPPPp"
+    db "..pppppppppppppp"
+    db "..pP..........pP"
+    db "..pp..........pp"
+    db "................"
+
+; boat icon: side-on plank hull with raised bow and stern
+pal_icon_boat:
+    PAL 'K', 40, 26, 14
+    PAL 'P', 162, 130, 78
+    PAL 'p', 110, 86, 50
+    PAL 'h', 84, 62, 22
+    dq 0
+icon_boat_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+    db "...h........h..."
+    db "...hp......ph..."
+    db "...hP......Ph..."
+    db "..hhPPPPPPPPPhh."
+    db "..hPPPPPPPPPPPPh"
+    db "..hpPPPPPPPPPPph"
+    db "...hpPPPPPPPPph."
+    db "....hppppppppp.."
+    db ".....hhhhhhhh..."
+    db "................"
+    db "................"
+
+; breath bubbles (9x9 HUD bitmaps): a light-blue ring with a white highlight; popping = 4 dots
+pal_bubble:
+    PAL 'B', 70, 130, 220
+    PAL 'b', 150, 205, 255
+    PAL 'w', 255, 255, 255
+    dq 0
+bubble_bmp:
+    db "..bbbbb.."
+    db ".b.....B."
+    db "b..ww...B"
+    db "b.w.....B"
+    db "b.......B"
+    db "b.......B"
+    db "b.......B"
+    db ".B.....B."
+    db "..BBBBB.."
+bubble_pop_bmp:
+    db "........."
+    db ".bb...bb."
+    db ".bw...BB."
+    db "........."
+    db "........."
+    db "........."
+    db ".bb...BB."
+    db ".bB...BB."
+    db "........."
+
+section .text

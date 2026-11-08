@@ -61,6 +61,8 @@ creative_default: db STONE, DIRT, GRASS, COBBLE, PLANKS, LOG, LEAVES, GLASS, BRI
 
 recipes:
     db 1, 1, PLANKS, 4, LOG, 0, 0, 0, 0, 0, 0, 0, 0
+    db 1, 1, PLANKS, 4, PINE_LOG, 0, 0, 0, 0, 0, 0, 0, 0
+    db 1, 1, PLANKS, 4, BIRCH_LOG, 0, 0, 0, 0, 0, 0, 0, 0
     db 1, 2, STICK, 4, PLANKS, PLANKS, 0, 0, 0, 0, 0, 0, 0
     db 2, 2, CRAFTING_TABLE, 1, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0, 0, 0
     TOOLS PLANKS, WOOD_PICKAXE, WOOD_AXE, WOOD_SHOVEL, WOOD_SWORD
@@ -128,6 +130,8 @@ recipes:
     db 3, 3, DIAMOND_HAMMER, 1, DIAMOND, DIAMOND, DIAMOND, DIAMOND, STICK, DIAMOND, 0, STICK, 0
     db 3, 3, IRON_SPEAR, 1, 0, 0, IRON_INGOT, 0, STICK, 0, STICK, 0, 0
     db 3, 3, DIAMOND_SPEAR, 1, 0, 0, DIAMOND, 0, STICK, 0, STICK, 0, 0
+    db 3, 2, BED, 1, WOOL, WOOL, WOOL, PLANKS, PLANKS, PLANKS, 0, 0, 0
+    db 3, 2, BOAT, 1, PLANKS, 0, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0
 recipes_end:
 
 section .data

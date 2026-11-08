@@ -1,11 +1,13 @@
 ; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts and fireballs. Spawn, flight, hits
 ; on mobs and the player, arrows sticking in blocks and the player picking his own back up,
-; rockets and fireballs exploding on impact, drawing. Projectiles are not saved with the world.
+; rockets and fireballs exploding on impact, drawing. Projectiles are not saved with the world; they
+; live in local coordinates (arrows_shift follows the origin) and expire on their own, so nothing
+; removes them when a column unloads.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render
+global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift
 
 extern player, raycast, ray_aabb, mobs_raycast, mob_strike, explode_at, explode_magic
 extern surv, game_mode, inv_add
@@ -816,4 +818,26 @@ draw_box:
     movaps  xmm2, xmm0
     call    render_box
     add     rsp, 8
+    ret
+
+; arrows_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every live projectile's local x
+; and z drop by that much (exact: dx and dz are multiples of 512)
+arrows_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [arrows]
+    lea     rcx, [arrows_end]
+.l:
+    cmp     dword [rax + ARROWENT.live], 0
+    je      .next
+    movss   xmm2, [rax + ARROWENT.x]
+    subss   xmm2, xmm0
+    movss   [rax + ARROWENT.x], xmm2
+    movss   xmm2, [rax + ARROWENT.z]
+    subss   xmm2, xmm1
+    movss   [rax + ARROWENT.z], xmm2
+.next:
+    add     rax, ARROWENT_size
+    cmp     rax, rcx
+    jb      .l
     ret

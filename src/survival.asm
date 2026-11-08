@@ -11,6 +11,7 @@ extern audio_play, inv_held, inv_consume_held, armor_points
 extern item_food, item_saturation, block_step_sound
 extern world_get, world_is_solid, world_is_opaque
 extern rpg_stats, gear_powers, combat_phoenix_cd, fx_burst, hud_banner
+extern player_eye_in_water, sleep_cancel
 
 section .rodata
 align 4
@@ -40,7 +41,7 @@ surv_max_health: dd 20                  ; health cap in half hearts; rpg_recompu
 
 section .text
 
-; survival_reset(): full health (surv_max_health) and food, everything else zero
+; survival_reset(): full health (surv_max_health) and food, a full lung of air, everything else zero
 survival_reset:
     lea     rdi, [surv]
     mov     ecx, SURVIVAL_size
@@ -50,13 +51,14 @@ survival_reset:
     mov     [surv + SURVIVAL.health], eax
     mov     dword [surv + SURVIVAL.food], 20
     mov     dword [surv + SURVIVAL.saturation], __float32__(5.0)
+    mov     dword [surv + SURVIVAL.breath], MAX_BREATH
     ret
 
 ; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
 ; armor bonus, at most 20) reduces damage from mobs and explosions; environmental damage (a fall,
-; fire, hunger, suffocation) is given for a 20-health character and scales with the maximum
-; health (env_scale). A hit that lands starts 30 steps of invulnerability. A blow that would kill
-; may be undone by the Phoenix ring (lower_health).
+; fire, hunger, suffocation, drowning) is given for a 20-health character and scales with the maximum
+; health (env_scale). A hit that lands starts 30 steps of invulnerability and wakes a sleeper
+; (sleep_cancel). A blow that would kill may be undone by the Phoenix ring (lower_health).
 survival_damage:
     push    rbp
     mov     rbp, rsp
@@ -98,13 +100,14 @@ survival_damage:
     cmovb   eax, ecx                    ; max(1, ...)
     mov     ebx, eax
     jmp     .apply
-.environment:                           ; a fall, hunger, suffocation or fire: scaled to the health
+.environment:                           ; a fall, hunger, suffocation, fire or drowning: scaled to the health
     cmp     r12d, CAUSE_POISON
-    jae     .apply
+    je      .apply
     mov     edi, ebx
     call    env_scale
     mov     ebx, eax
 .apply:
+    call    sleep_cancel
     mov     dword [surv + SURVIVAL.invuln], 30
     mov     dword [surv + SURVIVAL.hurt_flash], 20
     movss   xmm0, [surv + SURVIVAL.exhaustion]
@@ -406,15 +409,44 @@ survival_step:
     jz      .clear
     inc     dword [surv + SURVIVAL.suffocate_timer]
     cmp     dword [surv + SURVIVAL.suffocate_timer], 30
-    jb      .timers
+    jb      .breath
     mov     dword [surv + SURVIVAL.suffocate_timer], 0
     mov     edi, 1
     mov     esi, CAUSE_SUFFOCATE
     call    survival_damage
-    jmp     .timers
+    jmp     .breath
 .clear:
     mov     dword [surv + SURVIVAL.suffocate_timer], 0
-    ; 7. timers count down
+    ; 7. breath: under water the air runs out, then 1 drowning damage every 60 steps; in the air it
+    ; comes back 5 steps at a time
+.breath:
+    call    player_eye_in_water
+    test    eax, eax
+    jz      .air
+    mov     eax, [surv + SURVIVAL.breath]
+    test    eax, eax
+    jz      .drowning
+    dec     eax
+    mov     [surv + SURVIVAL.breath], eax
+    jnz     .timers
+.drowning:
+    inc     dword [surv + SURVIVAL.drown_timer]
+    cmp     dword [surv + SURVIVAL.drown_timer], 60
+    jb      .timers
+    mov     dword [surv + SURVIVAL.drown_timer], 0
+    mov     edi, 1
+    mov     esi, CAUSE_DROWN
+    call    survival_damage
+    jmp     .timers
+.air:
+    mov     eax, [surv + SURVIVAL.breath]
+    add     eax, 5
+    mov     ecx, MAX_BREATH
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     [surv + SURVIVAL.breath], eax
+    mov     dword [surv + SURVIVAL.drown_timer], 0
+    ; 8. timers count down
 .timers:
     cmp     dword [surv + SURVIVAL.invuln], 0
     jle     .flash

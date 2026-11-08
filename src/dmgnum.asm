@@ -2,12 +2,12 @@
 ; smaller and translucent) and the words PARRY!, BLOCKED, DODGED, STUNNED, FROZEN and IMMUNE.
 ; 32 entries; each rises 0.6 blocks/s for 50 fixed steps and is drawn by the HUD at world_to_ui of
 ; its position, fading over its last 15 steps. When every entry is taken the oldest is replaced.
-; Nothing here is saved or random.
+; Nothing here is saved or random. Positions are local coordinates: dmgnum_shift follows the origin.
 %include "common.inc"
 default rel
 
 global dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_draw
-global dmgnum_count, dmgnum_list, dmgnum_style
+global dmgnum_count, dmgnum_list, dmgnum_style, dmgnum_shift
 
 extern world_to_ui, ui_text_centered, i32_to_str
 
@@ -296,4 +296,26 @@ dmgnum_draw:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; dmgnum_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every live entry's local x and
+; z drop by that much (exact: dx and dz are multiples of 512)
+dmgnum_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [dmgnum_list]
+    lea     rcx, [dmgnum_list + MAX_DMGNUM * DMGNUM_size]
+.l:
+    cmp     dword [rax + DMGNUM.kind], DK_FREE
+    je      .n
+    movss   xmm2, [rax + DMGNUM.x]
+    subss   xmm2, xmm0
+    movss   [rax + DMGNUM.x], xmm2
+    movss   xmm2, [rax + DMGNUM.z]
+    subss   xmm2, xmm1
+    movss   [rax + DMGNUM.z], xmm2
+.n:
+    add     rax, DMGNUM_size
+    cmp     rax, rcx
+    jb      .l
     ret

@@ -31,8 +31,6 @@ extern trade_offer, trade_can, trade_execute
 %define R_XP      rpg_state + RPGSAVE.xp
 %define R_RANKS   rpg_ext + RPGEXT.ranks
 %define R_ATTR    rpg_ext + RPGEXT.attr
-%define R_CLEARED rpg_state + RPGSAVE.cleared
-%define R_FLAGS   rpg_state + RPGSAVE.flags
 %define HDR       world_header + WORLDHDR.rpg
 %define HDRX      world_header + WORLDHDR.rpgx
 %define KS_NONE   0xFF
@@ -1656,8 +1654,6 @@ test_rpg_save_load_validates:
     mov     byte [R_QUEST], 3
     mov     byte [R_QSTATE], 1
     mov     word [R_QPROG], 2
-    mov     byte [R_CLEARED], 5
-    mov     byte [R_FLAGS], 1
     lea     rdi, [world_header]
     call    rpg_save
     EXPECT_B HDR + RPGSAVE.class, CLASS_ARCHER
@@ -1665,7 +1661,6 @@ test_rpg_save_load_validates:
     EXPECT_D HDR + RPGSAVE.xp, 55
     EXPECT_B HDRX + RPGEXT.ranks + 1, 1
     EXPECT_B HDRX + RPGEXT.version, RPGX_VERSION
-    EXPECT_B HDR + RPGSAVE.cleared, 5
     call    rpg_reset
     CALL0   rpg_class, CLASS_NONE
     call    hdr_load
@@ -1680,8 +1675,6 @@ test_rpg_save_load_validates:
     EXPECT_B R_QSTATE, 1
     cmp     word [R_QPROG], 2
     jne     .fail
-    EXPECT_B R_CLEARED, 5
-    EXPECT_B R_FLAGS, 1
     CALL1   rpg_stat, STAT_RANGED_DMG, 27   ; stats are recomputed: 15 + 2 * 6
     CALL1   rpg_stat, STAT_MOVE_SPEED, 8    ; Fleet Foot rank 1: 5 + 3
     CALL1   rpg_stat, STAT_CRIT_CHANCE, 11  ; 8 + 3
@@ -1813,33 +1806,23 @@ test_rpg_save_load_validates:
     call    hdr_load
     CALL0   rpg_level, 50
     EXPECT_D R_XP, 0
-    ; quest 0..8, quest state 0/1, cleared bits 0..5, flag bit 0
+    ; quest 0..8, quest state 0/1
     mov     edi, CLASS_WARRIOR
     mov     esi, 4
     call    hdr_set
     mov     byte [HDR + RPGSAVE.quest], 8
     mov     byte [HDR + RPGSAVE.quest_state], 1
-    mov     byte [HDR + RPGSAVE.cleared], 0x3F
-    mov     byte [HDR + RPGSAVE.flags], 1
     call    hdr_load
     EXPECT_B R_QUEST, 8
     EXPECT_B R_QSTATE, 1
-    EXPECT_B R_CLEARED, 0x3F
-    EXPECT_B R_FLAGS, 1
     mov     byte [HDR + RPGSAVE.quest], 9
     mov     byte [HDR + RPGSAVE.quest_state], 2
-    mov     byte [HDR + RPGSAVE.cleared], 0xFF
-    mov     byte [HDR + RPGSAVE.flags], 0xFE
     call    hdr_load
     EXPECT_B R_QUEST, 0
     EXPECT_B R_QSTATE, 0
-    EXPECT_B R_CLEARED, 0x3F
-    EXPECT_B R_FLAGS, 0
     mov     byte [HDR + RPGSAVE.quest], 0xFF
-    mov     byte [HDR + RPGSAVE.flags], 0xFF
     call    hdr_load
     EXPECT_B R_QUEST, 0
-    EXPECT_B R_FLAGS, 1
     TEST_END
 
 ; ---- quests ----------------------------------------------------------------------------

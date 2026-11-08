@@ -3,6 +3,9 @@
 ; damage, drops, save records. Every mob has a level (the player's; a dungeon's two above, the
 ; crypt boss's at least 20) that scales its health and its blows on the player. Elites roll
 ; affixes: elemental parts in their blows, vampiric healing, speed, a juggernaut's stability.
+; Mobs live in LOCAL coordinates: mobs_shift follows the origin, mobs_remove_box drops the mobs of
+; a column that unloads, and a mob whose column is not ready stands frozen. Land mobs steer clear
+; of water and, once in it, hold jump and float.
 ; A MOB starts with its BODY (MOB.body = 0), so a mob pointer is also a body pointer.
 %include "common.inc"
 default rel
@@ -10,19 +13,20 @@ default rel
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
 global mob_spawn, mob_spawn_elite, mob_spawn_npc, mob_is_hostile, mobs_raycast
 global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
-global mobs_save, mobs_load, yaw_from
+global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 
-extern body_init, body_step, body_intersects_block, player, player_eye
+extern body_init, body_step, body_in_water, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
-extern world_top_y, world_get, raycast, light_get
+extern world_top_y, world_get, world_column_ready, world_header, raycast, light_get, block_flags
 extern sky_brightness, sky_is_night
 extern surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
 extern arrows_spawn, explode_at, fx_explosion
 extern player_take_hit, combat_hit_flags, combat_stealth_t
 extern dmgnum_spawn, dmgnum_text, hud_banner
-extern rpg_state, rpg_on_mob_killed, rpg_add_xp, quests_on_boss_killed, structures_on_mob_killed
+extern rpg_on_mob_killed, rpg_add_xp, quests_on_boss_killed
+extern structures_on_mob_killed, structures_on_boss_killed
 extern rpg_level, rpg_stats
 extern combat_player_status, combat_attacker, combat_kb_mult, status_speed_mult, explode_dmg_mult
 extern gear_drop_from_mob
@@ -35,9 +39,9 @@ extern gear_drop_from_mob
 %define HIT_COOLDOWN  60                ; steps between zombie hits
 %define PANIC_STEPS   180               ; a hurt pig or chicken runs this long
 %define CREEPER_FUSE  90                ; steps from a lit fuse to the blast
-; ground a mob may spawn on, one bit per block id
-%define HOSTILE_GROUND ((1 << STONE) | (1 << GRASS) | (1 << DIRT) | (1 << COBBLE) | (1 << SAND) | (1 << GRAVEL))
-%define PASSIVE_GROUND (1 << GRASS)
+; what kind of ground spawn_at_ground looks for
+%define GROUND_HOSTILE 0                ; a solid, opaque block that is not bedrock or foliage
+%define GROUND_PASSIVE 1                ; grass
 %define ZOMBIE_WINDUP 20                ; steps a zombie's arm is up before the blow
 %define ZOMBIE_WINDUP_ELITE 16
 %define SPIDER_WINDUP 12                ; steps a spider rears up before the bite
@@ -56,7 +60,6 @@ extern gear_drop_from_mob
 %define MOB_HP_STEP   0.15              ; health per level above 1, as a fraction of the base health
 %define MOB_DMG_STEP  0.10              ; damage of a mob's blows per level above 1 (0.8 balance: 0.08 -> 0.10)
 %define MOB_MAX_LEVEL 255               ; a save keeps the level in one byte
-%define ORIGIN_CRYPT  99                ; MOB.origin of the crypt boss
 %define CRYPT_MIN_LEVEL 20              ; the crypt boss is at least this level
 %define ELITE_TWO_AFFIXES 15            ; elites from this level on carry two affixes
 %define NATURAL_ELITE_PCT 4             ; share of the night spawner's mobs that are elite
@@ -158,8 +161,11 @@ c_day:      dd 0.8                      ; brightness at which zombies burn
 c_vol_say:  dd 0.7
 c_vol_hurt: dd 1.0
 c_glide:    dd -3.0                     ; slowest a chicken falls, blocks/s
-c_256:      dd 256.0
-c_64:       dd 64.0
+c_load_xz:  dd 65536.0                  ; a saved mob lies within this many blocks of the origin...
+c_load_y:   dd 256.0                    ; ...and below this height
+c_water_dx: dd 0.7                      ; how far ahead a mob looks for water
+c_turn:     dd 180.0                    ; a mob that meets water turns about
+k_abs:      dd 0x7FFFFFFF               ; |x| mask (loaded with movss: andps needs a register here)
 c_one:      dd 1.0
 ; creeper
 c_ignite2:  dd 9.0                      ; the fuse lights within 3 blocks
@@ -284,8 +290,10 @@ mob_count_kind:
     jb      .loop
     ret
 
-; mob_level_for(edi origin) -> eax the level of a mob born at that MOB.origin: the player's, two
-; above it in a dungeon (origin 1..6), the player's + 3 but at least 20 for the crypt boss (99)
+; mob_level_for(edi origin) -> eax the level of a mob born at that MOB.origin (a world_header.sites
+; index + 1, 0 = no site): the player's, two above it in a dungeon, the player's + 3 but at least
+; 20 for the Fallen King of a crypt. Any other origin (a village, a camp, an index no record backs)
+; gives the player's level.
 mob_level_for:
     push    rbx
     mov     ebx, edi
@@ -294,12 +302,17 @@ mob_level_for:
     cmp     eax, ecx
     cmovl   eax, ecx                    ; a blank character reads level 0: count it as 1
     lea     edx, [rbx - 1]
-    cmp     edx, NUM_DUNGEONS - 1
-    ja      .crypt
+    cmp     edx, MAX_SITESTATES - 1
+    ja      .ret                        ; no site (origin 0 wraps round to a huge index)
+    imul    edx, edx, SITESTATE_size
+    lea     rcx, [world_header + WORLDHDR.sites]
+    movzx   edx, byte [rcx + rdx + SITESTATE.kind]
+    cmp     edx, SITE_DUNGEON
+    jne     .crypt
     add     eax, 2                      ; a dungeon: two levels above the player
     jmp     .ret
 .crypt:
-    cmp     ebx, ORIGIN_CRYPT
+    cmp     edx, SITE_CRYPT
     jne     .ret
     add     eax, 3
     mov     ecx, CRYPT_MIN_LEVEL
@@ -628,14 +641,18 @@ yaw_from:
 ; spiders hunt within 16 blocks (ai_creeper, ai_skeleton, ai_spider); the Fallen King hunts within
 ; 48 blocks and sees through smoke (ai_boss); villagers stay within 6 blocks of home and turn to a
 ; player within 4; a panicking pig or chicken runs along its heading; everything else wanders in
-; 1-4 s legs.
-; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player.
+; 1-4 s legs. At the end (.jump) a mob in water holds jump (it floats up and drifts); one that would
+; step into water (WATER 0.7 blocks ahead at its feet or just below that) turns about when it
+; wanders and stops when it is hunting or walking home; one that walks into an obstacle hops.
+; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player, [rsp+12] 1 while its
+; heading is steered on purpose (hunting, walking home), else 0.
 mob_ai:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 24
     mov     rbx, rdi
+    mov     dword [rsp + 12], 0         ; no purposeful heading yet
     xor     eax, eax
     mov     [rbx + MOB.input + INPUT.strafe], eax
     mov     [rbx + MOB.input + INPUT.down], eax
@@ -681,6 +698,7 @@ mob_ai:
     movss   xmm1, [rsp + 4]
     call    yaw_from
     movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rsp + 12], 1         ; hunting: the heading is on purpose
     mov     eax, [rbx + MOB.type]
     cmp     eax, MOB_ZOMBIE
     je      .zombie
@@ -805,6 +823,7 @@ mob_ai:
     movss   xmm1, [rsp + 4]
     call    yaw_from
     movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rsp + 12], 1         ; walking home: so is this one
     mov     dword [rbx + MOB.input + INPUT.fwd], 1
     jmp     .jump
 .at_home:
@@ -849,7 +868,28 @@ mob_ai:
     jmp     .jump
 .stand:
     mov     dword [rbx + MOB.input + INPUT.fwd], 0
-.jump:                                  ; hop when walking into something
+.jump:                                  ; steer clear of water, hop when walking into something
+    mov     rdi, rbx
+    call    body_in_water
+    test    eax, eax
+    jz      .dry
+    mov     eax, 1                      ; afloat: it holds jump, so it floats up and drifts
+    jmp     .store_jump
+.dry:
+    cmp     dword [rbx + MOB.input + INPUT.fwd], 0
+    je      .hop
+    mov     rdi, rbx
+    call    mob_water_ahead
+    test    eax, eax
+    jz      .hop
+    cmp     dword [rsp + 12], 0
+    jne     .halt
+    mov     rdi, rbx                    ; a wanderer swings away from the water...
+    call    mob_turn_about
+    jmp     .hop
+.halt:
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0  ; ...a purposeful walker stops at the shore
+.hop:
     xor     eax, eax
     cmp     dword [rbx + MOB.input + INPUT.fwd], 0
     je      .store_jump
@@ -865,6 +905,82 @@ mob_ai:
     add     rsp, 24
     pop     rbx
     pop     rbp
+    ret
+
+; mob_water_ahead(rdi mob) -> eax 1 when WATER lies 0.7 blocks ahead of the mob along its heading
+; (behind it when it backs away: input.fwd < 0), in the cell of its feet or in the cell below that
+; rbx = mob, r12d, r13d, r14d = x, z and feet y of the cell looked at
+mob_water_ahead:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     rbx, rdi
+    movss   xmm0, [rbx + BODY.yaw]
+    call    sincos_deg                  ; xmm0 = sin yaw, xmm1 = cos yaw
+    cvtsi2ss xmm2, dword [rbx + MOB.input + INPUT.fwd]
+    mulss   xmm2, [c_water_dx]          ; +-0.7 along the direction of travel
+    mulss   xmm0, xmm2
+    addss   xmm0, [rbx + BODY.x]        ; x + 0.7 sin yaw
+    roundss xmm0, xmm0, 9
+    cvttss2si r12d, xmm0
+    mulss   xmm1, xmm2
+    movss   xmm3, [rbx + BODY.z]
+    subss   xmm3, xmm1                  ; z - 0.7 cos yaw
+    roundss xmm3, xmm3, 9
+    cvttss2si r13d, xmm3
+    movss   xmm0, [rbx + BODY.y]
+    roundss xmm0, xmm0, 9
+    cvttss2si r14d, xmm0
+    mov     edi, r12d
+    mov     esi, r14d
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    je      .yes
+    mov     edi, r12d
+    lea     esi, [r14 - 1]
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    je      .yes
+    xor     eax, eax
+    jmp     .ret
+.yes:
+    mov     eax, 1
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; mob_turn_about(rdi mob): the heading swings round to face away from what lies ahead: 180 degrees
+; plus an offset of -45..+45 that is a fixed hash of the mob's slot (no rng: a slot always swings
+; the same way), wrapped into [0, 360)
+mob_turn_about:
+    push    rbx
+    mov     rbx, rdi
+    call    mob_index
+    imul    eax, eax, 0x9E3779B1
+    shr     eax, 16
+    xor     edx, edx
+    mov     ecx, 91
+    div     ecx                         ; edx = 0..90
+    sub     edx, 45
+    cvtsi2ss xmm0, edx
+    addss   xmm0, [c_turn]
+    addss   xmm0, [rbx + BODY.yaw]
+    movss   xmm1, [c_360]
+    comiss  xmm0, xmm1
+    jb      .set
+    subss   xmm0, xmm1
+.set:
+    movss   [rbx + BODY.yaw], xmm0
+    pop     rbx
     ret
 
 ; mob_reel(rdi mob, rsi frame): knocks the mob away from the player at 6 blocks/s.
@@ -1860,10 +1976,16 @@ mob_update:
     pop     rbp
     ret
 
-; spawn_at_ground(edi type, esi x, edx z, ecx ground mask) -> eax slot index, or -1.
-; Needs 1 <= x, z <= 254, a surface at y + 1 <= 62 and a top block whose bit is set in the mask;
-; a hostile type also needs block light < 8 in the cell above that block (a torch keeps its
-; surroundings clear); a spider (1.4 blocks wide) also needs the 3 x 3 cells above it free.
+; spawn_at_ground(edi type, esi x, edx z, ecx ground kind) -> eax slot index, or -1.
+; (x, z) is a local cell. Its column must be ready and its top block at y <= 254. The mob stands on
+; the top block, in the cell above it; when that block is TALL_GRASS or SNOW_LAYER it stands in that
+; cell instead, on the block below. The cell it stands in is never WATER. GROUND_HOSTILE wants a
+; solid, opaque block that is not BEDROCK or foliage (LEAVES, PINE_LEAVES, BIRCH_LEAVES) under it,
+; GROUND_PASSIVE wants GRASS. A hostile type also needs block light < 8 in its cell (a torch keeps
+; its surroundings clear); a spider (1.4 blocks wide) also needs the 3 x 3 cells around that cell
+; free (air, TALL_GRASS or SNOW_LAYER).
+; rbx = type, r12d, r13d = x, z, r14d = ground kind, r15d = y of the top block;
+; frame: [rsp] y of the cell the mob stands in, [rsp+4] id of the block under it.
 spawn_at_ground:
     push    rbp
     mov     rbp, rsp
@@ -1873,39 +1995,77 @@ spawn_at_ground:
     push    r14
     push    r15
     sub     rsp, 8
-    lea     eax, [rsi - 1]
-    cmp     eax, 253
-    ja      .fail
-    lea     eax, [rdx - 1]
-    cmp     eax, 253
-    ja      .fail
     mov     ebx, edi
     mov     r12d, esi
     mov     r13d, edx
     mov     r14d, ecx
     mov     edi, r12d
     mov     esi, r13d
+    call    world_column_ready
+    test    eax, eax
+    jz      .fail
+    mov     edi, r12d
+    mov     esi, r13d
     call    world_top_y
     test    eax, eax
     js      .fail                       ; empty column
-    cmp     eax, 61
-    jg      .fail
+    cmp     eax, 254
+    jg      .fail                       ; no room above the top
     mov     r15d, eax
     mov     edi, r12d
     mov     esi, r15d
     mov     edx, r13d
+    call    world_get                   ; the top block
+    lea     ecx, [r15 + 1]
+    mov     [rsp], ecx                  ; it is the ground: the mob stands in the cell above
+    cmp     eax, TALL_GRASS
+    je      .plant
+    cmp     eax, SNOW_LAYER
+    jne     .ground
+.plant:                                 ; a plant or a snow layer: the mob stands in that very cell
+    test    r15d, r15d
+    jz      .fail
+    mov     [rsp], r15d
+    mov     edi, r12d
+    lea     esi, [r15 - 1]
+    mov     edx, r13d
+    call    world_get                   ; ...on the block below it
+.ground:
+    mov     [rsp + 4], eax
+    mov     edi, r12d                   ; the cell it stands in is never water
+    mov     esi, [rsp]
+    mov     edx, r13d
     call    world_get
-    cmp     eax, 31
-    ja      .fail
-    bt      r14d, eax
-    jnc     .fail
+    cmp     eax, WATER
+    je      .fail
+    mov     eax, [rsp + 4]
+    test    r14d, r14d
+    jnz     .passive
+    cmp     eax, BEDROCK
+    je      .fail
+    cmp     eax, LEAVES
+    je      .fail
+    cmp     eax, PINE_LEAVES
+    je      .fail
+    cmp     eax, BIRCH_LEAVES
+    je      .fail
+    lea     rcx, [block_flags]
+    movzx   ecx, byte [rcx + rax]
+    and     ecx, FLAG_SOLID | FLAG_OPAQUE
+    cmp     ecx, FLAG_SOLID | FLAG_OPAQUE
+    jne     .fail
+    jmp     .ground_ok
+.passive:
+    cmp     eax, GRASS
+    jne     .fail
+.ground_ok:
     lea     eax, [rbx - 1]
     cmp     eax, NUM_MOB_TYPES
     jae     .lit_ok
     cmp     byte [t_hostile + rax], 0
     je      .lit_ok
     mov     edi, r12d
-    lea     esi, [r15 + 1]
+    mov     esi, [rsp]
     mov     edx, r13d
     call    light_get
     and     eax, 15                     ; the block-light nibble
@@ -1915,7 +2075,7 @@ spawn_at_ground:
     cmp     ebx, MOB_SPIDER
     jne     .place
     mov     edi, r12d
-    lea     esi, [r15 + 1]
+    mov     esi, [rsp]
     mov     edx, r13d
     call    area_clear
     test    eax, eax
@@ -1924,8 +2084,7 @@ spawn_at_ground:
     movss   xmm3, [c_half]
     cvtsi2ss xmm0, r12d
     addss   xmm0, xmm3                  ; x + 0.5
-    lea     eax, [r15 + 1]
-    cvtsi2ss xmm1, eax                  ; on top of the ground
+    cvtsi2ss xmm1, dword [rsp]          ; on top of the ground
     cvtsi2ss xmm2, r13d
     addss   xmm2, xmm3                  ; z + 0.5
     mov     edi, ebx
@@ -1943,7 +2102,7 @@ spawn_at_ground:
     pop     rbp
     ret
 
-; spawn_near_player(edi type, esi min distance, edx distance range, ecx ground mask) -> eax slot or -1.
+; spawn_near_player(edi type, esi min distance, edx distance range, ecx ground kind) -> eax slot or -1.
 ; Picks a random bearing and a distance in [min, min + range) around the player.
 ; Frame: [rsp] sin, [rsp+4] cos of the bearing.
 spawn_near_player:
@@ -1993,7 +2152,8 @@ spawn_near_player:
     pop     rbp
     ret
 
-; area_clear(edi x, esi y, edx z) -> eax 1 when the 3 x 3 cells centred on (x, y, z) are all air
+; area_clear(edi x, esi y, edx z) -> eax 1 when the 3 x 3 cells centred on (x, y, z) are all free:
+; air, TALL_GRASS or SNOW_LAYER (nothing there stops a body)
 area_clear:
     push    rbp
     mov     rbp, rsp
@@ -2018,6 +2178,10 @@ area_clear:
     call    world_get
     test    eax, eax
     jz      .cell
+    cmp     eax, TALL_GRASS
+    je      .cell
+    cmp     eax, SNOW_LAYER
+    je      .cell
     xor     eax, eax
     jmp     .ret
 .clear:
@@ -2045,7 +2209,7 @@ spawn_passive:
     mov     edi, ebx
     mov     esi, 24
     mov     edx, 25
-    mov     ecx, PASSIVE_GROUND
+    mov     ecx, GROUND_PASSIVE
     call    spawn_near_player
 .done:
     pop     r12
@@ -2085,7 +2249,7 @@ mobs_spawn_tick:
     movzx   edi, byte [night_kinds + rax]
     mov     esi, 24
     mov     edx, 17
-    mov     ecx, HOSTILE_GROUND
+    mov     ecx, GROUND_HOSTILE
     call    spawn_near_player
     test    eax, eax
     js      .passive                    ; no spot found: nothing spawned
@@ -2123,7 +2287,8 @@ mobs_spawn_tick:
     pop     rbp
     ret
 
-; mobs_step(): one fixed 1/60 s step for every mob, then the spawner
+; mobs_step(): one fixed 1/60 s step for every mob, then the spawner. A mob whose column is not
+; ready (not generated yet, or not lit) stands frozen: no AI, no physics, no timers.
 mobs_step:
     push    rbp
     mov     rbp, rsp
@@ -2134,6 +2299,15 @@ mobs_step:
 .loop:
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next
+    movss   xmm0, [rbx + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si edi, xmm0
+    movss   xmm0, [rbx + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    call    world_column_ready
+    test    eax, eax
+    jz      .next
     mov     rdi, rbx
     call    mob_update
 .next:
@@ -2146,8 +2320,8 @@ mobs_step:
     pop     rbp
     ret
 
-; mobs_populate(): scatter pigs, then chickens, around the world centre (up to 200 tries
-; each, until 10 pigs / 6 chickens live)
+; mobs_populate(): scatter pigs, then chickens, around the player (up to 200 tries each, until
+; 10 pigs / 6 chickens live)
 mobs_populate:
     push    rbp
     mov     rbp, rsp
@@ -2161,7 +2335,7 @@ mobs_populate:
     ret
 
 ; populate(edi type, esi count): up to 200 tries at spawning that type on grass in the 97 x 97
-; square around the world centre, until `count` of them live
+; square around the player (floor of his x and z, +-48), until `count` of them live
 populate:
     push    rbp
     mov     rbp, rsp
@@ -2177,19 +2351,25 @@ populate:
     call    mob_count_type
     cmp     eax, r14d
     jae     .done
-    call    rng_next                    ; x = 128 + rng % 97 - 48
+    call    rng_next                    ; x = player x + rng % 97 - 48
     xor     edx, edx
     mov     ecx, 97
     div     ecx
-    lea     r12d, [rdx + 80]
+    movss   xmm0, [player + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    lea     r12d, [rax + rdx - 48]
     call    rng_next
     xor     edx, edx
     mov     ecx, 97
     div     ecx
-    add     edx, 80                     ; z
+    movss   xmm0, [player + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    lea     edx, [rax + rdx - 48]       ; z
     mov     edi, r13d
     mov     esi, r12d
-    mov     ecx, PASSIVE_GROUND
+    mov     ecx, GROUND_PASSIVE
     call    spawn_at_ground
     dec     ebx
     jnz     .try
@@ -2443,16 +2623,20 @@ mob_drops:
     pop     rbp
     ret
 
-; boss_death(rdi mob): the Fallen King falls (his loot comes from mob_drops): the realm remembers
-; it (progress flag bit 0), 500 XP + 25 per level of his, the quest chain moves on, a banner and a
-; blast at his heart
+; boss_death(rdi mob): the Fallen King falls (his loot comes from mob_drops): the crypt he was born
+; in (MOB.origin) is recorded as cleared (structures_on_boss_killed), 500 XP + 25 per level of his,
+; the quest chain moves on, a banner and a blast at his heart
 boss_death:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 8
     mov     rbx, rdi
-    or      byte [rpg_state + RPGSAVE.flags], 1
+    mov     edi, [rbx + MOB.origin]
+    test    edi, edi
+    jz      .xp                         ; not born at a site
+    call    structures_on_boss_killed
+.xp:
     mov     edi, [rbx + MOB.level]
     imul    edi, edi, 25
     add     edi, 500
@@ -2482,8 +2666,9 @@ boss_death:
 ; steps pays XP; HF_CRIT and the element bits (HF_ELEM_*) shape the floating damage number. HF_DOT
 ; (a tick of burn, bleed or poison) only tags the mob, raises its bar, shows the number and settles
 ; a kill: no hurt window, shove, lift, sound or panic. A kill reports to the RPG
-; (rpg_on_mob_killed when tagged, with the mob's level), to the dungeon the mob was born in
-; (structures_on_mob_killed) and, for the Fallen King, to boss_death. The Fallen King barely budges
+; (rpg_on_mob_killed when tagged, with the mob's level), to the site the mob was born at
+; (structures_on_mob_killed, MOB.origin = site state index + 1) and, for the Fallen King, to boss_death.
+; The Fallen King barely budges
 ; when hit and roars when he drops to a third of his health.
 ; Frame: [rsp] dirx, [rsp+4] dirz, [rsp+8] health before the hit.
 mob_strike:
@@ -2586,9 +2771,8 @@ mob_damage:
     call    rpg_on_mob_killed
 .origin:
     mov     edi, [rbx + MOB.origin]
-    lea     eax, [rdi - 1]
-    cmp     eax, NUM_DUNGEONS - 1
-    ja      .loot                       ; not born in a dungeon
+    test    edi, edi
+    jz      .loot                       ; not born at a site
     call    structures_on_mob_killed
 .loot:
     cmp     dword [rbx + MOB.type], MOB_BOSS
@@ -2734,9 +2918,20 @@ mobs_save:
     jae     .skip
 %endmacro
 
+; IN_ABS mem, bound: jump to .skip unless |float at mem| < constant bound (NaN and infinities skip)
+%macro IN_ABS 2
+    movss   xmm0, %1
+    movss   xmm1, [k_abs]
+    andps   xmm0, xmm1
+    movss   xmm1, [%2]
+    ucomiss xmm1, xmm0
+    jbe     .skip
+%endmacro
+
 ; mobs_load(rdi WORLDHDR*): clear, then respawn every saved record that describes a known mob
-; type (low byte 1..6, bit 8 = elite, bits 16..23 = level, bits 24..31 = affixes) inside the
-; world. A level of 0 (an older save) leaves the player's level mob_spawn gave; an elite takes
+; type (low byte 1..6, bit 8 = elite, bits 16..23 = level, bits 24..31 = affixes) at a finite
+; position within 65536 blocks of the origin in x and z and 0 <= y < 256. A level of 0 (an older save)
+; leaves the player's level mob_spawn gave; an elite takes
 ; its saved affixes (an elite saved before 0.8 has none: it rolls them, make_elite); the saved
 ; health clamps to 1..the maximum of that level, elite state and affixes.
 mobs_load:
@@ -2762,9 +2957,9 @@ mobs_load:
     dec     eax
     cmp     eax, 5
     ja      .skip                       ; not a saved mob type (1..6)
-    IN_RANGE [r13 + MOBSAVE.x], c_256
-    IN_RANGE [r13 + MOBSAVE.y], c_64
-    IN_RANGE [r13 + MOBSAVE.z], c_256
+    IN_ABS  [r13 + MOBSAVE.x], c_load_xz
+    IN_RANGE [r13 + MOBSAVE.y], c_load_y
+    IN_ABS  [r13 + MOBSAVE.z], c_load_xz
     movzx   edi, byte [r13 + MOBSAVE.type]  ; the low byte is the type, bit 8 marks an elite
     movss   xmm0, [r13 + MOBSAVE.x]
     movss   xmm1, [r13 + MOBSAVE.y]
@@ -2815,4 +3010,61 @@ mobs_load:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; mobs_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: every mob's local x and z, and
+; its home, drop by that much (exact: dx and dz are multiples of 512)
+mobs_shift:
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    lea     rax, [mobs]
+    lea     rcx, [mobs_end]
+.l:
+    cmp     dword [rax + MOB.type], MOB_NONE
+    je      .next
+    movss   xmm2, [rax + BODY.x]
+    subss   xmm2, xmm0
+    movss   [rax + BODY.x], xmm2
+    movss   xmm2, [rax + BODY.z]
+    subss   xmm2, xmm1
+    movss   [rax + BODY.z], xmm2
+    movss   xmm2, [rax + MOB.home_x]
+    subss   xmm2, xmm0
+    movss   [rax + MOB.home_x], xmm2
+    movss   xmm2, [rax + MOB.home_z]
+    subss   xmm2, xmm1
+    movss   [rax + MOB.home_z], xmm2
+.next:
+    add     rax, MOB_size
+    cmp     rax, rcx
+    jb      .l
+    ret
+
+; mobs_remove_box(edi x0, esi z0, edx x1, ecx z1): every mob whose cell (the floor of its x and z)
+; lies in the inclusive local box x0..x1, z0..z1 is removed
+mobs_remove_box:
+    lea     r8, [mobs]
+    lea     r9, [mobs_end]
+.l:
+    cmp     dword [r8 + MOB.type], MOB_NONE
+    je      .next
+    movss   xmm0, [r8 + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    cmp     eax, edi
+    jl      .next
+    cmp     eax, edx
+    jg      .next
+    movss   xmm0, [r8 + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    cmp     eax, esi
+    jl      .next
+    cmp     eax, ecx
+    jg      .next
+    mov     dword [r8 + MOB.type], MOB_NONE
+.next:
+    add     r8, MOB_size
+    cmp     r8, r9
+    jb      .l
     ret
