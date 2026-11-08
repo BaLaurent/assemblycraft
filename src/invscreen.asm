@@ -22,8 +22,6 @@ extern item_names, item_max_stack, i32_to_str
 %define LABEL_COL   RGBA(220, 220, 220, 255)
 %define PANEL_COL   RGBA(62, 62, 68, 235)
 %define EDGE_COL    RGBA(255, 255, 255, 70)
-%define PALETTE_N   92
-%define PAL_ROWS    ((PALETTE_N + 8) / 9)
 %define PAL_VISIBLE 6
 %define PAL_TRACK   (PAL_VISIBLE * 18)
 
@@ -32,15 +30,6 @@ extern item_names, item_max_stack, i32_to_str
 %define CLOSE_CONTAINER 2
 
 section .rodata
-palette:      db 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 23, 24
-%assign i 32
-%rep NUM_ITEMS - 32
-              db i
-%assign i i + 1
-%endrep
-%if $ - palette != PALETTE_N
-%error palette size
-%endif
 s_inventory:  db "Inventory", 0
 s_crafting:   db "Crafting", 0
 s_creative:   db "Creative", 0
@@ -57,8 +46,26 @@ s_py:         resd 1
 show_counts:  resd 1                    ; draw stack counts on the slots
 hover_id:     resd 1                    ; item id under the mouse this frame, 0 = none
 pal_scroll:   resd 1                    ; creative palette: first visible row
+palette_n:    resd 1                    ; entries in palette, 0 = not built yet
+palette:      resb 256                  ; creative palette: every id with a max stack
 
 section .text
+
+; palette_build(): fill palette with every id 1..NUM_ITEMS-1 whose item_max_stack != 0
+palette_build:
+    xor     eax, eax                    ; count
+    mov     ecx, 1
+.l:
+    cmp     byte [item_max_stack + rcx], 0
+    je      .n
+    mov     [palette + rax], cl
+    inc     eax
+.n:
+    inc     ecx
+    cmp     ecx, NUM_ITEMS
+    jb      .l
+    mov     [palette_n], eax
+    ret
 
 ; label(rdi s, esi x, edx y): grey 1x text
 label:
@@ -503,6 +510,10 @@ screen_inventory:
     push    r12
     push    r13
     push    r14
+    cmp     dword [palette_n], 0
+    jne     .built
+    call    palette_build
+.built:
     cmp     dword [app_entered], 0
     je      .entered
     mov     dword [pal_scroll], 0
@@ -566,15 +577,22 @@ screen_inventory:
     xor     ecx, ecx
     test    eax, eax
     cmovs   eax, ecx
-    mov     ecx, PAL_ROWS - PAL_VISIBLE
+    mov     ecx, [palette_n]
+    add     ecx, 8
+    imul    ecx, ecx, 0x38E4            ; / 9 (exact for n < 16384)
+    shr     ecx, 17
+    sub     ecx, PAL_VISIBLE            ; rows - visible
     cmp     eax, ecx
     cmovg   eax, ecx
+    xor     ecx, ecx
+    test    eax, eax
+    cmovs   eax, ecx
     mov     [pal_scroll], eax
     imul    ebx, eax, 9                 ; first visible palette index
     lea     r14d, [rbx + PAL_VISIBLE * 9]
-    cmp     r14d, PALETTE_N
+    cmp     r14d, [palette_n]
     jbe     .pal
-    mov     r14d, PALETTE_N
+    mov     r14d, [palette_n]
 .pal:
     imul    ecx, [pal_scroll], 9
     mov     eax, ebx
@@ -599,14 +617,22 @@ screen_inventory:
     mov     ecx, PAL_TRACK
     mov     r8d, RGBA(255, 255, 255, 40)
     call    ui_rect
+    mov     eax, [palette_n]
+    add     eax, 8
+    xor     edx, edx
+    mov     ecx, 9
+    div     ecx
+    mov     r14d, eax                   ; rows
     imul    eax, [pal_scroll], PAL_TRACK
     xor     edx, edx
-    mov     ecx, PAL_ROWS
-    div     ecx
+    div     r14d
     lea     edi, [r12 + 170]
     lea     esi, [r13 + rax + 18]
+    mov     eax, PAL_TRACK * PAL_VISIBLE
+    xor     edx, edx
+    div     r14d
+    mov     ecx, eax
     mov     edx, 2
-    mov     ecx, PAL_TRACK * PAL_VISIBLE / PAL_ROWS
     mov     r8d, RGBA(255, 255, 255, 160)
     call    ui_rect
     lea     rdi, [s_hotbar]

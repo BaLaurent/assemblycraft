@@ -6,7 +6,7 @@ global selftest_run
 
 extern sys_print, i32_to_str, str_append
 extern test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-extern test_world_load_v1_converts, test_world_load_v2_converts
+extern test_world_load_v1_converts, test_world_load_v2_converts, test_world_load_v3_migrates_items
 extern test_worldgen_deterministic, test_worldgen_shape, test_worldgen_ores
 extern test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
 extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
@@ -44,6 +44,7 @@ extern test_village_built_with_npcs, test_dungeon_clears_after_kills, test_crypt
 extern test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
 extern test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
 extern test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn
+extern test_shapes_boxes
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -60,6 +61,7 @@ tests:
     TEST world_save_load
     TEST world_load_v1_converts
     TEST world_load_v2_converts
+    TEST world_load_v3_migrates_items
     TEST worldgen_deterministic
     TEST worldgen_shape
     TEST worldgen_ores
@@ -150,6 +152,7 @@ tests:
     TEST fireball_explodes_without_breaking
     TEST blink_stops_before_wall
     TEST volley_and_arrow_rain_spawn
+    TEST shapes_boxes
     dq 0
 
 section .rodata
@@ -158,6 +161,7 @@ section .rodata
     TESTNAME world_save_load
     TESTNAME world_load_v1_converts
     TESTNAME world_load_v2_converts
+    TESTNAME world_load_v3_migrates_items
     TESTNAME worldgen_deterministic
     TESTNAME worldgen_shape
     TESTNAME worldgen_ores
@@ -248,6 +252,7 @@ section .rodata
     TESTNAME fireball_explodes_without_breaking
     TESTNAME blink_stops_before_wall
     TESTNAME volley_and_arrow_rain_spawn
+    TESTNAME shapes_boxes
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

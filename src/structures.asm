@@ -17,18 +17,19 @@ extern game_mode, settings, player
 extern rpg_state, rpg_add_xp, quests_on_dungeon_cleared
 extern hud_banner, audio_play
 
-%define OP_SHELL     31                 ; box op: stone or mossy brick picked by the cell's hash
-%define OP_IFAIR     0x80               ; box op flag: only replace AIR
-%define OP_IFSOLID   0x40               ; box op flag: only replace what is not AIR
+%define OP_SHELL     255                ; box id: stone or mossy brick picked by the cell's hash
+%define OP_IFAIR     1                  ; box flag: only replace AIR
+%define OP_IFSOLID   2                  ; box flag: only replace what is not AIR
 %define SPAWN_PERIOD 90                 ; steps between the spawn attempts of a dungeon
 %define MAX_LIVE     3                  ; live mobs of one dungeon at a time
 %define TUNNEL_STEPS 60                 ; columns a stair tunnel climbs at most
 %define ORIGIN_CRYPT 99                 ; MOB.origin of the crypt boss
 %define MAX_VILLAGES 2
 
-; a box record: signed offsets from the origin (x, z) and y relative to the y origin, then the op
-%macro BOX 7                            ; dx0, y0, dz0, dx1, y1, dz1, op
-    db %1, %2, %3, %4, %5, %6, %7, 0
+; a box record: signed offsets from the origin (x, z) and y relative to the y origin, then the
+; block id (0..254, or OP_SHELL) and the OP_IF* flags
+%macro BOX 7-8 0                        ; dx0, y0, dz0, dx1, y1, dz1, id, flags
+    db %1, %2, %3, %4, %5, %6, %7, %8
 %endmacro
 
 section .rodata
@@ -107,9 +108,9 @@ crypt_boxes_end:
 stair_step:
     BOX   0, 0, -1,  0, 0,  1, OP_SHELL
     BOX   0, 1, -1,  0, 3,  1, AIR
-    BOX   0, 0, -2,  0, 4, -2, OP_SHELL | OP_IFSOLID
-    BOX   0, 0,  2,  0, 4,  2, OP_SHELL | OP_IFSOLID
-    BOX   0, 4, -1,  0, 4,  1, OP_SHELL | OP_IFSOLID
+    BOX   0, 0, -2,  0, 4, -2, OP_SHELL, OP_IFSOLID
+    BOX   0, 0,  2,  0, 4,  2, OP_SHELL, OP_IFSOLID
+    BOX   0, 4, -1,  0, 4,  1, OP_SHELL, OP_IFSOLID
 %define STAIR_STEP ((stair_step_end - stair_step) / 8)
 stair_step_end:
 stair_exit:
@@ -123,7 +124,7 @@ stair_exit_end:
 village_boxes:
     BOX -15,  1, -15,  15, 14,  15, AIR
     BOX -15,  0, -15,  15,  0,  15, GRASS
-    BOX -15, -3, -15,  15, -1,  15, DIRT | OP_IFAIR
+    BOX -15, -3, -15,  15, -1,  15, DIRT, OP_IFAIR
     BOX  -1,  1,  -1,   1,  1,   1, COBBLE
     BOX   0,  1,   0,   0,  1,   0, AIR
     BOX   0,  0,   0,   0,  0,   0, GLASS
@@ -499,9 +500,9 @@ structures_plan:
 ; ---- building ---------------------------------------------------------------------------------
 
 ; box_fill(edi x0, esi y0, edx z0, ecx x1, r8d y1, r9d z1, eax op): applies op to every cell of the
-; inclusive box (world_set skips cells outside the world). op: the block id in bits 0..5, or
-; OP_SHELL for a stone brick (mossy with 3 in 10) chosen by hash of the cell; OP_IFAIR places
-; only where the cell is AIR, OP_IFSOLID only where it is not.
+; inclusive box (world_set skips cells outside the world). op = id | flags << 8: the block id,
+; or OP_SHELL for a stone brick (mossy with 3 in 10) chosen by hash of the cell; flag OP_IFAIR
+; places only where the cell is AIR, OP_IFSOLID only where it is not.
 ; Frame: [rsp] x1, [rsp+4] y1, [rsp+8] z1, [rsp+12] op, [rsp+16] x0, [rsp+20] z0.
 box_fill:
     push    rbp
@@ -526,14 +527,14 @@ box_fill:
 .x:
     mov     r15d, [rsp + 12]
     mov     ebx, r15d
-    and     ebx, 63                     ; block id, or OP_SHELL
-    test    r15d, OP_IFAIR | OP_IFSOLID
+    and     ebx, 255                    ; block id, or OP_SHELL
+    test    r15d, (OP_IFAIR | OP_IFSOLID) << 8
     jz      .place
     mov     edi, r12d
     mov     esi, r13d
     mov     edx, r14d
     call    world_get
-    test    r15d, OP_IFAIR
+    test    r15d, OP_IFAIR << 8
     jz      .need_solid
     test    eax, eax
     jnz     .next                       ; something is there already
@@ -582,7 +583,7 @@ box_fill:
     ret
 
 ; run_boxes(rdi table, esi count, edx ox, ecx oy, r8d oz): box_fill for each 8-byte record of the
-; table (signed offsets from the origin, then the op)
+; table (signed offsets from the origin, then the id and the flags)
 run_boxes:
     push    rbp
     mov     rbp, rsp
@@ -610,7 +611,7 @@ run_boxes:
     add     r8d, r14d
     movsx   r9d, byte [rbx + 5]
     add     r9d, r15d
-    movzx   eax, byte [rbx + 6]
+    movzx   eax, word [rbx + 6]         ; id | flags << 8
     call    box_fill
     add     rbx, 8
     dec     r12d

@@ -10,6 +10,7 @@ global inv_clear, inv_set_creative_default, inv_add, inv_add_dmg, inv_room_for, 
 global inv_consume_held, inv_damage_held, inv_find_hotbar, inv_click
 global inv_close_screen, craft_update, inv_count, inv_remove_one, armor_points, armor_wear
 global item_break_time, item_harvest_drop, item_attack_damage
+global recipes, recipes_end
 
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack
 extern item_burn, item_smelt, item_armor_slot, item_armor_points
@@ -46,7 +47,15 @@ creative_default: db STONE, DIRT, GRASS, COBBLE, PLANKS, LOG, LEAVES, GLASS, BRI
     db 3, 3, %4, 1, %1, %1, %1, %1, 0, %1, %1, 0, %1
     db 3, 2, %5, 1, %1, 0, %1, %1, 0, %1, 0, 0, 0
 %endmacro
-RECIPE_SIZE equ 13
+; records with the same output must be adjacent (the recipe book groups runs of them)
+%macro STORAGE 2                        ; material, block: 3x3 to the block, 1x1 back to 9
+    db 3, 3, %2, 1, %1, %1, %1, %1, %1, %1, %1, %1, %1
+    db 1, 1, %1, 9, %2, 0, 0, 0, 0, 0, 0, 0, 0
+%endmacro
+%macro STAIRS 2                         ; material, stairs: two mirrored records
+    db 3, 3, %2, 4, %1, 0, 0, %1, %1, 0, %1, %1, %1
+    db 3, 3, %2, 4, 0, 0, %1, 0, %1, %1, %1, %1, %1
+%endmacro
 
 recipes:
     db 1, 1, PLANKS, 4, LOG, 0, 0, 0, 0, 0, 0, 0, 0
@@ -87,6 +96,32 @@ recipes:
     db 3, 3, STAFF, 1, 0, 0, GOLD_INGOT, 0, STICK, 0, STICK, 0, 0
     db 1, 2, HEALTH_POTION, 1, APPLE, GLASS, 0, 0, 0, 0, 0, 0, 0
     db 1, 2, MANA_POTION, 1, GOLD_INGOT, GLASS, 0, 0, 0, 0, 0, 0, 0
+    db 2, 2, SANDSTONE, 1, SAND, SAND, SAND, SAND, 0, 0, 0, 0, 0
+    db 2, 1, MOSSY_COBBLESTONE, 1, COBBLE, LEAVES, 0, 0, 0, 0, 0, 0, 0
+    db 2, 1, MOSSY_STONE_BRICK, 1, STONE_BRICK, LEAVES, 0, 0, 0, 0, 0, 0, 0
+    db 3, 3, BOOKSHELF, 1, PLANKS, PLANKS, PLANKS, STICK, STICK, STICK, PLANKS, PLANKS, PLANKS
+    db 2, 2, WOOL, 1, STRING, STRING, STRING, STRING, 0, 0, 0, 0, 0
+    STORAGE IRON_INGOT, IRON_BLOCK
+    STORAGE GOLD_INGOT, GOLD_BLOCK
+    STORAGE DIAMOND, DIAMOND_BLOCK
+    STORAGE COAL, COAL_BLOCK
+    db 3, 1, PLANK_SLAB, 6, PLANKS, PLANKS, PLANKS, 0, 0, 0, 0, 0, 0
+    db 3, 1, COBBLE_SLAB, 6, COBBLE, COBBLE, COBBLE, 0, 0, 0, 0, 0, 0
+    db 3, 1, STONE_BRICK_SLAB, 6, STONE_BRICK, STONE_BRICK, STONE_BRICK, 0, 0, 0, 0, 0, 0
+    db 3, 1, BRICK_SLAB, 6, BRICK, BRICK, BRICK, 0, 0, 0, 0, 0, 0
+    db 3, 1, SANDSTONE_SLAB, 6, SANDSTONE, SANDSTONE, SANDSTONE, 0, 0, 0, 0, 0, 0
+    STAIRS PLANKS, PLANK_STAIRS
+    STAIRS COBBLE, COBBLE_STAIRS
+    STAIRS STONE_BRICK, STONE_BRICK_STAIRS
+    STAIRS BRICK, BRICK_STAIRS
+    STAIRS SANDSTONE, SANDSTONE_STAIRS
+    db 2, 3, WOOD_DOOR, 3, PLANKS, PLANKS, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0
+    db 2, 3, IRON_DOOR, 3, IRON_INGOT, IRON_INGOT, IRON_INGOT, IRON_INGOT, IRON_INGOT, IRON_INGOT, 0, 0, 0
+    db 3, 2, TRAPDOOR, 2, PLANKS, PLANKS, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0
+    db 3, 3, LADDER, 3, STICK, 0, STICK, STICK, STICK, STICK, STICK, 0, STICK
+    db 1, 2, TORCH, 4, COAL, STICK, 0, 0, 0, 0, 0, 0, 0
+    db 3, 2, FENCE, 3, PLANKS, STICK, PLANKS, PLANKS, STICK, PLANKS, 0, 0, 0
+    db 3, 2, GLASS_PANE, 16, GLASS, GLASS, GLASS, GLASS, GLASS, GLASS, 0, 0, 0
 recipes_end:
 
 section .data

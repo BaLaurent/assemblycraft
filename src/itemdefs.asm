@@ -1,11 +1,34 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..101 (NUM_ITEMS).
-; Ids 0..24 are the blocks, 25..31 are unused, 32..101 are tools/materials/food/armor/firearms/RPG gear.
+; itemdefs.asm - per-item data tables, indexed by item id 0..197 (NUM_ITEMS).
+; Ids 0..110 are the blocks (variant ids: the item form is block_base), 111..127 are unused,
+; 128..197 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear.
+; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel
 
 global item_names, item_icon, item_max_stack, item_tool, item_tier
 global item_durability, item_food, item_saturation, item_attack
 global item_burn, item_smelt, item_armor_slot, item_armor_points
+
+; PAD_TO table, id, elemsize, default: emit `default` up to (not including) entry `id`
+%macro PAD_TO 4
+%if %3 == 1
+    times (%2) - ($ - %1) db %4
+%elif %3 == 2
+    times (%2) - ($ - %1) / 2 dw %4
+%elif %3 == 4
+    times (%2) - ($ - %1) / 4 dd %4
+%else
+    times (%2) - ($ - %1) / 8 dq %4
+%endif
+%endmacro
+
+; END_TABLE table, elemsize: pad to NUM_ITEMS and check the size
+%macro END_TABLE 3                      ; table, elemsize, default
+    PAD_TO %1, NUM_ITEMS, %2, %3
+%if $ - %1 != NUM_ITEMS * %2
+%error %str(%1) has the wrong number of entries
+%endif
+%endmacro
 
 section .rodata
 n_air:      db "Air", 0
@@ -32,6 +55,33 @@ n_tnt:      db "TNT", 0
 n_fire:     db "Fire", 0
 n_sbrick:   db "Stone Bricks", 0
 n_mossy:    db "Mossy Stone Bricks", 0
+n_sandstone: db "Sandstone", 0
+n_smooth:   db "Smooth Stone", 0
+n_mcobble:  db "Mossy Cobblestone", 0
+n_cracked:  db "Cracked Stone Bricks", 0
+n_books:    db "Bookshelf", 0
+n_wool:     db "Wool", 0
+n_ironblk:  db "Block of Iron", 0
+n_goldblk:  db "Block of Gold", 0
+n_diablk:   db "Block of Diamond", 0
+n_coalblk:  db "Block of Coal", 0
+n_pslab:    db "Wooden Slab", 0
+n_cslab:    db "Cobblestone Slab", 0
+n_sbslab:   db "Stone Brick Slab", 0
+n_bslab:    db "Brick Slab", 0
+n_ssslab:   db "Sandstone Slab", 0
+n_pstairs:  db "Wooden Stairs", 0
+n_cstairs:  db "Cobblestone Stairs", 0
+n_sbstairs: db "Stone Brick Stairs", 0
+n_bstairs:  db "Brick Stairs", 0
+n_ssstairs: db "Sandstone Stairs", 0
+n_wdoor:    db "Wooden Door", 0
+n_idoor:    db "Iron Door", 0
+n_trapdoor: db "Trapdoor", 0
+n_ladder:   db "Ladder", 0
+n_torch:    db "Torch", 0
+n_fence:    db "Fence", 0
+n_pane:     db "Glass Pane", 0
 n_unused:   db "?", 0
 n_stick:    db "Stick", 0
 n_wpick:    db "Wooden Pickaxe", 0
@@ -105,12 +155,27 @@ n_mpotion:  db "Mana Potion", 0
 n_coin:     db "Gold Coin", 0
 
 align 8
+; display name; every variant id points at its base's name
 item_names:
     dq n_air, n_stone, n_grass, n_dirt, n_cobble, n_planks, n_log, n_leaves
     dq n_sand, n_glass, n_brick, n_bedrock, n_table
     dq n_coalore, n_ironore, n_goldore, n_diaore, n_furnace, n_furnace, n_chest, n_gravel, n_tnt
     dq n_fire, n_sbrick, n_mossy
-    times 7 dq n_unused                 ; 25..31
+    dq n_sandstone, n_smooth, n_mcobble, n_cracked, n_books, n_wool
+    dq n_ironblk, n_goldblk, n_diablk, n_coalblk
+    dq n_pslab, n_cslab, n_sbslab, n_bslab, n_ssslab
+    times 4 dq n_pstairs
+    times 4 dq n_cstairs
+    times 4 dq n_sbstairs
+    times 4 dq n_bstairs
+    times 4 dq n_ssstairs
+    times 16 dq n_wdoor
+    times 16 dq n_idoor
+    times 8 dq n_trapdoor
+    times 4 dq n_ladder
+    times 5 dq n_torch
+    dq n_fence, n_pane
+    PAD_TO item_names, STICK, 8, n_unused
     dq n_stick, n_wpick, n_waxe, n_wshovel, n_wsword
     dq n_spick, n_saxe, n_sshovel, n_ssword, n_apple, n_pork
     dq n_coal, n_iingot, n_gingot, n_diamond
@@ -126,21 +191,50 @@ item_names:
     dq n_pround, n_mball, n_shell, n_rround, n_rocket
     dq n_staff, n_astaff, n_idagger, n_ddagger, n_fang, n_kblade, n_cbow
     dq n_hpotion, n_mpotion, n_coin
+    END_TABLE item_names, 8, n_unused
 
-; atlas tile of the inventory icon: block side tile, the item id (32..42), or
-; TILE_ITEM0 + id - 43
+; atlas tile of the inventory icon: a block's side tile or icon tile (0 for non-base
+; variants), tiles 32.. for STICK..PORKCHOP, TILE_ITEM0 + id - COAL from COAL on
 item_icon:
     db 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
     db 26, 27, 28, 29, 30, 31, 44, 45, 46
     db 0, TILE_STONE_BRICK, TILE_MOSSY_BRICK ; FIRE, stone bricks, mossy
-    times 7 db 0
-    db 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42
-%assign i 43
-%rep NUM_ITEMS - 43
-    db TILE_ITEM0 + i - 43
+    db TILE_SANDSTONE_SIDE, TILE_SMOOTH_STONE, TILE_MOSSY_COBBLE, TILE_CRACKED_BRICK
+    db TILE_BOOKSHELF, TILE_WOOL, TILE_IRON_BLOCK, TILE_GOLD_BLOCK, TILE_DIAMOND_BLOCK
+    db TILE_COAL_BLOCK
+%assign i 0
+%rep 5
+    db TILE_ICON_SLAB0 + i
 %assign i i + 1
 %endrep
+%assign i 0
+%rep 5
+    db TILE_ICON_STAIRS0 + i, 0, 0, 0
+%assign i i + 1
+%endrep
+    db TILE_ICON_WOOD_DOOR
+    times 15 db 0
+    db TILE_ICON_IRON_DOOR
+    times 15 db 0
+    db TILE_TRAPDOOR
+    times 7 db 0
+    db TILE_LADDER, 0, 0, 0
+    db TILE_TORCH, 0, 0, 0, 0
+    db TILE_ICON_FENCE, TILE_ICON_GLASS_PANE
+    PAD_TO item_icon, STICK, 1, 0
+%assign i 0
+%rep COAL - STICK
+    db 32 + i
+%assign i i + 1
+%endrep
+%assign i 0
+%rep NUM_ITEMS - COAL
+    db TILE_ITEM0 + i
+%assign i i + 1
+%endrep
+    END_TABLE item_icon, 1, 0
 
+; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
 item_max_stack:
     db 0
     times 17 db 64                      ; blocks 1..17
@@ -148,7 +242,21 @@ item_max_stack:
     times 3 db 64                       ; chest, gravel, tnt
     db 0                                ; FIRE
     db 64, 64                           ; stone bricks, mossy
+    times 10 db 64                      ; SANDSTONE .. COAL_BLOCK
+    times 5 db 64                       ; slabs
+%rep 5
+    db 64, 0, 0, 0                      ; stairs
+%endrep
+    db 64                               ; WOOD_DOOR
+    times 15 db 0
+    db 64                               ; IRON_DOOR
+    times 15 db 0
+    db 64                               ; TRAPDOOR
     times 7 db 0
+    db 64, 0, 0, 0                      ; LADDER
+    db 64, 0, 0, 0, 0                   ; TORCH, TORCH_WALL
+    db 64, 64                           ; FENCE, GLASS_PANE
+    PAD_TO item_max_stack, STICK, 1, 0
     db 64                               ; stick
     times 8 db 1                        ; tools
     db 64, 64                           ; apple, porkchop
@@ -164,102 +272,108 @@ item_max_stack:
     times 7 db 1                        ; staves, daggers, legendaries
     db 16, 16                           ; potions
     db 64                               ; gold coin
+    END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD
 item_tool:
-    times 33 db 0
+    PAD_TO item_tool, WOOD_PICKAXE, 1, 0
     db TOOLS4, TOOLS4                   ; wood, stone
-    times 6 db 0                        ; apple .. diamond
+    PAD_TO item_tool, IRON_PICKAXE, 1, 0
     db TOOLS4, TOOLS4, TOOLS4           ; iron, gold, diamond
-    times IRON_DAGGER - 59 db 0
+    PAD_TO item_tool, IRON_DAGGER, 1, 0
     db TOOL_DAGGER, TOOL_DAGGER, TOOL_DAGGER, TOOL_SWORD ; daggers, King's Blade
-    times NUM_ITEMS - SHADOW_FANG - 2 db 0
+    END_TABLE item_tool, 1, 0
 
 item_tier:
-    times 33 db 0
+    PAD_TO item_tier, WOOD_PICKAXE, 1, 0
     times 4 db TIER_WOOD
     times 4 db TIER_STONE
-    times 6 db 0
+    PAD_TO item_tier, IRON_PICKAXE, 1, 0
     times 4 db TIER_IRON
     times 4 db TIER_GOLD
     times 4 db TIER_DIAMOND
-    times KINGS_BLADE - 59 db 0
+    PAD_TO item_tier, KINGS_BLADE, 1, 0
     db TIER_DIAMOND                     ; King's Blade
-    times NUM_ITEMS - KINGS_BLADE - 1 db 0
+    END_TABLE item_tier, 1, 0
 
 item_food:
-    times 41 db 0
+    PAD_TO item_food, APPLE, 1, 0
     db 4, 3                             ; apple, porkchop
-    times 22 db 0                       ; 43..64
+    PAD_TO item_food, ROTTEN_FLESH, 1, 0
     db 4, 8, 0, 2, 6                    ; rotten flesh, cooked pork, feather, raw/cooked chicken
-    times 12 db 0
-    times 10 db 0                       ; firearms, ammunition
-    times 10 db 0                       ; RPG gear
+    END_TABLE item_food, 1, 0
 
 item_attack:
-    times 33 db 1
+    PAD_TO item_attack, WOOD_PICKAXE, 1, 1
     db 3, 4, 2, 5                       ; wood pickaxe, axe, shovel, sword
     db 4, 5, 3, 6                       ; stone pickaxe, axe, shovel, sword
-    times 6 db 1
+    PAD_TO item_attack, IRON_PICKAXE, 1, 1
     db 5, 6, 4, 7                       ; iron
     db 3, 4, 2, 5                       ; gold
     db 6, 7, 5, 8                       ; diamond
-    times STAFF - 59 db 1
+    PAD_TO item_attack, STAFF, 1, 1
     db 2, 3, 5, 7, 9, 11                ; staff, archmage staff, daggers, Shadow Fang, King's Blade
-    times NUM_ITEMS - KINGS_BLADE - 1 db 1
+    END_TABLE item_attack, 1, 1
 
-; smelting result of an input item, or 0 (entries in ascending id order)
-%macro SMELT 2                          ; input id, result id
-    times (%1) - ($ - item_smelt) db 0
-    db %2
-%endmacro
+; smelting result of an input item, or 0
 item_smelt:
-    SMELT COBBLE, STONE
-    SMELT LOG, COAL
-    SMELT SAND, GLASS
-    SMELT IRON_ORE, IRON_INGOT
-    SMELT GOLD_ORE, GOLD_INGOT
-    SMELT PORKCHOP, COOKED_PORKCHOP
-    SMELT RAW_CHICKEN, COOKED_CHICKEN
-    times NUM_ITEMS - ($ - item_smelt) db 0
+    PAD_TO item_smelt, STONE, 1, 0
+    db SMOOTH_STONE
+    PAD_TO item_smelt, COBBLE, 1, 0
+    db STONE
+    PAD_TO item_smelt, LOG, 1, 0
+    db COAL
+    PAD_TO item_smelt, SAND, 1, 0
+    db GLASS
+    PAD_TO item_smelt, IRON_ORE, 1, 0
+    db IRON_INGOT
+    PAD_TO item_smelt, GOLD_ORE, 1, 0
+    db GOLD_INGOT
+    PAD_TO item_smelt, STONE_BRICK, 1, 0
+    db CRACKED_STONE_BRICK
+    PAD_TO item_smelt, PORKCHOP, 1, 0
+    db COOKED_PORKCHOP
+    PAD_TO item_smelt, RAW_CHICKEN, 1, 0
+    db COOKED_CHICKEN
+    END_TABLE item_smelt, 1, 0
 
 ; armor slot (ARMOR_HEAD..ARMOR_FEET) of an item, or 0
 item_armor_slot:
-    times 70 db 0
+    PAD_TO item_armor_slot, IRON_HELMET, 1, 0
     db 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4
-    times NUM_ITEMS - 82 db 0
+    END_TABLE item_armor_slot, 1, 0
 
 ; armor points of a worn piece
 item_armor_points:
-    times 70 db 0
+    PAD_TO item_armor_points, IRON_HELMET, 1, 0
     db 2, 6, 5, 2                       ; iron
     db 2, 5, 3, 1                       ; gold
     db 3, 8, 6, 3                       ; diamond
-    times NUM_ITEMS - 82 db 0
+    END_TABLE item_armor_points, 1, 0
 
 align 2
 item_durability:
-    times 33 dw 0
+    PAD_TO item_durability, WOOD_PICKAXE, 2, 0
     times 4 dw 59
     times 4 dw 131
-    times 6 dw 0
+    PAD_TO item_durability, IRON_PICKAXE, 2, 0
     times 4 dw 250                      ; iron tools
     times 4 dw 32                       ; gold tools
     times 4 dw 1561                     ; diamond tools
     dw 384                              ; bow
-    times 4 dw 0
+    PAD_TO item_durability, FLINT_AND_STEEL, 2, 0
     dw 64                               ; flint and steel
-    times 5 dw 0
+    PAD_TO item_durability, IRON_HELMET, 2, 0
     dw 165, 240, 225, 195               ; iron armor
     dw 77, 112, 105, 91                 ; gold armor
     dw 363, 528, 495, 429               ; diamond armor
-    times 10 dw 0                       ; firearms never wear, ammunition
+    PAD_TO item_durability, STAFF, 2, 0 ; firearms never wear, ammunition
     dw 300, 0, 200, 1200                ; staff, archmage staff, iron/diamond dagger
-    times NUM_ITEMS - DIAMOND_DAGGER - 1 dw 0 ; legendaries never wear
+    END_TABLE item_durability, 2, 0     ; legendaries never wear
 
-; fuel value in furnace steps, or 0 (entries in ascending id order)
+; fuel value in furnace steps, or 0
 %macro BURN 2                           ; item id, steps
-    times (%1) - ($ - item_burn) / 2 dw 0
+    PAD_TO item_burn, %1, 2, 0
     dw %2
 %endmacro
 item_burn:
@@ -267,6 +381,15 @@ item_burn:
     BURN LOG, 300
     BURN CRAFTING_TABLE, 300
     BURN CHEST, 300
+    BURN BOOKSHELF, 300
+    BURN WOOL, 100
+    BURN COAL_BLOCK, 16000
+    BURN PLANK_SLAB, 150
+    BURN PLANK_STAIRS, 300
+    BURN WOOD_DOOR, 200
+    BURN TRAPDOOR, 300
+    BURN LADDER, 300
+    BURN FENCE, 300
     BURN STICK, 100
     BURN WOOD_PICKAXE, 200
     BURN WOOD_AXE, 200
@@ -274,13 +397,12 @@ item_burn:
     BURN WOOD_SWORD, 200
     BURN COAL, 1600
     BURN BOW, 300
-    times NUM_ITEMS - ($ - item_burn) / 2 dw 0
+    END_TABLE item_burn, 2, 0
 
 align 4
 item_saturation:
-    times 41 dd 0.0
+    PAD_TO item_saturation, APPLE, 4, 0.0
     dd 2.4, 1.8
-    times 22 dd 0.0
+    PAD_TO item_saturation, ROTTEN_FLESH, 4, 0.0
     dd 0.8, 12.8, 0.0, 1.2, 7.2
-    times 12 dd 0.0
-    times NUM_ITEMS - 82 dd 0.0
+    END_TABLE item_saturation, 4, 0.0

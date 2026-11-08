@@ -9,7 +9,8 @@ global world_clear, world_mark_all_dirty, world_save, world_load
 extern block_flags, file_read, file_write_atomic
 
 section .rodata
-world_magic:    db "ACRAFT03"
+world_magic:    db "ACRAFT04"
+world_magic_v3: db "ACRAFT03"
 world_magic_v2: db "ACRAFT02"
 world_magic_v1: db "ACRAFT01"
 default_hotbar: db STONE, DIRT, GRASS, COBBLE, PLANKS, LOG, LEAVES, GLASS, BRICK
@@ -197,7 +198,7 @@ world_save:
     jmp     file_write_atomic
 
 ; world_load(rdi path) -> eax 0 ok / 1 missing / 2 invalid / 3 I/O error.
-; Accepts v3, converts v2 and 0.1 files in memory.
+; Accepts v4, converts v3 (item ids), v2 and 0.1 files in memory.
 world_load:
     push    rbp
     mov     rbp, rsp
@@ -209,7 +210,7 @@ world_load:
     test    rax, rax
     js      .ioerr
     cmp     rax, WORLD_FILE_SIZE
-    je      .v3
+    je      .v4
     cmp     rax, WORLD_V2_SIZE
     je      .v2
     cmp     rax, WORLD_V1_SIZE
@@ -224,11 +225,17 @@ world_load:
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .invalid
     call    convert_v2
+    call    migrate_items_v3
     jmp     .ok
-.v3:
-    mov     rax, [world_magic]
-    cmp     [world_header + WORLDHDR.magic], rax
+.v4:
+    mov     rax, [world_header + WORLDHDR.magic]
+    cmp     rax, [world_magic]
+    je      .ok
+    cmp     rax, [world_magic_v3]
     jne     .invalid
+    call    migrate_items_v3
+    mov     rax, [world_magic]
+    mov     [world_header + WORLDHDR.magic], rax
 .ok:
     call    world_mark_all_dirty
     xor     eax, eax
@@ -248,7 +255,8 @@ world_load:
     ret
 
 ; convert_v2(): a v2 image (1024-byte header + blocks) sits at world_header. Move the
-; blocks up to `blocks`, zero the v3-only header fields, stamp the v3 magic.
+; blocks up to `blocks`, zero the v3-only header fields, stamp the v4 magic (the item ids
+; are still v3 ones: the caller runs migrate_items_v3).
 convert_v2:
     ; overlapping, dest > src, so copy backwards
     lea     rsi, [world_header + WORLD_BASE_HDR + WORLD_VOLUME - 1]
@@ -266,7 +274,7 @@ convert_v2:
     ret
 
 ; convert_v1(): the 0.1 image (48-byte header + blocks) sits at world_header; rebuild it
-; as a v3 image in place. Old worlds load as Creative with their 0.1 hotbar.
+; as a v4 image in place. Old worlds load as Creative with their 0.1 hotbar.
 convert_v1:
     push    rbp
     mov     rbp, rsp
@@ -327,7 +335,7 @@ convert_v1:
     movzx   eax, byte [v1_scratch + V1_HOTBAR + rcx]
     test    eax, eax
     jz      .default
-    cmp     eax, NUM_BLOCKS
+    cmp     eax, V3_NUM_BLOCKS
     jb      .have
 .default:
     movzx   eax, byte [default_hotbar + rcx]
@@ -340,4 +348,59 @@ convert_v1:
     add     rsp, 8
     pop     rbx
     pop     rbp
+    ret
+
+; migrate_items_v3(): renumber every item stack of a v3 header (inventory, armor and the
+; cells of every used container) to the v4 id space: blocks keep their id, items move up
+; by FIRST_ITEM - V3_FIRST_ITEM, unknown ids are emptied.
+migrate_items_v3:
+    lea     rdi, [world_header + WORLDHDR.inventory]
+    mov     ecx, INV_SLOTS
+.inv:
+    call    migrate_stack
+    add     rdi, 4
+    dec     ecx
+    jnz     .inv
+    lea     rdi, [world_header + WORLDHDR.armor]
+    mov     ecx, 4
+.armor:
+    call    migrate_stack
+    add     rdi, 4
+    dec     ecx
+    jnz     .armor
+    lea     rdx, [world_header + WORLDHDR.containers]
+    mov     esi, MAX_CONTAINERS
+.cont:
+    cmp     byte [rdx + CONTAINER.kind], 0
+    je      .cnext
+    lea     rdi, [rdx + CONTAINER.slots]
+    mov     ecx, 27
+.cell:
+    call    migrate_stack
+    add     rdi, 4
+    dec     ecx
+    jnz     .cell
+.cnext:
+    add     rdx, CONTAINER_size
+    dec     esi
+    jnz     .cont
+    ret
+
+; migrate_stack(rdi ITEMSTACK*): v3 -> v4 id of one stack. Leaf, clobbers eax only.
+migrate_stack:
+    cmp     byte [rdi + ITEMSTACK.count], 0
+    je      .ret
+    movzx   eax, byte [rdi + ITEMSTACK.id]
+    cmp     eax, V3_NUM_BLOCKS
+    jb      .ret
+    cmp     eax, V3_FIRST_ITEM
+    jb      .zero
+    cmp     eax, V3_NUM_ITEMS
+    jae     .zero
+    add     eax, FIRST_ITEM - V3_FIRST_ITEM
+    mov     [rdi + ITEMSTACK.id], al
+    ret
+.zero:
+    mov     dword [rdi], 0
+.ret:
     ret

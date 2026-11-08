@@ -23,6 +23,7 @@ extern glFogi, glFogf, glFogfv, glAlphaFunc, glBlendFunc
 extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoord2i
 extern glActiveTexture, glTexEnvi, glTexEnvfv, glPushMatrix, glPopMatrix
 extern glColor3f, glColor4ub, glDepthMask
+extern glMultiTexCoord2f, glClientActiveTexture
 
 ; ---- GLFW enums -----------------------------------------------------------
 %define GLFW_TRUE              1

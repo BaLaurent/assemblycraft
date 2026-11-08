@@ -1,16 +1,47 @@
-; blockdefs.asm - per-block flags, atlas tiles, digging and harvest rules.
-; Indexed by block id 0..24 (NUM_BLOCKS). Display names live in itemdefs.asm.
+; blockdefs.asm - per-block flags, atlas tiles, digging and harvest rules, shapes, light.
+; Indexed by block id 0..110 (NUM_BLOCKS). Display names live in itemdefs.asm.
+; Variant groups (stairs, doors, trapdoors, ladders, wall torches) take one id per
+; orientation/state: param = id - block_base[id] (see common.inc).
+;
+; FLAG_SOLID is the coarse "full cell" answer of world_is_solid (drops, particles, blink,
+; placement support); bodies collide with shapes.asm boxes. FLAG_OPAQUE is set only on
+; full opaque cubes: it blocks light and culls faces.
 %include "common.inc"
 default rel
 
 global block_flags, block_tiles, block_hardness, block_tool, block_harvest_level
 global block_drop, block_dig_sound, block_step_sound, block_flammable
+global block_shape, block_base, block_light
+
+; SIZECHECK table, element size: every table holds exactly NUM_BLOCKS entries
+%macro SIZECHECK 2
+%if $ - %1 != NUM_BLOCKS * %2
+%error %str(%1) has the wrong number of entries
+%endif
+%endmacro
+
+; GROUP_IDS first, count: emit db first + i for i in 0..count-1
+%macro GROUP_IDS 2
+%assign gi 0
+%rep %2
+    db %1 + gi
+%assign gi gi + 1
+%endrep
+%endmacro
 
 section .rodata
 ;             AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK TABLE
 block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3,      3
 ;               COAL IRON GOLD DIAMOND FURNACE LIT CHEST GRAVEL TNT FIRE SBRICK MOSSY
              db 3,   3,   3,   3,      3,      3,  3,    3,     3,  0,   3,     3
+    times 10 db 3                       ; SANDSTONE .. COAL_BLOCK
+    times 5 db 1                        ; slabs
+    times 20 db 1                       ; stairs
+    times 40 db 0                       ; doors, trapdoors
+    times 4 db 0                        ; ladders
+    times 5 db 0                        ; torches
+    db 1, 1                             ; FENCE, GLASS_PANE
+    SIZECHECK block_flags, 1
 
 ; tiles per block: top, side, bottom
 block_tiles:
@@ -39,35 +70,222 @@ block_tiles:
     db 0, 0, 0                          ; FIRE (drawn by fire.asm, skipped by the mesher)
     db TILE_STONE_BRICK, TILE_STONE_BRICK, TILE_STONE_BRICK
     db TILE_MOSSY_BRICK, TILE_MOSSY_BRICK, TILE_MOSSY_BRICK
+    db TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE, TILE_SANDSTONE_BOTTOM
+    times 3 db TILE_SMOOTH_STONE
+    times 3 db TILE_MOSSY_COBBLE
+    times 3 db TILE_CRACKED_BRICK
+    db 5, TILE_BOOKSHELF, 5             ; BOOKSHELF
+    times 3 db TILE_WOOL
+    times 3 db TILE_IRON_BLOCK
+    times 3 db TILE_GOLD_BLOCK
+    times 3 db TILE_DIAMOND_BLOCK
+    times 3 db TILE_COAL_BLOCK
+%define T_PLANKS 5, 5, 5
+%define T_COBBLE 4, 4, 4
+%define T_SBRICK TILE_STONE_BRICK, TILE_STONE_BRICK, TILE_STONE_BRICK
+%define T_BRICK 11, 11, 11
+%define T_SANDSTONE TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE, TILE_SANDSTONE_BOTTOM
+    db T_PLANKS                         ; slabs
+    db T_COBBLE
+    db T_SBRICK
+    db T_BRICK
+    db T_SANDSTONE
+%rep 4
+    db T_PLANKS                         ; PLANK_STAIRS
+%endrep
+%rep 4
+    db T_COBBLE
+%endrep
+%rep 4
+    db T_SBRICK
+%endrep
+%rep 4
+    db T_BRICK
+%endrep
+%rep 4
+    db T_SANDSTONE
+%endrep
+%rep 8                                  ; WOOD_DOOR: param bit 0 = upper half
+    times 3 db TILE_DOOR_WOOD_LOWER
+    times 3 db TILE_DOOR_WOOD_UPPER
+%endrep
+%rep 8                                  ; IRON_DOOR
+    times 3 db TILE_DOOR_IRON_LOWER
+    times 3 db TILE_DOOR_IRON_UPPER
+%endrep
+    times 8 * 3 db TILE_TRAPDOOR
+    times 4 * 3 db TILE_LADDER
+    times 5 * 3 db TILE_TORCH
+    db T_PLANKS                         ; FENCE
+    db 10, 10, 10                       ; GLASS_PANE
+    SIZECHECK block_tiles, 3
 
 align 4
 ; seconds-scale hardness; negative = unbreakable
 block_hardness:
     dd 0.0, 1.5, 0.6, 0.5, 2.0, 2.0, 2.0, 0.2, 0.5, 0.3, 2.0, -1.0, 2.5
     dd 3.0, 3.0, 3.0, 3.0, 3.5, 3.5, 2.5, 0.6, 0.0, 0.0, 1.5, 1.5
+    ;  SAND  SMOOTH MOSSYC CRACK BOOKS WOOL IRON GOLD DIAM COAL
+    dd 0.8, 2.0, 2.0, 1.5, 1.5, 0.8, 5.0, 3.0, 5.0, 5.0
+    dd 2.0, 2.0, 1.5, 2.0, 0.8          ; slabs
+    times 4 dd 2.0                      ; stairs
+    times 4 dd 2.0
+    times 4 dd 1.5
+    times 4 dd 2.0
+    times 4 dd 0.8
+    times 16 dd 3.0                     ; WOOD_DOOR
+    times 16 dd 5.0                     ; IRON_DOOR
+    times 8 dd 3.0                      ; TRAPDOOR
+    times 4 dd 0.4                      ; LADDER
+    times 5 dd 0.0                      ; torches
+    dd 2.0, 0.3                         ; FENCE, GLASS_PANE
+    SIZECHECK block_hardness, 4
 
+%define M_TOOLS TOOL_AXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE
 ;                  AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK TABLE
 block_tool:       db 0, TOOL_PICKAXE, TOOL_SHOVEL, TOOL_SHOVEL, TOOL_PICKAXE, TOOL_AXE, TOOL_AXE, 0, TOOL_SHOVEL, 0, TOOL_PICKAXE, 0, TOOL_AXE
 ;                  COAL IRON GOLD DIAMOND FURNACE LIT CHEST GRAVEL TNT FIRE SBRICK MOSSY
                   db TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, 0, 0, TOOL_PICKAXE, TOOL_PICKAXE
+                  times 4 db TOOL_PICKAXE ; SANDSTONE .. CRACKED_STONE_BRICK
+                  db TOOL_AXE, 0         ; BOOKSHELF, WOOL
+                  times 4 db TOOL_PICKAXE ; storage blocks
+                  db M_TOOLS             ; slabs
+                  times 4 db TOOL_AXE    ; stairs
+                  times 16 db TOOL_PICKAXE
+                  times 16 db TOOL_AXE   ; WOOD_DOOR
+                  times 16 db TOOL_PICKAXE ; IRON_DOOR
+                  times 8 db TOOL_AXE    ; TRAPDOOR
+                  times 4 db TOOL_AXE    ; LADDER
+                  times 5 db 0           ; torches
+                  db TOOL_AXE, 0         ; FENCE, GLASS_PANE
+    SIZECHECK block_tool, 1
+
 ; minimum pickaxe level to harvest (0 = anything; 1 wood, 2 stone, 3 iron/diamond)
 block_harvest_level: db 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0
                   db 1, 2, 3, 3, 1, 1, 0, 0, 0, 0, 1, 1
+                  db 1, 1, 1, 1, 0, 0, 2, 3, 3, 1 ; SANDSTONE .. COAL_BLOCK
+                  db 0, 1, 1, 1, 1       ; slabs
+                  times 4 db 0           ; stairs
+                  times 16 db 1
+                  times 16 db 0          ; WOOD_DOOR
+                  times 16 db 1          ; IRON_DOOR
+                  times 8 + 4 + 5 + 2 db 0
+    SIZECHECK block_harvest_level, 1
+
 ; harvested item (LEAVES: 0, the apple chance is rolled by the game)
 block_drop:       db 0, COBBLE, DIRT, DIRT, COBBLE, PLANKS, LOG, 0, SAND, 0, BRICK, 0, CRAFTING_TABLE
                   db COAL, IRON_ORE, GOLD_ORE, DIAMOND, FURNACE, FURNACE, CHEST, GRAVEL, TNT, 0, STONE_BRICK, MOSSY_STONE_BRICK
+                  GROUP_IDS SANDSTONE, 15 ; SANDSTONE .. SANDSTONE_SLAB drop themselves
+                  times 4 db PLANK_STAIRS
+                  times 4 db COBBLE_STAIRS
+                  times 4 db STONE_BRICK_STAIRS
+                  times 4 db BRICK_STAIRS
+                  times 4 db SANDSTONE_STAIRS
+                  times 16 db WOOD_DOOR
+                  times 16 db IRON_DOOR
+                  times 8 db TRAPDOOR
+                  times 4 db LADDER
+                  times 5 db TORCH
+                  db FENCE, 0            ; GLASS_PANE drops nothing, like glass
+    SIZECHECK block_drop, 1
+
+%define DS_STONE SND_DIG_STONE
+%define DS_WOOD SND_DIG_WOOD
 block_dig_sound:
     db 0, SND_DIG_STONE, SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_STONE, SND_DIG_WOOD, SND_DIG_WOOD
     db SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_GLASS, SND_DIG_STONE, SND_DIG_STONE, SND_DIG_WOOD
     db SND_DIG_STONE, SND_DIG_STONE, SND_DIG_STONE, SND_DIG_STONE, SND_DIG_STONE, SND_DIG_STONE
     db SND_DIG_WOOD, SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_STONE, SND_DIG_STONE
+    times 4 db DS_STONE                 ; SANDSTONE .. CRACKED_STONE_BRICK
+    db DS_WOOD, SND_DIG_SOFT            ; BOOKSHELF, WOOL
+    times 4 db DS_STONE                 ; storage blocks
+    db DS_WOOD, DS_STONE, DS_STONE, DS_STONE, DS_STONE ; slabs
+    times 4 db DS_WOOD                  ; stairs
+    times 16 db DS_STONE
+    times 16 db DS_WOOD                 ; WOOD_DOOR
+    times 16 db DS_STONE                ; IRON_DOOR
+    times 8 + 4 + 5 db DS_WOOD          ; trapdoors, ladders, torches
+    db DS_WOOD, SND_DIG_GLASS           ; FENCE, GLASS_PANE
+    SIZECHECK block_dig_sound, 1
+
+%define SS_STONE SND_STEP_STONE
+%define SS_WOOD SND_STEP_WOOD
 block_step_sound:
     db 0, SND_STEP_STONE, SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_STONE, SND_STEP_WOOD, SND_STEP_WOOD
     db SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_WOOD
     db SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE, SND_STEP_STONE
     db SND_STEP_WOOD, SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_STONE, SND_STEP_STONE
+    times 4 db SS_STONE
+    db SS_WOOD, SND_STEP_SOFT           ; BOOKSHELF, WOOL
+    times 4 db SS_STONE
+    db SS_WOOD, SS_STONE, SS_STONE, SS_STONE, SS_STONE ; slabs
+    times 4 db SS_WOOD                  ; stairs
+    times 16 db SS_STONE
+    times 16 db SS_WOOD                 ; WOOD_DOOR
+    times 16 db SS_STONE                ; IRON_DOOR
+    times 8 + 4 + 5 db SS_WOOD
+    db SS_WOOD, SS_STONE                ; FENCE, GLASS_PANE
+    SIZECHECK block_step_sound, 1
+
 ; chance in % per fire tick that a neighbouring fire burns the block (TNT: ignites)
 ;                AIR STONE GRASS DIRT COBBLE PLANKS LOG LEAVES SAND GLASS BRICK BEDROCK TABLE
 block_flammable: db 0, 0,    0,    0,   0,     20,    5,  30,    0,   0,    0,    0,      20
 ;                COAL IRON GOLD DIAMOND FURNACE LIT CHEST GRAVEL TNT FIRE SBRICK MOSSY
                  db 0,   0,   0,   0,      0,      0,  20,   0,     100, 0,   0,     0
+                 db 0, 0, 0, 0, 30, 30, 0, 0, 0, 5 ; SANDSTONE .. COAL_BLOCK
+                 db 20, 0, 0, 0, 0       ; slabs
+                 times 4 db 20           ; PLANK_STAIRS
+                 times 16 db 0
+                 times 16 db 20          ; WOOD_DOOR
+                 times 16 db 0           ; IRON_DOOR
+                 times 8 + 4 db 20       ; trapdoors, ladders
+                 times 5 db 0            ; torches
+                 db 20, 0                ; FENCE, GLASS_PANE
+    SIZECHECK block_flammable, 1
+
+; SHAPE_* of each block (shapes.asm turns it into boxes)
+block_shape:
+    db SHAPE_NONE
+    times FIRE - 1 db SHAPE_CUBE        ; STONE .. TNT
+    db SHAPE_NONE                       ; FIRE
+    times PLANK_SLAB - STONE_BRICK db SHAPE_CUBE ; STONE_BRICK .. COAL_BLOCK
+    times 5 db SHAPE_SLAB
+    times 20 db SHAPE_STAIRS
+    times 32 db SHAPE_DOOR
+    times 8 db SHAPE_TRAPDOOR
+    times 4 db SHAPE_LADDER
+    times 5 db SHAPE_TORCH
+    db SHAPE_FENCE, SHAPE_PANE
+    SIZECHECK block_shape, 1
+
+; the base id of a variant group (param = id - base); the item form of a block, 0 = none
+block_base:
+    db 0                                ; AIR
+    GROUP_IDS STONE, FURNACE_LIT - STONE ; STONE .. FURNACE
+    db FURNACE                          ; FURNACE_LIT
+    GROUP_IDS CHEST, FIRE - CHEST       ; CHEST .. TNT
+    db 0                                ; FIRE
+    GROUP_IDS STONE_BRICK, PLANK_STAIRS - STONE_BRICK ; .. SANDSTONE_SLAB
+    times 4 db PLANK_STAIRS
+    times 4 db COBBLE_STAIRS
+    times 4 db STONE_BRICK_STAIRS
+    times 4 db BRICK_STAIRS
+    times 4 db SANDSTONE_STAIRS
+    times 16 db WOOD_DOOR
+    times 16 db IRON_DOOR
+    times 8 db TRAPDOOR
+    times 4 db LADDER
+    times 5 db TORCH                    ; TORCH, TORCH_WALL variants: param = 1 + support side
+    db FENCE, GLASS_PANE
+    SIZECHECK block_base, 1
+
+; block light emitted (0..15)
+block_light:
+    times FURNACE_LIT db 0
+    db 13                               ; FURNACE_LIT
+    times FIRE - CHEST db 0
+    db 15                               ; FIRE
+    times TORCH - STONE_BRICK db 0
+    times 5 db 14                       ; TORCH, TORCH_WALL variants
+    db 0, 0
+    SIZECHECK block_light, 1

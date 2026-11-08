@@ -43,80 +43,136 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FIRE           22               ; not solid, drawn by fire.asm, not an item
 %define STONE_BRICK    23
 %define MOSSY_STONE_BRICK 24
-%define NUM_BLOCKS     25
+%define SANDSTONE      25
+%define SMOOTH_STONE   26
+%define MOSSY_COBBLESTONE 27
+%define CRACKED_STONE_BRICK 28
+%define BOOKSHELF      29
+%define WOOL           30
+%define IRON_BLOCK     31
+%define GOLD_BLOCK     32
+%define DIAMOND_BLOCK  33
+%define COAL_BLOCK     34
+%define PLANK_SLAB     35               ; slabs 35..39: bottom half only
+%define COBBLE_SLAB    36
+%define STONE_BRICK_SLAB 37
+%define BRICK_SLAB     38
+%define SANDSTONE_SLAB 39
+%define PLANK_STAIRS   40               ; stairs: 4 ids each, base + facing (DIR_*)
+%define COBBLE_STAIRS  44
+%define STONE_BRICK_STAIRS 48
+%define BRICK_STAIRS   52
+%define SANDSTONE_STAIRS 56
+%define WOOD_DOOR      60               ; 16 ids: base + facing*4 + open*2 + upper
+%define IRON_DOOR      76
+%define TRAPDOOR       92               ; 8 ids: base + facing*2 + open
+%define LADDER         100              ; 4 ids: base + support side (DIR_*)
+%define TORCH          104              ; standing torch, param 0
+%define TORCH_WALL     105              ; 105..108: param = 1 + support side
+%define FENCE          109
+%define GLASS_PANE     110
+%define NUM_BLOCKS     111              ; ids 111..127 unused
 
-; ---- item ids (25..31 unused) ---------------------------------------------
-%define STICK          32
-%define WOOD_PICKAXE   33
-%define WOOD_AXE       34
-%define WOOD_SHOVEL    35
-%define WOOD_SWORD     36
-%define STONE_PICKAXE  37
-%define STONE_AXE      38
-%define STONE_SHOVEL   39
-%define STONE_SWORD    40
-%define APPLE          41
-%define PORKCHOP       42
-%define COAL           43
-%define IRON_INGOT     44
-%define GOLD_INGOT     45
-%define DIAMOND        46
-%define IRON_PICKAXE   47
-%define IRON_AXE       48
-%define IRON_SHOVEL    49
-%define IRON_SWORD     50
-%define GOLD_PICKAXE   51
-%define GOLD_AXE       52
-%define GOLD_SHOVEL    53
-%define GOLD_SWORD     54
-%define DIAMOND_PICKAXE 55
-%define DIAMOND_AXE    56
-%define DIAMOND_SHOVEL 57
-%define DIAMOND_SWORD  58
-%define BOW            59
-%define ARROW          60
-%define STRING         61
-%define GUNPOWDER      62
-%define FLINT          63
-%define FLINT_AND_STEEL 64
-%define ROTTEN_FLESH   65
-%define COOKED_PORKCHOP 66
-%define FEATHER        67
-%define RAW_CHICKEN    68
-%define COOKED_CHICKEN 69
-%define IRON_HELMET    70
-%define IRON_CHESTPLATE 71
-%define IRON_LEGGINGS  72
-%define IRON_BOOTS     73
-%define GOLD_HELMET    74
-%define GOLD_CHESTPLATE 75
-%define GOLD_LEGGINGS  76
-%define GOLD_BOOTS     77
-%define DIAMOND_HELMET 78
-%define DIAMOND_CHESTPLATE 79
-%define DIAMOND_LEGGINGS 80
-%define DIAMOND_BOOTS  81
-%define PISTOL         82
-%define MUSKET         83
-%define SHOTGUN        84
-%define KALASHNIKOV    85
-%define ROCKET_LAUNCHER 86
-%define PISTOL_ROUND   87
-%define MUSKET_BALL    88
-%define SHOTGUN_SHELL  89
-%define RIFLE_ROUND    90
-%define ROCKET         91
-%define STAFF          92
-%define ARCHMAGE_STAFF 93
-%define IRON_DAGGER    94
-%define DIAMOND_DAGGER 95
-%define SHADOW_FANG    96
-%define KINGS_BLADE    97
-%define CELESTIAL_BOW  98
-%define HEALTH_POTION  99
-%define MANA_POTION    100
-%define GOLD_COIN      101
-%define NUM_ITEMS      102
+; ---- item ids -------------------------------------------------------------
+%define FIRST_ITEM     128
+%define STICK          (FIRST_ITEM + 0)
+%define WOOD_PICKAXE   (FIRST_ITEM + 1)
+%define WOOD_AXE       (FIRST_ITEM + 2)
+%define WOOD_SHOVEL    (FIRST_ITEM + 3)
+%define WOOD_SWORD     (FIRST_ITEM + 4)
+%define STONE_PICKAXE  (FIRST_ITEM + 5)
+%define STONE_AXE      (FIRST_ITEM + 6)
+%define STONE_SHOVEL   (FIRST_ITEM + 7)
+%define STONE_SWORD    (FIRST_ITEM + 8)
+%define APPLE          (FIRST_ITEM + 9)
+%define PORKCHOP       (FIRST_ITEM + 10)
+%define COAL           (FIRST_ITEM + 11)
+%define IRON_INGOT     (FIRST_ITEM + 12)
+%define GOLD_INGOT     (FIRST_ITEM + 13)
+%define DIAMOND        (FIRST_ITEM + 14)
+%define IRON_PICKAXE   (FIRST_ITEM + 15)
+%define IRON_AXE       (FIRST_ITEM + 16)
+%define IRON_SHOVEL    (FIRST_ITEM + 17)
+%define IRON_SWORD     (FIRST_ITEM + 18)
+%define GOLD_PICKAXE   (FIRST_ITEM + 19)
+%define GOLD_AXE       (FIRST_ITEM + 20)
+%define GOLD_SHOVEL    (FIRST_ITEM + 21)
+%define GOLD_SWORD     (FIRST_ITEM + 22)
+%define DIAMOND_PICKAXE (FIRST_ITEM + 23)
+%define DIAMOND_AXE    (FIRST_ITEM + 24)
+%define DIAMOND_SHOVEL (FIRST_ITEM + 25)
+%define DIAMOND_SWORD  (FIRST_ITEM + 26)
+%define BOW            (FIRST_ITEM + 27)
+%define ARROW          (FIRST_ITEM + 28)
+%define STRING         (FIRST_ITEM + 29)
+%define GUNPOWDER      (FIRST_ITEM + 30)
+%define FLINT          (FIRST_ITEM + 31)
+%define FLINT_AND_STEEL (FIRST_ITEM + 32)
+%define ROTTEN_FLESH   (FIRST_ITEM + 33)
+%define COOKED_PORKCHOP (FIRST_ITEM + 34)
+%define FEATHER        (FIRST_ITEM + 35)
+%define RAW_CHICKEN    (FIRST_ITEM + 36)
+%define COOKED_CHICKEN (FIRST_ITEM + 37)
+%define IRON_HELMET    (FIRST_ITEM + 38)
+%define IRON_CHESTPLATE (FIRST_ITEM + 39)
+%define IRON_LEGGINGS  (FIRST_ITEM + 40)
+%define IRON_BOOTS     (FIRST_ITEM + 41)
+%define GOLD_HELMET    (FIRST_ITEM + 42)
+%define GOLD_CHESTPLATE (FIRST_ITEM + 43)
+%define GOLD_LEGGINGS  (FIRST_ITEM + 44)
+%define GOLD_BOOTS     (FIRST_ITEM + 45)
+%define DIAMOND_HELMET (FIRST_ITEM + 46)
+%define DIAMOND_CHESTPLATE (FIRST_ITEM + 47)
+%define DIAMOND_LEGGINGS (FIRST_ITEM + 48)
+%define DIAMOND_BOOTS  (FIRST_ITEM + 49)
+%define PISTOL         (FIRST_ITEM + 50)
+%define MUSKET         (FIRST_ITEM + 51)
+%define SHOTGUN        (FIRST_ITEM + 52)
+%define KALASHNIKOV    (FIRST_ITEM + 53)
+%define ROCKET_LAUNCHER (FIRST_ITEM + 54)
+%define PISTOL_ROUND   (FIRST_ITEM + 55)
+%define MUSKET_BALL    (FIRST_ITEM + 56)
+%define SHOTGUN_SHELL  (FIRST_ITEM + 57)
+%define RIFLE_ROUND    (FIRST_ITEM + 58)
+%define ROCKET         (FIRST_ITEM + 59)
+%define STAFF          (FIRST_ITEM + 60)
+%define ARCHMAGE_STAFF (FIRST_ITEM + 61)
+%define IRON_DAGGER    (FIRST_ITEM + 62)
+%define DIAMOND_DAGGER (FIRST_ITEM + 63)
+%define SHADOW_FANG    (FIRST_ITEM + 64)
+%define KINGS_BLADE    (FIRST_ITEM + 65)
+%define CELESTIAL_BOW  (FIRST_ITEM + 66)
+%define HEALTH_POTION  (FIRST_ITEM + 67)
+%define MANA_POTION    (FIRST_ITEM + 68)
+%define GOLD_COIN      (FIRST_ITEM + 69)
+%define NUM_ITEMS      (FIRST_ITEM + 70) ; 198
+
+; v3 (0.6) id space, for save migration
+%define V3_NUM_BLOCKS  25
+%define V3_FIRST_ITEM  32
+%define V3_NUM_ITEMS   102
+
+; ---- directions / block shapes ---------------------------------------------
+%define DIR_N          0                ; -z
+%define DIR_E          1                ; +x
+%define DIR_S          2                ; +z
+%define DIR_W          3                ; -x
+%define SHAPE_NONE     0
+%define SHAPE_CUBE     1
+%define SHAPE_SLAB     2
+%define SHAPE_STAIRS   3
+%define SHAPE_DOOR     4
+%define SHAPE_TRAPDOOR 5
+%define SHAPE_LADDER   6
+%define SHAPE_TORCH    7
+%define SHAPE_FENCE    8
+%define SHAPE_PANE     9
+%define BOXES_RENDER   0                ; shape_boxes purposes
+%define BOXES_COLLIDE  1
+%define BOXES_SELECT   2
+%define MAX_SHAPE_BOXES 9
+%define RECIPE_SIZE    13               ; w, h, out id, out count, cells[9] (row-major in w x h)
+%define LIGHT_SKY_FULL 0xF0             ; packed light: sky<<4 | block
 %define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER
 
 ; ---- tools ----------------------------------------------------------------
@@ -142,7 +198,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FLAG_CULL_SAME 4
 
 ; ---- mesh / texture -------------------------------------------------------
-%define MAX_CHUNK_VERTS    98304        ; 4096 blocks * 6 faces * 4
+%define MAX_CHUNK_VERTS    196608       ; cubes need <= 98304; shaped blocks use the rest
 %define VERTEX_SIZE        16
 %define ATLAS_PX           256
 %define TILE_PX            16
@@ -192,7 +248,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_CHICKEN_BODY  77
 %define TILE_CHICKEN_FACE  78
 %define TILE_CHICKEN_LEG   79
-%define TILE_ITEM0         80           ; icon of item id i >= 43 is TILE_ITEM0 + i - 43 (80..138)
+%define TILE_ITEM0         80           ; icon of item id i >= COAL is TILE_ITEM0 + i - COAL (80..138);
+                                        ; STICK..PORKCHOP use tiles 32 + i - STICK
 %define TILE_ABILITY0      139          ; 139 + (class-1)*3 + slot
 %define TILE_CLASS0        151          ; 151..154, class-1
 %define TILE_STAT0         155          ; 155 + stat id
@@ -203,6 +260,31 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_BOSS_ROBE     177
 %define TILE_BOSS_FACE     178
 %define TILE_BOSS_CROWN    179
+%define TILE_DOOR_IRON_UPPER 15
+%define TILE_SANDSTONE_TOP 61
+%define TILE_SANDSTONE_SIDE 62
+%define TILE_SANDSTONE_BOTTOM 63
+%define TILE_SMOOTH_STONE  180
+%define TILE_MOSSY_COBBLE  181
+%define TILE_CRACKED_BRICK 182
+%define TILE_BOOKSHELF     183
+%define TILE_WOOL          184
+%define TILE_IRON_BLOCK    185
+%define TILE_GOLD_BLOCK    186
+%define TILE_DIAMOND_BLOCK 187
+%define TILE_COAL_BLOCK    188
+%define TILE_DOOR_WOOD_LOWER 189
+%define TILE_DOOR_WOOD_UPPER 190
+%define TILE_DOOR_IRON_LOWER 191
+%define TILE_TRAPDOOR      200
+%define TILE_LADDER        201
+%define TILE_TORCH         202
+%define TILE_ICON_STAIRS0  240          ; 240..244: planks, cobble, stone brick, brick, sandstone
+%define TILE_ICON_SLAB0    245          ; 245..249, same order
+%define TILE_ICON_WOOD_DOOR 250
+%define TILE_ICON_IRON_DOOR 251
+%define TILE_ICON_FENCE    252
+%define TILE_ICON_GLASS_PANE 253
 %define FONT_Y             192          ; glyph rows at atlas y 192..239, x 0..127
 
 ; ---- save file ------------------------------------------------------------
@@ -436,7 +518,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_SLAM        50
 %define SND_VILLAGER    51
 %define SND_DRINK       52
-%define NUM_SOUNDS      53
+%define SND_DOOR_OPEN   53
+%define SND_DOOR_CLOSE  54
+%define NUM_SOUNDS      55
 
 ; ---- colours: packed for glColor4ub as four bytes r,g,b,a -----------------
 %define RGBA(r,g,b,a) ((r)|((g)<<8)|((b)<<16)|((a)<<24))
@@ -716,7 +800,7 @@ endstruc                                ; 44 bytes
 
 ; v3 world file header; offsets are load-bearing (save files, verification patches)
 struc WORLDHDR
-    .magic:      resb 8                 ; "ACRAFT03"
+    .magic:      resb 8                 ; "ACRAFT04" (v3 "ACRAFT03": old item ids)
     .seed:       resd 1
     .mode:       resd 1
     .time:       resd 1

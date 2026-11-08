@@ -3,7 +3,7 @@
 default rel
 
 global test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-global test_world_load_v1_converts, test_world_load_v2_converts
+global test_world_load_v1_converts, test_world_load_v2_converts, test_world_load_v3_migrates_items
 
 extern blocks, chunk_dirty, world_header
 extern world_get, world_set, world_is_solid, world_clear, world_save, world_load
@@ -17,6 +17,7 @@ garbage:   db "garbage!!!"
 v1_magic:  db "ACRAFT01"
 v2_magic:  db "ACRAFT02"
 v3_magic:  db "ACRAFT03"
+v4_magic:  db "ACRAFT04"
 v1_hotbar: db 1, 3, 2, 4, 5, 6, 7, 9, 10
 
 section .text
@@ -224,7 +225,7 @@ test_world_load_v1_converts:
     lea     rdi, [v1_path]
     call    world_load
     EXPECT_EAX 0
-    mov     rax, [v3_magic]
+    mov     rax, [v4_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     cmp     dword [world_header + WORLDHDR.seed], 77
@@ -277,6 +278,8 @@ test_world_load_v2_converts:
     mov     dword [world_header + WORLDHDR.seed], 55
     mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
     mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
+    mov     byte [world_header + WORLDHDR.inventory + 4 + ITEMSTACK.id], V3_FIRST_ITEM ; old STICK
+    mov     byte [world_header + WORLDHDR.inventory + 4 + ITEMSTACK.count], 2
     ; blocks forward to world_header+1024 (dest < src, so a forward copy is safe)
     lea     rsi, [blocks]
     lea     rdi, [world_header + WORLD_BASE_HDR]
@@ -291,7 +294,7 @@ test_world_load_v2_converts:
     lea     rdi, [v2_path]
     call    world_load
     EXPECT_EAX 0
-    mov     rax, [v3_magic]
+    mov     rax, [v4_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     cmp     dword [world_header + WORLDHDR.seed], 55
@@ -299,6 +302,8 @@ test_world_load_v2_converts:
     cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
     jne     .fail
     cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
+    jne     .fail
+    cmp     word [world_header + WORLDHDR.inventory + 4], STICK | (2 << 8)
     jne     .fail
     mov     edi, 1
     mov     esi, 2
@@ -316,6 +321,82 @@ test_world_load_v2_converts:
     ret
 .fail:
     lea     rdi, [v2_path]
+    call    file_unlink
+    mov     eax, 1
+    pop     rbp
+    ret
+
+; A v3 (0.6) file loads with its item ids moved to the v4 numbering: blocks keep their
+; id, items move up by FIRST_ITEM - V3_FIRST_ITEM, unused ids are emptied; a v4 save is
+; not migrated a second time.
+test_world_load_v3_migrates_items:
+    push    rbp
+    mov     rbp, rsp
+    call    world_clear
+    mov     edi, 10
+    mov     esi, 5
+    mov     edx, 10
+    mov     ecx, CHEST
+    call    world_set
+    lea     rdi, [world_header]
+    mov     ecx, WORLD_HDR_SIZE
+    xor     eax, eax
+    rep     stosb
+    mov     rax, [v3_magic]
+    mov     [world_header], rax
+    lea     rax, [world_header]
+    mov     word [rax + WORLDHDR.inventory], 32 | (5 << 8)          ; old STICK x5
+    mov     word [rax + WORLDHDR.inventory + 4], 24 | (3 << 8)      ; MOSSY_STONE_BRICK x3
+    mov     word [rax + WORLDHDR.armor + 4], 79 | (1 << 8)          ; old DIAMOND_CHESTPLATE
+    lea     rax, [world_header + WORLDHDR.containers]
+    mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
+    mov     word [rax + CONTAINER.slots], 44 | (7 << 8)             ; old IRON_INGOT x7
+    mov     word [rax + CONTAINER.slots + 4], 27 | (1 << 8)         ; unused v3 id
+    lea     rdi, [save_path]
+    lea     rsi, [world_header]
+    mov     edx, WORLD_FILE_SIZE
+    call    file_write_atomic
+    EXPECT_EAX 0
+    call    world_clear
+    mov     qword [world_header], 0
+    lea     rdi, [save_path]
+    call    world_load
+    EXPECT_EAX 0
+    lea     rax, [world_header]
+    cmp     word [rax + WORLDHDR.inventory], STICK | (5 << 8)
+    jne     .fail
+    cmp     word [rax + WORLDHDR.inventory + 4], MOSSY_STONE_BRICK | (3 << 8)
+    jne     .fail
+    cmp     byte [rax + WORLDHDR.armor + 4], DIAMOND_CHESTPLATE
+    jne     .fail
+    lea     rax, [world_header + WORLDHDR.containers]
+    cmp     word [rax + CONTAINER.slots], IRON_INGOT | (7 << 8)
+    jne     .fail
+    cmp     dword [rax + CONTAINER.slots + 4], 0
+    jne     .fail
+    mov     edi, 10
+    mov     esi, 5
+    mov     edx, 10
+    call    world_get
+    EXPECT_EAX CHEST
+    lea     rdi, [save_path]
+    call    world_save
+    EXPECT_EAX 0
+    mov     rax, [v4_magic]
+    cmp     [world_header + WORLDHDR.magic], rax
+    jne     .fail
+    lea     rdi, [save_path]
+    call    world_load
+    EXPECT_EAX 0
+    cmp     word [world_header + WORLDHDR.inventory], STICK | (5 << 8)
+    jne     .fail
+    lea     rdi, [save_path]
+    call    file_unlink
+    xor     eax, eax
+    pop     rbp
+    ret
+.fail:
+    lea     rdi, [save_path]
     call    file_unlink
     mov     eax, 1
     pop     rbp
