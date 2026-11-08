@@ -818,7 +818,7 @@ structures_mark_freed(edi x, esi z) -> eax 1 when (x, z) lies in a cached camp (
 **Screens, HUD and flow (W4)**
 - game.asm: only the right click belongs to a folk (talk, and the click is spent: no use, place or potion). The left button reaches heavy, melee, staff and gun as on any mob.
 - `screen_trade`'s panel is `26 + 21 × trade_count` high (236 for the Villagers' 10 rows, as before).
-- `hud_banner_paint(edi y)` is split out of the banner draw. `screen_shrine` paints a tier banner above its panel, and the HUD skips its own copy under the shrine screen (so it shows once; fixed in the live checks).
+- `hud_banner_paint(edi y)` is split out of the banner draw. `screen_shrine` paints a tier banner above its panel, and the HUD skips its own copy under the shrine screen, so it shows once. This was fixed in the live checks and verified live only (screenshots before and after); no unit test covers it.
 - Death strings are the spec's literal texts ("Slain by Bandits"), with a size check on the table.
 - A creative left click never breaks a block with `hardness < 0` (a shrine; bedrock as before). Regression in `shrine_and_folk_dispatch`.
 
