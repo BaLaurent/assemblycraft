@@ -17,7 +17,7 @@ extern region_plan, camp_plan, structures_fill_chest, structures_refresh, struct
 extern sites, site_count, site_state, structures_reset, structures_step, structures_nearest
 extern structures_on_mob_killed, structures_on_boss_killed, structures_mark_freed
 extern roads_edges, roads_in_rect, road_mask, road_mark, camp_main, patrol_point, patrol_consider
-extern gen_column, gen_height, gen_biome, structures_stamp
+extern gen_column, gen_height, gen_biome, gen_surface, structures_stamp
 extern world_origin_x, world_origin_z
 extern mobs, mobs_clear, mob_spawn, mob_count_type
 extern rpg_state, rpg_reset, rpg_xp_need
@@ -68,10 +68,10 @@ k_210_5: dd 210.5
 k_212:   dd 212.0
 k_250_5: dd 250.5
 k_50_5:  dd 50.5
-k_m21_5: dd -21.5
-k_849_5: dd 849.5
-k_156_5: dd 156.5
-k_196_5: dd 196.5
+k_m755_5: dd -755.5
+k_m661_5: dd -661.5
+k_184_5: dd 184.5
+k_76_5: dd 76.5
 
 ; the plan's trigger boxes relative to a site's (x, y, z): lo dx, dy, dz, hi dx, dy, dz, by kind - 1
 t_box:
@@ -79,12 +79,12 @@ t_box:
     dd  -5, -1,  -5,  19,  5,  19
     dd  -7,  0,  -7,   7,  7,   7
     dd -10, -2, -10,  10,  8,  10
-; the biomes each faction's camp may stand in: a bit per BIOME_*
+; the biomes each faction's camp may stand in: a bit per BIOME_* (camp_homes in structures.asm)
 t_homes:
-    dd (1 << BIOME_PLAINS) | (1 << BIOME_FOREST)
-    dd (1 << BIOME_FOREST) | (1 << BIOME_MOUNTAINS)
+    dd (1 << BIOME_PLAINS) | (1 << BIOME_FOREST) | (1 << BIOME_BIRCH)
+    dd (1 << BIOME_FOREST) | (1 << BIOME_MOUNTAINS) | (1 << BIOME_SAVANNA)
     dd (1 << BIOME_SWAMP)
-    dd (1 << BIOME_SNOW) | (1 << BIOME_MOUNTAINS)
+    dd (1 << BIOME_SNOW) | (1 << BIOME_TAIGA) | (1 << BIOME_MOUNTAINS)
     dd (1 << BIOME_MOUNTAINS)
 ; the regions searched for a site and compared: (arx, arz) pairs, the origin's region first
 t_regions:
@@ -2727,9 +2727,9 @@ check_site_exits:
     ret
 
 ; check_camp_clearing() -> eax 0 when the first camp the plans have (regions -3..3) is built through
-; gen_column as a clearing: one top block (grass, sand, stone or snow block) over the cells within 10 of
-; its centre at its ground height, something solid under it and air above up to 12 blocks, at the nine
-; cells of t_free_cells that none of the camp's buildings stands on
+; gen_column as a clearing: one top block over the cells within 10 of its centre at its ground height, the
+; terrain's own surface block at the centre (gen_surface), something solid under it and air above up to 12
+; blocks, at the nine cells of t_free_cells that none of the camp's buildings stands on
 ; Frame: [rsp .. +56) the site, [rsp+56] the top block.
 check_camp_clearing:
     push    rbp
@@ -2787,15 +2787,11 @@ check_camp_clearing:
     xor     ecx, ecx
     call    block_at
     mov     [rsp + 56], eax
-    cmp     eax, GRASS
-    je      .top_ok
-    cmp     eax, SAND
-    je      .top_ok
-    cmp     eax, STONE
-    je      .top_ok
-    cmp     eax, SNOW_BLOCK
+    mov     edi, [rbx + SITE.x]         ; the clearing's top is what the terrain's surface is at the centre
+    mov     esi, [rbx + SITE.z]
+    call    gen_surface
+    cmp     eax, [rsp + 56]
     jne     .bad
-.top_ok:
     xor     r14d, r14d                  ; cell i of t_free
 .cell:
     lea     rax, [t_free_cells]
@@ -3117,8 +3113,9 @@ first_camp:
     pop     rbx
     ret
 
-; camp_of_faction(edi faction, rsi SITE* dst) -> eax 1 when one of the super-regions -2 .. 1 (rows of
-; constant sz first) has a camp of that faction: the first one is copied to dst
+; camp_of_faction(edi faction, rsi SITE* dst) -> eax 1 when one of the super-regions -5 .. 4 (rows of
+; constant sz first) has a camp of that faction: the first one is copied to dst. 100 super-regions: the
+; swamp (cult) and mountains (stonekin) camps are rare on seed 42
 ; Frame: [rsp .. +280) the camps.
 camp_of_faction:
     push    rbp
@@ -3131,9 +3128,9 @@ camp_of_faction:
     sub     rsp, 296
     mov     r12d, edi
     mov     r13, rsi
-    mov     r14d, -2                    ; sz
+    mov     r14d, -5                    ; sz
 .sz:
-    mov     ebx, -2                     ; sx
+    mov     ebx, -5                     ; sx
 .sx:
     mov     edi, ebx
     mov     esi, r14d
@@ -3151,10 +3148,10 @@ camp_of_faction:
     jmp     .camp
 .next_sx:
     inc     ebx
-    cmp     ebx, 1
+    cmp     ebx, 4
     jle     .sx
     inc     r14d
-    cmp     r14d, 1
+    cmp     r14d, 4
     jle     .sz
     xor     eax, eax
     jmp     .ret
@@ -3839,25 +3836,93 @@ test_camp_npcs_recreated:
 
 ; ---- test 9: the roads --------------------------------------------------------------------------------
 
-; first_road(rdi ROADEDGE* dst) -> eax 1 when roads_edges gives a road over the super-regions (0, 0), (-1, 0),
-; (0, -1), (-1, -1) in that order, else over sx, sz -3 .. 3 in rows of constant sz: the first one is
-; copied to dst; 0 when there is none
+; road_wet(rdi ROADEDGE* road) -> eax how many of the points 1 .. 39 of 40 along the road stand on ground at
+; most 2 below the sea (road_point, gen_height)
+road_wet:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12, rdi
+    xor     r13d, r13d
+    mov     ebx, 1
+.point:
+    mov     rdi, r12
+    mov     esi, ebx
+    mov     edx, 40
+    call    road_point
+    mov     edi, eax
+    mov     esi, edx
+    call    gen_height
+    cmp     eax, SEA_LEVEL - 2
+    jg      .dry
+    inc     r13d
+.dry:
+    inc     ebx
+    cmp     ebx, 39
+    jbe     .point
+    mov     eax, r13d
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; wet_road_in(edi sx, esi sz, rdx ROADEDGE* dst) -> eax 1 when the super-region (sx, sz) has a road with at
+; least 2 points under water (road_wet): the first one is copied to dst
 ; Frame: [rsp .. +72) roads_edges' output.
-first_road:
+wet_road_in:
     push    rbx
     push    r12
     push    r13
     sub     rsp, 80
+    mov     r12, rdx
+    lea     rdx, [rsp]
+    call    roads_edges
+    mov     ebx, eax
+    lea     r13, [rsp]
+.edge:
+    test    ebx, ebx
+    jz      .none
+    mov     rdi, r13
+    call    road_wet
+    cmp     eax, 2
+    jae     .found
+    add     r13, ROADEDGE_size
+    dec     ebx
+    jmp     .edge
+.found:
+    mov     rsi, r13
+    mov     rdi, r12
+    mov     ecx, ROADEDGE_size / 4
+    rep movsd
+    mov     eax, 1
+    jmp     .ret
+.none:
+    xor     eax, eax
+.ret:
+    add     rsp, 80
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; first_road(rdi ROADEDGE* dst) -> eax 1 when roads_edges gives a road that crosses water (wet_road_in) over the
+; super-regions (0, 0), (-1, 0), (0, -1), (-1, -1) in that order, else over sx, sz -3 .. 3 in rows of constant
+; sz: the first one is copied to dst; 0 when there is none. The roads tests need a road with water on it: the
+; sea stays over the floor where a road crosses it.
+first_road:
+    push    rbx
+    push    r12
+    push    r13
     mov     r12, rdi
     xor     ebx, ebx
 .first:
     lea     rax, [t_super]
     mov     edi, [rax + rbx*8]
     mov     esi, [rax + rbx*8 + 4]
-    lea     rdx, [rsp]
-    call    roads_edges
+    mov     rdx, r12
+    call    wet_road_in
     test    eax, eax
-    jnz     .found
+    jnz     .ret
     inc     ebx
     cmp     ebx, 4
     jb      .first
@@ -3867,10 +3932,10 @@ first_road:
 .sx:
     mov     edi, ebx
     mov     esi, r13d
-    lea     rdx, [rsp]
-    call    roads_edges
+    mov     rdx, r12
+    call    wet_road_in
     test    eax, eax
-    jnz     .found
+    jnz     .ret
     inc     ebx
     cmp     ebx, 3
     jle     .sx
@@ -3878,15 +3943,7 @@ first_road:
     cmp     r13d, 3
     jle     .sz
     xor     eax, eax
-    jmp     .ret
-.found:
-    lea     rsi, [rsp]
-    mov     rdi, r12
-    mov     ecx, ROADEDGE_size / 4
-    rep movsd
-    mov     eax, 1
 .ret:
-    add     rsp, 80
     pop     r13
     pop     r12
     pop     rbx
@@ -4301,7 +4358,7 @@ check_road_window:
 ; the end of an axis road, beside a diagonal one). Then seed 42: on the first road (first_road) the cells at
 ; 20, 35, 50, 65 and 80 percent of its length that lie above the sea outside every site's footprint (at least
 ; 3 of them) are gravel with 2 cells of air over them once generated, and their road_mask is 2; along the
-; whole road, at 39 points, no cell with a non-zero road_mask has a trunk or tall grass in its column and the
+; whole road, at 39 points outside every site's footprint, no cell with a non-zero road_mask has a trunk or tall grass in its column and the
 ; point's own cell has road_mask 2; the masks of neighbouring columns agree on the cells they share
 ; Frame: [rsp .. +24) the road, [rsp+24] points checked, [rsp+28] x, [rsp+32] z, [rsp+36] ground.
 test_roads_stamped:
@@ -4464,9 +4521,15 @@ test_roads_stamped:
     call    road_class
     cmp     eax, 2
     jne     .fail
+    mov     edi, [rsp + 28]             ; a site's builder owns the point (a village house across the road is
+    mov     esi, [rsp + 32]             ; not growth): no tree or grass claim there
+    call    clear_of_sites
+    test    eax, eax
+    jz      .no_growth_claim
     call    check_no_growth
     test    eax, eax
     jnz     .fail
+.no_growth_claim:
     mov     edi, [rsp + 28]             ; the ground there, and whether a site's builder owns the cell
     mov     esi, [rsp + 32]
     call    gen_height
@@ -4701,7 +4764,7 @@ check_patrol_classes:
 ; player 30, 47, 97 or 100 blocks from it; 60 blocks away patrol_consider puts three ROLE_PATROL Bandits there
 ; (ARCHER, BERSERKER, BRUTE) side by side across the road on the stone, with the road's key, heading for B
 ; with A as their home; while they live, or for 36000 steps after a removal, it adds none, then it adds
-; them again. On seed 42's first road, with the world origin moved onto it, structures_step does the same
+; them again. On seed 42's first road that crosses water, with the world origin moved onto it, structures_step does the same
 ; for the road's real patrol in Survival and in Creative.
 ; Frame: [rsp .. +24) the road, [rsp+24] patrol_point's out[3], [rsp+36] saved game_time, [rsp+40] game_mode,
 ; [rsp+44] difficulty, [rsp+48] player x, y, z.
@@ -4865,32 +4928,32 @@ test_patrol_spawns_on_road:
     inc     r12d
     cmp     r12d, NUM_FACTIONS
     jb      .factions
-    call    mobs_clear                  ; ---- seed 42's first road, real
+    call    mobs_clear                  ; ---- seed 42's first road that crosses water, real
     call    structures_reset
     mov     edi, 42
     call    worldgen_set_seed
     call    world_clear
-    mov     dword [world_origin_x], 1280
-    mov     dword [world_origin_z], 0
-    mov     edi, 89                     ; the column of its first end: absolute chunk (89, 12)
-    mov     esi, 12
+    mov     dword [world_origin_x], 5888
+    mov     dword [world_origin_z], -3840
+    mov     edi, 379                    ; the column of its first end: absolute chunk (379, -236)
+    mov     esi, -236
     call    claim_lit
-    mov     edi, 156                    ; stone under its first end (1436, 196), local (156, 196)
+    mov     edi, 184                    ; stone under its first end (6072, -3764), local (184, 76)
     mov     esi, 10
-    mov     edx, 196
+    mov     edx, 76
     mov     ecx, STONE
     call    world_set
     lea     rdi, [rsp]
     call    first_road
     test    eax, eax
     jz      .fail
-    cmp     dword [rsp + ROADEDGE.ax], 1436
+    cmp     dword [rsp + ROADEDGE.ax], 6072
     jne     .fail
-    cmp     dword [rsp + ROADEDGE.az], 196
+    cmp     dword [rsp + ROADEDGE.az], -3764
     jne     .fail
     mov     r14d, [rsp + ROADEDGE.key]
     mov     dword [game_time], 0        ; at step 0 the patrol stands on the first end
-    PLAYER_AT 96.5, 196.5               ; 60 blocks west of it
+    PLAYER_AT 124.5, 76.5               ; 60 blocks west of it
     mov     r12d, 2
 .mode:
     mov     edi, 60
@@ -4945,7 +5008,7 @@ test_patrol_spawns_on_road:
     ret
 
 ; check_real_patrol(edi key) -> eax 0 when every live folk is a ROLE_PATROL of the Bandits with that road key
-; heading for the second camp, (-21.5, 849.5) local, with the first, (156.5, 196.5), as its home, its feet on
+; heading for the second camp, (-755.5, -661.5) local, with the first, (184.5, 76.5), as its home, its feet on
 ; y 11; and the classes are one ARCHER, one BERSERKER and one BRUTE (leaf)
 check_real_patrol:
     xor     r8d, r8d                    ; archers
@@ -4969,19 +5032,19 @@ check_real_patrol:
     jne     .bad
     jp      .bad
     movss   xmm0, [rax + MOB.dest_x]
-    ucomiss xmm0, [k_m21_5]
+    ucomiss xmm0, [k_m755_5]
     jne     .bad
     jp      .bad
     movss   xmm0, [rax + MOB.dest_z]
-    ucomiss xmm0, [k_849_5]
+    ucomiss xmm0, [k_m661_5]
     jne     .bad
     jp      .bad
     movss   xmm0, [rax + MOB.home_x]
-    ucomiss xmm0, [k_156_5]
+    ucomiss xmm0, [k_184_5]
     jne     .bad
     jp      .bad
     movss   xmm0, [rax + MOB.home_z]
-    ucomiss xmm0, [k_196_5]
+    ucomiss xmm0, [k_76_5]
     jne     .bad
     jp      .bad
     movzx   edx, byte [rax + MOB.fclass]

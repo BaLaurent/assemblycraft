@@ -2,7 +2,7 @@
 ; ambient occlusion (baked into the vertex colour) and smooth light (block light averaged per
 ; corner, one sky level per face); shaped blocks (slabs, stairs, doors, ladders, torches, fences,
 ; panes, beds, snow, cacti) are emitted box by box from shapes.asm with one flat light per face;
-; tall grass is two crossed diagonal quads; water and ice are drawn in a second, translucent range.
+; tall grass is two crossed diagonal quads; water, ice and lava are drawn in a second, translucent range.
 ; Vertex positions are in 1/16 block RELATIVE TO THE CHUNK (0..256; render.asm translates each chunk
 ; and scales by 1/16); VERTEX.pad carries the packed light (sky << 4 | block) that texture unit 1
 ; turns into a colour through the light map.
@@ -520,21 +520,32 @@ mesh_chunk:
     inc     dword [V(L_BOXI)]
     jmp     .box_loop
 
-; ---- translucent block (pass 1): water and ice, flat light of the cell each face looks into ---
-; A face is culled against an opaque or another translucent neighbour. The open top of a WATER
-; cell (nothing watery above) sits at 14/16 of the cell, and so does the top edge of its sides.
+; ---- translucent block (pass 1): water, ice and lava, flat light of the cell each face looks into
+; A face is culled against an opaque neighbour or a translucent one; a LAVA cell is culled only
+; against LAVA (its opaque-looking face stays visible from inside water). The open top of a WATER
+; cell (nothing watery above) and of a LAVA cell (no LAVA above) sits at 14/16 of the cell, and so
+; does the top edge of its sides.
 .water:
     call    cell_coords
     mov     dword [V(L_WBOX)], 0x10000000       ; x0 y0 z0 = 0, x1 = 16
     mov     byte [V(L_WBOX) + 4], 16
     mov     byte [V(L_WBOX) + 5], 16
     cmp     r14d, WATER
-    jne     .wface_init
+    jne     .wnot_water
     mov     ecx, [V(L_PI)]
     movzx   eax, byte [pad_blocks + rcx + PAD_Y]    ; the cell above
     cmp     eax, WATER
     je      .wface_init
     cmp     eax, ICE
+    je      .wface_init
+    mov     byte [V(L_WBOX) + 4], 14
+    jmp     .wface_init
+.wnot_water:
+    cmp     r14d, LAVA
+    jne     .wface_init
+    mov     ecx, [V(L_PI)]
+    movzx   eax, byte [pad_blocks + rcx + PAD_Y]    ; the cell above
+    cmp     eax, LAVA
     je      .wface_init
     mov     byte [V(L_WBOX) + 4], 14
 .wface_init:
@@ -546,8 +557,15 @@ mesh_chunk:
     call    face_pv
     mov     ecx, [V(L_PVI)]
     movzx   eax, byte [pad_blocks + rcx]
-    test    byte [block_flags + rax], FLAG_OPAQUE | FLAG_TRANSLUCENT
+    test    byte [block_flags + rax], FLAG_OPAQUE
     jnz     .wnext
+    test    byte [block_flags + rax], FLAG_TRANSLUCENT
+    jz      .wvisible
+    cmp     r14d, LAVA
+    jne     .wnext                              ; water and ice hide against any translucent cell
+    cmp     eax, LAVA
+    je      .wnext                              ; lava hides only against lava
+.wvisible:
     movzx   eax, byte [pad_light + rcx]
     mov     ecx, 3
     mov     [V(L_AO)], ecx

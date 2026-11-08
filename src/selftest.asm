@@ -73,6 +73,10 @@ extern test_folk_kill_reputation_and_drops, test_folk_projectiles, test_folk_int
 extern test_folk_travellers, test_camp_built_with_slots, test_camp_npcs_recreated
 extern test_roads_stamped, test_patrol_spawns_on_road, test_faction_save_load
 extern test_shrine_and_folk_dispatch, test_shrine_block_tables
+extern test_terrain_blocks_tables, test_mesher_lava
+extern test_biome_ladder
+extern test_lava_burns, test_new_biome_consumers
+extern test_caves_reworked
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -256,6 +260,12 @@ tests:
     TEST faction_save_load
     TEST shrine_and_folk_dispatch
     TEST shrine_block_tables
+    TEST terrain_blocks_tables
+    TEST mesher_lava
+    TEST biome_ladder
+    TEST lava_burns
+    TEST new_biome_consumers
+    TEST caves_reworked
     dq 0
 
 section .rodata
@@ -431,6 +441,12 @@ section .rodata
     TESTNAME faction_save_load
     TESTNAME shrine_and_folk_dispatch
     TESTNAME shrine_block_tables
+    TESTNAME terrain_blocks_tables
+    TESTNAME mesher_lava
+    TESTNAME biome_ladder
+    TESTNAME lava_burns
+    TESTNAME new_biome_consumers
+    TESTNAME caves_reworked
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

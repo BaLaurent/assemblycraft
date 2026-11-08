@@ -11,7 +11,7 @@ extern audio_play, inv_held, inv_consume_held, armor_points
 extern item_food, item_saturation, block_step_sound
 extern world_get, world_is_solid, world_is_opaque
 extern rpg_stats, gear_powers, combat_phoenix_cd, fx_burst, hud_banner
-extern player_eye_in_water, sleep_cancel
+extern player_eye_in_water, sleep_cancel, body_in_liquid, combat_player_status, game_time
 
 section .rodata
 align 4
@@ -283,7 +283,8 @@ survival_exhaust:
     movss   [surv + SURVIVAL.exhaustion], xmm0
     ret
 
-; survival_step(rdi INPUT*, xmm0 horiz_dist, esi jumped): one fixed step, survival only
+; survival_step(rdi INPUT*, xmm0 horiz_dist, esi jumped): one fixed step, survival only (game.asm calls it in
+; Survival only, so Creative never burns in lava)
 survival_step:
     push    rbp
     mov     rbp, rsp
@@ -432,16 +433,16 @@ survival_step:
     jz      .drowning
     dec     eax
     mov     [surv + SURVIVAL.breath], eax
-    jnz     .timers
+    jnz     .lava
 .drowning:
     inc     dword [surv + SURVIVAL.drown_timer]
     cmp     dword [surv + SURVIVAL.drown_timer], 60
-    jb      .timers
+    jb      .lava
     mov     dword [surv + SURVIVAL.drown_timer], 0
     mov     edi, 1
     mov     esi, CAUSE_DROWN
     call    survival_damage
-    jmp     .timers
+    jmp     .lava
 .air:
     mov     eax, [surv + SURVIVAL.breath]
     add     eax, 5
@@ -450,7 +451,28 @@ survival_step:
     cmovg   eax, ecx
     mov     [surv + SURVIVAL.breath], eax
     mov     dword [surv + SURVIVAL.drown_timer], 0
-    ; 8. timers count down
+    ; 8. lava: a player standing in it burns (combat_player_status, STS_BURN: 3 s, ticked by combat_step's
+    ; damage over time) and on every 10th step of game_time the lava itself strikes for 4 (fire damage
+    ; scaled to the maximum health, no armor; the 30 steps of invulnerability it starts leave one strike
+    ; in 30 steps)
+.lava:
+    lea     rdi, [player]
+    call    body_in_liquid
+    cmp     eax, LAVA
+    jne     .timers
+    mov     edi, STS_BURN
+    mov     esi, 24
+    call    combat_player_status
+    mov     eax, [game_time]
+    xor     edx, edx
+    mov     ecx, 10
+    div     ecx
+    test    edx, edx
+    jnz     .timers
+    mov     edi, 4
+    mov     esi, CAUSE_FIRE
+    call    survival_damage
+    ; 9. timers count down
 .timers:
     cmp     dword [surv + SURVIVAL.invuln], 0
     jle     .flash

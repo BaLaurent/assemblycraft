@@ -4,7 +4,7 @@ default rel
 
 global player, body_init, body_step, body_intersects_block, move_axis
 global player_look, player_eye, player_forward
-global body_in_water, player_eye_in_water, player_shift
+global body_in_liquid, player_eye_in_water, player_shift
 
 extern sincos_deg, world_get, shape_boxes, cell_boxes, block_shape
 
@@ -37,7 +37,9 @@ c_swim_g:    dd 10.0                    ; swimming: vy falls by this per second 
 c_swim_min:  dd -2.5                    ; ... to at most this sink speed
 c_swim_up:   dd 3.0                     ; jump held in water: rise speed
 c_swim_out:  dd 7.0                     ; ... pushing against a ledge: enough to climb out
-c_probe_lo:  dd 0.4                     ; body_in_water probes the cells at feet + 0.4 and feet + 0.05
+c_lava_slow: dd 0.3                     ; lava: horizontal speed factor (water: 0.5) ...
+c_lava_up:   dd 1.5                     ; ... and the rise speed with jump held (water: 3.0)
+c_probe_lo:  dd 0.4                     ; body_in_liquid probes the cells at feet + 0.4 and feet + 0.05
 c_probe_hi:  dd 0.05
 
 section .bss
@@ -71,15 +73,17 @@ player_shift:
     movss   [rax + BODY.z], xmm1
     ret
 
-; body_in_water(rdi body) -> eax 1 when the cell at (floor x, floor(y + 0.4), floor z) or the one at
-; (floor x, floor(y + 0.05), floor z) holds WATER: the feet or the lower body is under the surface
-body_in_water:
+; body_in_liquid(rdi body) -> eax WATER, LAVA or 0: what the cell at (floor x, floor(y + 0.4), floor z) or the
+; one at (floor x, floor(y + 0.05), floor z) holds, i.e. whether the feet or the lower body are under the
+; surface of a liquid. When one probe finds WATER and the other LAVA the answer is WATER.
+; r12d, r13d = x and z of the cell, r14d = the liquid found so far (0 or LAVA)
+body_in_liquid:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 8
+    push    r14
     mov     rbx, rdi
     movss   xmm0, [rbx + BODY.x]
     roundss xmm0, xmm0, 9
@@ -87,6 +91,7 @@ body_in_water:
     movss   xmm0, [rbx + BODY.z]
     roundss xmm0, xmm0, 9
     cvttss2si r13d, xmm0                ; cell z
+    xor     r14d, r14d
     movss   xmm0, [rbx + BODY.y]
     addss   xmm0, [c_probe_hi]
     roundss xmm0, xmm0, 9
@@ -95,7 +100,9 @@ body_in_water:
     mov     edx, r13d
     call    world_get
     cmp     eax, WATER
-    je      .yes
+    je      .water
+    cmp     eax, LAVA
+    cmove   r14d, eax                   ; (eax is LAVA when it is equal)
     movss   xmm0, [rbx + BODY.y]
     addss   xmm0, [c_probe_lo]
     roundss xmm0, xmm0, 9
@@ -104,13 +111,15 @@ body_in_water:
     mov     edx, r13d
     call    world_get
     cmp     eax, WATER
-    je      .yes
-    xor     eax, eax
+    je      .water
+    cmp     eax, LAVA
+    cmove   r14d, eax
+    mov     eax, r14d
     jmp     .out
-.yes:
-    mov     eax, 1
+.water:
+    mov     eax, WATER
 .out:
-    add     rsp, 8
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -676,12 +685,13 @@ decay_kb:
 ; order so that resting on the ground leaves y exactly integral. A ladder cell under the box
 ; overrides the vertical speed (climb, hold or slide) and ends every fall. A body on the ground
 ; that walks into a low step (slab, stair, trapdoor) is lifted over it (step_up).
-; Swimming (not flying, body_in_water at the start of the step): horizontal speed halves
-; (sprint still x1.3), vy -= 10 dt down to -2.5, jump sets vy = 3 (7 when the previous step was
-; blocked horizontally: climbs a one-block ledge out of the water). A body that is in water at
-; the end of the step lands softly: its fall count is zeroed and the landed distance is 0.
+; Swimming (not flying, body_in_liquid is WATER or LAVA at the start of the step): horizontal speed
+; halves in water, drops to 0.3 in lava (sprint still x1.3), vy -= 10 dt down to -2.5, jump sets
+; vy = 3 in water, 1.5 in lava (7 in either when the previous step was blocked horizontally: climbs a
+; one-block ledge out of the liquid). A body that is in a liquid at the end of the step lands softly:
+; its fall count is zeroed and the landed distance is 0.
 ; Frame: [rsp] y0, [rsp + 4] x0, z0, dx, dz, vx0, vz0 (what step_up needs), [rsp + 32] blocked
-; by the previous step, [rsp + 36] swimming.
+; by the previous step, [rsp + 36] the liquid the body is in (0, WATER or LAVA).
 body_step:
     push    rbp
     mov     rbp, rsp
@@ -699,7 +709,7 @@ body_step:
     cmp     dword [rbx + BODY.flying], 0
     jne     .swim_known
     mov     rdi, rbx
-    call    body_in_water
+    call    body_in_liquid
 .swim_known:
     mov     [rsp + 36], eax
     movss   xmm0, [rbx + BODY.yaw]
@@ -735,9 +745,15 @@ body_step:
     je      .sprint_done
     mulss   xmm5, [c_sprint]            ; sprinting is 30% faster than the current walk speed
 .sprint_done:
-    cmp     dword [rsp + 36], 0
+    mov     eax, [rsp + 36]
+    test    eax, eax
     je      .have_speed
-    mulss   xmm5, [c_half]              ; wading and swimming are half as fast
+    movss   xmm6, [c_half]              ; wading and swimming are half as fast ...
+    cmp     eax, LAVA
+    jne     .liquid_speed
+    movss   xmm6, [c_lava_slow]         ; ... lava drags harder: 0.3
+.liquid_speed:
+    mulss   xmm5, xmm6
 .have_speed:
     mulss   xmm4, xmm5
     mulss   xmm3, xmm5
@@ -774,7 +790,11 @@ body_step:
     maxss   xmm0, [c_swim_min]          ; sinks at 2.5 blocks/s at most
     cmp     dword [r12 + INPUT.jump], 0
     je      .vy_set
-    movss   xmm0, [c_swim_up]           ; jump held: swim up at 3
+    movss   xmm0, [c_swim_up]           ; jump held: swim up at 3 (lava: 1.5)
+    cmp     dword [rsp + 36], LAVA
+    jne     .up_set
+    movss   xmm0, [c_lava_up]
+.up_set:
     cmp     dword [rsp + 32], 0
     je      .vy_set
     movss   xmm0, [c_swim_out]          ; ... against a ledge: 7, enough to climb out
@@ -846,11 +866,11 @@ body_step:
     lea     rsi, [rsp + 4]
     call    step_up                     ; a low step in the way: try to climb it
 .moved:
-    ; fall tracking: a body that ends the step in water falls softly
+    ; fall tracking: a body that ends the step in a liquid (water or lava) falls softly
     cmp     dword [rbx + BODY.flying], 0
     jne     .fall_reset
     mov     rdi, rbx
-    call    body_in_water
+    call    body_in_liquid
     test    eax, eax
     jnz     .fall_reset
     xorps   xmm0, xmm0

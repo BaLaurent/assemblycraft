@@ -1,61 +1,96 @@
-; caves.asm - the underground of a generated column: tunnels, caverns and ravines, ores, gravel pockets.
+; caves.asm - the underground of a generated column: tunnels, caverns and roofed ravines, ores, gravel
+; pockets, and the dressing of the caves (pools, floors, exposed ore).
 ;
-; gen_underground(buf, tc, ax0, az0) is called by gen_column after the surface is laid; it carves,
-; then places ores and gravel, in that order. carved_at, gen_carved and gen_cave_flags are pure
-; functions of the absolute cell and of gen_seed and are reentrant (the main thread calls them while
-; the worker runs gen_column); everything else belongs to the one thread that runs gen_column.
-; carved_at agrees bit for bit with the lattice pass of gen_caves: both interpolate the same
-; lattice samples with BILERP and the same carve_test.
+; gen_underground(buf, tc, ax0, az0) is called by gen_column after the surface is laid; it carves, then
+; places ores, gravel pockets and the cave dressing, in that order. carved_at, gen_carved and
+; gen_cave_flags are pure functions of the absolute cell and of gen_seed and are reentrant (the main
+; thread calls them while the worker runs gen_column); everything else belongs to the one thread that
+; runs gen_column. carved_at agrees bit for bit with the lattice pass of gen_caves: both interpolate the
+; same lattice samples with BILERP and the same y lerp, and take the one decision from carve_test.
+;
+; What carves (carve_test, rules in this order):
+;   1  y < 5 or y > h: nothing.        2  h < 97 (water, swamp): nothing within 4 cells of the top.
+;   3  tunnel: y 12..72 (and, in a CF_MOUTH column, y 73..h), |A| < 0.07 and |B| < 0.07 (0.05 above y 72).
+;   4  cavern: y 20..56, CF_CAVERN, not CF_PILLAR, V > k_cav_t.
+;   5  ravine: CF_RAVINE, y 25..min(70, h - 10): roofed, never open to the sky.
+; The column flags of a cell (cave_flags): CF_RAVINE ravine_at, CF_PILLAR noise2(shift 2, salt 1750) > 0.82,
+; CF_CAVERN noise2(shift 7, salt 1740) > -0.25, CF_MOUTH noise2(shift 6, salt 1730) > 0.65 on land (h >= 97)
+; whose terrain falls 4 or more within 3 cells (h - min of the four neighbours at distance 3).
 %include "common.inc"
 default rel
 
-global gen_underground, carved_at, gen_carved
+global gen_underground, carved_at, gen_carved, gen_cave_flags
 
-extern hash32, noise3, fbm2
+extern hash32, noise2, noise3, fbm2
 extern gen_height
 
-; cave lattice: 4 block spacing, levels j (y = 4 j) 0..21 of the three fields, 5 x 5 points per level
+; cave lattice: 4 block spacing, levels j (y = 4 j) 0..61 of the three fields, 5 x 5 points per level.
+; Levels LAT_JLO..LAT_JHI are always sampled; the two tunnel fields go on up to the level above the highest
+; mouth cell's surface when the column has a mouth.
 %define LAT_I       4                   ; bytes per x step
 %define LAT_K       32                  ; per z step (5 floats, padded to 8)
 %define LAT_J       160                 ; per level
-%define LAT_F       3520                ; per field (22 levels)
+%define LAT_LEVELS  62                  ; levels 0..61 cover y up to 244
+%define LAT_F       (LAT_LEVELS * LAT_J) ; per field
 %define LAT_JLO     3
 %define LAT_JHI     21
+%define CP_F        (LAT_LEVELS * 4)    ; bytes per field in g_cp
+
+; dressing: the AIR bit masks of the column, 18 words per y (lz -1 .. 16, the two outer words stay 0)
+%define AM_Y        133                 ; rows y 0..132
+%define AM_ROW      36                  ; bytes per y
 
 section .rodata
+align 16
+k_stone16:  times 16 db STONE
 align 4
 k_quarter:  dd 0.25
 k_tun_t:    dd 0.07                     ; |tunnel noise| below this carves
-k_cav_t:    dd 0.45                     ; cavern noise above this carves
+k_tun_up:   dd 0.05                     ; the same above y 72, where only a mouth's tunnels carve (0.07 left a 23 deep run)
+k_cav_t:    dd 0.44                     ; cavern noise above this carves: 4.9 % AIR over seed 42's 4096 x 4096
 k_rav_a:    dd 0.012                    ; ravine centre band
 k_rav_b:    dd 0.30                     ; ravine gate noise
+k_pillar_t: dd 0.82                     ; CF_PILLAR: cavern pillars where this noise is above
+k_cavern_f: dd -0.25                    ; CF_CAVERN: caverns where this noise is above
+k_mouth_t:  dd 0.65                     ; CF_MOUTH: tunnel mouths where this noise is above (0.55 left a 22 deep run)
+k_pool_t:   dd 0.40                     ; pool candidates where noise2(shift 4, salt 1770) is above
+k_floor_t:  dd 0.30                     ; floor noise above: gravel
+k_floor_n:  dd -0.30                    ; floor noise below: mossy cobblestone
 k_absmask:  dd 0x7FFFFFFF
 
-; cave fields: shift, salt (tunnel A, tunnel B, cavern)
+; cave fields: shift, salt, ymul (tunnel A, tunnel B, cavern V); the lattice samples noise3(4 i, ymul j, 4 k)
 cave_fields:
-    dd 5, 2000
-    dd 5, 2001
-    dd 6, 2002
+    dd 5, 2000, 8
+    dd 5, 2001, 8
+    dd 5, 2005, 12
 
-; Ore table: salt, id, y_min, y_max, attempts per column, vein size (random-walk cells)
+; Ore table: salt, id, y_min, y_max, attempts per column, vein size (random-walk cells), exposed weight
 %define ORE_SALT 0
 %define ORE_ID   4
 %define ORE_YMIN 8
 %define ORE_YMAX 12
 %define ORE_ATT  16
 %define ORE_SIZE 20
-%define ORE_REC  24
+%define ORE_WGT  24
+%define ORE_REC  28
 ore_tab:
-    dd 1, COAL_ORE,    40, 130, 20, 8
-    dd 2, IRON_ORE,    15,  80, 12, 6
-    dd 3, GOLD_ORE,     5,  40,  3, 5
-    dd 4, DIAMOND_ORE,  2,  18,  1, 4
+    dd 1, COAL_ORE,    40, 130, 20, 8, 40
+    dd 2, IRON_ORE,    15,  80, 12, 6, 30
+    dd 3, GOLD_ORE,     5,  40,  3, 5, 20
+    dd 4, DIAMOND_ORE,  2,  18,  1, 4, 10
 ore_tab_end:
+
+nbr_dx:     db -1, 1, 0, 0              ; the four horizontal neighbours of a cell
+nbr_dz:     db 0, 0, -1, 1
 
 section .bss
 alignb 16
 g_lat:      resb 3 * LAT_F              ; cave field samples, [field][level][k][i]
-g_cp:       resd 3 * 22                 ; one cell's field values per level, [field][level]
+g_cp:       resd 3 * LAT_LEVELS         ; one cell's field values per level, [field][level]
+g_cf:       resb 256                    ; the CF_* flags of every cell of the column, lz * 16 + lx
+g_pnm:      resw 16                     ; per row lz, the mask (bit lx) of the cells whose pool noise is above k_pool_t
+g_am:       resw AM_Y * 18              ; AIR bit masks of the column rows, [y][lz + 1] bit lx
+g_hm:       resd 1                      ; the highest surface of a CF_MOUTH cell of the column, 0 with none
 g_buf:      resq 1                      ; the GENBUF being filled
 g_tc:       resq 1                      ; its TCELL table, (lz + 3) * TC_W + lx + 3
 g_acx:      resd 1
@@ -66,8 +101,8 @@ g_az0:      resd 1
 section .text
 
 ; gen_underground(rdi GENBUF* buf, rsi TCELL* tc, edx ax0, ecx az0)
-; The caves, then the ores, then the gravel pockets of the column (ax0 / 16, az0 / 16) whose terrain
-; is already in buf.blocks and whose terrain cells (the column plus its 3 cell margin) are tc.
+; The caves, then the ores, then the gravel pockets, then the dressing of the column (ax0 / 16, az0 / 16)
+; whose terrain is already in buf.blocks and whose terrain cells (the column plus its 3 cell margin) are tc.
 gen_underground:
     sub     rsp, 8
     mov     [g_buf], rdi
@@ -81,7 +116,20 @@ gen_underground:
     call    gen_caves
     call    gen_ores
     call    gen_gravel
+    call    cave_dress
     add     rsp, 8
+    ret
+
+; tc_h(edi lx, esi lz) -> eax: the surface height of the terrain cell (lx, lz) of the column in progress,
+; lx and lz in -3 .. 18. Clobbers rcx.
+tc_h:
+    add     esi, 3
+    imul    esi, esi, TC_W
+    lea     eax, [rdi + 3]
+    add     eax, esi
+    imul    eax, eax, TCELL_size
+    mov     rcx, [g_tc]
+    mov     eax, [rcx + rax + TCELL.h]
     ret
 
 ; ---------------------------------------------------------------------------------------------
@@ -119,12 +167,135 @@ ravine_at:
     pop     rbx
     ret
 
-; carve_test(edi y, esi h, edx ravine, xmm0 A, xmm1 B, xmm2 V) -> eax 0/1
-; The one carve decision. h is the column's terrain height, A and B the two tunnel field values and
-; V the cavern field value at the cell (only the ones whose y range holds y are read), ravine the
-; ravine flag of its column. Nothing below y 5 or above the surface is carved, and in columns lower
-; than 97 (oceans, rivers, swamps) nothing within 4 cells of the top, so no air sits under water.
-;   tunnels y 12..72: |A| < 0.07 and |B| < 0.07;  caverns y 30..80: V > 0.45;  ravines y 25..h.
+; mouth_flag(edi ax, esi az, edx h, ecx slope) -> eax CF_MOUTH or 0
+; A tunnel mouth column is land (h >= 97) with noise2(ax, az, 6, 1730) > 0.65 whose terrain falls 4 or more
+; within 3 cells: slope = h - min(h(ax -+ 3, az), h(ax, az -+ 3)). gen_underground hands in the slope it
+; reads from its terrain cells; a negative slope is computed here with four gen_height calls, after the
+; noise has passed. Reentrant.
+mouth_flag:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    xor     r15d, r15d
+    cmp     r13d, 97
+    jl      .out
+    mov     edx, 6
+    mov     ecx, 1730
+    call    noise2                      ; edi, esi are still ax, az
+    comiss  xmm0, [k_mouth_t]
+    jbe     .out
+    test    r14d, r14d
+    jns     .slope
+    lea     edi, [rbx - 3]
+    mov     esi, r12d
+    call    gen_height
+    mov     r14d, eax                   ; the lowest neighbour so far
+    lea     edi, [rbx + 3]
+    mov     esi, r12d
+    call    gen_height
+    cmp     eax, r14d
+    cmovl   r14d, eax
+    mov     edi, ebx
+    lea     esi, [r12 - 3]
+    call    gen_height
+    cmp     eax, r14d
+    cmovl   r14d, eax
+    mov     edi, ebx
+    lea     esi, [r12 + 3]
+    call    gen_height
+    cmp     eax, r14d
+    cmovl   r14d, eax
+    mov     eax, r13d
+    sub     eax, r14d
+    mov     r14d, eax
+.slope:
+    cmp     r14d, 4
+    jl      .out
+    mov     r15d, CF_MOUTH
+.out:
+    mov     eax, r15d
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; cave_flags(edi ax, esi az, edx h, ecx slope) -> eax CF_* flags of the column cell (ax, az)
+; CF_RAVINE, CF_PILLAR, CF_CAVERN and CF_MOUTH, each a function of the cell alone (see the header). slope is
+; mouth_flag's. Reentrant.
+cave_flags:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    call    ravine_at                   ; CF_RAVINE is 1
+    mov     r15d, eax
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 2
+    mov     ecx, 1750
+    call    noise2
+    comiss  xmm0, [k_pillar_t]
+    jbe     .no_pillar
+    or      r15d, CF_PILLAR
+.no_pillar:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 7
+    mov     ecx, 1740
+    call    noise2
+    comiss  xmm0, [k_cavern_f]
+    jbe     .no_cavern
+    or      r15d, CF_CAVERN
+.no_cavern:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    mouth_flag
+    or      eax, r15d
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; gen_cave_flags(edi ax, esi az) -> eax CF_* flags
+; The column flags of the cell at absolute (ax, az), with its terrain height from gen_height. Reentrant.
+gen_cave_flags:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    call    gen_height
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, eax
+    mov     ecx, -1
+    call    cave_flags
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; carve_test(edi y, esi h, edx flags, xmm0 A, xmm1 B, xmm2 V) -> eax 0/1
+; The one carve decision (the rules are in the header). h is the column's terrain height, flags its CF_*
+; flags, A and B the two tunnel field values and V the cavern field value at the cell: only the ones the
+; rules read for this y and these flags need to be valid.
 carve_test:
     xor     eax, eax
     cmp     edi, 5
@@ -139,40 +310,54 @@ carve_test:
 .allowed:
     cmp     edi, 12
     jl      .no_tunnel
+    movss   xmm5, [k_tun_t]
     cmp     edi, 72
-    jg      .no_tunnel
+    jle     .tunnel
+    test    edx, CF_MOUTH
+    jz      .no_tunnel                  ; above y 72 only a mouth's tunnels carve
+    movss   xmm5, [k_tun_up]            ; and they are narrower
+.tunnel:
     movss   xmm3, [k_absmask]
     movaps  xmm4, xmm0
     andps   xmm4, xmm3
-    comiss  xmm4, [k_tun_t]
+    comiss  xmm4, xmm5
     jae     .no_tunnel
     movaps  xmm4, xmm1
     andps   xmm4, xmm3
-    comiss  xmm4, [k_tun_t]
+    comiss  xmm4, xmm5
     jae     .no_tunnel
     mov     eax, 1
     ret
 .no_tunnel:
-    cmp     edi, 30
+    cmp     edi, 20
     jl      .no_cavern
-    cmp     edi, 80
+    cmp     edi, 56
     jg      .no_cavern
+    test    edx, CF_CAVERN
+    jz      .no_cavern
+    test    edx, CF_PILLAR
+    jnz     .no_cavern
     comiss  xmm2, [k_cav_t]
     jbe     .no_cavern
     mov     eax, 1
     ret
 .no_cavern:
-    test    edx, edx
+    test    edx, CF_RAVINE
     jz      .out
     cmp     edi, 25
     jl      .out
+    cmp     edi, 70
+    jg      .out
+    lea     ecx, [rsi - 10]
+    cmp     edi, ecx
+    jg      .out                        ; a ravine keeps 10 cells of roof
     mov     eax, 1
 .out:
     ret
 
 ; BILERP: xmm0 = bilerp of v00 = xmm0, v10 = xmm1, v01 = xmm2, v11 = xmm3 by wx = xmm4, wz = xmm5
 ; (a = v00 + (v10 - v00) wx, b = v01 + (v11 - v01) wx, a + (b - a) wz). Clobbers xmm1-xmm3.
-; The cave pass and gen_carved both interpolate with this and nothing else.
+; The cave pass and carved_at both interpolate with this and nothing else.
 %macro BILERP 0
     subss   xmm1, xmm0
     mulss   xmm1, xmm4
@@ -185,10 +370,10 @@ carve_test:
     addss   xmm0, xmm2
 %endmacro
 
-; cave_field(edi ax, esi y, edx az, ecx shift, r8d salt) -> xmm0
-; The value of one cave field at the cell: noise3(4 i, 8 j, 4 k, shift, salt) sampled on the 4 block
-; lattice (the 8 j is the vertical squash), bilinear in x and z at the two levels around y, then
-; linear in y. gen_column's lattice holds the same samples, so both agree to the bit.
+; cave_field(edi ax, esi y, edx az, ecx shift, r8d salt, r9d ymul) -> xmm0
+; The value of one cave field at the cell: noise3(4 i, ymul j, 4 k, shift, salt) sampled on the 4 block
+; lattice (ymul is the vertical squash), bilinear in x and z at the two levels around y, then linear in y.
+; gen_column's lattice holds the same samples, so both agree to the bit.
 cave_field:
     push    rbp
     push    rbx
@@ -196,9 +381,10 @@ cave_field:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 56                     ; [0] wx [4] wz [8] wy [12] shift [16] salt [20] level0 [24] level1
+    sub     rsp, 56                     ; [0] wx [4] wz [8] wy [12] shift [16] salt [20] level0 [24] level1 [28] ymul
     mov     [rsp + 12], ecx
     mov     [rsp + 16], r8d
+    mov     [rsp + 28], r9d
     mov     eax, edi
     and     eax, 3
     pxor    xmm0, xmm0
@@ -234,7 +420,7 @@ cave_field:
 .cx:
     shl     edi, 2
     lea     esi, [r14 + rbp]
-    shl     esi, 3
+    imul    esi, [rsp + 28]
     lea     edx, [r13 + 0]
     test    ebx, 2
     jz      .cz
@@ -274,8 +460,10 @@ cave_field:
     ret
 
 ; carved_at(edi ax, esi y, edx az, ecx h) -> eax 0/1
-; carve_test for the cell (ax, y, az) of a column whose terrain height h the caller already knows:
-; it evaluates only the noise fields whose y range holds y. gen_carved and the vegetation pass call it.
+; carve_test for the cell (ax, y, az) of a column whose terrain height h the caller already knows. It
+; evaluates only the flags and noise fields the rules read for this y: nothing below y 12 carves, above
+; y 72 only a mouth's tunnels, the cavern flags only at y 20..56, the ravine only at y 25..min(70, h - 10).
+; gen_carved, the vegetation pass and the pool step of cave_dress call it. Reentrant.
 carved_at:
     push    rbp
     push    rbx
@@ -285,7 +473,7 @@ carved_at:
     push    r15
     sub     rsp, 40                     ; [0] A [4] B [8] V
     xor     eax, eax
-    cmp     esi, 5
+    cmp     esi, 12
     jl      .out
     cmp     esi, ecx
     jg      .out
@@ -301,48 +489,100 @@ carved_at:
     mov     r12d, esi                   ; y
     mov     r13d, edx                   ; az
     mov     r14d, ecx                   ; h
-    xor     r15d, r15d                  ; ravine
-    cmp     r12d, 25
-    jl      .fields
-    mov     edi, ebx
-    mov     esi, r13d
-    call    ravine_at
-    mov     r15d, eax
-.fields:
+    xor     r15d, r15d                  ; flags
     pxor    xmm0, xmm0
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm0
     movss   [rsp + 8], xmm0
-    cmp     r12d, 12
-    jl      .test
     cmp     r12d, 72
-    jg      .cavern
+    jg      .upper
+    cmp     r12d, 20
+    jl      .ravine
+    cmp     r12d, 56
+    jg      .ravine
+    mov     edi, ebx                    ; y 20..56: the cavern and pillar flags
+    mov     esi, r13d
+    mov     edx, 7
+    mov     ecx, 1740
+    call    noise2
+    comiss  xmm0, [k_cavern_f]
+    jbe     .ravine
+    or      r15d, CF_CAVERN
+    mov     edi, ebx
+    mov     esi, r13d
+    mov     edx, 2
+    mov     ecx, 1750
+    call    noise2
+    comiss  xmm0, [k_pillar_t]
+    jbe     .ravine
+    or      r15d, CF_PILLAR
+.ravine:
+    cmp     r12d, 25
+    jl      .tunnels
+    cmp     r12d, 70
+    jg      .tunnels
+    lea     eax, [r14 - 10]
+    cmp     r12d, eax
+    jg      .tunnels
+    mov     edi, ebx
+    mov     esi, r13d
+    call    ravine_at
+    or      r15d, eax
+.tunnels:
+    mov     edi, ebx                    ; the tunnel fields A and B
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, [cave_fields]
+    mov     r8d, [cave_fields + 4]
+    mov     r9d, [cave_fields + 8]
+    call    cave_field
+    movss   [rsp], xmm0
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, [cave_fields + 12]
+    mov     r8d, [cave_fields + 16]
+    mov     r9d, [cave_fields + 20]
+    call    cave_field
+    movss   [rsp + 4], xmm0
+    mov     eax, r15d
+    and     eax, CF_CAVERN | CF_PILLAR
+    cmp     eax, CF_CAVERN
+    jne     .test                       ; the cavern field only where a cavern can carve
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, [cave_fields + 24]
+    mov     r8d, [cave_fields + 28]
+    mov     r9d, [cave_fields + 32]
+    call    cave_field
+    movss   [rsp + 8], xmm0
+    jmp     .test
+.upper:                                 ; y 73..h: a mouth's tunnels only
+    mov     edi, ebx
+    mov     esi, r13d
+    mov     edx, r14d
+    mov     ecx, -1
+    call    mouth_flag
+    test    eax, eax
+    jz      .out
+    mov     r15d, eax
     mov     edi, ebx
     mov     esi, r12d
     mov     edx, r13d
     mov     ecx, [cave_fields]
     mov     r8d, [cave_fields + 4]
+    mov     r9d, [cave_fields + 8]
     call    cave_field
     movss   [rsp], xmm0
     mov     edi, ebx
     mov     esi, r12d
     mov     edx, r13d
-    mov     ecx, [cave_fields + 8]
-    mov     r8d, [cave_fields + 12]
+    mov     ecx, [cave_fields + 12]
+    mov     r8d, [cave_fields + 16]
+    mov     r9d, [cave_fields + 20]
     call    cave_field
     movss   [rsp + 4], xmm0
-.cavern:
-    cmp     r12d, 30
-    jl      .test
-    cmp     r12d, 80
-    jg      .test
-    mov     edi, ebx
-    mov     esi, r12d
-    mov     edx, r13d
-    mov     ecx, [cave_fields + 16]
-    mov     r8d, [cave_fields + 20]
-    call    cave_field
-    movss   [rsp + 8], xmm0
 .test:
     mov     edi, r12d
     mov     esi, r14d
@@ -383,37 +623,134 @@ gen_carved:
     pop     rbx
     ret
 
-; gen_caves(): samples the three cave fields on the 4 block lattice of the column (levels 3..21), then
-; walks every cell of the column from y 5 up to the ravine or tunnel/cavern limit and clears the ones
-; carve_test says are carved. A carved surface cell takes the snow layer above it along.
+; gen_caves(): the flags of every cell, the lattice samples of the three cave fields and the carving.
 gen_caves:
-    push    rbp
-    mov     rbp, rsp
+    sub     rsp, 8
+    call    cave_flag_cells
+    call    cave_lattice
+    call    cave_carve
+    add     rsp, 8
+    ret
+
+; cave_flag_cells(): g_cf of the column's cells (cave_flags with the slope read from the terrain cells) and
+; g_hm, the highest surface among its mouth cells (0 with none). Cells lower than 12 carve nothing: flags 0.
+cave_flag_cells:
     push    rbx
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, 40                     ; [0] lz [4] lx
+    sub     rsp, 16                     ; [0] lz [4] lx
+    mov     dword [g_hm], 0
+    mov     dword [rsp], 0
+.lz:
+    mov     dword [rsp + 4], 0
+.lx:
+    mov     edi, [rsp + 4]
+    mov     esi, [rsp]
+    call    tc_h
+    mov     r14d, eax                   ; h
+    xor     r15d, r15d                  ; flags
+    cmp     r14d, 12
+    jl      .store
+    mov     eax, [rsp]
+    add     eax, 3
+    imul    eax, eax, TC_W
+    mov     ecx, [rsp + 4]
+    add     ecx, 3
+    add     eax, ecx
+    imul    eax, eax, TCELL_size
+    mov     rcx, [g_tc]
+    lea     r13, [rcx + rax]            ; the cell's TCELL
+    xor     ecx, ecx
+    cmp     r14d, 97
+    jl      .call                       ; no mouth on low land: the slope does not matter
+    mov     eax, [r13 - 3 * TCELL_size]
+    mov     edx, [r13 + 3 * TCELL_size]
+    cmp     edx, eax
+    cmovl   eax, edx
+    mov     edx, [r13 - 3 * TC_W * TCELL_size]
+    cmp     edx, eax
+    cmovl   eax, edx
+    mov     edx, [r13 + 3 * TC_W * TCELL_size]
+    cmp     edx, eax
+    cmovl   eax, edx
+    mov     ecx, r14d
+    sub     ecx, eax                    ; slope
+.call:
+    mov     edi, [rsp + 4]
+    add     edi, [g_ax0]
+    mov     esi, [rsp]
+    add     esi, [g_az0]
+    mov     edx, r14d
+    call    cave_flags
+    mov     r15d, eax
+    test    r15d, CF_MOUTH
+    jz      .store
+    cmp     r14d, [g_hm]
+    jle     .store
+    mov     [g_hm], r14d
+.store:
+    mov     eax, [rsp]
+    shl     eax, 4
+    add     eax, [rsp + 4]
+    lea     rcx, [g_cf]
+    mov     [rcx + rax], r15b
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], 16
+    jb      .lx
+    inc     dword [rsp]
+    cmp     dword [rsp], 16
+    jb      .lz
+    add     rsp, 16
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; cave_lattice(): samples the three cave fields on the 4 block lattice of the column into g_lat: levels
+; LAT_JLO..LAT_JHI of each, and for the two tunnel fields of a column with a mouth the levels up to the one
+; above its highest mouth surface.
+cave_lattice:
+    push    rbx
+    push    r12
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [0] last level of the field
     xor     r12d, r12d                  ; field
 .f:
+    mov     eax, LAT_JHI
+    cmp     r12d, 2
+    jae     .last
+    mov     ecx, [g_hm]
+    test    ecx, ecx
+    jz      .last
+    shr     ecx, 2
+    inc     ecx
+    mov     eax, ecx
+.last:
+    mov     [rsp], eax
     mov     ebx, LAT_JLO                ; level j
 .j:
     xor     r14d, r14d                  ; k
 .k:
     xor     r15d, r15d                  ; i
 .i:
+    lea     rax, [cave_fields]
+    lea     rcx, [r12 + r12*2]
+    lea     rax, [rax + rcx*4]          ; this field's row
+    mov     esi, ebx
+    imul    esi, [rax + 8]              ; y = ymul * j
     mov     edi, r15d
     shl     edi, 2
     add     edi, [g_ax0]                ; x = ax0 + 4 i
-    mov     esi, ebx
-    shl     esi, 3                      ; 8 j
     mov     edx, r14d
     shl     edx, 2
     add     edx, [g_az0]                ; z = az0 + 4 k
-    lea     rax, [cave_fields]
-    mov     ecx, [rax + r12*8]
-    mov     r8d, [rax + r12*8 + 4]
+    mov     ecx, [rax]
+    mov     r8d, [rax + 4]
     call    noise3
     imul    eax, r12d, LAT_F
     imul    ecx, ebx, LAT_J
@@ -430,45 +767,60 @@ gen_caves:
     cmp     r14d, 5
     jb      .k
     inc     ebx
-    cmp     ebx, LAT_JHI
+    cmp     ebx, [rsp]
     jbe     .j
     inc     r12d
     cmp     r12d, 3
     jb      .f
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r12
+    pop     rbx
+    ret
+
+; cave_carve(): walks every cell of the column from y 12 up to its carve limit (the surface in a mouth
+; cell, otherwise 72 or the surface) and clears the ones carve_test says are carved, with the field values
+; interpolated from the lattice. A carved surface cell takes the snow layer above it along.
+cave_carve:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 40                     ; [0] lz [4] lx [12] 1 when the cell's cavern can carve
     mov     dword [rsp], 0
 .lz:
     mov     dword [rsp + 4], 0
 .lx:
-    mov     eax, [rsp]
-    add     eax, 3
-    imul    eax, eax, TC_W
-    mov     ecx, [rsp + 4]
-    add     ecx, 3
-    add     eax, ecx
-    imul    eax, eax, TCELL_size
-    mov     rcx, [g_tc]
-    mov     r14d, [rcx + rax + TCELL.h]
+    mov     edi, [rsp + 4]
+    mov     esi, [rsp]
+    call    tc_h
+    mov     r14d, eax                   ; h
     cmp     r14d, 12
     jl      .nextcell                   ; nothing below y 12 carves
-    mov     edi, [rsp + 4]
-    add     edi, [g_ax0]
-    mov     esi, [rsp]
-    add     esi, [g_az0]
-    call    ravine_at
-    mov     r15d, eax
-    mov     ebx, 80                     ; highest y worth testing: 80, or the surface when a ravine cuts it
-    cmp     ebx, r14d
-    cmovg   ebx, r14d
-    test    r15d, r15d
-    cmovnz  ebx, r14d
-    ; the cell's column pointer
-    mov     rax, [g_buf]
-    lea     r13, [rax + GENBUF.blocks]
     mov     eax, [rsp]
     shl     eax, 4
     add     eax, [rsp + 4]
-    add     r13, rax
-    ; weights and the field values of every level over this cell
+    lea     rcx, [g_cf]
+    movzx   r15d, byte [rcx + rax]      ; the cell's flags
+    mov     rcx, [g_buf]
+    lea     r13, [rcx + GENBUF.blocks]
+    add     r13, rax                    ; the cell's column pointer
+    mov     ebx, 72                     ; highest y worth testing: 72, or the surface of a low or mouth cell
+    cmp     ebx, r14d
+    cmovg   ebx, r14d
+    test    r15d, CF_MOUTH
+    cmovnz  ebx, r14d
+    mov     eax, r15d
+    and     eax, CF_CAVERN | CF_PILLAR
+    xor     ecx, ecx
+    cmp     eax, CF_CAVERN
+    sete    cl
+    mov     [rsp + 12], ecx
+    ; weights, and the field values of every level over this cell
     mov     eax, [rsp + 4]
     and     eax, 3
     pxor    xmm4, xmm4
@@ -489,38 +841,49 @@ gen_caves:
     lea     rsi, [g_lat]
     add     rsi, rax
     lea     rdi, [g_cp]
+    mov     r8d, ebx
+    shr     r8d, 2
+    inc     r8d                         ; the tunnel fields' last level: the one above the limit's
     xor     r12d, r12d                  ; field
 .cpf:
+    cmp     r12d, 2
+    jb      .tunnel_levels
+    cmp     dword [rsp + 12], 0
+    je      .cp_done                    ; no cavern in this cell: the cavern field is not read
+    mov     r9d, 5                      ; the cavern field is read at y 20..56: levels 5..15
+    mov     ecx, 15 - 5 + 1
+    jmp     .cp_go
+.tunnel_levels:
+    mov     r9d, LAT_JLO
+    mov     ecx, r8d
+    sub     ecx, LAT_JLO - 1
+.cp_go:
     imul    eax, r12d, LAT_F
-    lea     rdx, [rsi + rax + LAT_JLO * LAT_J]
-    mov     ecx, LAT_JHI - LAT_JLO + 1
-    imul    eax, r12d, 88
-    lea     r8, [rdi + rax + LAT_JLO * 4]
+    imul    r10d, r9d, LAT_J
+    add     eax, r10d
+    lea     rdx, [rsi + rax]            ; the lattice at (field, first level, this cell's k, i)
+    imul    eax, r12d, CP_F
+    lea     r10, [rdi + r9*4]
+    add     r10, rax                    ; g_cp[field][first level]
 .cpj:
     movss   xmm0, [rdx]
     movss   xmm1, [rdx + LAT_I]
     movss   xmm2, [rdx + LAT_K]
     movss   xmm3, [rdx + LAT_K + LAT_I]
     BILERP
-    movss   [r8], xmm0
+    movss   [r10], xmm0
     add     rdx, LAT_J
-    add     r8, 4
+    add     r10, 4
     dec     ecx
     jnz     .cpj
     inc     r12d
     cmp     r12d, 3
     jb      .cpf
-    mov     r12d, 5                     ; y
+.cp_done:
+    mov     r12d, 12                    ; y
 .y:
     cmp     r12d, ebx
     jg      .nextcell
-    pxor    xmm0, xmm0
-    pxor    xmm1, xmm1
-    pxor    xmm2, xmm2
-    cmp     r12d, 12
-    jl      .test
-    cmp     r12d, 80
-    jg      .test
     mov     eax, r12d
     shr     eax, 2                      ; level
     mov     ecx, r12d
@@ -535,13 +898,20 @@ gen_caves:
     subss   xmm4, xmm0
     mulss   xmm4, xmm3
     addss   xmm0, xmm4                  ; tunnel A
-    movss   xmm1, [rdx + 88]
-    movss   xmm4, [rdx + 92]
+    movss   xmm1, [rdx + CP_F]
+    movss   xmm4, [rdx + CP_F + 4]
     subss   xmm4, xmm1
     mulss   xmm4, xmm3
     addss   xmm1, xmm4                  ; tunnel B
-    movss   xmm2, [rdx + 176]
-    movss   xmm4, [rdx + 180]
+    pxor    xmm2, xmm2
+    cmp     dword [rsp + 12], 0
+    je      .test
+    cmp     r12d, 20
+    jl      .test
+    cmp     r12d, 56
+    jg      .test
+    movss   xmm2, [rdx + 2 * CP_F]
+    movss   xmm4, [rdx + 2 * CP_F + 4]
     subss   xmm4, xmm2
     mulss   xmm4, xmm3
     addss   xmm2, xmm4                  ; cavern
@@ -766,4 +1136,458 @@ gen_gravel:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; ---------------------------------------------------------------------------------------------
+; the dressing of the caves
+
+; cave_dress(): after the carving, ores and gravel pockets: pools sunk into the floors, gravel and moss on the
+; rest of the floors, then ore on the cave walls. Pools go first so that floors do not break up a pool. The
+; passes only ever replace STONE cells, so the AIR bit masks g_am are taken once and stay right.
+cave_dress:
+    sub     rsp, 8
+    call    dress_masks
+    call    dress_pools
+    call    dress_floors
+    call    dress_ore
+    add     rsp, 8
+    ret
+
+; dress_masks(): g_am[y][lz + 1] = the bit mask (bit lx) of the AIR cells of row (y, lz), y 0..132.
+dress_masks:
+    mov     rsi, [g_buf]
+    lea     rsi, [rsi + GENBUF.blocks]
+    lea     rdx, [g_am]
+    pxor    xmm1, xmm1
+    xor     ecx, ecx                    ; y
+.y:
+    lea     r8, [rdx + 2]               ; the word of lz 0
+    mov     r9, rsi                     ; the row (y, 0)
+    mov     r10d, 16
+.lz:
+    movdqu  xmm0, [r9]
+    pcmpeqb xmm0, xmm1
+    pmovmskb eax, xmm0
+    mov     [r8], ax
+    add     r9, 16
+    add     r8, 2
+    dec     r10d
+    jnz     .lz
+    add     rsi, 256
+    add     rdx, AM_ROW
+    inc     ecx
+    cmp     ecx, AM_Y
+    jb      .y
+    ret
+
+; dress_floors(): every STONE cell with an AIR cell above it, 6 <= y <= min(h - 8, 80), becomes GRAVEL where
+; noise3(ax, y, az, 3, 1760) > 0.30 and MOSSY_COBBLESTONE where it is below -0.30.
+dress_floors:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16                     ; [0] y [4] lz
+    mov     dword [rsp], 6
+.y:
+    mov     dword [rsp + 4], 0
+.lz:
+    mov     eax, [rsp]
+    shl     eax, 8
+    mov     ecx, [rsp + 4]
+    shl     ecx, 4
+    add     eax, ecx
+    mov     rsi, [g_buf]
+    movdqu  xmm0, [rsi + GENBUF.blocks + rax]
+    pcmpeqb xmm0, [k_stone16]
+    pmovmskb ebx, xmm0                  ; the STONE cells of the row
+    test    ebx, ebx
+    jz      .nextlz
+    mov     eax, [rsp]
+    inc     eax
+    imul    eax, eax, 18
+    add     eax, [rsp + 4]
+    inc     eax
+    lea     rcx, [g_am]
+    movzx   eax, word [rcx + rax*2]     ; the AIR cells of the row above
+    and     ebx, eax
+    jz      .nextlz
+.bit:
+    bsf     r12d, ebx                   ; lx
+    lea     eax, [rbx - 1]
+    and     ebx, eax
+    mov     edi, r12d
+    mov     esi, [rsp + 4]
+    call    tc_h
+    sub     eax, 8
+    cmp     [rsp], eax
+    jg      .nextbit                    ; y <= h - 8
+    mov     edi, [g_ax0]
+    add     edi, r12d
+    mov     esi, [rsp]
+    mov     edx, [g_az0]
+    add     edx, [rsp + 4]
+    mov     ecx, 3
+    mov     r8d, 1760
+    call    noise3
+    mov     r13d, GRAVEL
+    comiss  xmm0, [k_floor_t]
+    ja      .set
+    movss   xmm1, [k_floor_n]
+    mov     r13d, MOSSY_COBBLESTONE
+    comiss  xmm1, xmm0
+    jbe     .nextbit
+.set:
+    mov     eax, [rsp]
+    shl     eax, 8
+    mov     ecx, [rsp + 4]
+    shl     ecx, 4
+    add     eax, ecx
+    add     eax, r12d
+    mov     rsi, [g_buf]
+    mov     [rsi + GENBUF.blocks + rax], r13b
+.nextbit:
+    test    ebx, ebx
+    jnz     .bit
+.nextlz:
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], 16
+    jb      .lz
+    inc     dword [rsp]
+    cmp     dword [rsp], 80
+    jbe     .y
+    add     rsp, 16
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; ore_pick(edi y, esi r) -> eax block id (0 when no ore row holds y)
+; The exposed ore of the cell at height y: among the ore_tab rows whose [ymin, ymax] holds y, the one that
+; ((r >> 10) % total weight) lands on when the weights are walked in table order.
+ore_pick:
+    lea     rdx, [ore_tab]
+    xor     ecx, ecx                    ; the total weight of the rows that hold y
+.sum:
+    cmp     edi, [rdx + ORE_YMIN]
+    jl      .snext
+    cmp     edi, [rdx + ORE_YMAX]
+    jg      .snext
+    add     ecx, [rdx + ORE_WGT]
+.snext:
+    add     rdx, ORE_REC
+    lea     rax, [ore_tab_end]
+    cmp     rdx, rax
+    jb      .sum
+    xor     eax, eax
+    test    ecx, ecx
+    jz      .out
+    mov     eax, esi
+    shr     eax, 10
+    xor     edx, edx
+    div     ecx
+    mov     esi, edx                    ; the pick
+    lea     rdx, [ore_tab]
+.walk:
+    cmp     edi, [rdx + ORE_YMIN]
+    jl      .wnext
+    cmp     edi, [rdx + ORE_YMAX]
+    jg      .wnext
+    mov     eax, [rdx + ORE_WGT]
+    cmp     esi, eax
+    jb      .found
+    sub     esi, eax
+.wnext:
+    add     rdx, ORE_REC
+    jmp     .walk                       ; the pick is below the total: some row holds it
+.found:
+    mov     eax, [rdx + ORE_ID]
+.out:
+    ret
+
+; dress_ore(): every STONE cell with 2 <= y <= min(h - 6, 130) and an AIR cell among its six neighbours in
+; the column turns to ore where (hash32(ax, az, 4000 + y) & 1023) < 20, the ore picked by ore_pick. The
+; exposed cells of a row are found with its bit mask: the STONE cells of the row, and the AIR cells of the
+; rows next to it (the same row shifted by one cell, the rows lz -+ 1, the rows y -+ 1).
+dress_ore:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16                     ; [0] y [4] lz
+    mov     dword [rsp], 2
+.y:
+    mov     dword [rsp + 4], 0
+.lz:
+    mov     eax, [rsp]
+    shl     eax, 8
+    mov     ecx, [rsp + 4]
+    shl     ecx, 4
+    add     eax, ecx
+    mov     rsi, [g_buf]
+    movdqu  xmm0, [rsi + GENBUF.blocks + rax]
+    pcmpeqb xmm0, [k_stone16]
+    pmovmskb ebx, xmm0                  ; the STONE cells of the row
+    test    ebx, ebx
+    jz      .nextlz
+    mov     eax, [rsp]
+    imul    eax, eax, 18
+    add     eax, [rsp + 4]
+    inc     eax
+    lea     rcx, [g_am]
+    lea     rcx, [rcx + rax*2]          ; the AIR word of this row
+    movzx   eax, word [rcx]
+    mov     edx, eax
+    add     edx, edx                    ; AIR at lx - 1
+    shr     eax, 1                      ; AIR at lx + 1
+    or      edx, eax
+    movzx   eax, word [rcx - 2]
+    or      edx, eax                    ; AIR at lz - 1
+    movzx   eax, word [rcx + 2]
+    or      edx, eax                    ; AIR at lz + 1
+    movzx   eax, word [rcx - AM_ROW]
+    or      edx, eax                    ; AIR at y - 1
+    movzx   eax, word [rcx + AM_ROW]
+    or      edx, eax                    ; AIR at y + 1
+    and     ebx, edx
+    jz      .nextlz
+.bit:
+    bsf     r12d, ebx                   ; lx
+    lea     eax, [rbx - 1]
+    and     ebx, eax
+    mov     edi, r12d
+    mov     esi, [rsp + 4]
+    call    tc_h
+    sub     eax, 6
+    cmp     [rsp], eax
+    jg      .nextbit                    ; y <= h - 6
+    mov     edi, [g_ax0]
+    add     edi, r12d
+    mov     esi, [g_az0]
+    add     esi, [rsp + 4]
+    mov     edx, [rsp]
+    add     edx, 4000
+    call    hash32
+    mov     r13d, eax
+    and     eax, 1023
+    cmp     eax, 20
+    jae     .nextbit
+    mov     edi, [rsp]
+    mov     esi, r13d
+    call    ore_pick
+    test    eax, eax
+    jz      .nextbit
+    mov     ecx, [rsp]
+    shl     ecx, 8
+    mov     edx, [rsp + 4]
+    shl     edx, 4
+    add     ecx, edx
+    add     ecx, r12d
+    mov     rsi, [g_buf]
+    mov     [rsi + GENBUF.blocks + rcx], al
+.nextbit:
+    test    ebx, ebx
+    jnz     .bit
+.nextlz:
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], 16
+    jb      .lz
+    inc     dword [rsp]
+    cmp     dword [rsp], 130
+    jbe     .y
+    add     rsp, 16
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; pool_nbr_carved(edi nlx, esi nlz, edx y) -> eax 1 when the cell (nlx, y, nlz), nlx and nlz in -1 .. 16, is
+; carved (a cave cell, not the sky over lower ground)
+; In the column that is an AIR cell at or below the terrain surface tc_h gives for it; outside the column,
+; which the buffer does not hold, it is carved_at. The two agree, so both sides of a column border decide a
+; pool cell the same way.
+pool_nbr_carved:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8
+    mov     ebx, edi                    ; nlx
+    mov     r12d, esi                   ; nlz
+    mov     r13d, edx                   ; y
+    call    tc_h
+    mov     r14d, eax                   ; the neighbour's surface
+    cmp     ebx, 15
+    ja      .outside
+    cmp     r12d, 15
+    ja      .outside
+    xor     eax, eax
+    cmp     r13d, r14d
+    jg      .out                        ; sky
+    mov     eax, r12d
+    shl     eax, 4
+    add     eax, ebx
+    mov     ecx, r13d
+    shl     ecx, 8
+    add     eax, ecx
+    mov     rcx, [g_buf]
+    cmp     byte [rcx + GENBUF.blocks + rax], AIR
+    sete    al
+    movzx   eax, al
+    jmp     .out
+.outside:
+    mov     edi, [g_ax0]
+    add     edi, ebx
+    mov     esi, r13d
+    mov     edx, [g_az0]
+    add     edx, r12d
+    mov     ecx, r14d
+    call    carved_at
+.out:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; dress_pools(): the floor cell of a cave sinks into a pool. A STONE cell at 6 <= y <= min(h - 8, 80) turns
+; to LAVA (y <= 30) or WATER (above) where all of these hold: the cell above it is AIR (an open floor), the cell
+; below it is not AIR (the pool is one cell deep and has a bed), noise2(ax, az, 4, 1770) > 0.40, and none of
+; its four horizontal neighbours at its own level is carved (pool_nbr_carved): the pool sits in a basin of
+; rock, so no liquid cell has AIR beside it. Everything a cell reads is the carving (AIR in the buffer or
+; carved_at) or its own block, which no other pool cell changes, so the order of the cells does not matter and
+; both sides of a column border decide alike. Candidate cells of a row are found with the row's bit masks:
+; STONE, with AIR above and not below, in the cells whose pool noise is high.
+; Why not the AIR cell above the floor, with neighbours that are rock or candidates themselves: whatever
+; subset of a carved level a local rule turns to liquid ends in a candidate that the rule rejected for its
+; own neighbours, so 31 % of such pool cells had AIR beside them (28 % with a second ring), where this has none.
+dress_pools:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16                     ; [0] y [4] lz
+    xor     r14d, r14d                  ; the pool noise masks of all rows, or-ed
+    xor     r13d, r13d                  ; lz
+.pnz:
+    xor     ebx, ebx                    ; the row's mask: bit lx = pool noise above k_pool_t
+    xor     r12d, r12d                  ; lx
+.pnx:
+    mov     edi, [g_ax0]
+    add     edi, r12d
+    mov     esi, [g_az0]
+    add     esi, r13d
+    mov     edx, 4
+    mov     ecx, 1770
+    call    noise2
+    comiss  xmm0, [k_pool_t]
+    jbe     .pnno
+    bts     ebx, r12d
+.pnno:
+    inc     r12d
+    cmp     r12d, 16
+    jb      .pnx
+    lea     rax, [g_pnm]
+    mov     [rax + r13*2], bx
+    or      r14d, ebx
+    inc     r13d
+    cmp     r13d, 16
+    jb      .pnz
+    test    r14d, r14d
+    jz      .out                        ; no cell of the column has pool noise
+    mov     dword [rsp], 6
+.y:
+    mov     dword [rsp + 4], 0
+.lz:
+    mov     eax, [rsp + 4]
+    lea     rcx, [g_pnm]
+    movzx   ebx, word [rcx + rax*2]
+    test    ebx, ebx
+    jz      .nextlz
+    mov     eax, [rsp]
+    shl     eax, 8
+    mov     ecx, [rsp + 4]
+    shl     ecx, 4
+    add     eax, ecx
+    mov     rsi, [g_buf]
+    movdqu  xmm0, [rsi + GENBUF.blocks + rax]
+    pcmpeqb xmm0, [k_stone16]
+    pmovmskb eax, xmm0                  ; the STONE cells of the row
+    and     ebx, eax
+    jz      .nextlz
+    mov     eax, [rsp]
+    imul    eax, eax, 18
+    add     eax, [rsp + 4]
+    inc     eax
+    lea     rcx, [g_am]
+    lea     rcx, [rcx + rax*2]          ; the AIR word of this row
+    movzx   eax, word [rcx + AM_ROW]
+    and     ebx, eax                    ; AIR above
+    movzx   eax, word [rcx - AM_ROW]
+    not     eax
+    and     ebx, eax                    ; and not AIR below
+    jz      .nextlz
+.bit:
+    bsf     r12d, ebx                   ; lx
+    lea     eax, [rbx - 1]
+    and     ebx, eax
+    mov     edi, r12d
+    mov     esi, [rsp + 4]
+    call    tc_h
+    sub     eax, 8
+    cmp     [rsp], eax
+    jg      .nextbit                    ; y <= h - 8
+    xor     r15d, r15d                  ; neighbour
+.nb:
+    lea     rcx, [nbr_dx]
+    movsx   edi, byte [rcx + r15]
+    add     edi, r12d
+    lea     rcx, [nbr_dz]
+    movsx   esi, byte [rcx + r15]
+    add     esi, [rsp + 4]
+    mov     edx, [rsp]
+    call    pool_nbr_carved
+    test    eax, eax
+    jnz     .nextbit                    ; carved beside it: the liquid would have AIR at its side
+    inc     r15d
+    cmp     r15d, 4
+    jb      .nb
+    mov     eax, [rsp]
+    shl     eax, 8
+    mov     ecx, [rsp + 4]
+    shl     ecx, 4
+    add     eax, ecx
+    add     eax, r12d
+    mov     cl, WATER
+    cmp     dword [rsp], 30
+    jg      .set
+    mov     cl, LAVA
+.set:
+    mov     rsi, [g_buf]
+    mov     [rsi + GENBUF.blocks + rax], cl
+.nextbit:
+    test    ebx, ebx
+    jnz     .bit
+.nextlz:
+    inc     dword [rsp + 4]
+    cmp     dword [rsp + 4], 16
+    jb      .lz
+    inc     dword [rsp]
+    cmp     dword [rsp], 80
+    jbe     .y
+.out:
+    add     rsp, 16
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
     ret

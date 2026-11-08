@@ -9,7 +9,7 @@
 default rel
 
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
-global hud_bubble_tiles, banner_text
+global hud_bubble_tiles, banner_text, hud_biome_name
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon
@@ -61,7 +61,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.10  ", 0
+s_dbg_title: db "AssemblyCraft 0.10.1  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -123,8 +123,16 @@ s_b_snow:   db "Snow", 0
 s_b_swamp:  db "Swamp", 0
 s_b_mount:  db "Mountains", 0
 s_b_river:  db "River", 0
+s_b_taiga:  db "Snowy Taiga", 0
+s_b_savanna: db "Savanna", 0
+s_b_shore:  db "Stony Shore", 0
+s_b_birch:  db "Birch Forest", 0
 align 8
 biome_names:   dq s_b_ocean, s_b_plains, s_b_forest, s_b_desert, s_b_snow, s_b_swamp, s_b_mount, s_b_river
+               dq s_b_taiga, s_b_savanna, s_b_shore, s_b_birch
+%if $ - biome_names != NUM_BIOMES * 8
+%error "hud.asm: biome_names needs one name per BIOME_*"
+%endif
 
 section .data
 align 4
@@ -1921,6 +1929,17 @@ debug_emit:
     lea     rbx, [dbg_buf]
 %endmacro
 
+; hud_biome_name(edi biome) -> rax the name of that BIOME_* as a C string; "unknown" for any other value
+; (-1 from world_biome_at: the column is not loaded) (leaf)
+hud_biome_name:
+    lea     rax, [s_unknown]
+    cmp     edi, NUM_BIOMES
+    jae     .ret
+    lea     rcx, [biome_names]
+    mov     rax, [rcx + rdi*8]
+.ret:
+    ret
+
 ; hud_debug(): the F3 lines (coordinates are absolute: local + world origin). rbx = write cursor,
 ; r12d = line; stack: [rsp] day, [rsp+4] hour, [rsp+8] minute, [rsp+12] xp to next level,
 ; [rsp+16] stream_stats: loaded, pending, lit, pool chunks
@@ -1953,12 +1972,9 @@ hud_debug:
     roundss xmm0, [player + BODY.z], 9
     cvttss2si esi, xmm0
     call    world_biome_at
-    cmp     eax, NUM_BIOMES
-    lea     rsi, [s_unknown]
-    jae     .biome_named                ; -1: the column is not loaded
-    lea     rcx, [biome_names]
-    mov     rsi, [rcx + rax*8]
-.biome_named:
+    mov     edi, eax
+    call    hud_biome_name              ; -1: the column is not loaded
+    mov     rsi, rax
     mov     rdi, rbx
     call    str_append
     mov     rbx, rax

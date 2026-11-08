@@ -22,6 +22,9 @@
 ; The 0.10 art (shrine tiles 228, 229 and the faction skins 304..323, past the font) follows the 0.9
 ; art and precedes the font, in tile order: the shrine tiles are draw-free bitmaps, the skins are
 ; 16x16 bitmaps shaded by one draw per pixel (305 is the 0.9 npc face again).
+; The 0.10.1 art (dry grass top and side 324, 325, lava 326, past the font) follows the 0.10 art and
+; precedes the font: 324 and 326 are plain noise, 325 is the grass-side generator (16 column depths,
+; then one draw per pixel) in dry colours.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -1066,6 +1069,43 @@ texgen_build:
     NBMP    321, fk_stk_face_bmp, pal_fk_stk_face, 224, 31
     NBMP    322, fk_stk_tunic_bmp, pal_fk_stk_tunic, 224, 31
     NBMP    323, fk_stk_pants_bmp, pal_fk_stk_pants, 224, 31
+
+    ; ---- 0.10.1 art (after the 0.10 art, before the font; the atlas outside these 3 tiles is
+    ;      untouched). 324 dry grass top, 325 dry grass side (the tile 2 generator with the dry
+    ;      colour: 16 column depths first, then one draw per pixel), 326 lava (opaque). ----
+    TILE_BEGIN 324
+    NOISE_PIXEL RGB(170,160,82), 192, 63
+    TILE_END
+
+    xor     r15d, r15d
+.t325_depth:
+    call    rng
+    mov     edx, eax
+    and     edx, 1
+    add     edx, 3
+    test    eax, 7
+    jnz     .t325_store
+    add     edx, 2
+.t325_store:
+    mov     [rsp + r15], dl
+    inc     r15d
+    cmp     r15d, 16
+    jb      .t325_depth
+    TILE_BEGIN 325
+    DRAW_M  192, 63
+    movzx   eax, byte [rsp + r15]
+    mov     esi, RGB(150,108,74)
+    cmp     r14d, eax
+    jae     .t325_shade
+    mov     esi, RGB(170,160,82)
+.t325_shade:
+    mov     edx, r8d
+    call    shade
+    TILE_END
+
+    TILE_BEGIN 326
+    NOISE_PIXEL RGB(214,96,26), 160, 95
+    TILE_END
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95

@@ -8,7 +8,7 @@ default rel
 global test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
 global test_mesh_adjacent_glass, test_mesh_chunk_boundary
 global test_mesh_slab_half_height, test_mesh_stairs_quads, test_mesh_light_packed
-global test_mesher_water, test_mesher_cross, test_render_frustum
+global test_mesher_water, test_mesher_cross, test_mesher_lava, test_render_frustum
 
 extern world_clear, world_set, world_chunk
 extern mesh_chunk, mesh_scratch
@@ -776,6 +776,140 @@ run_cases:
     xor     eax, eax
     jmp     .ret
 .fail:
+    mov     eax, 1
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; lava_floor: a 5 x 5 stone floor at y = 9 on x, z 0..4
+lava_floor:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    xor     r12d, r12d                  ; z
+.z:
+    xor     ebx, ebx                    ; x
+.x:
+    mov     edi, ebx
+    mov     esi, 9
+    mov     edx, r12d
+    mov     ecx, STONE
+    call    world_set
+    inc     ebx
+    cmp     ebx, 4
+    jbe     .x
+    inc     r12d
+    cmp     r12d, 4
+    jbe     .z
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; RANGE first, count, field, lo, hi: fail unless the field's min..max over the vertices is lo..hi
+%macro RANGE 5
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, %3
+    call    vert_range
+    cmp     eax, %4
+    jne     .fail
+    cmp     edx, %5
+    jne     .fail
+%endmacro
+
+; COUNT first, count, field, value, expected: fail unless exactly `expected` vertices match
+%macro COUNT 5
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, %3
+    mov     ecx, %4
+    call    vert_count
+    cmp     eax, %5
+    jne     .fail
+%endmacro
+
+; lava and dry grass on the 5 x 5 stone floor (opaque range = the floor: 70 quads = 280 vertices).
+; (1) one LAVA cell at (1,10,1): 5 translucent quads (the top at 10 * 16 + 14 and 4 sides, the
+; bottom is culled against the stone), white, tile TILE_LAVA (column 6, row 20). (2) a second LAVA
+; cell on top: the lower cell has 4 sides and no top, the upper keeps the 14/16 top at
+; 11 * 16 + 14: 9 quads, no vertex at 10 * 16 + 14. (3) WATER beside LAVA: the water face against
+; the lava is culled, the lava face against the water is not: 5 + 4 = 9 quads. (4) a lone DRY_GRASS
+; block: top tile 324 (column 4, row 20), side tile 325 (column 5, row 20), bottom dirt (tile 3).
+test_mesher_lava:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    world_clear
+    call    lava_floor
+    SETB    1, 10, 1, LAVA
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    call    mesh_one
+    mov     ebx, eax
+    cmp     edx, 70 * 4
+    jne     .fail
+    sub     ebx, edx
+    cmp     ebx, 5 * 4                  ; translucent vertices
+    jne     .fail
+    COUNT   280, 20, VERTEX.y, 10 * 16 + 14, 4 + 4 * 2
+    COUNT   280, 20, VERTEX.y, 10 * 16, 4 * 2
+    RANGE   280, 20, VERTEX.u, 6 * 256 + 1, 6 * 256 + 255
+    RANGE   280, 20, VERTEX.v, 20 * 256 + 1, 20 * 256 + 255
+    mov     edi, 280
+    mov     esi, 20
+    mov     edx, 0xFFFFFFFF
+    call    vert_colour
+    test    eax, eax
+    jz      .fail
+    call    world_clear
+    call    lava_floor
+    SETB    1, 10, 1, LAVA
+    SETB    1, 11, 1, LAVA
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    call    mesh_one
+    sub     eax, 280
+    cmp     eax, 9 * 4
+    jne     .fail
+    COUNT   280, 36, VERTEX.y, 10 * 16 + 14, 0
+    COUNT   280, 36, VERTEX.y, 11 * 16 + 14, 4 + 4 * 2
+    call    world_clear
+    call    lava_floor
+    SETB    1, 10, 1, LAVA
+    SETB    2, 10, 1, WATER
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    call    mesh_one
+    sub     eax, 280
+    cmp     eax, 9 * 4
+    jne     .fail
+    call    world_clear
+    SETB    5, 5, 5, DRY_GRASS
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    call    mesh_one
+    cmp     eax, 24
+    jne     .fail
+    RANGE   8, 4, VERTEX.u, TILE_DRY_GRASS_TOP % 16 * 256 + 1, TILE_DRY_GRASS_TOP % 16 * 256 + 255
+    RANGE   8, 4, VERTEX.v, TILE_DRY_GRASS_TOP / 16 * 256 + 1, TILE_DRY_GRASS_TOP / 16 * 256 + 255
+    RANGE   0, 4, VERTEX.u, TILE_DRY_GRASS_SIDE % 16 * 256 + 1, TILE_DRY_GRASS_SIDE % 16 * 256 + 255
+    RANGE   0, 4, VERTEX.v, TILE_DRY_GRASS_SIDE / 16 * 256 + 1, TILE_DRY_GRASS_SIDE / 16 * 256 + 255
+    RANGE   12, 4, VERTEX.u, 3 * 256 + 1, 3 * 256 + 255
+    RANGE   12, 4, VERTEX.v, 1, 255
+    call    world_clear
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    call    world_clear
     mov     eax, 1
 .ret:
     pop     r12

@@ -6,7 +6,7 @@ global test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_l
 global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
-global test_new_blocks_tables, test_shrine_block_tables
+global test_new_blocks_tables, test_shrine_block_tables, test_terrain_blocks_tables
 
 extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
@@ -16,6 +16,7 @@ extern item_break_time, item_harvest_drop
 extern world_clear, world_set, world_header, conts
 extern cont_create, cont_fill_from_inv
 extern block_flags, block_shape, block_tiles, block_hardness, block_tool, block_drop, block_base
+extern block_harvest_level, block_dig_sound, block_step_sound, block_flammable
 extern item_max_stack, item_icon, item_names, block_light, block_is_usable, texgen_build
 
 section .rodata
@@ -1382,6 +1383,154 @@ test_shrine_block_tables:
     jb      .py
     add     rbx, 2
     lea     rax, [art_tiles_end]
+    cmp     rbx, rax
+    jb      .tile
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+section .rodata
+; the Contracts rows of DRY_GRASS and LAVA (0.10.1 terrain), 40 bytes each:
+;   +0 name ptr, +8 id, +12 hardness, +16 tiles top/side/bottom (words), +24 flags, tool, harvest
+;   level, drop, dig sound, step sound, flammable, shape, block_base, light, item_icon,
+;   item_max_stack (12 bytes)
+%define TB_ROW 40
+tb_rows:
+    dq tb_nm_dry
+    dd DRY_GRASS
+    dd 0.6
+    dw TILE_DRY_GRASS_TOP, TILE_DRY_GRASS_SIDE, 3, 0
+    db FLAG_SOLID | FLAG_OPAQUE, TOOL_SHOVEL, 0, DIRT, SND_DIG_SOFT, SND_STEP_SOFT, 0, SHAPE_CUBE
+    db 0, 0, 0, 0
+    times 4 db 0
+    dq tb_nm_lava
+    dd LAVA
+    dd -1.0
+    dw TILE_LAVA, TILE_LAVA, TILE_LAVA, 0
+    db FLAG_TRANSLUCENT, 0, 0, 0, 0, 0, 0, SHAPE_LIQUID
+    db 0, 15, 0, 0
+    times 4 db 0
+tb_rows_end:
+tb_nm_dry:  db "Dry Grass", 0
+tb_nm_lava: db "Lava", 0
+; the 3 tiles 0.10.1 draws
+tb_tiles:
+    dw TILE_DRY_GRASS_TOP, TILE_DRY_GRASS_SIDE, TILE_LAVA
+tb_tiles_end:
+
+section .text
+
+; test_terrain_blocks_tables() -> eax 0 pass
+;   DRY_GRASS (135) and LAVA (136) match the Contracts rows field by field: flags, tile words,
+;   hardness, tool, harvest level, drop, dig/step sound, flammable, shape, block_base, light (LAVA
+;   15), item name, item icon and max stack (no item form). The atlas draws tiles 324..326 fully
+;   opaque with no black pixel.
+test_terrain_blocks_tables:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    lea     r12, [tb_rows]
+.row:
+    mov     ebx, [r12 + 8]
+    movzx   eax, byte [block_flags + rbx]
+    cmp     al, [r12 + 24]
+    jne     .fail
+    movzx   eax, byte [block_tool + rbx]
+    cmp     al, [r12 + 25]
+    jne     .fail
+    movzx   eax, byte [block_harvest_level + rbx]
+    cmp     al, [r12 + 26]
+    jne     .fail
+    movzx   eax, byte [block_drop + rbx]
+    cmp     al, [r12 + 27]
+    jne     .fail
+    movzx   eax, byte [block_dig_sound + rbx]
+    cmp     al, [r12 + 28]
+    jne     .fail
+    movzx   eax, byte [block_step_sound + rbx]
+    cmp     al, [r12 + 29]
+    jne     .fail
+    movzx   eax, byte [block_flammable + rbx]
+    cmp     al, [r12 + 30]
+    jne     .fail
+    movzx   eax, byte [block_shape + rbx]
+    cmp     al, [r12 + 31]
+    jne     .fail
+    movzx   eax, byte [block_base + rbx]
+    cmp     al, [r12 + 32]
+    jne     .fail
+    movzx   eax, byte [block_light + rbx]
+    cmp     al, [r12 + 33]
+    jne     .fail
+    movzx   eax, byte [item_icon + rbx]
+    cmp     al, [r12 + 34]
+    jne     .fail
+    movzx   eax, byte [item_max_stack + rbx]
+    cmp     al, [r12 + 35]
+    jne     .fail
+    movss   xmm0, [block_hardness + rbx*4]
+    ucomiss xmm0, [r12 + 12]
+    jne     .fail
+    jp      .fail
+    lea     rsi, [rbx + rbx*2]
+    movzx   eax, word [block_tiles + rsi*2]
+    cmp     ax, [r12 + 16]
+    jne     .fail
+    movzx   eax, word [block_tiles + rsi*2 + 2]
+    cmp     ax, [r12 + 18]
+    jne     .fail
+    movzx   eax, word [block_tiles + rsi*2 + 4]
+    cmp     ax, [r12 + 20]
+    jne     .fail
+    lea     rdx, [item_names]
+    mov     rdi, [rdx + rbx*8]
+    mov     rsi, [r12]
+    call    nb_streq
+    test    eax, eax
+    jz      .fail
+    add     r12, TB_ROW
+    lea     rax, [tb_rows_end]
+    cmp     r12, rax
+    jb      .row
+    ; the atlas: every pixel of tiles 324..326 is opaque and not black
+    lea     rdi, [art_atlas]
+    call    texgen_build
+    lea     rbx, [tb_tiles]
+.tile:
+    movzx   eax, word [rbx]
+    mov     ecx, eax
+    shr     ecx, 4
+    shl     ecx, 12                         ; row * 16 px * 256 px per row
+    and     eax, 15
+    shl     eax, 4
+    add     eax, ecx                        ; the tile's first pixel
+    lea     r12, [art_atlas]
+    lea     r12, [r12 + rax*4]
+    xor     ecx, ecx                        ; py
+.py:
+    xor     edx, edx                        ; px
+.px:
+    mov     eax, ecx
+    shl     eax, 8
+    add     eax, edx
+    mov     eax, [r12 + rax*4]
+    cmp     eax, 0xFF000000
+    jbe     .fail                           ; alpha < 255 or rgb == 0
+    inc     edx
+    cmp     edx, 16
+    jb      .px
+    inc     ecx
+    cmp     ecx, 16
+    jb      .py
+    add     rbx, 2
+    lea     rax, [tb_tiles_end]
     cmp     rbx, rax
     jb      .tile
     xor     eax, eax

@@ -5,7 +5,7 @@
 ; affixes: elemental parts in their blows, vampiric healing, speed, a juggernaut's stability.
 ; Mobs live in LOCAL coordinates: mobs_shift follows the origin, mobs_remove_box drops the mobs of
 ; a column that unloads, and a mob whose column is not ready stands frozen. Land mobs steer clear
-; of water and, once in it, hold jump and float.
+; of water and lava and, once in a liquid, hold jump and float (in lava they burn too).
 ; A MOB starts with its BODY (MOB.body = 0), so a mob pointer is also a body pointer.
 %include "common.inc"
 default rel
@@ -18,7 +18,7 @@ global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 global make_elite, mob_scale, mob_blow, mob_blow_raw, mob_melee_hit, mob_arrow_flags, mob_index
 global knock_player, mob_reel, mob_stunned_text, folk_strike_mob, mob_coins, mob_drop, spawn_near_player
 
-extern body_init, body_step, body_in_water, body_intersects_block, player, player_eye
+extern body_init, body_step, body_in_liquid, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
 extern world_top_y, world_get, world_column_ready, world_header, raycast, light_get, block_flags
 extern world_origin_x, world_origin_z
@@ -65,6 +65,8 @@ extern status_apply
 %define CRYPT_MIN_LEVEL 20              ; the crypt boss is at least this level
 %define ELITE_TWO_AFFIXES 15            ; elites from this level on carry two affixes
 %define NATURAL_ELITE_PCT 4             ; share of the night spawner's mobs that are elite
+%define LAVA_STRIKE   4                 ; health a mob standing in lava loses ...
+%define LAVA_PERIOD   10                ; ... every this many steps of game_time
 
 ; ELITE_DAMAGE reg32: damage x 1.5, rounded, when the mob at rbx is an elite (clobbers xmm7)
 %macro ELITE_DAMAGE 1
@@ -162,8 +164,9 @@ c_vol_hurt: dd 1.0
 c_glide:    dd -3.0                     ; slowest a chicken falls, blocks/s
 c_load_xz:  dd 65536.0                  ; a saved mob lies within this many blocks of the origin...
 c_load_y:   dd 256.0                    ; ...and below this height
-c_water_dx: dd 0.7                      ; how far ahead a mob looks for water
-c_turn:     dd 180.0                    ; a mob that meets water turns about
+c_water_dx: dd 0.7                      ; how far ahead a mob looks for water or lava
+c_turn:     dd 180.0                    ; a mob that meets water or lava turns about
+c_lava_burn: dd 24.0                    ; STS_BURN magnitude of a mob in lava (status_apply: a tick of 2 per 30 steps)
 k_abs:      dd 0x7FFFFFFF               ; |x| mask (loaded with movss: andps needs a register here)
 c_one:      dd 1.0
 ; creeper
@@ -650,9 +653,10 @@ yaw_from:
 ; 48 blocks and sees through smoke (ai_boss); folk follow folk_ai (folk.asm: fighters hunt, patrol and
 ; guard, the rest stroll around home, turn to a player within 4 or run when scared); a panicking pig
 ; or chicken runs along its heading; everything else wanders in
-; 1-4 s legs. At the end (.jump) a mob in water holds jump (it floats up and drifts); one that would
-; step into water (WATER 0.7 blocks ahead at its feet or just below that) turns about when it
-; wanders and stops when it is hunting or walking home; one that walks into an obstacle hops.
+; 1-4 s legs. At the end (.jump) a mob in a liquid holds jump (it floats up and drifts) and one in LAVA
+; also burns (mob_lava_burn; a mob that burns to death is gone: eax 0 with MOB.type MOB_NONE); one that
+; would step into water or lava (WATER or LAVA 0.7 blocks ahead at its feet or just below that) turns
+; about when it wanders and stops when it is hunting or walking home; one that walks into an obstacle hops.
 ; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player, [rsp+12] 1 while its
 ; heading is steered on purpose (hunting, walking home), else 0.
 mob_ai:
@@ -850,11 +854,18 @@ mob_ai:
     jmp     .jump
 .stand:
     mov     dword [rbx + MOB.input + INPUT.fwd], 0
-.jump:                                  ; steer clear of water, hop when walking into something
+.jump:                                  ; steer clear of water and lava, hop when walking into something
     mov     rdi, rbx
-    call    body_in_water
+    call    body_in_liquid
     test    eax, eax
     jz      .dry
+    cmp     eax, LAVA
+    jne     .afloat
+    mov     rdi, rbx
+    call    mob_lava_burn               ; in lava it burns...
+    cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .gone                       ; ...and may burn to death
+.afloat:
     mov     eax, 1                      ; afloat: it holds jump, so it floats up and drifts
     jmp     .store_jump
 .dry:
@@ -889,7 +900,40 @@ mob_ai:
     pop     rbp
     ret
 
-; mob_water_ahead(rdi mob) -> eax 1 when WATER lies 0.7 blocks ahead of the mob along its heading
+; mob_lava_burn(rdi mob): the mob stands in lava. It catches fire (status_apply, STS_BURN, magnitude 24:
+; 3 s of burn, a tick of 2 every 30 steps, renewed while it stays) and on every LAVA_PERIOD-th step of
+; game_time takes a strike of LAVA_STRIKE health (mob_strike lands inside the hurt window, with no
+; knockback). A mob the strike kills is gone (MOB.type = MOB_NONE, its loot dropped): look at the type again.
+; r12d = the mob's slot
+mob_lava_burn:
+    push    rbp
+    mov     rbp, rsp
+    push    r12
+    sub     rsp, 8
+    call    mob_index                   ; eax = the slot of rdi
+    mov     r12d, eax
+    mov     edi, eax
+    mov     esi, STS_BURN
+    movss   xmm0, [c_lava_burn]
+    call    status_apply
+    mov     eax, [game_time]
+    xor     edx, edx
+    mov     ecx, LAVA_PERIOD
+    div     ecx
+    test    edx, edx
+    jnz     .ret
+    mov     edi, r12d
+    mov     esi, LAVA_STRIKE
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    mob_strike
+.ret:
+    add     rsp, 8
+    pop     r12
+    pop     rbp
+    ret
+
+; mob_water_ahead(rdi mob) -> eax 1 when WATER or LAVA lies 0.7 blocks ahead of the mob along its heading
 ; (behind it when it backs away: input.fwd < 0), in the cell of its feet or in the cell below that
 ; rbx = mob, r12d, r13d, r14d = x, z and feet y of the cell looked at
 mob_water_ahead:
@@ -922,11 +966,15 @@ mob_water_ahead:
     call    world_get
     cmp     eax, WATER
     je      .yes
+    cmp     eax, LAVA
+    je      .yes
     mov     edi, r12d
     lea     esi, [r14 - 1]
     mov     edx, r13d
     call    world_get
     cmp     eax, WATER
+    je      .yes
+    cmp     eax, LAVA
     je      .yes
     xor     eax, eax
     jmp     .ret
@@ -2081,9 +2129,9 @@ mob_update:
 ; spawn_at_ground(edi type, esi x, edx z, ecx ground kind) -> eax slot index, or -1.
 ; (x, z) is a local cell. Its column must be ready and its top block at y <= 254. The mob stands on
 ; the top block, in the cell above it; when that block is TALL_GRASS or SNOW_LAYER it stands in that
-; cell instead, on the block below. The cell it stands in is never WATER. GROUND_HOSTILE wants a
+; cell instead, on the block below. The cell it stands in is never WATER or LAVA. GROUND_HOSTILE wants a
 ; solid, opaque block that is not BEDROCK or foliage (LEAVES, PINE_LEAVES, BIRCH_LEAVES) under it,
-; GROUND_PASSIVE wants GRASS. A hostile type also needs block light < 8 in its cell (a torch keeps
+; GROUND_PASSIVE wants GRASS or DRY_GRASS. A hostile type also needs block light < 8 in its cell (a torch keeps
 ; its surroundings clear); a spider (1.4 blocks wide) also needs the 3 x 3 cells around that cell
 ; free (air, TALL_GRASS or SNOW_LAYER).
 ; rbx = type, r12d, r13d = x, z, r14d = ground kind, r15d = y of the top block;
@@ -2134,11 +2182,13 @@ spawn_at_ground:
     call    world_get                   ; ...on the block below it
 .ground:
     mov     [rsp + 4], eax
-    mov     edi, r12d                   ; the cell it stands in is never water
+    mov     edi, r12d                   ; the cell it stands in is never water or lava
     mov     esi, [rsp]
     mov     edx, r13d
     call    world_get
     cmp     eax, WATER
+    je      .fail
+    cmp     eax, LAVA
     je      .fail
     mov     eax, [rsp + 4]
     test    r14d, r14d
@@ -2159,6 +2209,8 @@ spawn_at_ground:
     jmp     .ground_ok
 .passive:
     cmp     eax, GRASS
+    je      .ground_ok
+    cmp     eax, DRY_GRASS
     jne     .fail
 .ground_ok:
     lea     eax, [rbx - 1]

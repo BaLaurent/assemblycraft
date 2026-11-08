@@ -79,7 +79,7 @@ target_flags:
     ret
 
 ; cell_free(edi x, esi y, edx z) -> eax 1 when a block may be put into the cell: it lies at
-; 0 <= y <= 255 in a ready (lit) column and holds air, water, tall grass or a snow layer
+; 0 <= y <= 255 in a ready (lit) column and holds air, water, lava, tall grass or a snow layer
 cell_free:
     push    rbp
     mov     rbp, rsp
@@ -103,6 +103,8 @@ cell_free:
     test    eax, eax
     jz      .yes
     cmp     eax, WATER
+    je      .yes
+    cmp     eax, LAVA
     je      .yes
     cmp     eax, TALL_GRASS
     je      .yes
@@ -134,7 +136,7 @@ cell_free:
 ;  - a torch stands on a solid block's top face, or leans on an opaque block's side face
 ;    (TORCH_WALL + side);
 ;  - everything else is the item itself.
-; A cell is free (cell_free) when it lies at 0 <= y <= 255 in a ready column and holds air, water,
+; A cell is free (cell_free) when it lies at 0 <= y <= 255 in a ready column and holds air, water, lava,
 ; tall grass or a snow layer. A targeted tall grass or snow layer is replaced in place: the block
 ; goes into b itself (a torch there stands on the block below; a ladder cannot hang on a plant).
 ; Refused: not a block item, cell not free, a placement that does not suit the face, the player or

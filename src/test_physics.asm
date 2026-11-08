@@ -10,7 +10,7 @@ global test_swim_physics, test_boats
 extern player, body_init, body_step, body_intersects_block
 extern raycast, world_clear, world_set
 extern world_get
-extern body_in_water, player_eye_in_water, survival_reset, survival_land, surv, game_mode
+extern body_in_liquid, player_eye_in_water, survival_reset, survival_land, surv, game_mode
 extern drops, drops_clear, banner_text, str_eq
 extern boats, boat_riding, boats_clear, boats_step, boats_place, boats_raycast, boats_mount
 extern boats_break, boats_save, boats_load, boats_shift
@@ -536,7 +536,7 @@ set_ledge:
 ; Swimming: 60 steps east in the pool cover half of what they cover on land (+-5%). A dry fall of 8
 ; blocks hurts (control), a fall of 20 blocks into 5 deep water does not, and ends standing on the pool
 ; floor. Sinking never exceeds 2.5 blocks/s; jump held gives vy 3 (7 when the last step was blocked).
-; body_in_water / player_eye_in_water read the cells at feet + 0.05 / + 0.4 and at the eye.
+; body_in_liquid / player_eye_in_water read the cells at feet + 0.05 / + 0.4 and at the eye.
 ; Frame: [rsp] unused, [rsp + 4] land distance, [rsp + 8] ratio, [rsp + 12] the caller's game_mode.
 test_swim_physics:
     push    rbp
@@ -662,18 +662,18 @@ test_swim_physics:
     SETF    [player + BODY.y], 15.7
     SETF    [player + BODY.z], 16.5
     lea     rdi, [player]
-    call    body_in_water
-    cmp     eax, 1
+    call    body_in_liquid
+    cmp     eax, WATER
     jne     .fail                       ; feet + 0.05 = 15.75: still in the top water cell
     SETF    [player + BODY.y], 16.0
     lea     rdi, [player]
-    call    body_in_water
+    call    body_in_liquid
     test    eax, eax
     jnz     .fail                       ; standing on the surface: dry
     SETF    [player + BODY.x], 30.5
     SETF    [player + BODY.y], 11.0
     lea     rdi, [player]
-    call    body_in_water
+    call    body_in_liquid
     test    eax, eax
     jnz     .fail                       ; the dry column
     SETF    [player + BODY.x], 16.5

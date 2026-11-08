@@ -2,7 +2,7 @@
 ;
 ; gen_column() fills one 16 x 256 x 16 column of a GENBUF from the seed alone; the same column
 ; always comes out the same, whatever was generated before (no state survives a call), so columns
-; can be built in any order on the generator thread. gen_height, gen_biome and gen_find_spawn
+; can be built in any order on the generator thread. gen_height, gen_biome, gen_surface and gen_find_spawn
 ; (and caves.asm's gen_carved) are pure functions of the absolute cell and of gen_seed and are reentrant (stack
 ; and registers only); the main thread calls them while the worker runs gen_column. The statics
 ; below belong to gen_column alone: exactly one thread runs it at a time (the worker during a
@@ -14,7 +14,7 @@
 %include "common.inc"
 default rel
 
-global worldgen_set_seed, gen_column, gen_height, gen_biome, gen_find_spawn
+global worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn
 
 extern hash32, noise2, fbm2, gen_seed
 extern structures_stamp, roads_prepare, road_mask, gen_underground, carved_at
@@ -31,6 +31,7 @@ extern structures_stamp, roads_prepare, road_mask, gen_underground, carved_at
 %define TF_MTN      24
 %define TF_SW       28
 %define TF_HPRE     32
+%define TF_TW       36                  ; T' = T + the dither: what the surface materials read
 %define TF_SIZE     40                  ; keeps rsp 16-aligned after the five pushes
 
 section .rodata
@@ -49,10 +50,7 @@ k_p035:     dd 0.35
 k_p006:     dd 0.06                     ; river band half width
 k_river_t:  dd 0.025                    ; river biome
 k_mtn_t:    dd 0.35                     ; mountain biome
-k_snow_t:   dd -0.25                    ; snow biome / freezing
-k_desert_t: dd 0.25
-k_swamp_t:  dd 0.5
-k_forest_t: dd -0.05
+k_swamp_t:  dd 0.5                      ; swamp biome: sw above this
 k_beach:    dd -0.06
 k_mud:      dd 0.3
 k_8:        dd 8.0
@@ -66,6 +64,23 @@ k_96:       dd 96.0
 k_98:       dd 98.0
 k_160:      dd 160.0
 k_absmask:  dd 0x7FFFFFFF
+; the climate ladder: T and M are cut at percentiles of fbm2 over seed 42's 16 block grid of |x|, |z| <= 3072
+; (385 x 385 samples, oceans included), rounded to 3 decimals
+k_t_snow:     dd -0.345                 ; T below: snow (P14 of T)
+k_t_taiga:    dd -0.164                 ; T below: taiga, and the freezing line (P28)
+k_t_swamp_lo: dd -0.057                 ; swamps start to grow here (P38)
+k_t_swamp_hi: dd 0.178                  ; and stop here (P66)
+k_t_savanna:  dd 0.255                  ; T from here: savanna or desert, dry grass (P74)
+k_t_desert:   dd 0.400                  ; T from here: desert where it is dry (P86)
+k_m_plains:   dd -0.122                 ; M below: plains (P35 of M)
+k_m_birch:    dd 0.056                  ; M below: birch forest, from here: forest (P55)
+k_m_desert:   dd 0.100                  ; M below: desert, from here: savanna (P60)
+k_wobble:     dd 0.015                  ; how far the surface materials dither T and M over a border
+k_p002:       dd 0.02                   ; width of the swamp band's ramps in T
+k_shore_c:    dd -0.05                  ; stony shore: C below this
+k_20:         dd 20.0
+k_80:         dd 80.0
+k_165:        dd 165.0
 
 section .bss
 alignb 64
@@ -115,16 +130,37 @@ worldgen_set_seed:
     movss   [rsp + %4], xmm0
 %endmacro
 
+; WOBBLE salt, slot: xmm0 = [rsp + slot] + 0.015 noise2(ebx, r12d, 3, salt), the dithered T or M
+%macro WOBBLE 2
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 3
+    mov     ecx, %1
+    call    noise2
+    mulss   xmm0, [k_wobble]
+    addss   xmm0, [rsp + %2]
+%endmacro
+
 ; terrain_cell(edi ax, esi az, rdx TCELL* out)
 ; The terrain of the block column at absolute (ax, az): its height, biome and layer blocks. Pure and
-; reentrant. gen_height, gen_biome and gen_column all read their answers from here, so they agree
+; reentrant. gen_height, gen_biome, gen_surface and gen_column all read their answers from here, so they agree
 ; bit for bit.
 ;   C continentalness, T temperature, M moisture, Rg ruggedness, D detail, Rv river distance.
 ;   C < -0.10: ocean, h = 91 - 36 clamp01((-0.10 - C) / 0.25) + 3 D.
 ;   Else land = clamp01((C + 0.10) / 0.20), mtn = clamp01((Rg - 0.20) / 0.35)^2 * land,
-;   h = 98 + 10 land + 8 D + mtn (70 + 30 D); swamps (wet, not cold, flat) lerp toward 96 + 2 D by
-;   sw = clamp01((M - 0.25) / 0.10) * (T >= -0.25) * (1 - mtn); rivers (Rv < 0.06, h < 160) lerp
-;   toward 93 by smoothstep(Rv / 0.06). The height is floor(h) clamped to 8..240.
+;   h = 98 + 10 land + 8 D + mtn (70 + 30 D); swamps (wet, temperate, flat) lerp toward 96 + 2 D by
+;   sw = clamp01((M - 0.25) / 0.10) * bT * (1 - mtn), bT = clamp01((T - k_t_swamp_lo) / 0.02) *
+;   clamp01((k_t_swamp_hi - T) / 0.02); rivers (Rv < 0.06, h < 160) lerp toward 93 by smoothstep(Rv / 0.06).
+;   The height is floor(h) clamped to 8..240.
+; The biome follows a climate ladder; the first rule that matches wins: ocean (C < -0.10), river, mountains
+; (mtn > 0.35), stony shore (C < -0.05 and Rg > 0.10), snow (T < k_t_snow), taiga (T < k_t_taiga), then for
+; T >= k_t_desert desert where M < k_m_desert and savanna elsewhere, savanna from k_t_savanna, swamp (sw > 0.5),
+; plains (M < k_m_plains), birch forest (M < k_m_birch), forest. Only neighbours on the ladder touch, so a
+; desert never meets snow. The surface materials of land blend over a border: they read T' = T + 0.015 n and
+; M' = M + 0.015 n' (8 block noises, land only) in place of T and M: dry grass from k_t_savanna, snow
+; cover and frozen water below k_t_taiga, sand patches in a savanna, dry grass in a desert. Mountains of
+; h >= 150 are bare stone under a snow line S = 165 + 80 clamp01((T - k_t_taiga) / (k_t_desert - k_t_taiga)):
+; snow cover from S, a SNOW_BLOCK top from S + 20.
 terrain_cell:
     push    rbp
     mov     rbp, rsp
@@ -138,7 +174,7 @@ terrain_cell:
     mov     r12d, esi
     mov     r13, rdx
     FBMC    10, 4, SALT_C, TF_C
-    FBMC    9, 3, 1100, TF_T
+    FBMC    10, 2, 1700, TF_T
     FBMC    6, 4, 1400, TF_D
     movss   xmm0, [rsp + TF_C]
     comiss  xmm0, [k_ocean]
@@ -150,6 +186,8 @@ terrain_cell:
     movss   [rsp + TF_RV], xmm0
     FBMC    9, 3, 1300, TF_RG
     FBMC    9, 3, 1200, TF_M
+    WOBBLE  1710, TF_T                  ; T' (land only)
+    movss   [rsp + TF_TW], xmm0
     ; land = clamp01((C + 0.10) / 0.20)
     movss   xmm0, [rsp + TF_C]
     addss   xmm0, [k_p010]
@@ -174,16 +212,23 @@ terrain_cell:
     addss   xmm2, [k_70]
     mulss   xmm2, xmm1
     addss   xmm0, xmm2
-    ; sw = clamp01((M - 0.25) / 0.10), 0 when cold, times (1 - mtn)
+    ; sw = clamp01((M - 0.25) / 0.10) * bT * (1 - mtn); bT = clamp01((T - k_t_swamp_lo) / 0.02) *
+    ; clamp01((k_t_swamp_hi - T) / 0.02) keeps the swamps to the temperate band
     movss   xmm3, [rsp + TF_M]
     subss   xmm3, [k_p025]
     divss   xmm3, [k_p010]
     CLAMP01 xmm3
-    movss   xmm4, [rsp + TF_T]
-    comiss  xmm4, [k_snow_t]
-    jae     .warm
-    pxor    xmm3, xmm3
-.warm:
+    movss   xmm5, [rsp + TF_T]
+    movaps  xmm4, xmm5
+    subss   xmm4, [k_t_swamp_lo]
+    divss   xmm4, [k_p002]
+    CLAMP01 xmm4
+    movss   xmm6, [k_t_swamp_hi]
+    subss   xmm6, xmm5
+    divss   xmm6, [k_p002]
+    CLAMP01 xmm6
+    mulss   xmm4, xmm6
+    mulss   xmm3, xmm4
     movss   xmm4, [k_one]
     subss   xmm4, xmm1
     mulss   xmm3, xmm4
@@ -210,6 +255,8 @@ terrain_cell:
     addss   xmm0, xmm2
     jmp     .round
 .ocean:
+    movss   xmm1, [rsp + TF_T]          ; no dither over the sea: T' is T
+    movss   [rsp + TF_TW], xmm1
     movss   xmm0, [k_ocean]
     subss   xmm0, [rsp + TF_C]
     mulss   xmm0, [k_four]
@@ -229,7 +276,7 @@ terrain_cell:
     mov     eax, 240
     cmp     r14d, eax
     cmovg   r14d, eax
-    ; ---- biome ----
+    ; ---- biome: the first rule that matches wins ----
     mov     r15d, BIOME_OCEAN
     movss   xmm0, [rsp + TF_C]
     comiss  xmm0, [k_ocean]
@@ -246,41 +293,62 @@ terrain_cell:
     movss   xmm0, [rsp + TF_MTN]
     comiss  xmm0, [k_mtn_t]
     ja      .materials
+    mov     r15d, BIOME_SHORE           ; a rugged coast
+    movss   xmm0, [rsp + TF_C]
+    comiss  xmm0, [k_shore_c]
+    jae     .not_shore
+    movss   xmm0, [rsp + TF_RG]
+    comiss  xmm0, [k_p010]
+    ja      .materials
+.not_shore:
+    movss   xmm0, [rsp + TF_T]          ; the temperature ladder
     mov     r15d, BIOME_SNOW
-    movss   xmm0, [rsp + TF_T]
-    comiss  xmm0, [k_snow_t]
+    comiss  xmm0, [k_t_snow]
     jb      .materials
-    comiss  xmm0, [k_desert_t]
-    jbe     .not_desert
+    mov     r15d, BIOME_TAIGA
+    comiss  xmm0, [k_t_taiga]
+    jb      .materials
+    comiss  xmm0, [k_t_desert]
+    jb      .not_desert
+    mov     r15d, BIOME_SAVANNA         ; hot: desert where it is dry, savanna where it is not
     movss   xmm1, [rsp + TF_M]
-    comiss  xmm1, [k_zero]
+    comiss  xmm1, [k_m_desert]
+    jae     .materials
     mov     r15d, BIOME_DESERT
-    jb      .materials
+    jmp     .materials
 .not_desert:
+    mov     r15d, BIOME_SAVANNA
+    comiss  xmm0, [k_t_savanna]
+    jae     .materials
     mov     r15d, BIOME_SWAMP
     movss   xmm0, [rsp + TF_SW]
     comiss  xmm0, [k_swamp_t]
     ja      .materials
-    mov     r15d, BIOME_FOREST
     movss   xmm0, [rsp + TF_M]
-    comiss  xmm0, [k_forest_t]
-    ja      .materials
     mov     r15d, BIOME_PLAINS
+    comiss  xmm0, [k_m_plains]
+    jb      .materials
+    mov     r15d, BIOME_BIRCH
+    comiss  xmm0, [k_m_birch]
+    jb      .materials
+    mov     r15d, BIOME_FOREST
     ; ---- materials ----
 .materials:
     mov     [r13 + TCELL.h], r14d
     mov     [r13 + TCELL.biome], r15d
     xor     eax, eax
-    movss   xmm0, [rsp + TF_T]
-    comiss  xmm0, [k_snow_t]
+    movss   xmm0, [rsp + TF_TW]
+    comiss  xmm0, [k_t_taiga]
     setb    al
-    mov     [r13 + TCELL.cold], eax
+    mov     [r13 + TCELL.cold], eax     ; T' below the freezing line
     mov     dword [r13 + TCELL.deep], STONE
     mov     dword [r13 + TCELL.cover], 0
     cmp     r15d, BIOME_OCEAN
     je      .m_ocean
     cmp     r15d, BIOME_RIVER
     je      .m_river
+    cmp     r15d, BIOME_SHORE
+    je      .m_shore                    ; no beach on a stony shore
     cmp     r14d, 98
     jg      .m_land
     movss   xmm0, [rsp + TF_C]
@@ -289,24 +357,61 @@ terrain_cell:
 .m_land:
     cmp     r15d, BIOME_DESERT
     je      .m_desert
+    cmp     r15d, BIOME_SAVANNA
+    je      .m_savanna
     cmp     r15d, BIOME_SNOW
+    je      .m_snow
+    cmp     r15d, BIOME_TAIGA
     je      .m_snow
     cmp     r15d, BIOME_SWAMP
     je      .m_swamp
     cmp     r15d, BIOME_MOUNTAINS
     je      .m_mtn
-    mov     eax, GRASS                  ; PLAINS, FOREST
+.m_temperate:                           ; plains, birch forest, forest, swamp without mud, mountain below h 150
+    mov     eax, GRASS
     mov     ecx, DIRT
+    movss   xmm0, [rsp + TF_TW]
+    comiss  xmm0, [k_t_savanna]
+    jb      .m_covered
+    mov     eax, DRY_GRASS
+.m_covered:                             ; the surface in eax / ecx, and snow over it where T' is below k_t_taiga
+    cmp     dword [r13 + TCELL.cold], 0
+    je      .m_store
+    mov     dword [r13 + TCELL.cover], SNOW_LAYER
     jmp     .m_store
-.m_desert:
-    mov     dword [r13 + TCELL.deep], SANDSTONE
-    mov     eax, SAND
-    mov     ecx, SAND
-    jmp     .m_store
-.m_snow:
+.m_snow:                                ; snow and taiga
     mov     dword [r13 + TCELL.cover], SNOW_LAYER
     mov     eax, GRASS
     mov     ecx, DIRT
+    jmp     .m_store
+.m_savanna:                             ; dry grass, sand where T' and M' say desert
+    movss   xmm0, [rsp + TF_TW]
+    comiss  xmm0, [k_t_desert]
+    jb      .m_savanna_dry
+    WOBBLE  1711, TF_M
+    comiss  xmm0, [k_m_desert]
+    jae     .m_savanna_dry
+    mov     eax, SAND
+    mov     ecx, SAND
+    jmp     .m_store
+.m_savanna_dry:
+    mov     eax, DRY_GRASS
+    mov     ecx, DIRT
+    jmp     .m_store
+.m_desert:                              ; sand, dry grass over sand where T' or M' say savanna
+    mov     dword [r13 + TCELL.deep], SANDSTONE
+    movss   xmm0, [rsp + TF_TW]
+    comiss  xmm0, [k_t_desert]
+    jb      .m_desert_dry
+    WOBBLE  1711, TF_M
+    comiss  xmm0, [k_m_desert]
+    jae     .m_desert_dry
+    mov     eax, SAND
+    mov     ecx, SAND
+    jmp     .m_store
+.m_desert_dry:
+    mov     eax, DRY_GRASS
+    mov     ecx, SAND
     jmp     .m_store
 .m_swamp:
     mov     edi, ebx
@@ -314,31 +419,49 @@ terrain_cell:
     mov     edx, 3
     mov     ecx, 1600
     call    noise2
-    mov     eax, GRASS
-    mov     ecx, DIRT
     comiss  xmm0, [k_mud]
-    jbe     .m_store
+    jbe     .m_temperate
     mov     eax, MUD
+    mov     ecx, DIRT
     jmp     .m_store
 .m_mtn:
     cmp     r14d, 150
-    jl      .m_mtn_grass
-    cmp     r14d, 195
-    jge     .m_mtn_snow
+    jl      .m_temperate
+    movss   xmm0, [rsp + TF_T]          ; the snow line S = 165 + 80 clamp01((T - k_t_taiga) / (k_t_desert - k_t_taiga))
+    subss   xmm0, [k_t_taiga]
+    movss   xmm1, [k_t_desert]
+    subss   xmm1, [k_t_taiga]
+    divss   xmm0, xmm1
+    CLAMP01 xmm0
+    mulss   xmm0, [k_80]
+    addss   xmm0, [k_165]
+    cvtsi2ss xmm1, r14d
+    comiss  xmm1, xmm0
+    jb      .m_mtn_stone                ; below the snow line
+    addss   xmm0, [k_20]
+    comiss  xmm1, xmm0
+    jae     .m_mtn_snow                 ; from S + 20: a block of snow
+    mov     dword [r13 + TCELL.cover], SNOW_LAYER
+.m_mtn_stone:
     mov     eax, STONE
     mov     ecx, STONE
-    cmp     r14d, 175
-    jl      .m_store
-    mov     dword [r13 + TCELL.cover], SNOW_LAYER
-    jmp     .m_store
-.m_mtn_grass:
-    mov     eax, GRASS
-    mov     ecx, DIRT
     jmp     .m_store
 .m_mtn_snow:
     mov     eax, SNOW_BLOCK
     mov     ecx, STONE
     jmp     .m_store
+.m_shore:                               ; stone, gravel in patches
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 2
+    mov     ecx, 1720
+    call    noise2
+    mov     eax, STONE
+    mov     ecx, STONE
+    comiss  xmm0, [k_p020]
+    jbe     .m_covered
+    mov     eax, GRAVEL
+    jmp     .m_covered
 .m_ocean:
     mov     eax, SAND
     mov     ecx, SAND
@@ -350,7 +473,7 @@ terrain_cell:
 .m_beach:
     mov     eax, SAND
     mov     ecx, SAND
-    jmp     .m_store
+    jmp     .m_covered
 .m_river:
     mov     dword [r13 + TCELL.top], SAND
     mov     dword [r13 + TCELL.f1], SAND
@@ -393,14 +516,28 @@ gen_biome:
     add     rsp, 40
     ret
 
+; gen_surface(edi ax, esi az) -> eax top, edx filler, ecx cover
+; The surface blocks of the column at absolute (ax, az), before caves, trees and sites: the block at y = h
+; (TCELL.top), the block under it (TCELL.f1, the filler) and the cover placed at h + 1 when the column is above
+; water (TCELL.cover: SNOW_LAYER or 0). Reentrant.
+gen_surface:
+    sub     rsp, 40
+    mov     rdx, rsp
+    call    terrain_cell
+    mov     eax, [rsp + TCELL.top]
+    mov     edx, [rsp + TCELL.f1]
+    mov     ecx, [rsp + TCELL.cover]
+    add     rsp, 40
+    ret
+
 ; ---------------------------------------------------------------------------------------------
 ; spawn
 
 ; gen_find_spawn(rdi out dd[3])
 ; The world spawn: the first column centre (16 i + 8, 16 j + 8), walking the rings max(|i|, |j|) = k for
-; k = 0..256 (inside a ring j ascending, then i ascending), whose biome is PLAINS, FOREST, DESERT, SNOW or
-; SWAMP and whose terrain is at least 97 high; out = absolute (x, height + 1, z). With none, the fallback is
-; (8, max(height(8, 8), 96) + 1, 8). Reentrant.
+; k = 0..256 (inside a ring j ascending, then i ascending), whose biome is one of SPAWN_BIOMES (plains, forest,
+; desert, snow, swamp, taiga, savanna, birch forest) and whose terrain is at least 97 high; out = absolute
+; (x, height + 1, z). With none, the fallback is (8, max(height(8, 8), 96) + 1, 8). Reentrant.
 gen_find_spawn:
     push    rbp
     mov     rbp, rsp
@@ -437,9 +574,9 @@ gen_find_spawn:
     mov     rdx, rsp
     call    terrain_cell
     mov     eax, [rsp + TCELL.biome]
-    dec     eax
-    cmp     eax, 4                      ; PLAINS .. SWAMP are the biome ids 1..5
-    ja      .next
+    mov     ecx, SPAWN_BIOMES
+    bt      ecx, eax
+    jnc     .next
     mov     ecx, [rsp + TCELL.h]
     cmp     ecx, 97
     jl      .next
@@ -746,14 +883,16 @@ leaf_layer:
     pop     rbp
     ret
 
-; plant_tree(edi lx, esi lz, edx h, ecx t, r8d kind)   kind: 1 oak, 2 birch, 3 pine
+; plant_tree(edi lx, esi lz, edx h, ecx t, r8d kind)   kind: 1 oak, 2 birch, 3 pine, 5 snowy pine, 6 acacia
 ; Stamps the tree rooted at the ground cell (lx, h, lz) into the column in progress; lx and lz may lie up
 ; to 3 cells outside it, and what falls outside is dropped. The ground becomes DIRT, the trunk is written
 ; over anything, leaves only into AIR. Oak: trunk 4 + (t >> 8) % 3, leaf layers at h + H - 2 and h + H - 1
 ; (radius 2, corners cut), h + H (radius 1) and h + H + 1 (radius 1, corners cut). Birch: the oak shape with
 ; birch blocks and a trunk of 5 + (t >> 8) % 3. Pine: PINE_LOG trunk 6 + (t >> 8) % 4, a layer at every
 ; height from the trunk top down to h + 3 with the radius alternating 1, 2, 1, ... (radius 2 corners cut),
-; and one leaf above the top.
+; and one leaf above the top. Snowy pine: the pine with a SNOW_LAYER (into AIR only) on the leaf above the top.
+; Acacia: LOG trunk 4 + ((t >> 8) & 1), a flat crown of LEAVES: radius 2 (corners cut) at the trunk top and
+; radius 1 on the layer above it.
 plant_tree:
     push    rbp
     push    rbx
@@ -770,6 +909,10 @@ plant_tree:
     shr     eax, 8                      ; t >> 8
     cmp     r15d, 3
     je      .pine
+    cmp     r15d, 5
+    je      .pine
+    cmp     r15d, 6
+    je      .acacia
     xor     edx, edx
     mov     ecx, 3
     div     ecx
@@ -781,6 +924,12 @@ plant_tree:
     mov     dword [rsp], BIRCH_LOG
     mov     dword [rsp + 4], BIRCH_LEAVES
     lea     ebp, [rdx + 5]              ; birch trunk height
+    jmp     .stamp
+.acacia:
+    and     eax, 1
+    lea     ebp, [rax + 4]              ; acacia trunk height
+    mov     dword [rsp], LOG
+    mov     dword [rsp + 4], LEAVES
     jmp     .stamp
 .pine:
     and     eax, 3
@@ -807,6 +956,10 @@ plant_tree:
     jle     .trunk
     cmp     r15d, 3
     je      .pine_leaves
+    cmp     r15d, 5
+    je      .pine_leaves
+    cmp     r15d, 6
+    je      .acacia_leaves
     mov     edi, ebx
     lea     esi, [r13 + rbp - 2]
     mov     edx, r12d
@@ -836,6 +989,22 @@ plant_tree:
     mov     r9d, [rsp + 4]
     call    leaf_layer
     jmp     .out
+.acacia_leaves:
+    mov     edi, ebx
+    lea     esi, [r13 + rbp]
+    mov     edx, r12d
+    mov     ecx, 2
+    mov     r8d, 1
+    mov     r9d, [rsp + 4]
+    call    leaf_layer
+    mov     edi, ebx
+    lea     esi, [r13 + rbp + 1]
+    mov     edx, r12d
+    mov     ecx, 1
+    xor     r8d, r8d
+    mov     r9d, [rsp + 4]
+    call    leaf_layer
+    jmp     .out
 .pine_leaves:
     xor     r14d, r14d                  ; d = trunk top - y
 .layer:
@@ -862,6 +1031,14 @@ plant_tree:
     lea     esi, [r13 + rbp + 1]
     mov     edx, r12d
     mov     ecx, [rsp + 4]
+    mov     r8d, 1
+    call    put_cell
+    cmp     r15d, 5
+    jne     .out
+    mov     edi, ebx                    ; a snowy pine: snow on the top leaf
+    lea     esi, [r13 + rbp + 2]
+    mov     edx, r12d
+    mov     ecx, SNOW_LAYER
     mov     r8d, 1
     call    put_cell
 .out:
@@ -911,10 +1088,11 @@ plant_cactus:
     pop     rbx
     ret
 
-; veg_kind(edi biome, esi h, edx top, ecx t) -> eax 0 none, 1 oak, 2 birch, 3 pine, 4 cactus
+; veg_kind(edi biome, esi h, edx top, ecx t) -> eax 0 none, 1 oak, 2 birch, 3 pine, 4 cactus, 5 snowy pine, 6 acacia
 ; The pure planting decision of one terrain cell before the cave check. Nothing grows below h 97. Trees need
-; a GRASS top, cacti a SAND top in a desert. With r = t & 255: plains oak r < 1, forest r < 7 (oak when
-; t & 256, else birch), snow pine r < 3, mountains pine r < 2 (h < 150 only), swamp oak r < 3, desert cactus r < 2.
+; a GRASS top, cacti a SAND top in a desert, acacias a DRY_GRASS top in a savanna. With r = t & 255: plains
+; oak r < 1, forest r < 7 (oak when t & 256, else birch), birch forest birch r < 7, snow snowy pine r < 3, taiga
+; snowy pine r < 8, mountains pine r < 2 (h < 150 only), swamp oak r < 3, desert cactus r < 2, savanna acacia r < 2.
 veg_kind:
     xor     eax, eax
     cmp     esi, 97
@@ -922,14 +1100,20 @@ veg_kind:
     movzx   r8d, cl
     cmp     edi, BIOME_DESERT
     je      .desert
+    cmp     edi, BIOME_SAVANNA
+    je      .savanna
     cmp     edx, GRASS
     jne     .out
     cmp     edi, BIOME_PLAINS
     je      .plains
     cmp     edi, BIOME_FOREST
     je      .forest
+    cmp     edi, BIOME_BIRCH
+    je      .birch
     cmp     edi, BIOME_SNOW
     je      .snow
+    cmp     edi, BIOME_TAIGA
+    je      .taiga
     cmp     edi, BIOME_MOUNTAINS
     je      .mountains
     cmp     edi, BIOME_SWAMP
@@ -948,10 +1132,20 @@ veg_kind:
     jnz     .out
     mov     eax, 2
     ret
+.birch:
+    cmp     r8d, 7
+    jae     .out
+    mov     eax, 2
+    ret
 .snow:
     cmp     r8d, 3
     jae     .out
     mov     eax, 3
+    ret
+.taiga:
+    cmp     r8d, 8
+    jae     .out
+    mov     eax, 5
     ret
 .mountains:
     cmp     esi, 150
@@ -965,6 +1159,13 @@ veg_kind:
     jae     .out
     mov     eax, 1
     ret
+.savanna:
+    cmp     edx, DRY_GRASS
+    jne     .out
+    cmp     r8d, 2
+    jae     .out
+    mov     eax, 6
+    ret
 .desert:
     cmp     edx, SAND
     jne     .out
@@ -975,39 +1176,39 @@ veg_kind:
     ret
 
 ; grass_chance(edi biome, esi h, edx top) -> eax chance out of 256 for tall grass on this cell (0 = none)
-; Only on a GRASS top: plains 26, forest 13, swamp 38, mountains below h 150 8.
+; Only on a GRASS or DRY_GRASS top: plains 26, forest 13, birch forest 18, swamp 38, mountains below h 150 8,
+; taiga 4, savanna 40; every other biome 0.
 grass_chance:
     xor     eax, eax
     cmp     edx, GRASS
+    je      .top
+    cmp     edx, DRY_GRASS
     jne     .out
-    cmp     edi, BIOME_PLAINS
-    jne     .forest
-    mov     eax, 26
-    ret
-.forest:
-    cmp     edi, BIOME_FOREST
-    jne     .swamp
-    mov     eax, 13
-    ret
-.swamp:
-    cmp     edi, BIOME_SWAMP
-    jne     .mountains
-    mov     eax, 38
-    ret
-.mountains:
+.top:
+    lea     rcx, [grass_chances]
+    movzx   eax, byte [rcx + rdi]
     cmp     edi, BIOME_MOUNTAINS
     jne     .out
     cmp     esi, 150
-    jge     .out
-    mov     eax, 8
+    jl      .out
+    xor     eax, eax
 .out:
     ret
+
+section .rodata
+; grass_chance by biome id (the mountains' 8 only counts below h 150)
+grass_chances:
+    db 0, 26, 13, 0, 0, 38, 8, 0, 4, 40, 0, 18
+%if $ - grass_chances != NUM_BIOMES
+%error "grass_chances needs one entry per biome"
+%endif
+section .text
 
 ; gen_vegetation(): walks the cells of the column and a 3 cell margin around it in a fixed order (z, then x)
 ; and plants what veg_kind decides, unless a cave opens the top cell: trees and cacti stamp themselves
 ; clipped to the column, so a tree rooted in a neighbouring column leaves its leaves here and the
-; neighbour's own generation leaves the same ones there. Tall grass goes on the GRASS tops of the column
-; itself that got no tree, into AIR only (hash32(x, z, 98) & 255 below grass_chance). A cell with a
+; neighbour's own generation leaves the same ones there. Tall grass goes on the GRASS and DRY_GRASS tops of the
+; column itself that got no tree, into AIR only (hash32(x, z, 98) & 255 below grass_chance). A cell with a
 ; non-zero road_mask (roads_prepare: on a road or within 4 of it) gets neither.
 gen_vegetation:
     push    rbp

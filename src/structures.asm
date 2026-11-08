@@ -18,8 +18,9 @@ global region_plan, camp_plan, structures_stamp, structures_fill_chest, structur
 global structures_reset, structures_step, structures_nearest, structures_mark_freed
 global structures_on_mob_killed, structures_on_boss_killed, structures_shift, site_state
 global roads_edges, roads_in_rect, roads_prepare, road_mark, road_mask, camp_main, patrol_point, patrol_consider
+global camp_clearing, camp_homes
 
-extern hash32, gen_height, gen_biome
+extern hash32, gen_height, gen_biome, gen_surface
 extern world_header, world_get, world_top_y, world_column_ready, world_origin_x, world_origin_z
 extern mobs, mob_spawn, mob_spawn_elite, folk_spawn, folk_make_champion, mob_count_type, mob_set_level
 extern faction_champion_defeated
@@ -124,11 +125,11 @@ foot_box:
 ; the biomes a faction's camp may stand in, by faction: a bit per BIOME_* (the villagers' row is not
 ; planned: their camp is the village)
 camp_homes:
-    dd (1 << BIOME_PLAINS) | (1 << BIOME_FOREST)        ; villagers
-    dd (1 << BIOME_FOREST) | (1 << BIOME_MOUNTAINS)     ; bandits
-    dd (1 << BIOME_SWAMP)                               ; cult
-    dd (1 << BIOME_SNOW) | (1 << BIOME_MOUNTAINS)       ; beastfolk
-    dd (1 << BIOME_MOUNTAINS)                           ; stonekin
+    dd (1 << BIOME_PLAINS) | (1 << BIOME_FOREST) | (1 << BIOME_BIRCH)        ; villagers
+    dd (1 << BIOME_FOREST) | (1 << BIOME_MOUNTAINS) | (1 << BIOME_SAVANNA)   ; bandits
+    dd (1 << BIOME_SWAMP)                                                    ; cult
+    dd (1 << BIOME_SNOW) | (1 << BIOME_TAIGA) | (1 << BIOME_MOUNTAINS)       ; beastfolk
+    dd (1 << BIOME_MOUNTAINS)                                                ; stonekin
 
 c_pts:    dd -8, -8, 8, -8, -8, 8, 8, 8 ; crypt height samples: the four corners
 
@@ -524,8 +525,8 @@ far_from:
 
 ; village_find(edi arx, esi arz, rdx out3) -> eax 1 when the region has a village: out3 = x,
 ; ground y, z. 70 % of the regions try; of 16 candidates (x, z 48 .. 463 into the region) the first
-; in a PLAINS or FOREST biome (DESERT or SNOW for half of the candidates) whose ground is at least
-; 98 high at the centre and within 4 of it at 25 samples (5 apart, +-10) is the village.
+; in a PLAINS, FOREST or BIRCH biome (DESERT, SNOW, SAVANNA or TAIGA for half of the candidates) whose
+; ground is at least 98 high at the centre and within 4 of it at 25 samples (5 apart, +-10) is the village.
 ; Frame: [rsp] z, [rsp+4] centre height, [rsp+8] key, [rsp+12] sample dx, [rsp+16] sample dz.
 village_find:
     push    rbp
@@ -568,12 +569,18 @@ village_find:
     je      .biome_ok
     cmp     eax, BIOME_FOREST
     je      .biome_ok
+    cmp     eax, BIOME_BIRCH
+    je      .biome_ok
     cmp     eax, BIOME_DESERT
     je      .alt
     cmp     eax, BIOME_SNOW
+    je      .alt
+    cmp     eax, BIOME_SAVANNA
+    je      .alt
+    cmp     eax, BIOME_TAIGA
     jne     .next
 .alt:
-    mov     edi, r15d                   ; DESERT and SNOW villages for half of the candidates
+    mov     edi, r15d                   ; DESERT, SNOW, SAVANNA and TAIGA villages for half of the candidates
     mov     esi, r13d
     mov     edx, 703
     call    hash32
@@ -2070,36 +2077,11 @@ build_village:
     pop     rbp
     ret
 
-; camp_ground(edi biome, esi ground y) -> eax top block, edx filler block of a camp's clearing
-; (the generator's materials: grass over dirt; sand in a desert; on a mountain stone from 150 and a
-; snow block top from 195) (leaf)
-camp_ground:
-    mov     eax, GRASS
-    mov     edx, DIRT
-    cmp     edi, BIOME_DESERT
-    jne     .not_desert
-    mov     eax, SAND
-    mov     edx, SAND
-    ret
-.not_desert:
-    cmp     edi, BIOME_MOUNTAINS
-    jne     .ret
-    cmp     esi, 150
-    jl      .ret
-    mov     eax, STONE
-    mov     edx, STONE
-    cmp     esi, 195
-    jl      .ret
-    mov     eax, SNOW_BLOCK
-.ret:
-    ret
-
-; build_camp(rdi SITE*): a faction camp: x, z +-10 flattened to the ground height h of its centre (the
-; biome's top block at h, its filler under it down to h - 3 where there is air, air from h + 1 to h + 12),
-; then camp_boxes in the faction's shrine and materials (camp_mat through box_mat) and the camp's chest
-; (table 2) in the leader's hut.
-; Frame: [rsp] the camp's faction.
-build_camp:
+; camp_clearing(rdi SITE*, esi top, edx filler): the clearing of a faction camp: x, z +-10 flattened to the
+; ground height h of the camp's centre, `top` at h, `filler` under it down to h - 3 where there is air, air
+; from h + 1 to h + 12 (stamping: only the part in the column being stamped, see box_fill). build_camp
+; passes the terrain's own materials at the centre.
+camp_clearing:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -2108,18 +2090,10 @@ build_camp:
     push    r14
     push    r15
     sub     rsp, 8
-    mov     eax, [rdi + SITE.index]
-    mov     [rsp], eax
     mov     r12d, [rdi + SITE.x]
     mov     r13d, [rdi + SITE.y]        ; h
     mov     r14d, [rdi + SITE.z]
-    mov     edi, r12d
-    mov     esi, r14d
-    call    gen_biome
-    mov     edi, eax
-    mov     esi, r13d
-    call    camp_ground
-    mov     ebx, eax                    ; top block
+    mov     ebx, esi                    ; top block
     mov     r15d, edx                   ; filler
     lea     edi, [r12 - 10]             ; the air above
     lea     esi, [r13 + 1]
@@ -2145,6 +2119,39 @@ build_camp:
     lea     r9d, [r14 + 10]
     mov     eax, ebx
     call    box_fill
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; build_camp(rdi SITE*): a faction camp: the clearing (camp_clearing: x, z +-10 flattened to the ground height
+; h of its centre, in the terrain's own top block and filler there, gen_surface), then camp_boxes in the
+; faction's shrine and materials (camp_mat through box_mat) and the camp's chest (table 2) in the leader's hut.
+; Frame: [rsp] the camp's faction.
+build_camp:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16
+    mov     rbx, rdi
+    mov     eax, [rbx + SITE.index]
+    mov     [rsp], eax
+    mov     r12d, [rbx + SITE.x]
+    mov     r13d, [rbx + SITE.y]        ; h
+    mov     r14d, [rbx + SITE.z]
+    mov     edi, r12d
+    mov     esi, r14d
+    call    gen_surface                 ; eax = the top block, edx = the filler (ecx, the cover, is dropped)
+    mov     rdi, rbx
+    mov     esi, eax
+    call    camp_clearing               ; (edx still the filler)
     mov     eax, [rsp]                  ; the faction: its shrine and its materials
     lea     ecx, [rax + SHRINE]
     mov     [box_mat], cl
@@ -2162,8 +2169,7 @@ build_camp:
     lea     edx, [r14 - 7]
     mov     ecx, 2
     call    place_chest
-    add     rsp, 8
-    pop     r15
+    add     rsp, 16
     pop     r14
     pop     r13
     pop     r12

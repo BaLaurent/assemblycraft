@@ -4,14 +4,29 @@ default rel
 
 global test_worldgen_deterministic, test_worldgen_shape, test_worldgen_ores
 global test_worldgen_biomes, test_worldgen_column_independence
-global test_worldgen_spawn, test_worldgen_water_ice
+global test_worldgen_spawn, test_worldgen_water_ice, test_biome_ladder
 
 extern world_clear, fnv1a
-extern worldgen_set_seed, gen_column, gen_height, gen_biome, gen_find_spawn
+extern worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn
 
 %define BIOME_TOTAL 148225              ; 385 x 385 samples of the 16 block grid over |x|, |z| <= 3072
 %define GB_SCRATCH  8                   ; generator buffers below
 %define WI_STRIDE   700                 ; water_ice looks at every 700th ocean or river centre
+; every land biome with a stable share: all but the rivers and the stony shore, which only have to occur
+%define SHARE_BIOMES ((1 << BIOME_PLAINS) | (1 << BIOME_FOREST) | (1 << BIOME_DESERT) | (1 << BIOME_SNOW) | \
+                      (1 << BIOME_SWAMP) | (1 << BIOME_MOUNTAINS) | (1 << BIOME_TAIGA) | (1 << BIOME_SAVANNA) | \
+                      (1 << BIOME_BIRCH))
+%define LAD_N       257                 ; biome_ladder's window: |x|, |z| <= 512 at 4 blocks, 257 samples a side
+%define SG_N        385                 ; and its grid: the 385 x 385 samples of BIOME_TOTAL
+; what biome_ladder knows of a grid sample (sg_cls bits)
+%define SC_DESERT   1                   ; the biome is a desert
+%define SC_SAVANNA  2
+%define SC_COLD     4                   ; snow or taiga
+%define SC_SNOWY    8                   ; SNOW_LAYER cover or a SNOW_BLOCK top
+%define SC_QB       16                  ; plains, birch forest or forest with a DRY_GRASS top
+%define SC_QC       32                  ; plains, birch forest or forest with SNOW_LAYER cover
+%define SC_QD       64                  ; savanna with a SAND top above the beach (h > 98)
+%define SC_TEMP     128                 ; plains, birch forest or forest
 
 section .bss
 alignb 64
@@ -25,6 +40,11 @@ spawn_a:   resd 4
 spawn_b:   resd 4
 wi_ice:    resd 1
 wi_water:  resd 1
+lad_win:   resb LAD_N * LAD_N          ; gen_biome over the window, row z, column x
+sg_bio:    resb SG_N * SG_N            ; gen_biome of the grid
+sg_cls:    resb SG_N * SG_N            ; SC_* bits of the grid, row z, column x
+alignb 4
+lad_forbid: resd NUM_BIOMES            ; per biome the mask of the biomes that may not touch it
 
 section .text
 
@@ -352,8 +372,9 @@ test_worldgen_ores:
     pop     rbp
     ret
 
-; seed 42, gen_biome on the 16 block grid over |x|, |z| <= 3072: every biome occurs, the ocean covers
-; 10..45 %, each other land biome at least 2 %
+; seed 42, gen_biome on the 16 block grid over |x|, |z| <= 3072: every biome occurs (rivers and the stony shore
+; included), the ocean covers 10..45 %, and plains, forest, desert, snow, swamp, mountains, taiga, savanna and
+; birch forest take at least 2 % each
 test_worldgen_biomes:
     push    rbp
     mov     rbp, rsp
@@ -389,7 +410,7 @@ test_worldgen_biomes:
     cmp     dword [rsi + rcx*4], 0
     je      .fail
     inc     ecx
-    cmp     ecx, BIOME_RIVER + 1        ; the 0.10 biomes; the transition biomes arrive with the ladder
+    cmp     ecx, NUM_BIOMES
     jb      .all
     mov     eax, [rsi + BIOME_OCEAN*4]
     imul    rax, rax, 100
@@ -399,13 +420,17 @@ test_worldgen_biomes:
     ja      .fail
     mov     ecx, BIOME_PLAINS
 .land:
+    mov     eax, SHARE_BIOMES
+    bt      eax, ecx
+    jnc     .skip
     mov     eax, [rsi + rcx*4]
     imul    rax, rax, 100
     cmp     rax, BIOME_TOTAL * 2
     jb      .fail
+.skip:
     inc     ecx
-    cmp     ecx, BIOME_MOUNTAINS
-    jbe     .land
+    cmp     ecx, NUM_BIOMES
+    jb      .land
     xor     eax, eax
     jmp     .out
 .fail:
@@ -734,7 +759,7 @@ test_worldgen_column_independence:
     pop     rbp
     ret
 
-; col_ok(edi ax, esi az) -> eax 1 when the column is spawn material: biome PLAINS .. SWAMP and terrain >= 97
+; col_ok(edi ax, esi az) -> eax 1 when the column is spawn material: a SPAWN_BIOMES biome and terrain >= 97
 col_ok:
     push    rbx
     push    r12
@@ -742,9 +767,9 @@ col_ok:
     mov     ebx, edi
     mov     r12d, esi
     call    gen_biome
-    dec     eax
-    cmp     eax, 4
-    ja      .no
+    mov     ecx, SPAWN_BIOMES
+    bt      ecx, eax
+    jnc     .no
     mov     edi, ebx
     mov     esi, r12d
     call    gen_height
@@ -761,8 +786,9 @@ col_ok:
     ret
 
 ; check_spawn(edi seed) -> eax 0 ok / 1 fail
-; The spawn is deterministic, on a column centre, on land that is neither ocean, river nor mountains,
-; stands on the terrain surface, and no column that comes before it in the ring order qualifies.
+; The spawn is deterministic, on a column centre, in one of the SPAWN_BIOMES (so on land that is neither ocean,
+; river, mountains nor stony shore), stands on the terrain surface, and no column that comes before it in the ring
+; order qualifies.
 check_spawn:
     push    rbp
     mov     rbp, rsp
@@ -797,12 +823,9 @@ check_spawn:
     mov     edi, ebx
     mov     esi, r12d
     call    gen_biome
-    cmp     eax, BIOME_OCEAN
-    je      .fail
-    cmp     eax, BIOME_RIVER
-    je      .fail
-    cmp     eax, BIOME_MOUNTAINS
-    je      .fail
+    mov     ecx, SPAWN_BIOMES
+    bt      ecx, eax
+    jnc     .fail
     mov     edi, ebx
     mov     esi, r12d
     call    gen_height
@@ -1088,6 +1111,488 @@ test_worldgen_water_ice:
     pop     r14
     pop     r13
     pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---------------------------------------------------------------------------------------------
+; biome_ladder
+
+section .rodata
+; pairs of biomes that must never touch, a and b: the far ends of the climate ladder
+lad_pairs:
+    dd BIOME_SNOW, BIOME_PLAINS
+    dd BIOME_SNOW, BIOME_BIRCH
+    dd BIOME_SNOW, BIOME_FOREST
+    dd BIOME_SNOW, BIOME_SWAMP
+    dd BIOME_SNOW, BIOME_SAVANNA
+    dd BIOME_SNOW, BIOME_DESERT
+    dd BIOME_TAIGA, BIOME_SWAMP
+    dd BIOME_TAIGA, BIOME_SAVANNA
+    dd BIOME_TAIGA, BIOME_DESERT
+    dd BIOME_SWAMP, BIOME_SAVANNA
+    dd BIOME_SWAMP, BIOME_DESERT
+    dd BIOME_DESERT, BIOME_PLAINS
+    dd BIOME_DESERT, BIOME_BIRCH
+    dd BIOME_DESERT, BIOME_FOREST
+lad_pairs_end:
+; the SC_* role bits of a grid sample, by its biome id
+sg_roles:
+    db 0                                ; ocean
+    db SC_TEMP                          ; plains
+    db SC_TEMP                          ; forest
+    db SC_DESERT
+    db SC_COLD                          ; snow
+    db 0                                ; swamp
+    db 0                                ; mountains
+    db 0                                ; river
+    db SC_COLD                          ; taiga
+    db SC_SAVANNA
+    db 0                                ; stony shore
+    db SC_TEMP                          ; birch forest
+%if $ - sg_roles != NUM_BIOMES
+%error "sg_roles needs one entry per biome"
+%endif
+
+section .text
+; ladder_masks(): lad_forbid[a] = the mask of the biomes that may not touch a, built from lad_pairs both ways
+ladder_masks:
+    lea     rdi, [lad_forbid]
+    xor     eax, eax
+    mov     ecx, NUM_BIOMES
+    rep     stosd
+    lea     rdi, [lad_forbid]
+    lea     rsi, [lad_pairs]
+    lea     r8, [lad_pairs_end]
+.pair:
+    mov     eax, [rsi]                  ; a
+    mov     ecx, [rsi + 4]              ; b
+    mov     edx, 1
+    shl     edx, cl
+    or      [rdi + rax*4], edx          ; a may not touch b
+    mov     r9d, ecx
+    mov     ecx, eax
+    mov     edx, 1
+    shl     edx, cl
+    or      [rdi + r9*4], edx           ; and b may not touch a
+    add     rsi, 8
+    cmp     rsi, r8
+    jb      .pair
+    ret
+
+; ladder_pairs_ok(rsi biome array, edi n) -> eax 0 ok / 1 a forbidden pair
+; No two 4-neighbours of the n x n array of biome ids (row z, column x) may be a forbidden pair of lad_forbid.
+ladder_pairs_ok:
+    lea     r8, [lad_forbid]
+    lea     r11d, [rdi - 1]             ; the last row and column
+    xor     r10d, r10d                  ; row
+.row:
+    xor     r9d, r9d                    ; column
+    mov     eax, r10d
+    imul    eax, edi                    ; index of (row, 0)
+.col:
+    movzx   ecx, byte [rsi + rax]
+    mov     edx, [r8 + rcx*4]           ; the biomes this one may not touch
+    cmp     r9d, r11d
+    jae     .no_x
+    movzx   ecx, byte [rsi + rax + 1]
+    bt      edx, ecx
+    jc      .fail
+.no_x:
+    cmp     r10d, r11d
+    jae     .no_z
+    lea     ecx, [rax + rdi]
+    movzx   ecx, byte [rsi + rcx]
+    bt      edx, ecx
+    jc      .fail
+.no_z:
+    inc     eax
+    inc     r9d
+    cmp     r9d, edi
+    jb      .col
+    inc     r10d
+    cmp     r10d, edi
+    jb      .row
+    xor     eax, eax
+    ret
+.fail:
+    mov     eax, 1
+    ret
+
+; ladder_adjacent(edi seed) -> eax 0 ok / 1 fail
+; gen_biome of the seed over the window |x|, |z| <= 512 at 4 blocks (lad_win), then ladder_pairs_ok on it.
+ladder_adjacent:
+    push    rbx
+    push    r12
+    push    r13
+    call    worldgen_set_seed
+    lea     r13, [lad_win]
+    mov     r12d, -512                  ; z
+.z:
+    mov     ebx, -512                   ; x
+.x:
+    mov     edi, ebx
+    mov     esi, r12d
+    call    gen_biome
+    mov     [r13], al
+    inc     r13
+    add     ebx, 4
+    cmp     ebx, 512
+    jle     .x
+    add     r12d, 4
+    cmp     r12d, 512
+    jle     .z
+    lea     rsi, [lad_win]
+    mov     edi, LAD_N
+    call    ladder_pairs_ok
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; sg_fill() -> eax 0 ok / 1 fail
+; For the 16 block grid |x|, |z| <= 3072 of the current seed, sg_bio gets the biome and sg_cls the SC_* bits of
+; every sample. gen_surface must also keep its layering: the cover is 0 or SNOW_LAYER, a SAND top lies on SAND,
+; GRASS and MUD on DIRT, a SNOW_BLOCK on STONE, and DRY_GRASS on SAND in a desert and on DIRT elsewhere.
+sg_fill:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [0] top [4] filler [8] cover
+    lea     r14, [sg_cls]
+    mov     r12d, -3072                 ; z
+.z:
+    mov     ebx, -3072                  ; x
+.x:
+    mov     edi, ebx
+    mov     esi, r12d
+    call    gen_biome
+    mov     r13d, eax                   ; biome
+    lea     rcx, [sg_roles]
+    movzx   r15d, byte [rcx + rax]      ; its role bits
+    mov     edi, ebx
+    mov     esi, r12d
+    call    gen_surface
+    mov     [rsp], eax
+    mov     [rsp + 4], edx
+    mov     [rsp + 8], ecx
+    test    ecx, ecx
+    jz      .top
+    cmp     ecx, SNOW_LAYER
+    jne     .fail
+    or      r15d, SC_SNOWY
+    test    r15d, SC_TEMP
+    jz      .top
+    or      r15d, SC_QC
+.top:
+    mov     eax, [rsp]
+    mov     edx, [rsp + 4]
+    cmp     eax, SNOW_BLOCK
+    je      .snow_block
+    cmp     eax, SAND
+    je      .sand
+    cmp     eax, DRY_GRASS
+    je      .dry
+    cmp     eax, GRASS
+    je      .dirt
+    cmp     eax, MUD
+    je      .dirt
+    jmp     .store
+.snow_block:
+    or      r15d, SC_SNOWY
+    cmp     edx, STONE
+    jne     .fail
+    jmp     .store
+.sand:
+    cmp     edx, SAND
+    jne     .fail
+    test    r15d, SC_SAVANNA
+    jz      .store
+    mov     edi, ebx                    ; a sand-topped savanna: a patch, unless it is a beach
+    mov     esi, r12d
+    call    gen_height
+    cmp     eax, 98
+    jle     .store
+    or      r15d, SC_QD
+    jmp     .store
+.dry:
+    test    r15d, SC_TEMP
+    jz      .dry_filler
+    or      r15d, SC_QB
+.dry_filler:
+    mov     ecx, DIRT
+    cmp     r13d, BIOME_DESERT
+    jne     .dry_cmp
+    mov     ecx, SAND
+.dry_cmp:
+    cmp     edx, ecx
+    jne     .fail
+    jmp     .store
+.dirt:
+    cmp     edx, DIRT
+    jne     .fail
+.store:
+    lea     rcx, [sg_cls]
+    mov     rax, r14
+    sub     rax, rcx                    ; the sample's index
+    mov     [r14], r15b
+    inc     r14
+    lea     rcx, [sg_bio]
+    mov     [rcx + rax], r13b
+    add     ebx, 16
+    cmp     ebx, 3072
+    jle     .x
+    add     r12d, 16
+    cmp     r12d, 3072
+    jle     .z
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; sg_near(edi i, esi j, edx r, ecx mask) -> eax 1 when some grid sample within r steps of (i, j) (a square window,
+; clipped to the grid) has a class bit of mask
+sg_near:
+    mov     r8d, esi
+    sub     r8d, edx                    ; first row
+    jns     .row0
+    xor     r8d, r8d
+.row0:
+    lea     r9d, [rsi + rdx]            ; last row
+    cmp     r9d, SG_N - 1
+    jbe     .row1
+    mov     r9d, SG_N - 1
+.row1:
+    mov     r10d, edi
+    sub     r10d, edx                   ; first column
+    jns     .col0
+    xor     r10d, r10d
+.col0:
+    lea     r11d, [rdi + rdx]           ; last column
+    cmp     r11d, SG_N - 1
+    jbe     .col1
+    mov     r11d, SG_N - 1
+.col1:
+    lea     rsi, [sg_cls]
+.row:
+    imul    eax, r8d, SG_N
+    add     eax, r10d
+    mov     edx, r10d
+.col:
+    movzx   edi, byte [rsi + rax]
+    test    edi, ecx
+    jnz     .yes
+    inc     eax
+    inc     edx
+    cmp     edx, r11d
+    jbe     .col
+    inc     r8d
+    cmp     r8d, r9d
+    jbe     .row
+    xor     eax, eax
+    ret
+.yes:
+    mov     eax, 1
+    ret
+
+; sg_check() -> eax 0 ok / 4..10 the failed check (see test_biome_ladder)
+; Over sg_cls: no sample with a snowy surface lies within 2 steps (32 blocks) of a desert; some plains, birch
+; forest or forest sample has a DRY_GRASS top, some has SNOW_LAYER cover, and some savanna sample has a sand
+; patch; and these patches sit by their borders: every sand patch has a desert within 3 steps (48 blocks), and
+; at least 90 % of the dry grass ones a savanna, of the snow ones a taiga or snow biome (the rest are patches
+; around a temperature peak or dip that just misses the border).
+sg_check:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [0] dry grass patches [4] with no savanna near [8] snow patches
+                                        ; [12] with no taiga or snow near [16] sand patches [20] with no desert near
+    xor     eax, eax
+    mov     [rsp], eax
+    mov     [rsp + 4], eax
+    mov     [rsp + 8], eax
+    mov     [rsp + 12], eax
+    mov     [rsp + 16], eax
+    mov     [rsp + 20], eax
+    xor     r12d, r12d                  ; j
+.j:
+    xor     ebx, ebx                    ; i
+.i:
+    imul    eax, r12d, SG_N
+    add     eax, ebx
+    lea     rcx, [sg_cls]
+    movzx   r13d, byte [rcx + rax]
+    test    r13d, SC_DESERT
+    jz      .no_desert
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 2
+    mov     ecx, SC_SNOWY
+    call    sg_near
+    test    eax, eax
+    jnz     .f4                         ; snow beside a desert
+.no_desert:
+    test    r13d, SC_QB
+    jz      .no_qb
+    inc     dword [rsp]
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 3
+    mov     ecx, SC_SAVANNA
+    call    sg_near
+    test    eax, eax
+    jnz     .no_qb
+    inc     dword [rsp + 4]
+.no_qb:
+    test    r13d, SC_QC
+    jz      .no_qc
+    inc     dword [rsp + 8]
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 3
+    mov     ecx, SC_COLD
+    call    sg_near
+    test    eax, eax
+    jnz     .no_qc
+    inc     dword [rsp + 12]
+.no_qc:
+    test    r13d, SC_QD
+    jz      .next
+    inc     dword [rsp + 16]
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, 3
+    mov     ecx, SC_DESERT
+    call    sg_near
+    test    eax, eax
+    jnz     .next
+    inc     dword [rsp + 20]
+.next:
+    inc     ebx
+    cmp     ebx, SG_N
+    jb      .i
+    inc     r12d
+    cmp     r12d, SG_N
+    jb      .j
+    cmp     dword [rsp], 0
+    je      .f5                         ; no dry grass in a temperate biome
+    cmp     dword [rsp + 8], 0
+    je      .f6                         ; no snow cover in one
+    cmp     dword [rsp + 16], 0
+    je      .f7                         ; no sand patch in a savanna
+    cmp     dword [rsp + 20], 0
+    jne     .f8                         ; a sand patch far from any desert
+    mov     eax, [rsp + 4]
+    imul    eax, eax, 10
+    cmp     eax, [rsp]
+    ja      .f9                         ; over 10 % of the dry grass patches far from a savanna
+    mov     eax, [rsp + 12]
+    imul    eax, eax, 10
+    cmp     eax, [rsp + 8]
+    ja      .f10                        ; over 10 % of the snow patches far from a taiga or snow biome
+    xor     eax, eax
+    jmp     .out
+.f4:
+    mov     eax, 4
+    jmp     .out
+.f5:
+    mov     eax, 5
+    jmp     .out
+.f6:
+    mov     eax, 6
+    jmp     .out
+.f7:
+    mov     eax, 7
+    jmp     .out
+.f8:
+    mov     eax, 8
+    jmp     .out
+.f9:
+    mov     eax, 9
+    jmp     .out
+.f10:
+    mov     eax, 10
+.out:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; The climate ladder. Seeds 42 and 7: over the window |x|, |z| <= 512 at 4 blocks no two 4-neighbours are snow
+; beside plains, birch forest, forest, swamp, savanna or desert, taiga beside swamp, savanna or desert, swamp
+; beside savanna or desert, or desert beside plains, birch forest or forest. Seed 42, the 16 block grid over
+; |x|, |z| <= 3072 with gen_surface: no snowy surface within 32 blocks of a desert, and the patches of dry grass,
+; snow and sand that the surface materials dither over a border sit by that border (sg_check); gen_surface also
+; keeps its layering (sg_fill); and the same forbidden pairs do not touch on that grid either. eax tells which
+; check failed: 1 forbidden neighbours with seed 42, 2 with seed 7, 3 gen_surface's layering, 4 snow within 32
+; blocks of a desert, 5 no dry grass patch in a temperate biome, 6 no snow patch in one, 7 no sand patch in a
+; savanna, 8 a sand patch far from a desert, 9 dry grass patches far from a savanna, 10 snow patches far from a
+; taiga or snow biome, 11 forbidden neighbours on the grid.
+test_biome_ladder:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    ladder_masks
+    mov     edi, 42
+    call    ladder_adjacent
+    test    eax, eax
+    jz      .seed7
+    mov     eax, 1
+    jmp     .out
+.seed7:
+    mov     edi, 7
+    call    ladder_adjacent
+    test    eax, eax
+    jz      .surface
+    mov     eax, 2
+    jmp     .out
+.surface:
+    mov     edi, 42
+    call    worldgen_set_seed
+    call    sg_fill
+    test    eax, eax
+    jz      .check
+    mov     eax, 3
+    jmp     .out
+.check:
+    call    sg_check
+    test    eax, eax
+    jnz     .out
+    lea     rsi, [sg_bio]
+    mov     edi, SG_N
+    call    ladder_pairs_ok
+    test    eax, eax
+    jz      .out
+    mov     eax, 11
+.out:
+    mov     ebx, eax
+    mov     edi, 42
+    call    worldgen_set_seed
+    mov     eax, ebx
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
