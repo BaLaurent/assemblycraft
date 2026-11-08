@@ -100,7 +100,8 @@ test_fx_explosion_spawns_and_expires:
 
 ; test_fx_debris_falls_and_bounces: one STONE debris cube thrown from just above a stone floor
 ; (top at y = 11) falls, bounces (vy goes from negative to positive) and in every one of its 80
-; steps stays out of solid cells and no lower than 0.01 under the floor top.
+; steps stays out of solid cells and no lower than 0.01 under the floor top; the debris of a DRY_GRASS
+; block carries its 16-bit side tile (325).
 ; r13d = 1 once it came within 0.15 of the floor, 2 once it bounced, 4 while it was falling
 test_fx_debris_falls_and_bounces:
     push    rbp
@@ -184,6 +185,17 @@ test_fx_debris_falls_and_bounces:
     and     r13d, 3
     cmp     r13d, 3
     jne     .fail4
+    call    fx_clear                    ; the debris of a block whose side tile is past 255 (DRY_GRASS, 325)
+    mov     edi, 16
+    mov     esi, 11
+    mov     edx, 16
+    mov     ecx, DRY_GRASS
+    movss   xmm0, [k_15_5]
+    movss   xmm1, [k_10_5]
+    movss   xmm2, [k_15_5]
+    call    fx_debris
+    cmp     dword [fx_particles + PARTICLE.tile], TILE_DRY_GRASS_SIDE
+    jne     .fail5
     xor     eax, eax
     jmp     .out
 .fail1:
@@ -197,6 +209,9 @@ test_fx_debris_falls_and_bounces:
     jmp     .out
 .fail4:
     mov     eax, 4
+    jmp     .out
+.fail5:
+    mov     eax, 5
 .out:
     mov     ebx, eax
     call    fx_clear
