@@ -27,6 +27,7 @@ s_min:      db " min ago", 0
 s_hour:     db " h ago", 0
 s_day:      db " day ago", 0
 s_days:     db " days ago", 0
+m_v5:       db "ACRAFT05"
 m_v4:       db "ACRAFT04"
 m_v3:       db "ACRAFT03"
 m_v2:       db "ACRAFT02"
@@ -263,6 +264,8 @@ add_entry:
     cmp     rax, WORLD_BASE_HDR
     jl      .try_v1
     mov     rdx, [hdr_buf]
+    cmp     rdx, [m_v5]
+    je      .v2v3
     cmp     rdx, [m_v4]
     je      .v2v3
     cmp     rdx, [m_v3]

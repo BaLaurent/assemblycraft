@@ -7,11 +7,12 @@ global world_header, blocks, chunk_dirty
 global world_get, world_set, world_is_solid, world_is_opaque, world_top_y
 global world_clear, world_mark_all_dirty, world_mark_cell_dirty, world_save, world_load
 
-extern block_flags, block_light, file_read, file_write_atomic
+extern block_flags, block_light, file_read, file_write_atomic, item_gear
 extern light_mark, light_fill_sky, light_compute_all
 
 section .rodata
-world_magic:    db "ACRAFT04"
+world_magic:    db "ACRAFT05"
+world_magic_v4: db "ACRAFT04"
 world_magic_v3: db "ACRAFT03"
 world_magic_v2: db "ACRAFT02"
 world_magic_v1: db "ACRAFT01"
@@ -229,7 +230,8 @@ world_save:
     jmp     file_write_atomic
 
 ; world_load(rdi path) -> eax 0 ok / 1 missing / 2 invalid / 3 I/O error.
-; Accepts v4, converts v3 (item ids), v2 and 0.1 files in memory.
+; Accepts v5, converts v4 (16384-byte header, gear wear), v3 (also item ids), v2 and 0.1
+; files in memory; a converted image is stamped v5.
 world_load:
     push    rbp
     mov     rbp, rsp
@@ -241,6 +243,8 @@ world_load:
     test    rax, rax
     js      .ioerr
     cmp     rax, WORLD_FILE_SIZE
+    je      .v5
+    cmp     rax, WORLD_V4_SIZE
     je      .v4
     cmp     rax, WORLD_V2_SIZE
     je      .v2
@@ -257,16 +261,27 @@ world_load:
     jne     .invalid
     call    convert_v2
     call    migrate_items_v3
-    jmp     .ok
+    jmp     .gear
 .v4:
     mov     rax, [world_header + WORLDHDR.magic]
-    cmp     rax, [world_magic]
-    je      .ok
+    cmp     rax, [world_magic_v4]
+    je      .conv4
     cmp     rax, [world_magic_v3]
     jne     .invalid
+    call    convert_v4
     call    migrate_items_v3
+    jmp     .gear
+.conv4:
+    call    convert_v4
+.gear:
+    call    migrate_gear_v4
     mov     rax, [world_magic]
     mov     [world_header + WORLDHDR.magic], rax
+    jmp     .ok
+.v5:
+    mov     rax, [world_header + WORLDHDR.magic]
+    cmp     rax, [world_magic]
+    jne     .invalid
 .ok:
     call    light_compute_all
     call    world_mark_all_dirty
@@ -287,7 +302,7 @@ world_load:
     ret
 
 ; convert_v2(): a v2 image (1024-byte header + blocks) sits at world_header. Move the
-; blocks up to `blocks`, zero the v3-only header fields, stamp the v4 magic (the item ids
+; blocks up to `blocks`, zero the v3+ header fields, stamp the v5 magic (the item ids
 ; are still v3 ones: the caller runs migrate_items_v3).
 convert_v2:
     ; overlapping, dest > src, so copy backwards
@@ -305,8 +320,25 @@ convert_v2:
     mov     [world_header + WORLDHDR.magic], rax
     ret
 
+; convert_v4(): a v3/v4 image (16384-byte header + blocks) sits at world_header. Move the
+; blocks up to `blocks` and zero the v5-only header bytes 16384..32767 (jewelry, rpgx).
+; The magic is left alone: the caller dispatches on it and stamps v5.
+convert_v4:
+    ; overlapping, dest > src, so copy backwards
+    lea     rsi, [world_header + WORLD_V4_HDR + WORLD_VOLUME - 1]
+    lea     rdi, [blocks + WORLD_VOLUME - 1]
+    mov     ecx, WORLD_VOLUME
+    std
+    rep     movsb
+    cld
+    lea     rdi, [world_header + WORLD_V4_HDR]
+    mov     ecx, WORLD_HDR_SIZE - WORLD_V4_HDR
+    xor     eax, eax
+    rep     stosb
+    ret
+
 ; convert_v1(): the 0.1 image (48-byte header + blocks) sits at world_header; rebuild it
-; as a v4 image in place. Old worlds load as Creative with their 0.1 hotbar.
+; as a v5 image in place. Old worlds load as Creative with their 0.1 hotbar.
 convert_v1:
     push    rbp
     mov     rbp, rsp
@@ -434,5 +466,53 @@ migrate_stack:
     ret
 .zero:
     mov     dword [rdi], 0
+.ret:
+    ret
+
+; migrate_gear_v4(): pre-0.8 gear kept its wear in ITEMSTACK.dmg, which now holds the
+; rarity/tier/seed roll. Zero dmg of every gear stack (item_gear != 0) in the inventory,
+; armor and every used container, so old weapons and armor load as Common.
+migrate_gear_v4:
+    lea     rdi, [world_header + WORLDHDR.inventory]
+    mov     ecx, INV_SLOTS
+.inv:
+    call    gear_unroll
+    add     rdi, 4
+    dec     ecx
+    jnz     .inv
+    lea     rdi, [world_header + WORLDHDR.armor]
+    mov     ecx, 4
+.armor:
+    call    gear_unroll
+    add     rdi, 4
+    dec     ecx
+    jnz     .armor
+    lea     rdx, [world_header + WORLDHDR.containers]
+    mov     esi, MAX_CONTAINERS
+.cont:
+    cmp     byte [rdx + CONTAINER.kind], 0
+    je      .cnext
+    lea     rdi, [rdx + CONTAINER.slots]
+    mov     ecx, 27
+.cell:
+    call    gear_unroll
+    add     rdi, 4
+    dec     ecx
+    jnz     .cell
+.cnext:
+    add     rdx, CONTAINER_size
+    dec     esi
+    jnz     .cont
+    ret
+
+; gear_unroll(rdi ITEMSTACK*): zero dmg when the id is gear. Leaf, clobbers eax, r8.
+gear_unroll:
+    movzx   eax, byte [rdi + ITEMSTACK.id]
+    cmp     eax, NUM_ITEMS
+    jae     .ret
+    lea     r8, [item_gear]
+    cmp     byte [r8 + rax], GK_NONE
+    je      .ret
+    mov     word [rdi + ITEMSTACK.dmg], 0
 .ret:
     ret

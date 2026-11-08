@@ -13,7 +13,7 @@ extern file_read, file_write_atomic
 %macro SETTINGS_IMAGE 0
     dd 70, 100, 8, 100, 2, 0, 1, 0, 0
     dd 87, 83, 65, 68, 32, 340, 341, 69, 70, 82 ; W S A D Space LShift LCtrl E F R
-    dd 67, 81, 71, 86, 75               ; C Q G V K
+    dd 67, 81, 71, 86, 75, 88           ; C Q G V K X
 %endmacro
 
 ; one table record = 32 bytes: name[16] NUL padded, field offset, min, max, flag
@@ -60,6 +60,7 @@ settings_table:
     SETENT "key_ability2",    SETTINGS.keys + 4 * BIND_ABILITY2,  32, 348, 1
     SETENT "key_ability3",    SETTINGS.keys + 4 * BIND_ABILITY3,  32, 348, 1
     SETENT "key_skills",      SETTINGS.keys + 4 * BIND_SKILLS,    32, 348, 1
+    SETENT "key_ability4",    SETTINGS.keys + 4 * BIND_ABILITY4,  32, 348, 1
 settings_table_end:
 
 section .bss

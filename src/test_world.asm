@@ -4,10 +4,11 @@ default rel
 
 global test_world_bounds, test_world_set_marks_dirty, test_world_save_load
 global test_world_load_v1_converts, test_world_load_v2_converts, test_world_load_v3_migrates_items
+global test_world_load_v4_converts
 
 extern blocks, chunk_dirty, world_header
 extern world_get, world_set, world_is_solid, world_clear, world_save, world_load
-extern file_write_atomic, file_unlink, fnv1a
+extern file_write_atomic, file_unlink, file_read, fnv1a
 
 section .rodata
 save_path: db "/tmp/assemblycraft-selftest.acw", 0
@@ -18,6 +19,7 @@ v1_magic:  db "ACRAFT01"
 v2_magic:  db "ACRAFT02"
 v3_magic:  db "ACRAFT03"
 v4_magic:  db "ACRAFT04"
+v5_magic:  db "ACRAFT05"
 v1_hotbar: db 1, 3, 2, 4, 5, 6, 7, 9, 10
 
 section .text
@@ -125,7 +127,13 @@ test_world_save_load:
     push    rbx
     sub     rsp, 8
     call    world_clear
-%if WORLDHDR_size != 16384 || WORLDHDR.armor != 944 || WORLDHDR.containers != 1024 || CONTAINER_size != 128
+%if WORLDHDR_size != 32768 || WORLDHDR.armor != 944 || WORLDHDR.containers != 1024 || CONTAINER_size != 128
+    jmp     .fail
+%endif
+%if WORLDHDR.jewelry != 16384 || WORLDHDR.rpgx != 16400 || RPGEXT_size != 256
+    jmp     .fail
+%endif
+%if MOB_size != 228 || INVENTORY_size != 216
     jmp     .fail
 %endif
 %if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.mobs != 304
@@ -225,7 +233,7 @@ test_world_load_v1_converts:
     lea     rdi, [v1_path]
     call    world_load
     EXPECT_EAX 0
-    mov     rax, [v4_magic]
+    mov     rax, [v5_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     cmp     dword [world_header + WORLDHDR.seed], 77
@@ -294,7 +302,7 @@ test_world_load_v2_converts:
     lea     rdi, [v2_path]
     call    world_load
     EXPECT_EAX 0
-    mov     rax, [v4_magic]
+    mov     rax, [v5_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     cmp     dword [world_header + WORLDHDR.seed], 55
@@ -339,7 +347,7 @@ test_world_load_v3_migrates_items:
     mov     ecx, CHEST
     call    world_set
     lea     rdi, [world_header]
-    mov     ecx, WORLD_HDR_SIZE
+    mov     ecx, WORLD_V4_HDR
     xor     eax, eax
     rep     stosb
     mov     rax, [v3_magic]
@@ -352,9 +360,14 @@ test_world_load_v3_migrates_items:
     mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
     mov     word [rax + CONTAINER.slots], 44 | (7 << 8)             ; old IRON_INGOT x7
     mov     word [rax + CONTAINER.slots + 4], 27 | (1 << 8)         ; unused v3 id
+    ; blocks forward to world_header+16384 (dest < src, so a forward copy is safe)
+    lea     rsi, [blocks]
+    lea     rdi, [world_header + WORLD_V4_HDR]
+    mov     ecx, WORLD_VOLUME
+    rep     movsb
     lea     rdi, [save_path]
     lea     rsi, [world_header]
-    mov     edx, WORLD_FILE_SIZE
+    mov     edx, WORLD_V4_SIZE
     call    file_write_atomic
     EXPECT_EAX 0
     call    world_clear
@@ -382,13 +395,125 @@ test_world_load_v3_migrates_items:
     lea     rdi, [save_path]
     call    world_save
     EXPECT_EAX 0
-    mov     rax, [v4_magic]
+    mov     rax, [v5_magic]
     cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     lea     rdi, [save_path]
     call    world_load
     EXPECT_EAX 0
     cmp     word [world_header + WORLDHDR.inventory], STICK | (5 << 8)
+    jne     .fail
+    lea     rdi, [save_path]
+    call    file_unlink
+    xor     eax, eax
+    pop     rbp
+    ret
+.fail:
+    lea     rdi, [save_path]
+    call    file_unlink
+    mov     eax, 1
+    pop     rbp
+    ret
+
+; A v4 (0.7) file: the blocks move up past the 32768-byte v5 header, the v5-only header
+; bytes (jewelry, rpgx) are zeroed, gear loses its old wear (dmg is now the roll) while tools
+; keep theirs, and the next save is a full v5 file.
+test_world_load_v4_converts:
+    push    rbp
+    mov     rbp, rsp
+    call    world_clear
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    mov     ecx, BRICK
+    call    world_set
+    mov     edi, 10
+    mov     esi, 5
+    mov     edx, 10
+    mov     ecx, CHEST
+    call    world_set
+    ; cells 0 and 16 sit at image bytes 16384 / 16400: the v5 jewelry / rpgx offsets
+    xor     edi, edi
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, STONE
+    call    world_set
+    mov     edi, 16
+    xor     esi, esi
+    xor     edx, edx
+    mov     ecx, STONE
+    call    world_set
+    lea     rdi, [world_header]
+    mov     ecx, WORLD_V4_HDR
+    xor     eax, eax
+    rep     stosb
+    lea     rax, [world_header]
+    mov     rcx, [v4_magic]
+    mov     [rax], rcx
+    mov     dword [rax + WORLDHDR.inventory], IRON_SWORD | (1 << 8) | (37 << 16)
+    mov     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
+    mov     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8) | (3 << 16)
+    lea     rax, [world_header + WORLDHDR.containers]
+    mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
+    mov     dword [rax + CONTAINER.slots], BOW | (1 << 8) | (10 << 16)
+    ; blocks forward to world_header+16384 (dest < src, so a forward copy is safe)
+    lea     rsi, [blocks]
+    lea     rdi, [world_header + WORLD_V4_HDR]
+    mov     ecx, WORLD_VOLUME
+    rep     movsb
+    lea     rdi, [save_path]
+    lea     rsi, [world_header]
+    mov     edx, WORLD_V4_SIZE
+    call    file_write_atomic
+    EXPECT_EAX 0
+    call    world_clear
+    mov     qword [world_header], 0
+    lea     rdi, [save_path]
+    call    world_load
+    EXPECT_EAX 0
+    lea     rax, [world_header]
+    mov     rcx, [v5_magic]
+    cmp     [rax + WORLDHDR.magic], rcx
+    jne     .fail
+    cmp     dword [rax + WORLDHDR.inventory], IRON_SWORD | (1 << 8)
+    jne     .fail
+    cmp     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
+    jne     .fail
+    cmp     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8)
+    jne     .fail
+    cmp     dword [rax + WORLDHDR.containers + CONTAINER.slots], BOW | (1 << 8)
+    jne     .fail
+    lea     rdi, [world_header + WORLDHDR.jewelry]
+    mov     ecx, 16 + RPGEXT_size
+    xor     eax, eax
+    repe    scasb
+    jne     .fail
+    mov     edi, 1
+    mov     esi, 2
+    mov     edx, 3
+    call    world_get
+    EXPECT_EAX BRICK
+    mov     edi, 16
+    xor     esi, esi
+    xor     edx, edx
+    call    world_get
+    EXPECT_EAX STONE
+    mov     edi, 10
+    mov     esi, 5
+    mov     edx, 10
+    call    world_get
+    EXPECT_EAX CHEST
+    lea     rdi, [save_path]
+    call    world_save
+    EXPECT_EAX 0
+    lea     rdi, [save_path]
+    lea     rsi, [world_header]
+    mov     edx, WORLD_FILE_SIZE + 1
+    call    file_read
+    cmp     rax, WORLD_FILE_SIZE
+    jne     .fail
+    mov     rax, [v5_magic]
+    cmp     [world_header + WORLDHDR.magic], rax
     jne     .fail
     lea     rdi, [save_path]
     call    file_unlink

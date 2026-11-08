@@ -50,6 +50,8 @@ trade_tab:                              ; give -> get
     dd GOLD_COIN, 12, STAFF, 1
     dd ROTTEN_FLESH, 10, GOLD_COIN, 1
     dd DIAMOND, 1, GOLD_COIN, 15
+    dd GOLD_COIN, 30, RING, 1
+    dd GOLD_COIN, 30, AMULET, 1
 
 section .text
 

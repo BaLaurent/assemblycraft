@@ -1,6 +1,6 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..197 (NUM_ITEMS).
+; itemdefs.asm - per-item data tables, indexed by item id 0..207 (NUM_ITEMS).
 ; Ids 0..110 are the blocks (variant ids: the item form is block_base), 111..127 are unused,
-; 128..197 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear.
+; 128..207 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel
@@ -8,6 +8,7 @@ default rel
 global item_names, item_icon, item_max_stack, item_tool, item_tier
 global item_durability, item_food, item_saturation, item_attack
 global item_burn, item_smelt, item_armor_slot, item_armor_points
+global item_gear, item_legendary
 
 ; PAD_TO table, id, elemsize, default: emit `default` up to (not including) entry `id`
 %macro PAD_TO 4
@@ -153,6 +154,16 @@ n_cbow:     db "Celestial Bow", 0
 n_hpotion:  db "Health Potion", 0
 n_mpotion:  db "Mana Potion", 0
 n_coin:     db "Gold Coin", 0
+n_ring:     db "Ring", 0
+n_amulet:   db "Amulet", 0
+n_phoenix:  db "Phoenix Ring", 0
+n_storm:    db "Band of Storms", 0
+n_ember:    db "Ember Amulet", 0
+n_viper:    db "Viper Amulet", 0
+n_ihammer:  db "Iron Warhammer", 0
+n_dhammer:  db "Diamond Warhammer", 0
+n_ispear:   db "Iron Spear", 0
+n_dspear:   db "Diamond Spear", 0
 
 align 8
 ; display name; every variant id points at its base's name
@@ -191,10 +202,13 @@ item_names:
     dq n_pround, n_mball, n_shell, n_rround, n_rocket
     dq n_staff, n_astaff, n_idagger, n_ddagger, n_fang, n_kblade, n_cbow
     dq n_hpotion, n_mpotion, n_coin
+    dq n_ring, n_amulet, n_phoenix, n_storm, n_ember, n_viper
+    dq n_ihammer, n_dhammer, n_ispear, n_dspear
     END_TABLE item_names, 8, n_unused
 
 ; atlas tile of the inventory icon: a block's side tile or icon tile (0 for non-base
-; variants), tiles 32.. for STICK..PORKCHOP, TILE_ITEM0 + id - COAL from COAL on
+; variants), tiles 32.. for STICK..PORKCHOP, TILE_ITEM0 + id - COAL from COAL to GOLD_COIN,
+; then the 0.8 jewelry and weapon tiles
 item_icon:
     db 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
     db 26, 27, 28, 29, 30, 31, 44, 45, 46
@@ -228,10 +242,13 @@ item_icon:
 %assign i i + 1
 %endrep
 %assign i 0
-%rep NUM_ITEMS - COAL
+%rep RING - COAL
     db TILE_ITEM0 + i
 %assign i i + 1
 %endrep
+    db TILE_RING, TILE_AMULET, TILE_RING, TILE_RING ; ring, amulet, Phoenix Ring, Band of Storms
+    db TILE_AMULET, TILE_AMULET         ; Ember, Viper amulets
+    db TILE_IRON_HAMMER, TILE_DIAMOND_HAMMER, TILE_IRON_SPEAR, TILE_DIAMOND_SPEAR
     END_TABLE item_icon, 1, 0
 
 ; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
@@ -272,6 +289,7 @@ item_max_stack:
     times 7 db 1                        ; staves, daggers, legendaries
     db 16, 16                           ; potions
     db 64                               ; gold coin
+    times 10 db 1                       ; jewelry, hammers, spears
     END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD
@@ -282,6 +300,8 @@ item_tool:
     db TOOLS4, TOOLS4, TOOLS4           ; iron, gold, diamond
     PAD_TO item_tool, IRON_DAGGER, 1, 0
     db TOOL_DAGGER, TOOL_DAGGER, TOOL_DAGGER, TOOL_SWORD ; daggers, King's Blade
+    PAD_TO item_tool, IRON_HAMMER, 1, 0
+    db TOOL_HAMMER, TOOL_HAMMER, TOOL_SPEAR, TOOL_SPEAR
     END_TABLE item_tool, 1, 0
 
 item_tier:
@@ -294,6 +314,8 @@ item_tier:
     times 4 db TIER_DIAMOND
     PAD_TO item_tier, KINGS_BLADE, 1, 0
     db TIER_DIAMOND                     ; King's Blade
+    PAD_TO item_tier, IRON_HAMMER, 1, 0
+    db TIER_IRON, TIER_DIAMOND, TIER_IRON, TIER_DIAMOND ; hammers, spears
     END_TABLE item_tier, 1, 0
 
 item_food:
@@ -313,6 +335,8 @@ item_attack:
     db 6, 7, 5, 8                       ; diamond
     PAD_TO item_attack, STAFF, 1, 1
     db 2, 3, 5, 7, 9, 11                ; staff, archmage staff, daggers, Shadow Fang, King's Blade
+    PAD_TO item_attack, IRON_HAMMER, 1, 1
+    db 9, 12, 6, 8                      ; iron/diamond warhammer, iron/diamond spear
     END_TABLE item_attack, 1, 1
 
 ; smelting result of an input item, or 0
@@ -350,6 +374,45 @@ item_armor_points:
     db 2, 5, 3, 1                       ; gold
     db 3, 8, 6, 3                       ; diamond
     END_TABLE item_armor_points, 1, 0
+
+; AT table, id, value: one byte entry at `id` (ascending ids), zero before it
+%macro AT 3
+    PAD_TO %1, %2, 1, 0
+    db %3
+%endmacro
+
+; gear kind (GK_*) of an item: rolled gear with affixes, or GK_NONE
+item_gear:
+    AT item_gear, WOOD_SWORD, GK_MELEE
+    AT item_gear, STONE_SWORD, GK_MELEE
+    AT item_gear, IRON_SWORD, GK_MELEE
+    AT item_gear, GOLD_SWORD, GK_MELEE
+    AT item_gear, DIAMOND_SWORD, GK_MELEE
+    AT item_gear, BOW, GK_BOW
+    PAD_TO item_gear, IRON_HELMET, 1, 0
+%rep 3
+    db GK_HEAD, GK_CHEST, GK_LEGS, GK_FEET ; iron, gold, diamond armor
+%endrep
+    PAD_TO item_gear, STAFF, 1, 0
+    db GK_STAFF, GK_STAFF               ; staff, archmage staff
+    db GK_MELEE, GK_MELEE, GK_MELEE, GK_MELEE ; daggers, Shadow Fang, King's Blade
+    db GK_BOW                           ; Celestial Bow
+    PAD_TO item_gear, RING, 1, 0
+    db GK_RING, GK_AMULET, GK_RING, GK_RING, GK_AMULET, GK_AMULET
+    db GK_MELEE, GK_MELEE, GK_MELEE, GK_MELEE ; hammers, spears
+    END_TABLE item_gear, 1, 0
+
+; legendary power (LP_*) of an item, or LP_NONE
+item_legendary:
+    AT item_legendary, ARCHMAGE_STAFF, LP_ARCHMAGE
+    AT item_legendary, SHADOW_FANG, LP_SHADOW_FANG
+    AT item_legendary, KINGS_BLADE, LP_KINGSLAYER
+    AT item_legendary, CELESTIAL_BOW, LP_CELESTIAL
+    AT item_legendary, PHOENIX_RING, LP_PHOENIX
+    AT item_legendary, STORM_BAND, LP_STORMS
+    AT item_legendary, EMBER_AMULET, LP_EMBERS
+    AT item_legendary, VIPER_AMULET, LP_VIPER
+    END_TABLE item_legendary, 1, 0
 
 align 2
 item_durability:

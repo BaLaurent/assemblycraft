@@ -145,7 +145,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define HEALTH_POTION  (FIRST_ITEM + 67)
 %define MANA_POTION    (FIRST_ITEM + 68)
 %define GOLD_COIN      (FIRST_ITEM + 69)
-%define NUM_ITEMS      (FIRST_ITEM + 70) ; 198
+%define RING           (FIRST_ITEM + 70) ; jewelry: GK_RING / GK_AMULET, drops and shop only
+%define AMULET         (FIRST_ITEM + 71)
+%define PHOENIX_RING   (FIRST_ITEM + 72) ; legendary jewelry
+%define STORM_BAND     (FIRST_ITEM + 73)
+%define EMBER_AMULET   (FIRST_ITEM + 74)
+%define VIPER_AMULET   (FIRST_ITEM + 75)
+%define IRON_HAMMER    (FIRST_ITEM + 76)
+%define DIAMOND_HAMMER (FIRST_ITEM + 77)
+%define IRON_SPEAR     (FIRST_ITEM + 78)
+%define DIAMOND_SPEAR  (FIRST_ITEM + 79)
+%define NUM_ITEMS      (FIRST_ITEM + 80) ; 208
 
 ; v3 (0.6) id space, for save migration
 %define V3_NUM_BLOCKS  25
@@ -182,6 +192,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TOOL_SHOVEL    3
 %define TOOL_SWORD     4
 %define TOOL_DAGGER    5
+%define TOOL_HAMMER    6
+%define TOOL_SPEAR     7
 %define TIER_WOOD      1
 %define TIER_STONE     2
 %define TIER_IRON      3
@@ -285,11 +297,34 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_ICON_IRON_DOOR 251
 %define TILE_ICON_FENCE    252
 %define TILE_ICON_GLASS_PANE 253
+; 0.8 tiles: the only 23 free atlas tiles (203..207, 216..223, 232..239, 254, 255)
+%define TILE_RING          203
+%define TILE_AMULET        204
+%define TILE_IRON_HAMMER   205
+%define TILE_DIAMOND_HAMMER 206
+%define TILE_IRON_SPEAR    207
+%define TILE_DIAMOND_SPEAR 216
+%define TILE_ABILITY3_0    217          ; 217..220: slot-3 icon, class-1
+%define TILE_ATTR_STR      221
+%define TILE_ATTR_DEX      222
+%define TILE_ATTR_INT      223
+%define TILE_ATTR_VIT      232
+%define TILE_ELEM_FIRE     233          ; 233..236: fire, frost, shock, poison
+%define TILE_ELEM_FROST    234
+%define TILE_ELEM_SHOCK    235
+%define TILE_ELEM_POISON   236
+%define TILE_STAT_ASPD     237
+%define TILE_STAT_BLEED    238
+%define TILE_STAT_AREA     239
+%define TILE_STAT_ELITE    254
+%define TILE_KEYSTONE      255
 %define FONT_Y             192          ; glyph rows at atlas y 192..239, x 0..127
 
 ; ---- save file ------------------------------------------------------------
-%define WORLD_HDR_SIZE  16384
-%define WORLD_FILE_SIZE 4210688          ; 16384 + 4194304
+%define WORLD_HDR_SIZE  32768
+%define WORLD_FILE_SIZE 4227072          ; 32768 + 4194304 (v5, "ACRAFT05")
+%define WORLD_V4_HDR    16384            ; v3/v4 header size
+%define WORLD_V4_SIZE   4210688          ; v3/v4 file: 16384 + 4194304
 %define WORLD_BASE_HDR  1024             ; fields shared by v2 and v3 headers
 %define WORLD_V2_SIZE   4195328          ; v2 file: 1024-byte header + blocks
 %define WORLD_V1_SIZE   4194352          ; 0.1 file: 48-byte header + blocks
@@ -317,6 +352,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_SPIDER    7
 %define CAUSE_FIRE      8
 %define CAUSE_BOSS      9
+%define CAUSE_POISON    10
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -330,6 +366,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MOB_BOSS        9
 %define NUM_MOB_TYPES   9
 %define MOB_ELITE_BIT   0x100           ; MOBSAVE.type flag
+%define MS_LEVEL_SHIFT  16              ; MOBSAVE.type bits 16..23 = level (0 = derive on load)
+%define MS_AFFIX_SHIFT  24              ; MOBSAVE.type bits 24..31 = elite affixes (AFX_*)
+%define AFX_MOLTEN      1               ; MOB.affix bits
+%define AFX_FROZEN      2
+%define AFX_VENOMOUS    4
+%define AFX_STORM       8
+%define AFX_VAMPIRIC    16
+%define AFX_SWIFT       32
+%define AFX_JUGGERNAUT  64
+%define AFX_ARMORED     128
+%define NUM_AFFIX_KINDS 8
 %define MAX_MOBS        32
 %define MAX_DROPS       64              ; item entities lying in the world
 %define MAX_ARROWS      96
@@ -342,6 +389,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define AF_CRIT         1               ; ARROWENT.flags
 %define AF_EXPLOSIVE    2
 %define AF_BIG          4
+%define AF_BLEED        8
+%define AF_ATTACK       16              ; a weapon attack (bow shot, staff bolt), not a skill
+%define AF_ELEM_SHIFT   8               ; ARROWENT.flags bits 8..10 = element (ELEM_*)
+%define PROJ_KNIFE      5
 %define MAX_PRIMED      32              ; primed TNT
 %define MAX_FIRES       1024
 %define MAX_PARTICLES   768
@@ -351,6 +402,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FX_SPARK        4
 %define FX_MAGIC        5
 %define FX_GOLD         6
+%define FX_FROST        7
 
 ; ---- RPG ------------------------------------------------------------------
 %define CLASS_NONE      0
@@ -359,8 +411,105 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CLASS_ARCHER    3
 %define CLASS_ROGUE     4
 %define NUM_CLASSES     4
-%define MAX_LEVEL       30
-%define NUM_NODES       12              ; node = branch*4 + tier
+%define MAX_LEVEL       50
+%define NUM_NODES       18              ; node = branch*6 + tier
+%define NODES_PER_BRANCH 6
+%define NUM_ABILITY_SLOTS 4
+%define RPGX_VERSION    1
+%define NODE_STAT       0               ; NODEINFO.kind
+%define NODE_ABILITY    1
+%define NODE_KEYSTONE   2
+%define V4_NODES        12              ; 0.7 tree layout, removed in wave 2
+%define V4_MAX_LEVEL    30              ; 0.7 tree layout, removed in wave 2
+
+%define ATTR_STR        0
+%define ATTR_DEX        1
+%define ATTR_INT        2
+%define ATTR_VIT        3
+%define NUM_ATTRS       4
+%define ATTR_PER_LEVEL  3
+
+%define KS_EXECUTIONER  0               ; keystone id = (class-1)*3 + branch
+%define KS_JUGGERNAUT   1
+%define KS_BLOODRAGE    2
+%define KS_INFERNO      3
+%define KS_BLOOD_MAGIC  4
+%define KS_MANA_SHIELD  5
+%define KS_DEADEYE      6
+%define KS_BARRAGE      7
+%define KS_WIND_RUNNER  8
+%define KS_ASSASSINATE  9
+%define KS_SHADOW_DANCE 10
+%define KS_VENOM_BLADES 11
+
+%define ELEM_PHYS       0
+%define ELEM_FIRE       1
+%define ELEM_FROST      2
+%define ELEM_SHOCK      3
+%define ELEM_POISON     4
+%define NUM_ELEMS       5
+
+%define STS_BURN        0               ; status kinds
+%define STS_CHILL       1
+%define STS_SHOCK       2
+%define STS_POISON      3
+%define STS_BLEED       4
+
+%define SRC_MELEE       0               ; damage sources (combat_hit_mob / combat_calc)
+%define SRC_BOW         1
+%define SRC_BOLT        2
+%define SRC_MELEE_SKILL 3
+%define SRC_RANGED_SKILL 4
+%define SRC_SPELL       5
+%define SRC_THORNS      6
+
+%define HITF_ELEM_MASK  7               ; combat_hit_mob flags: bits 0..2 element
+%define HITF_CRIT       0x100
+%define HITF_BLEED      0x200
+%define HITF_HURTWIN    0x400           ; respect the mob hurt window (mob_hurt)
+%define HITF_CHILL3     0x800
+%define HITF_EXECUTE    0x1000
+%define HITF_NOSTATUS   0x2000
+%define HITF_CHAIN      0x4000
+
+%define GK_NONE         0               ; item_gear kinds
+%define GK_MELEE        1
+%define GK_BOW          2
+%define GK_STAFF        3
+%define GK_HEAD         4
+%define GK_CHEST        5
+%define GK_LEGS         6
+%define GK_FEET         7
+%define GK_RING         8
+%define GK_AMULET       9
+%define GEAR_RARITY_SHIFT 14            ; gear dmg word: rarity<<14 | tier<<10 | seed
+%define GEAR_TIER_SHIFT 10
+%define GEAR_SEED_MASK  1023
+%define RAR_COMMON      0
+%define RAR_MAGIC       1
+%define RAR_RARE        2
+%define RAR_EPIC        3
+%define RAR_LEGENDARY   4               ; display only (legendary items carry RAR_RARE bits)
+%define MAX_AFFIXES     5
+%define LOOT_MOB        0
+%define LOOT_ELITE      1
+%define LOOT_BOSS       2
+%define LOOT_CHEST      3
+%define LOOT_SHOP       4
+%define LP_NONE         0               ; legendary powers; gear_powers bit = 1 << lp
+%define LP_KINGSLAYER   1
+%define LP_ARCHMAGE     2
+%define LP_CELESTIAL    3
+%define LP_SHADOW_FANG  4
+%define LP_PHOENIX      5
+%define LP_STORMS       6
+%define LP_EMBERS       7
+%define LP_VIPER        8
+
+%define FMT_PCT         0               ; STATINFO.fmt: "+N%"
+%define FMT_FLAT        1               ; "+N"
+%define FMT_TENTH       2               ; "+N.N"
+%define FMT_NEGPCT      3               ; "-N%" (stored positive)
 
 %define STAT_MAX_HEALTH    0
 %define STAT_MELEE_DMG     1
@@ -380,7 +529,33 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define STAT_COOLDOWN_RED  15
 %define STAT_ARROW_SAVE    16
 %define STAT_DODGE_COST    17
-%define NUM_STATS          18
+%define STAT_ATTACK_SPEED  18
+%define STAT_FIRE_DMG      19           ; 19..22: % damage of element (elem-1)
+%define STAT_FROST_DMG     20
+%define STAT_SHOCK_DMG     21
+%define STAT_POISON_DMG    22
+%define STAT_ADD_FIRE      23           ; 23..26: flat element damage added to weapon attacks
+%define STAT_ADD_FROST     24
+%define STAT_ADD_SHOCK     25
+%define STAT_ADD_POISON    26
+%define STAT_RES_FIRE      27           ; 27..30: % element damage taken reduction
+%define STAT_RES_FROST     28
+%define STAT_RES_SHOCK     29
+%define STAT_RES_POISON    30
+%define STAT_BLEED_CHANCE  31
+%define STAT_DOT_DMG       32
+%define STAT_ELITE_DMG     33
+%define STAT_AREA          34
+%define STAT_LIFE_REGEN    35           ; tenths of health per second
+%define STAT_LIFE_ON_KILL  36
+%define STAT_THORNS        37
+%define STAT_BLOCK_COST    38
+%define STAT_XP_BONUS      39
+%define STAT_GOLD_FIND     40
+%define STAT_MAGIC_FIND    41
+%define STAT_ALL_DMG       42
+%define STAT_WEAPON_DMG    43
+%define NUM_STATS          44
 
 %define RES_STAMINA     0
 %define RES_MANA        1
@@ -392,11 +567,16 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 
 %define HF_CRIT         1               ; combat_hit_flags bits
 %define HF_PLAYER       2
+%define HF_DOT          4
+%define HF_ELEM_SHIFT   4
+%define HF_ELEM_MASK    0x70
 
 %define TXT_PARRY       0               ; dmgnum_text ids
 %define TXT_BLOCKED     1
 %define TXT_DODGED      2
 %define TXT_STUNNED     3
+%define TXT_FROZEN      4
+%define TXT_IMMUNE      5
 
 %define SITE_VILLAGE    1
 %define SITE_DUNGEON    2
@@ -411,7 +591,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define Q_ELITE         4
 %define Q_BOSS          5
 %define NUM_QUESTS      8
-%define NUM_TRADES      8
+%define NUM_TRADES      10
 
 %define INV_SLOTS       36              ; 0..8 hotbar, 9..35 main
 %define SLOTREF_GRID    36              ; grid cell c = 36 + c (c 0..8, 3 wide)
@@ -419,6 +599,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
                                         ; 46 = cursor (never clickable)
 %define SLOTREF_ARMOR   47              ; 47..50: head, chest, legs, feet
 %define SLOTREF_CONTAINER 51            ; 51..77: open container cells
+%define SLOTREF_JEWELRY 78              ; 78, 79 rings, 80 amulet
 
 %define CONT_FURNACE    1
 %define CONT_CHEST      2
@@ -445,6 +626,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_DIALOG       16
 %define ST_CLASS        17
 %define ST_SKILLS       18
+%define ST_CHARACTER    19
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -462,7 +644,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIND_ABILITY2   12
 %define BIND_ABILITY3   13
 %define BIND_SKILLS     14
-%define NUM_BINDINGS    15
+%define BIND_ABILITY4   15
+%define NUM_BINDINGS    16
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0
@@ -520,7 +703,12 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_DRINK       52
 %define SND_DOOR_OPEN   53
 %define SND_DOOR_CLOSE  54
-%define NUM_SOUNDS      55
+%define SND_FREEZE      55
+%define SND_HEAVY       56
+%define SND_KNIVES      57
+%define SND_LOOT_RARE   58
+%define SND_LEGENDARY   59
+%define NUM_SOUNDS      60
 
 ; ---- colours: packed for glColor4ub as four bytes r,g,b,a -----------------
 %define RGBA(r,g,b,a) ((r)|((g)<<8)|((b)<<16)|((a)<<24))
@@ -575,7 +763,7 @@ struc FRAMEINPUT
     .reload:      resd 1                ; edge of the Reload binding (every state)
     .skills:      resd 1                ; edge of the Skill Tree binding (every state)
     .dodge:       resd 1                ; edges below: only while the cursor is captured
-    .ability:     resd 3
+    .ability:     resd 4
 endstruc
 
 struc UIINPUT
@@ -636,6 +824,7 @@ struc INVENTORY
     .result: resb 4
     .cursor: resb 4
     .armor:  resb 4 * 4                 ; head, chest, legs, feet (refs 47..50)
+    .jewelry: resb 3 * 4                ; ring, ring, amulet (refs 78..80)
 endstruc
 
 struc SURVIVAL
@@ -676,6 +865,22 @@ struc MOB
     .timer_b:  resd 1
     .home_x:   resd 1                   ; floats, NPC home
     .home_z:   resd 1
+    .level:    resd 1                   ; 1..
+    .affix:    resd 1                   ; AFX_* bits (elites)
+    .burn_t:   resd 1                   ; steps
+    .burn_dmg: resd 1                   ; float per tick
+    .bleed_t:  resd 1
+    .bleed_dmg: resd 1                  ; float per tick
+    .poison_t: resd 1
+    .poison:   resd 1                   ; stacks
+    .poison_dmg: resd 1                 ; float per stack per tick
+    .chill_t:  resd 1
+    .chill:    resd 1                   ; stacks 0..2
+    .freeze_cd: resd 1
+    .shock_t:  resd 1
+    .shock:    resd 1                   ; stacks 0..3
+    .mark_t:   resd 1                   ; Hunter's Mark steps
+    .dot_tick: resd 1                   ; steps to the next DoT tick
 endstruc
 
 struc MOBSAVE
@@ -706,7 +911,7 @@ struc RPGSAVE
     .quest:          resb 1             ; next quest index 0..8 (8 = chain finished)
     .quest_state:    resb 1             ; 0 not accepted, 1 accepted
     .xp:             resd 1             ; into the current level
-    .ranks:          resb NUM_NODES     ; rank of node b*4 + t
+    .ranks_v4:       resb V4_NODES      ; 0.7 ranks (unused once RPGEXT lands)
     .cleared:        resb 1             ; bit d = dungeon d cleared
     .flags:          resb 1             ; bit0 = boss defeated
     .quest_progress: resw 1
@@ -731,8 +936,8 @@ endstruc
 struc NODEINFO
     .name:  resq 1
     .desc:  resq 1
-    .kind:  resb 1                      ; 0 stat, 1 ability
-    .stat:  resb 1                      ; stat id; ability slot for an ability node
+    .kind:  resb 1                      ; NODE_STAT, NODE_ABILITY, NODE_KEYSTONE
+    .stat:  resb 1                      ; stat id; ability slot (ability); KS_* id (keystone)
     .max:   resb 1                      ; max rank
     .pad:   resb 1
     .value: resd 1                      ; per rank, 0 for abilities
@@ -753,6 +958,50 @@ endstruc
 %if ABILINFO_size != 32
 %error "ABILINFO must be 32 bytes"
 %endif
+
+; RPG extension, stored in WORLDHDR.rpgx (v5)
+struc RPGEXT
+    .ranks:   resb 32                   ; rank of node branch*6 + tier (0..17)
+    .attr:    resw NUM_ATTRS            ; attribute points spent
+    .version: resb 1                    ; RPGX_VERSION; 0 = refund on load
+    .pad:     resb 215
+endstruc
+%if RPGEXT_size != 256
+%error "RPGEXT must be 256 bytes"
+%endif
+
+; rpg_stat_info record: display data of one stat
+struc STATINFO
+    .label:  resq 1                     ; zstr "Melee damage"
+    .suffix: resq 1                     ; zstr "% melee damage"
+    .fmt:    resb 1                     ; FMT_*
+    .icon:   resb 1                     ; atlas tile
+    .pad:    resb 6
+endstruc
+%if STATINFO_size != 24
+%error "STATINFO must be 24 bytes"
+%endif
+
+; gear.asm affix table record
+struc AFFIXDEF
+    .stat:  resb 1
+    .lo:    resb 1
+    .hi:    resb 1
+    .tlo:   resb 1                      ; per tier
+    .thi:   resb 1
+    .pad:   resb 1
+    .kinds: resw 1                      ; bit 1 << GK_*
+    .word:  resq 1                      ; zstr name prefix
+endstruc
+%if AFFIXDEF_size != 16
+%error "AFFIXDEF must be 16 bytes"
+%endif
+
+; one decoded gear affix
+struc GEARAFFIX
+    .stat:  resd 1
+    .value: resd 1
+endstruc
 
 ; quests_current record: one quest of the chain
 struc QUESTINFO
@@ -800,7 +1049,7 @@ endstruc                                ; 44 bytes
 
 ; v3 world file header; offsets are load-bearing (save files, verification patches)
 struc WORLDHDR
-    .magic:      resb 8                 ; "ACRAFT04" (v3 "ACRAFT03": old item ids)
+    .magic:      resb 8                 ; "ACRAFT05" (v4 "ACRAFT04": 16384-byte header; v3 "ACRAFT03": old item ids)
     .seed:       resd 1
     .mode:       resd 1
     .time:       resd 1
@@ -821,8 +1070,14 @@ struc WORLDHDR
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
     .containers: resb MAX_CONTAINERS * CONTAINER_size ; @1024
-    .pad2:       resb WORLD_HDR_SIZE - 1024 - MAX_CONTAINERS * CONTAINER_size
-endstruc                                ; 16384 bytes
+    .pad1:       resb 16384 - 1024 - MAX_CONTAINERS * CONTAINER_size
+    .jewelry:    resb 16                ; @16384: 3 ITEMSTACKs + 4 spare
+    .rpgx:       resb RPGEXT_size       ; @16400
+    .pad2:       resb WORLD_HDR_SIZE - 16400 - RPGEXT_size
+endstruc                                ; 32768 bytes
+%if WORLDHDR_size != WORLD_HDR_SIZE
+%error "WORLDHDR must be WORLD_HDR_SIZE bytes"
+%endif
 
 ; 0.1 header (48 bytes, magic "ACRAFT01")
 %define V1_SEED    8
@@ -921,7 +1176,7 @@ struc ARROWENT
     .pickup: resd 1                     ; 0/1
     .live:   resd 1                     ; 0/1
     .kind:   resd 1                     ; PROJ_ARROW, PROJ_BULLET, PROJ_ROCKET, PROJ_BOLT, PROJ_FIREBALL
-    .flags:  resd 1                     ; AF_CRIT, AF_EXPLOSIVE, AF_BIG
+    .flags:  resd 1                     ; AF_CRIT, AF_EXPLOSIVE, AF_BIG, AF_BLEED, AF_ATTACK; bits 8..10 element
 endstruc                                ; 56 bytes
 
 ; a primed TNT block: a physics body (y = bottom of the 0.98 cube) burning down (not saved)

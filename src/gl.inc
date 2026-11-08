@@ -51,8 +51,10 @@ extern glMultiTexCoord2f, glClientActiveTexture
 %define KEY_E             69
 %define KEY_S             83
 %define KEY_W             87
+%define KEY_X             88
 %define KEY_ESCAPE        256
 %define KEY_ENTER         257
+%define KEY_TAB           258
 %define KEY_BACKSPACE     259
 %define KEY_F3            292
 %define KEY_F11           300

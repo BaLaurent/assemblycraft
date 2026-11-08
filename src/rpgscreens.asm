@@ -798,7 +798,7 @@ screen_skills:
     call    ui_rect
 .conn_next:
     inc     ebx
-    cmp     ebx, NUM_NODES
+    cmp     ebx, V4_NODES
     jb      .conn
     ; ---- nodes
     xor     ebx, ebx
@@ -908,7 +908,7 @@ screen_skills:
     mov     r8d, 1
     call    ui_text
     inc     ebx
-    cmp     ebx, NUM_NODES
+    cmp     ebx, V4_NODES
     jb      .node
     ; ---- footer: "<key>: <ability>" for the three slots, centred, locked ones grey
     xor     ebx, ebx

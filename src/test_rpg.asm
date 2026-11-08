@@ -25,7 +25,7 @@ extern trade_offer, trade_can, trade_execute
 %define R_QSTATE  rpg_state + RPGSAVE.quest_state
 %define R_QPROG   rpg_state + RPGSAVE.quest_progress
 %define R_XP      rpg_state + RPGSAVE.xp
-%define R_RANKS   rpg_state + RPGSAVE.ranks
+%define R_RANKS   rpg_state + RPGSAVE.ranks_v4
 %define R_CLEARED rpg_state + RPGSAVE.cleared
 %define R_FLAGS   rpg_state + RPGSAVE.flags
 %define HDR       world_header + WORLDHDR.rpg
@@ -43,6 +43,8 @@ trade_tab:                              ; give, give_n, get, get_n
     dd GOLD_COIN, 12, STAFF, 1
     dd ROTTEN_FLESH, 10, GOLD_COIN, 1
     dd DIAMOND, 1, GOLD_COIN, 15
+    dd GOLD_COIN, 30, RING, 1
+    dd GOLD_COIN, 30, AMULET, 1
 s_warrior:  db "Warrior", 0
 s_mage:     db "Mage", 0
 s_archer:   db "Archer", 0
@@ -360,7 +362,7 @@ test_rpg_skill_spend_rules:
     CALL0   rpg_points, 3
     CALL1   rpg_can_spend, 1, 3             ; tier 1 needs level 4
     CALL1   rpg_can_spend, 4, 0             ; tier 0 is free
-    mov     edi, NUM_NODES
+    mov     edi, V4_NODES
     call    rpg_can_spend
     test    eax, eax
     jz      .fail                           ; no such node
@@ -574,7 +576,7 @@ test_rpg_stats_from_class_and_ranks:
     mov     rax, [rax + NODEINFO.name]
     STR_IS  s_empty
     mov     edi, CLASS_WARRIOR
-    mov     esi, NUM_NODES
+    mov     esi, V4_NODES
     call    rpg_node_info
     mov     rax, [rax + NODEINFO.desc]
     STR_IS  s_empty
@@ -590,7 +592,7 @@ test_rpg_stats_from_class_and_ranks:
     mov     r14, rax
     ; the plan's skill table: stat (0x80 | slot for an ability) and value of every node
     lea     eax, [r12 - 1]
-    imul    eax, eax, NUM_NODES
+    imul    eax, eax, V4_NODES
     add     eax, r13d
     lea     rcx, [exp_nodes]
     lea     rcx, [rcx + rax*2]
@@ -660,7 +662,7 @@ test_rpg_stats_from_class_and_ranks:
     je      .fail
 .next_node:
     inc     r13d
-    cmp     r13d, NUM_NODES
+    cmp     r13d, V4_NODES
     jb      .node
     inc     r12d
     cmp     r12d, NUM_CLASSES
@@ -752,7 +754,7 @@ test_rpg_save_load_validates:
     EXPECT_B HDR + RPGSAVE.class, CLASS_ARCHER
     EXPECT_B HDR + RPGSAVE.level, 7
     EXPECT_D HDR + RPGSAVE.xp, 55
-    EXPECT_B HDR + RPGSAVE.ranks + 4, 1
+    EXPECT_B HDR + RPGSAVE.ranks_v4 + 4, 1
     EXPECT_B HDR + RPGSAVE.cleared, 5
     call    rpg_reset
     CALL0   rpg_class, CLASS_NONE
@@ -775,8 +777,8 @@ test_rpg_save_load_validates:
     mov     edi, CLASS_ARCHER
     mov     esi, 5
     call    hdr_set
-    lea     rdi, [HDR + RPGSAVE.ranks]
-    mov     ecx, NUM_NODES
+    lea     rdi, [HDR + RPGSAVE.ranks_v4]
+    mov     ecx, V4_NODES
     mov     al, 3
     rep     stosb
     call    hdr_load
@@ -817,31 +819,31 @@ test_rpg_save_load_validates:
     mov     edi, CLASS_ROGUE
     mov     esi, 10
     call    hdr_set
-    mov     byte [HDR + RPGSAVE.ranks + 0], 4
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 0], 4
     call    hdr_load
     CALL0   rpg_class, CLASS_ROGUE
     EXPECT_B R_RANKS + 0, 0
     mov     edi, CLASS_ROGUE
     mov     esi, 10
     call    hdr_set
-    mov     byte [HDR + RPGSAVE.ranks + 5], 2
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 5], 2
     call    hdr_load
     EXPECT_B R_RANKS + 5, 0
     ; ranks adding up to the level are fine, one more is not
     mov     edi, CLASS_ROGUE
     mov     esi, 9
     call    hdr_set
-    mov     byte [HDR + RPGSAVE.ranks + 0], 3
-    mov     byte [HDR + RPGSAVE.ranks + 1], 3
-    mov     byte [HDR + RPGSAVE.ranks + 4], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 0], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 1], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 4], 3
     call    hdr_load
     EXPECT_B R_RANKS + 4, 3
     mov     edi, CLASS_ROGUE
     mov     esi, 8
     call    hdr_set
-    mov     byte [HDR + RPGSAVE.ranks + 0], 3
-    mov     byte [HDR + RPGSAVE.ranks + 1], 3
-    mov     byte [HDR + RPGSAVE.ranks + 4], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 0], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 1], 3
+    mov     byte [HDR + RPGSAVE.ranks_v4 + 4], 3
     call    hdr_load
     EXPECT_B R_RANKS + 4, 0
     EXPECT_B R_RANKS + 0, 0

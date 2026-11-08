@@ -51,6 +51,7 @@ extern test_light_sky_and_shadow, test_torch_light_falloff, test_light_update_on
 extern test_step_up_slab_not_block, test_stairs_then_block, test_door_blocks_until_opened
 extern test_ladder_climb, test_fence_cannot_jump, test_place_variants
 extern test_door_break_removes_pair_and_support, test_raycast_shapes
+extern test_world_load_v4_converts
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -177,6 +178,7 @@ tests:
     TEST place_variants
     TEST door_break_removes_pair_and_support
     TEST raycast_shapes
+    TEST world_load_v4_converts
     dq 0
 
 section .rodata
@@ -295,6 +297,7 @@ section .rodata
     TESTNAME place_variants
     TESTNAME door_break_removes_pair_and_support
     TESTNAME raycast_shapes
+    TESTNAME world_load_v4_converts
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

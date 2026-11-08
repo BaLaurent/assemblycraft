@@ -346,7 +346,7 @@ test_ability_cost_cooldown_and_unlock:
     call    abilities_reset             ; ---- War Cry, bought: stuns within 6 blocks, not beyond
     call    rpg_recompute
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
-    mov     byte [rpg_state + RPGSAVE.ranks + 5], 1
+    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 5], 1
     SETF    [combat_stamina], 100.0
     mov     edi, MOB_ZOMBIE
     movss   xmm0, [k_16_5]
@@ -521,7 +521,7 @@ test_blink_stops_before_wall:
     mov     edi, CLASS_MAGE
     mov     esi, 5
     call    set_class
-    mov     byte [rpg_state + RPGSAVE.ranks + 5], 1
+    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 5], 1
     SETF    [combat_mana], 100.0
     lea     rdi, [rsp]
     movss   xmm0, [k_90]                ; facing +x
@@ -616,7 +616,7 @@ test_volley_and_arrow_rain_spawn:
     mov     edi, CLASS_ARCHER
     mov     esi, 5
     call    set_class
-    mov     byte [rpg_state + RPGSAVE.ranks + 7], 1
+    mov     byte [rpg_state + RPGSAVE.ranks_v4 + 7], 1
     SETF    [combat_stamina], 100.0
     mov     edi, ARROW
     mov     esi, 10

@@ -55,8 +55,8 @@ prev_fly:       resd 1
 prev_reload:    resd 1
 prev_skills:    resd 1
 prev_dodge:     resd 1
-prev_ability:   resd 3
-cap_edges:      resd 4                 ; dodge, ability 1..3 edges until the captured branch
+prev_ability:   resd 4
+cap_edges:      resd 5                 ; dodge, ability 1..4 edges until the captured branch
 prev_num:       resd 9
 
 section .text
@@ -408,6 +408,9 @@ input_poll:
     BIND    BIND_ABILITY3
     EDGE    prev_ability + 8
     mov     [cap_edges + 12], edx
+    BIND    BIND_ABILITY4
+    EDGE    prev_ability + 12
+    mov     [cap_edges + 16], edx
     xor     ecx, ecx
 .num:
     push    rcx
@@ -466,6 +469,8 @@ input_poll:
     mov     [frame_input + FRAMEINPUT.ability + 4], eax
     mov     eax, [cap_edges + 12]
     mov     [frame_input + FRAMEINPUT.ability + 8], eax
+    mov     eax, [cap_edges + 16]
+    mov     [frame_input + FRAMEINPUT.ability + 12], eax
     ; buttons, ignoring the click that captured the mouse until both are released
     cmp     dword [suppress], 0
     je      .buttons

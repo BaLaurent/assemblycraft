@@ -317,7 +317,7 @@ test_chest_spills_on_break:
     PLACE   5, 11, 5, CHEST, CONT_CHEST
     mov     rbx, rax
     mov     dword [rbx + CONTAINER.slots], STK(DIRT, 65, 0)
-    mov     dword [rbx + CONTAINER.slots + 1*4], STK(200, 1, 0)
+    mov     dword [rbx + CONTAINER.slots + 1*4], STK(NUM_ITEMS + 10, 1, 0)
     mov     dword [rbx + CONTAINER.slots + 2*4], STK(STICK, 0, 3)
     mov     dword [rbx + CONTAINER.slots + 3*4], STK(FURNACE_LIT, 1, 0)
     mov     dword [rbx + CONTAINER.slots + 4*4], STK(IRON_PICKAXE, 1, 9)

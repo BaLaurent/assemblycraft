@@ -32,13 +32,21 @@ s_empty:     db 0
 
 ; base stats per class (0 = no class, 1..4), in stat-id order:
 ; HEALTH MELEE RANGED SPELL CRIT CRITDMG MANA MANAREGEN STAMINA STAMREGEN ARMOR SPEED
-; BACKSTAB PARRY LIFESTEAL COOLDOWN ARROWSAVE DODGECOST
+; BACKSTAB PARRY LIFESTEAL COOLDOWN ARROWSAVE DODGECOST, then stats 18..43 (all 0)
 base_stats:
     dd 20,  0,  0,  0,  0, 0,   0, 0, 100, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; none
+    times NUM_STATS - 18 dd 0
     dd 24, 10,  0,  0,  5, 0,   0, 0, 120, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Warrior
+    times NUM_STATS - 18 dd 0
     dd 18,  0,  0, 10,  5, 0, 100, 4,  80, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Mage
+    times NUM_STATS - 18 dd 0
     dd 20,  0, 15,  0,  8, 0,   0, 0, 100, 0, 0, 5,   0, 0, 0, 0, 10, 0   ; Archer
+    times NUM_STATS - 18 dd 0
     dd 20,  0,  0,  0, 10, 0,   0, 0, 110, 10, 0, 5, 100, 0, 0, 0,  0, 0  ; Rogue
+    times NUM_STATS - 18 dd 0
+%if $ - base_stats != (NUM_CLASSES + 1) * NUM_STATS * 4
+%error "base_stats needs NUM_STATS dwords per class"
+%endif
 
 tier_level: db 1, 4, 9, 15              ; level needed by a node of tier 0..3
 
@@ -226,13 +234,13 @@ rpg_level:
 ; rpg_points() -> eax unspent skill points = level - sum of ranks (never negative)
 rpg_points:
     movzx   eax, byte [rpg_state + RPGSAVE.level]
-    lea     rsi, [rpg_state + RPGSAVE.ranks]
+    lea     rsi, [rpg_state + RPGSAVE.ranks_v4]
     xor     ecx, ecx
 .l:
     movzx   edx, byte [rsi + rcx]
     sub     eax, edx
     inc     ecx
-    cmp     ecx, NUM_NODES
+    cmp     ecx, V4_NODES
     jb      .l
     xor     edx, edx
     test    eax, eax
@@ -242,7 +250,7 @@ rpg_points:
 ; rpg_xp_need(edi level) -> eax XP to leave that level: 20 + 10 * level for 1..29, else 0
 rpg_xp_need:
     lea     eax, [rdi - 1]
-    cmp     eax, MAX_LEVEL - 1
+    cmp     eax, V4_MAX_LEVEL - 1
     jae     .none
     imul    eax, edi, 10
     add     eax, 20
@@ -254,10 +262,10 @@ rpg_xp_need:
 ; rpg_rank(edi node) -> eax rank of node 0..11 (0 for anything else)
 rpg_rank:
     xor     eax, eax
-    cmp     edi, NUM_NODES
+    cmp     edi, V4_NODES
     jae     .ret
     mov     ecx, edi
-    lea     rdx, [rpg_state + RPGSAVE.ranks]
+    lea     rdx, [rpg_state + RPGSAVE.ranks_v4]
     movzx   eax, byte [rdx + rcx]
 .ret:
     ret
@@ -282,11 +290,11 @@ rpg_ability_unlocked:
     je      .slot2
     test    edi, edi
     jz      .slot0
-    cmp     byte [rpg_state + RPGSAVE.ranks + 5], 0
+    cmp     byte [rpg_state + RPGSAVE.ranks_v4 + 5], 0
     seta    al
     ret
 .slot2:
-    cmp     byte [rpg_state + RPGSAVE.ranks + 7], 0
+    cmp     byte [rpg_state + RPGSAVE.ranks_v4 + 7], 0
     seta    al
     ret
 .slot0:
@@ -332,9 +340,9 @@ rpg_node_info:
     lea     eax, [rdi - 1]
     cmp     eax, NUM_CLASSES
     jae     .blank
-    cmp     esi, NUM_NODES
+    cmp     esi, V4_NODES
     jae     .blank
-    imul    eax, eax, NUM_NODES
+    imul    eax, eax, V4_NODES
     add     eax, esi
     imul    eax, eax, NODEINFO_size
     lea     rcx, [node_tab]
@@ -389,10 +397,10 @@ rpg_recompute:
     rep     movsd
     test    edx, edx
     jz      .caps
-    lea     r8, [rpg_state + RPGSAVE.ranks]
+    lea     r8, [rpg_state + RPGSAVE.ranks_v4]
     lea     r9, [node_tab]
     lea     eax, [rdx - 1]
-    imul    eax, eax, NUM_NODES * NODEINFO_size
+    imul    eax, eax, V4_NODES * NODEINFO_size
     add     r9, rax                     ; the class's first node
     lea     r10, [rpg_stats]
     xor     ecx, ecx
@@ -408,7 +416,7 @@ rpg_recompute:
 .next:
     add     r9, NODEINFO_size
     inc     ecx
-    cmp     ecx, NUM_NODES
+    cmp     ecx, V4_NODES
     jb      .node
 .caps:
     CAP     STAT_CRIT_CHANCE, 60
@@ -511,8 +519,8 @@ rpg_set_class:
     mov     [rpg_state + RPGSAVE.class], bl
     mov     byte [rpg_state + RPGSAVE.level], 1
     mov     dword [rpg_state + RPGSAVE.xp], 0
-    lea     rdi, [rpg_state + RPGSAVE.ranks]
-    mov     ecx, NUM_NODES
+    lea     rdi, [rpg_state + RPGSAVE.ranks_v4]
+    mov     ecx, V4_NODES
     xor     eax, eax
     rep     stosb
     call    rpg_recompute
@@ -552,7 +560,7 @@ rpg_add_xp:
     push    r12
     cmp     byte [rpg_state + RPGSAVE.class], 0
     je      .ret
-    cmp     byte [rpg_state + RPGSAVE.level], MAX_LEVEL
+    cmp     byte [rpg_state + RPGSAVE.level], V4_MAX_LEVEL
     jae     .ret
     mov     ebx, [rpg_state + RPGSAVE.xp]
     add     ebx, edi
@@ -629,13 +637,13 @@ rpg_can_spend:
     test    ecx, ecx
     jz      .ret
     mov     eax, 2
-    cmp     ebx, NUM_NODES
+    cmp     ebx, V4_NODES
     jae     .ret
     movzx   edi, byte [rpg_state + RPGSAVE.class]
     mov     esi, ebx
     call    rpg_node_info
     movzx   ecx, byte [rax + NODEINFO.max]
-    lea     rdx, [rpg_state + RPGSAVE.ranks]
+    lea     rdx, [rpg_state + RPGSAVE.ranks_v4]
     movzx   edx, byte [rdx + rbx]
     mov     eax, 2
     cmp     edx, ecx
@@ -650,7 +658,7 @@ rpg_can_spend:
     mov     eax, 4
     test    ecx, ecx
     jz      .ok                         ; tier 0 has no prerequisite
-    lea     rdx, [rpg_state + RPGSAVE.ranks]
+    lea     rdx, [rpg_state + RPGSAVE.ranks_v4]
     cmp     byte [rdx + rbx - 1], 0
     je      .ret
 .ok:
@@ -671,7 +679,7 @@ rpg_spend:
     call    rpg_can_spend
     test    eax, eax
     jnz     .no
-    lea     rdx, [rpg_state + RPGSAVE.ranks]
+    lea     rdx, [rpg_state + RPGSAVE.ranks_v4]
     inc     byte [rdx + rbx]
     call    rpg_recompute
     mov     edi, SND_CLICK
@@ -772,13 +780,13 @@ rpg_load:
     jae     .reset
     movzx   ebx, byte [rpg_state + RPGSAVE.level]
     lea     eax, [rbx - 1]
-    cmp     eax, MAX_LEVEL
+    cmp     eax, V4_MAX_LEVEL
     jae     .reset
-    lea     r8, [rpg_state + RPGSAVE.ranks]
+    lea     r8, [rpg_state + RPGSAVE.ranks_v4]
     lea     r9, [node_tab]
     movzx   eax, byte [rpg_state + RPGSAVE.class]
     dec     eax
-    imul    eax, eax, NUM_NODES * NODEINFO_size
+    imul    eax, eax, V4_NODES * NODEINFO_size
     add     r9, rax                     ; the class's first node
     xor     ecx, ecx                    ; node
     xor     edx, edx                    ; sum of ranks
@@ -789,13 +797,13 @@ rpg_load:
     add     edx, eax
     add     r9, NODEINFO_size
     inc     ecx
-    cmp     ecx, NUM_NODES
+    cmp     ecx, V4_NODES
     jb      .rank
     cmp     edx, ebx
     jbe     .ranks_ok
 .bad_ranks:
-    lea     rdi, [rpg_state + RPGSAVE.ranks]
-    mov     ecx, NUM_NODES
+    lea     rdi, [rpg_state + RPGSAVE.ranks_v4]
+    mov     ecx, V4_NODES
     xor     eax, eax
     rep     stosb
 .ranks_ok:
