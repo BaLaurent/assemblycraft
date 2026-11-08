@@ -106,7 +106,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIRCH_LOG      120
 %define BIRCH_LEAVES   121
 %define BED            122              ; 8 ids: base + head*4 + facing (DIR_*, foot -> head)
-%define NUM_BLOCKS     130              ; ids 130..143 unused
+%define SHRINE         130              ; 5 ids: base + faction (FAC_*), unbreakable, no item form
+%define NUM_BLOCKS     135              ; ids 135..143 unused
 
 ; ---- item ids -------------------------------------------------------------
 %define FIRST_ITEM     144
@@ -377,7 +378,15 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_ICON_BOAT     225
 %define TILE_BUBBLE        226
 %define TILE_BUBBLE_POP    227
+%define TILE_SHRINE_TOP    228          ; 0.10: the last free byte tiles
+%define TILE_SHRINE_SIDE   229
 %define FONT_Y             256          ; glyph rows at atlas y 256..303, x 0..127
+; 0.10 faction skins, 16-bit tile ids past the font: faction f's tile k = TILE_FOLK0 + 4f + k
+%define TILE_FOLK0         304          ; 304..323
+%define TILE_FOLK_HEAD     0
+%define TILE_FOLK_FACE     1
+%define TILE_FOLK_TUNIC    2
+%define TILE_FOLK_PANTS    3
 
 ; ---- save file ------------------------------------------------------------
 %define WORLD_HDR_SIZE  32768
@@ -406,6 +415,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_BOSS      9
 %define CAUSE_POISON    10
 %define CAUSE_DROWN     11
+%define CAUSE_FOLK      12              ; + faction: slain by a faction's folk (12..16)
+%define CAUSE_LAST      16
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
 
@@ -435,6 +446,20 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FCLASS_ACOLYTE  3
 %define FCLASS_BERSERKER 4
 %define NUM_FCLASSES    5
+%define FF_ASLEEP       1               ; MOB.fflags
+%define FF_RAGE         2
+%define TIER_HATED      0               ; faction_tier
+%define TIER_HOSTILE    1
+%define TIER_NEUTRAL    2
+%define TIER_FRIENDLY   3
+%define TIER_ALLIED     4
+%define STANDING_HOSTILE  -200          ; the lowest standing of each tier above Hated
+%define STANDING_NEUTRAL  0
+%define STANDING_FRIENDLY 200
+%define STANDING_ALLIED   500
+%define STANDING_MIN    -1000
+%define STANDING_MAX    1000
+%define CULT_MAX        199             ; the Ashen Cult never becomes Friendly
 %define MOB_ELITE_BIT   0x100           ; MOBSAVE.type flag
 %define MS_LEVEL_SHIFT  16              ; MOBSAVE.type bits 16..23 = level (0 = derive on load)
 %define MS_AFFIX_SHIFT  24              ; MOBSAVE.type bits 24..31 = elite affixes (AFX_*)
@@ -451,6 +476,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_DROPS       64              ; item entities lying in the world
 %define MAX_ARROWS      96
 
+%define OWNER_PLAYER    0               ; ARROWENT.owner
+%define OWNER_MONSTER   1
+%define OWNER_FOLK      2               ; + faction
 %define PROJ_ARROW      0               ; ARROWENT.kind
 %define PROJ_BULLET     1
 %define PROJ_ROCKET     2
@@ -654,6 +682,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_SITES       81              ; runtime cache: the 3x3 regions around the player
 %define MAX_SITESTATES  1024            ; WORLDHDR.sites
 %define SS_CLEARED      1               ; SITESTATE.flags
+%define SS_FREED        2               ; a camp's captive was freed
 %define FAC_VILLAGERS   0
 %define FAC_BANDITS     1
 %define FAC_CULT        2
@@ -704,6 +733,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_CLASS        17
 %define ST_SKILLS       18
 %define ST_CHARACTER    19
+%define ST_SHRINE       20
+%define ST_LEADER       21
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -1160,7 +1191,7 @@ struc SITESTATE
     .slot:  resb 1
     .kind:  resb 1
     .kills: resb 1
-    .flags: resb 1                      ; SS_CLEARED
+    .flags: resb 1                      ; SS_CLEARED, SS_FREED
 endstruc                                ; 12 bytes
 
 ; one loaded 16 x 256 x 16 column of the streamed world
@@ -1198,6 +1229,16 @@ struc GENBUF
     .chests:  resb MAX_GEN_CHESTS * GENCHEST_size
     .conts:   resb MAX_COL_CONTS * CONTAINER_size
 endstruc
+
+; a road between two camps of one super-region (structures.asm roads_edges), absolute cells
+struc ROADEDGE
+    .ax:      resd 1                    ; camp centres: A = the start, B = the end
+    .az:      resd 1
+    .bx:      resd 1
+    .bz:      resd 1
+    .faction: resd 1                    ; A's faction
+    .key:     resd 1                    ; hash32(sx, sz, 900 + i) | 1
+endstruc                                ; 24 bytes
 
 ; a boat: boats[MAX_BOATS] in boats.asm, local coordinates; named BOATENT because BOAT is the item id
 struc BOATENT
@@ -1240,7 +1281,9 @@ struc WORLDHDR
     .breath:     resd 1                 ; @324
     .boat_count: resd 1                 ; @328
     .boats:      resb MAX_BOATS * BOATSAVE_size ; @332
-    .pad_a:      resb 944 - 588
+    .standing:   resw 8                 ; @588: int16 per faction (FAC_*), 5 used
+    .champions:  resb 1                 ; @604: bit f = faction f's champion is defeated
+    .pad_a:      resb 944 - 605
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
     .mob_count:  resd 1                 ; @1024
@@ -1340,7 +1383,7 @@ struc ARROWENT
     .vz:     resd 1
     .age:    resd 1                     ; steps
     .stuck:  resd 1                     ; 0 flying, else steps stuck
-    .owner:  resd 1                     ; 0 player, 1 mob
+    .owner:  resd 1                     ; OWNER_PLAYER, OWNER_MONSTER, OWNER_FOLK + faction
     .damage: resd 1
     .pickup: resd 1                     ; 0/1
     .live:   resd 1                     ; 0/1

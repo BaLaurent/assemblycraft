@@ -320,6 +320,9 @@ test_world_save_load:
 %if MOB_size != 260 || INVENTORY_size != 216 || SITE_size != 56 || COLUMN_size != 408
     jmp     .fail
 %endif
+%if WORLDHDR.standing != 588 || WORLDHDR.champions != 604
+    jmp     .fail
+%endif
 %if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.origin_x != 300
     jmp     .fail
 %endif
