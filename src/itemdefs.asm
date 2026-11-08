@@ -1,5 +1,5 @@
 ; itemdefs.asm - per-item data tables, indexed by item id 0..224 (NUM_ITEMS).
-; Ids 0..134 are the blocks (variant ids: the item form is block_base), 135..143 are unused,
+; Ids 0..136 are the blocks (variant ids: the item form is block_base), 137..143 are unused,
 ; 144..224 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
@@ -96,6 +96,8 @@ n_blog:     db "Birch Log", 0
 n_bleaves:  db "Birch Leaves", 0
 n_bed:      db "Bed", 0
 n_shrine:   db "Shrine", 0
+n_drygrass: db "Dry Grass", 0
+n_lava:     db "Lava", 0
 n_boat:     db "Boat", 0
 n_unused:   db "?", 0
 n_stick:    db "Stick", 0
@@ -204,6 +206,7 @@ item_names:
     dq n_plog, n_pleaves, n_blog, n_bleaves
     times 8 dq n_bed
     times 5 dq n_shrine
+    dq n_drygrass, n_lava
     PAD_TO item_names, STICK, 8, n_unused
     dq n_stick, n_wpick, n_waxe, n_wshovel, n_wsword
     dq n_spick, n_saxe, n_sshovel, n_ssword, n_apple, n_pork
@@ -259,6 +262,7 @@ item_icon:
     db TILE_ICON_BED
     times 7 db 0
     times 5 db 0                        ; SHRINE: no item form
+    times 2 db 0                        ; DRY_GRASS, LAVA: no item form
     PAD_TO item_icon, STICK, 1, 0
 %assign i 0
 %rep COAL - STICK
@@ -303,6 +307,7 @@ item_max_stack:
     db 1                                ; BED
     times 7 db 0
     times 5 db 0                        ; SHRINE
+    times 2 db 0                        ; DRY_GRASS, LAVA
     PAD_TO item_max_stack, STICK, 1, 0
     db 64                               ; stick
     times 8 db 1                        ; tools

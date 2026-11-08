@@ -389,7 +389,7 @@ test_worldgen_biomes:
     cmp     dword [rsi + rcx*4], 0
     je      .fail
     inc     ecx
-    cmp     ecx, NUM_BIOMES
+    cmp     ecx, BIOME_RIVER + 1        ; the 0.10 biomes; the transition biomes arrive with the ladder
     jb      .all
     mov     eax, [rsi + BIOME_OCEAN*4]
     imul    rax, rax, 100

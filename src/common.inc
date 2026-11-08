@@ -38,7 +38,13 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIOME_SWAMP    5
 %define BIOME_MOUNTAINS 6
 %define BIOME_RIVER    7
-%define NUM_BIOMES     8
+%define BIOME_TAIGA    8                ; 0.10.1 transition biomes of the climate ladder
+%define BIOME_SAVANNA  9
+%define BIOME_SHORE    10
+%define BIOME_BIRCH    11
+%define NUM_BIOMES     12
+; the biomes the world spawn may stand in (land with a ground to build on)
+%define SPAWN_BIOMES   ((1 << BIOME_PLAINS) | (1 << BIOME_FOREST) | (1 << BIOME_DESERT) | (1 << BIOME_SNOW) | (1 << BIOME_SWAMP) | (1 << BIOME_TAIGA) | (1 << BIOME_SAVANNA) | (1 << BIOME_BIRCH))
 
 ; ---- block ids ------------------------------------------------------------
 %define AIR            0
@@ -107,7 +113,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIRCH_LEAVES   121
 %define BED            122              ; 8 ids: base + head*4 + facing (DIR_*, foot -> head)
 %define SHRINE         130              ; 5 ids: base + faction (FAC_*), unbreakable, no item form
-%define NUM_BLOCKS     135              ; ids 135..143 unused
+%define DRY_GRASS      135              ; savanna and warm-edge grass; digs to dirt
+%define LAVA           136              ; a liquid like WATER (SHAPE_LIQUID), light 15, burns
+%define NUM_BLOCKS     137              ; ids 137..143 unused
 
 ; ---- item ids -------------------------------------------------------------
 %define FIRST_ITEM     144
@@ -387,6 +395,15 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_FOLK_FACE     1
 %define TILE_FOLK_TUNIC    2
 %define TILE_FOLK_PANTS    3
+; 0.10.1 block tiles, 16-bit ids past the faction skins
+%define TILE_DRY_GRASS_TOP  324
+%define TILE_DRY_GRASS_SIDE 325
+%define TILE_LAVA           326
+; cave column flags (caves.asm cave_flags)
+%define CF_RAVINE      1
+%define CF_PILLAR      2
+%define CF_CAVERN      4
+%define CF_MOUTH       8
 
 ; ---- save file ------------------------------------------------------------
 %define WORLD_HDR_SIZE  32768

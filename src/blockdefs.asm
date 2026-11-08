@@ -1,5 +1,5 @@
 ; blockdefs.asm - per-block flags, atlas tiles, digging and harvest rules, shapes, light.
-; Indexed by block id 0..134 (NUM_BLOCKS). Display names live in itemdefs.asm.
+; Indexed by block id 0..136 (NUM_BLOCKS). Display names live in itemdefs.asm.
 ; Variant groups (stairs, doors, trapdoors, ladders, wall torches) take one id per
 ; orientation/state: param = id - block_base[id] (see common.inc).
 ;
@@ -45,6 +45,7 @@ block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3
     db 8,    9,  0,    3,    3,  0,    1,     3,   1,    3,   1
     times 8 db 1                        ; BED (foot 0..3, head 4..7)
     times 5 db 3                        ; SHRINE (one per faction)
+    db 3, 8                             ; DRY_GRASS, LAVA
     SIZECHECK block_flags, 1
 
 ; tiles per block: top, side, bottom
@@ -142,6 +143,8 @@ block_tiles:
 %rep 5                                  ; SHRINE
     dw TILE_SHRINE_TOP, TILE_SHRINE_SIDE, TILE_STONE_BRICK
 %endrep
+    dw TILE_DRY_GRASS_TOP, TILE_DRY_GRASS_SIDE, 3 ; DRY_GRASS (dirt below)
+    dw TILE_LAVA, TILE_LAVA, TILE_LAVA  ; LAVA
     SIZECHECK block_tiles, 6
 
 align 4
@@ -167,6 +170,7 @@ block_hardness:
     dd -1.0, 0.5, 0.1, 0.4, 0.6, 0.0, 0.4, 2.0, 0.2, 2.0, 0.2
     times 8 dd 0.2                      ; BED
     times 5 dd -1.0                     ; SHRINE
+    dd 0.6, -1.0                        ; DRY_GRASS, LAVA
     SIZECHECK block_hardness, 4
 
 %define M_TOOLS TOOL_AXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE
@@ -190,6 +194,7 @@ block_tool:       db 0, TOOL_PICKAXE, TOOL_SHOVEL, TOOL_SHOVEL, TOOL_PICKAXE, TO
                   db TOOL_AXE, 0, TOOL_AXE, 0 ; PINE_LOG .. BIRCH_LEAVES
                   times 8 db 0           ; BED
                   times 5 db 0           ; SHRINE
+                  db TOOL_SHOVEL, 0      ; DRY_GRASS, LAVA
     SIZECHECK block_tool, 1
 
 ; minimum pickaxe level to harvest (0 = anything; 1 wood, 2 stone, 3 iron/diamond)
@@ -203,6 +208,7 @@ block_harvest_level: db 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0
                   times 16 db 1          ; IRON_DOOR
                   times 8 + 4 + 5 + 2 db 0
                   times 11 + 8 + 5 db 0  ; WATER .. BED, SHRINE
+                  times 2 db 0           ; DRY_GRASS, LAVA
     SIZECHECK block_harvest_level, 1
 
 ; harvested item (LEAVES: 0, the apple chance is rolled by the game)
@@ -224,6 +230,7 @@ block_drop:       db 0, COBBLE, DIRT, DIRT, COBBLE, PLANKS, LOG, 0, SAND, 0, BRI
                   db PINE_LOG, 0, BIRCH_LOG, 0 ; leaves: the game rolls their drops
                   times 8 db BED         ; either half drops the one bed
                   times 5 db 0           ; SHRINE
+                  db DIRT, 0             ; DRY_GRASS digs to dirt, LAVA nothing
     SIZECHECK block_drop, 1
 
 %define DS_STONE SND_DIG_STONE
@@ -247,6 +254,7 @@ block_dig_sound:
     db DS_WOOD, SND_DIG_SOFT, DS_WOOD, SND_DIG_SOFT ; pine, birch
     times 8 db DS_WOOD                  ; BED
     times 5 db DS_STONE                 ; SHRINE
+    db SND_DIG_SOFT, 0                  ; DRY_GRASS, LAVA
     SIZECHECK block_dig_sound, 1
 
 %define SS_STONE SND_STEP_STONE
@@ -270,6 +278,7 @@ block_step_sound:
     db SS_WOOD, SND_STEP_SOFT, SS_WOOD, SND_STEP_SOFT ; pine, birch
     times 8 db SS_WOOD                  ; BED
     times 5 db SS_STONE                 ; SHRINE
+    db SND_STEP_SOFT, 0                 ; DRY_GRASS, LAVA
     SIZECHECK block_step_sound, 1
 
 ; chance in % per fire tick that a neighbouring fire burns the block (TNT: ignites)
@@ -290,6 +299,7 @@ block_flammable: db 0, 0,    0,    0,   0,     20,    5,  30,    0,   0,    0,  
                  db 5, 30, 5, 30         ; PINE_LOG, PINE_LEAVES, BIRCH_LOG, BIRCH_LEAVES
                  times 8 db 20           ; BED
                  times 5 db 0            ; SHRINE
+                 times 2 db 0            ; DRY_GRASS, LAVA
     SIZECHECK block_flammable, 1
 
 ; SHAPE_* of each block (shapes.asm turns it into boxes)
@@ -309,6 +319,7 @@ block_shape:
     times 4 db SHAPE_CUBE               ; pine, birch
     times 8 db SHAPE_BED
     times 5 db SHAPE_CUBE               ; SHRINE
+    db SHAPE_CUBE, SHAPE_LIQUID         ; DRY_GRASS, LAVA
     SIZECHECK block_shape, 1
 
 ; the base id of a variant group (param = id - base); the item form of a block, 0 = none
@@ -334,6 +345,7 @@ block_base:
     GROUP_IDS CACTUS, BED - CACTUS      ; CACTUS .. BIRCH_LEAVES
     times 8 db BED
     times 5 db SHRINE
+    db 0, 0                             ; DRY_GRASS, LAVA: no item form
     SIZECHECK block_base, 1
 
 ; block light emitted (0..15)
@@ -347,4 +359,5 @@ block_light:
     db 0, 0                             ; FENCE, GLASS_PANE
     times 11 + 8 db 0                   ; WATER .. BED
     times 5 db 10                       ; SHRINE
+    db 0, 15                            ; DRY_GRASS, LAVA
     SIZECHECK block_light, 1

@@ -1346,7 +1346,7 @@ test_shrine_block_tables:
     inc     ebx
     cmp     ebx, SHRINE + 5
     jb      .block
-    mov     edi, SHRINE + 5                 ; past the group: not a block, not usable
+    mov     edi, NUM_BLOCKS                 ; past the group: not a block, not usable
     call    block_is_usable
     test    eax, eax
     jnz     .fail
