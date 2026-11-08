@@ -5,17 +5,52 @@
 section .note.GNU-stack noalloc noexec nowrite progbits
 
 ; ---- world ----------------------------------------------------------------
-%define WORLD_X        256
-%define WORLD_Y        64
-%define WORLD_Z        256
-%define WORLD_VOLUME   4194304          ; index = (y<<16)|(z<<8)|x
+%define WORLD_X        256              ; removed at wave-1 integration
+%define WORLD_Y        64               ; removed at wave-1 integration
+%define WORLD_Z        256              ; removed at wave-1 integration
+%define WORLD_VOLUME   4194304          ; removed at wave-1 integration
 
-; ---- chunks ---------------------------------------------------------------
+; infinite streamed world: 16x16 columns of 16 chunks, local = absolute - world_origin
+%define WORLD_H        256
 %define CHUNK          16
-%define CHUNKS_X       16
-%define CHUNKS_Y       4
-%define CHUNKS_Z       16
-%define NUM_CHUNKS     1024             ; index = (cy*16 + cz)*16 + cx
+%define COL_CHUNKS     16
+%define COL_GRID       64               ; toroidal column table: slot (acz & 63)*64 + (acx & 63)
+%define MAX_COLUMNS    4096
+%define CHUNK_BYTES    8192             ; 4096 block bytes, then 4096 packed-light bytes
+%define POOL_CHUNKS    24576
+%define REGION_COLS    32               ; 32x32 columns per region file
+%define SEA_LEVEL      96
+%define REBASE_AT      1024
+%define REBASE_STEP    512
+%define MAX_RENDER_DIST 16
+%define COL_FREE       0                ; COLUMN.state
+%define COL_PENDING    1
+%define COL_BLOCKS     2
+%define COL_LIT        3
+%define CF_MODIFIED    1                ; COLUMN.flags
+%define CF_CONTS       2
+%define GEN_SLOTS      8                ; generator buffers
+%define GB_FREE        0                ; GENBUF.state
+%define GB_REQ         1
+%define GB_BUSY        2
+%define GB_DONE        3
+%define MAX_GEN_CHESTS 16
+%define MAX_COL_CONTS  64
+%define BIOME_OCEAN    0
+%define BIOME_PLAINS   1
+%define BIOME_FOREST   2
+%define BIOME_DESERT   3
+%define BIOME_SNOW     4
+%define BIOME_SWAMP    5
+%define BIOME_MOUNTAINS 6
+%define BIOME_RIVER    7
+%define NUM_BIOMES     8
+
+; ---- chunks (0.8 flat world) ------------------------------------------------
+%define CHUNKS_X       16               ; removed at wave-1 integration
+%define CHUNKS_Y       4                ; removed at wave-1 integration
+%define CHUNKS_Z       16               ; removed at wave-1 integration
+%define NUM_CHUNKS     1024             ; removed at wave-1 integration
 
 ; ---- block ids ------------------------------------------------------------
 %define AIR            0
@@ -71,7 +106,19 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TORCH_WALL     105              ; 105..108: param = 1 + support side
 %define FENCE          109
 %define GLASS_PANE     110
-%define NUM_BLOCKS     111              ; ids 111..143 unused
+%define WATER          111              ; translucent, not solid, not an item
+%define ICE            112
+%define SNOW_LAYER     113              ; 2/16 high, replaceable
+%define SNOW_BLOCK     114
+%define MUD            115
+%define TALL_GRASS     116              ; cross-shaped plant, replaceable
+%define CACTUS         117
+%define PINE_LOG       118
+%define PINE_LEAVES    119
+%define BIRCH_LOG      120
+%define BIRCH_LEAVES   121
+%define BED            122              ; 8 ids: base + head*4 + facing (DIR_*, foot -> head)
+%define NUM_BLOCKS     130              ; ids 130..143 unused
 
 ; ---- item ids -------------------------------------------------------------
 %define FIRST_ITEM     144
@@ -155,12 +202,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define DIAMOND_HAMMER (FIRST_ITEM + 77)
 %define IRON_SPEAR     (FIRST_ITEM + 78)
 %define DIAMOND_SPEAR  (FIRST_ITEM + 79)
-%define NUM_ITEMS      (FIRST_ITEM + 80) ; 224
-
-; v3 (0.6) id space, for save migration
-%define V3_NUM_BLOCKS  25
-%define V3_FIRST_ITEM  32
-%define V3_NUM_ITEMS   102
+%define BOAT           (FIRST_ITEM + 80)
+%define NUM_ITEMS      (FIRST_ITEM + 81) ; 225
 
 ; ---- directions / block shapes ---------------------------------------------
 %define DIR_N          0                ; -z
@@ -177,6 +220,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SHAPE_TORCH    7
 %define SHAPE_FENCE    8
 %define SHAPE_PANE     9
+%define SHAPE_BED      10               ; one 9/16 high box
+%define SHAPE_CROSS    11               ; two diagonal quads (drawn by the mesher)
+%define SHAPE_LIQUID   12               ; no boxes (drawn by the mesher's water path)
+%define SHAPE_SNOW     13               ; a 2/16 layer, no collision
+%define SHAPE_CACTUS   14               ; inset 1/16 on x and z
 %define BOXES_RENDER   0                ; shape_boxes purposes
 %define BOXES_COLLIDE  1
 %define BOXES_SELECT   2
@@ -208,6 +256,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FLAG_SOLID     1
 %define FLAG_OPAQUE    2
 %define FLAG_CULL_SAME 4
+%define FLAG_TRANSLUCENT 8              ; drawn in the blended pass (WATER, ICE)
 
 ; ---- mesh / texture -------------------------------------------------------
 %define MAX_CHUNK_VERTS    196608       ; cubes need <= 98304; shaped blocks use the rest
@@ -319,17 +368,32 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_STAT_AREA     239
 %define TILE_STAT_ELITE    254
 %define TILE_KEYSTONE      255
+; 0.9 tiles: the 24 tiles the font left at y 192..239 (192..199, 208..215, 224..231)
+%define TILE_WATER         192
+%define TILE_ICE           193
+%define TILE_SNOW          194
+%define TILE_MUD           195
+%define TILE_TALL_GRASS    196
+%define TILE_CACTUS_SIDE   197
+%define TILE_CACTUS_TOP    198
+%define TILE_PINE_LOG      199
+%define TILE_PINE_LOG_TOP  208
+%define TILE_PINE_LEAVES   209
+%define TILE_BIRCH_LOG     210
+%define TILE_BIRCH_LEAVES  211
+%define TILE_BED_HEAD_TOP  212
+%define TILE_BED_FOOT_TOP  213
+%define TILE_BED_HEAD_SIDE 214
+%define TILE_BED_FOOT_SIDE 215
+%define TILE_ICON_BED      224
+%define TILE_ICON_BOAT     225
+%define TILE_BUBBLE        226
+%define TILE_BUBBLE_POP    227
 %define FONT_Y             256          ; glyph rows at atlas y 256..303, x 0..127
 
 ; ---- save file ------------------------------------------------------------
 %define WORLD_HDR_SIZE  32768
-%define WORLD_FILE_SIZE 4227072          ; 32768 + 4194304 (v5, "ACRAFT05")
-%define WORLD_V4_HDR    16384            ; v3/v4 header size
-%define WORLD_V4_SIZE   4210688          ; v3/v4 file: 16384 + 4194304
-%define WORLD_BASE_HDR  1024             ; fields shared by v2 and v3 headers
-%define WORLD_V2_SIZE   4195328          ; v2 file: 1024-byte header + blocks
-%define WORLD_V1_SIZE   4194352          ; 0.1 file: 48-byte header + blocks
-%define WORLD_V1_HDR    48
+%define WORLD_FILE_SIZE 4227072          ; 32768 + 4194304; removed at wave-1 integration
 %define HOTBAR_SLOTS    9
 
 ; ---- game -----------------------------------------------------------------
@@ -354,6 +418,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_FIRE      8
 %define CAUSE_BOSS      9
 %define CAUSE_POISON    10
+%define CAUSE_DROWN     11
+%define MAX_BREATH      600             ; steps of air under water
+%define MAX_BOATS       16
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -378,7 +445,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define AFX_JUGGERNAUT  64
 %define AFX_ARMORED     128
 %define NUM_AFFIX_KINDS 8
-%define MAX_MOBS        32
+%define MAX_MOBS        64
 %define MAX_DROPS       64              ; item entities lying in the world
 %define MAX_ARROWS      96
 
@@ -580,7 +647,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SITE_VILLAGE    1
 %define SITE_DUNGEON    2
 %define SITE_CRYPT      3
-%define MAX_SITES       9
+%define SITE_CAMP       4               ; a faction camp clearing (index = FAC_*)
+%define MAX_REGION_SITES 9              ; region_plan output
+%define MAX_SITES       81              ; runtime cache: the 3x3 regions around the player
+%define MAX_SITESTATES  1024            ; WORLDHDR.sites
+%define SS_CLEARED      1               ; SITESTATE.flags
+%define FAC_VILLAGERS   0
+%define FAC_BANDITS     1
+%define FAC_CULT        2
+%define FAC_BEASTFOLK   3
+%define FAC_STONEKIN    4
+%define NUM_FACTIONS    5
 %define NUM_DUNGEONS    6
 %define DUNGEON_KILLS   8
 
@@ -602,7 +679,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 
 %define CONT_FURNACE    1
 %define CONT_CHEST      2
-%define MAX_CONTAINERS  120
+%define MAX_CONTAINERS  256             ; runtime table conts[]
+%define MAX_CONTAINERS_V5 118           ; removed at wave-1 integration
 %define SMELT_STEPS     200
 
 ; ---- app states -----------------------------------------------------------
@@ -719,15 +797,25 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SYS_CLOSE   3
 %define SYS_STAT    4
 %define SYS_LSEEK   8
+%define SYS_FSTAT   5
+%define SYS_PREAD64 17
 %define SYS_PWRITE64 18
 %define SYS_RENAME  82
 %define SYS_MKDIR   83
 %define SYS_UNLINK  87
+%define SYS_RMDIR   84
 %define SYS_TIME    201
 %define SYS_GETDENTS64 217
+%define SYS_CLOCK_GETTIME 228
+%define CLOCK_MONOTONIC 1
 %define O_RDONLY    0
 %define O_WRONLY    1
+%define O_RDWR      2
+%define O_CREAT     0x40
 %define O_WCT       0x241               ; O_WRONLY|O_CREAT|O_TRUNC
+%define SEEK_END    2
+%define DT_DIR      4
+%define DT_REG      8
 %define O_DIRECTORY 0x10000
 %define MODE_644    420
 %define ENOENT      2
@@ -840,6 +928,8 @@ struc SURVIVAL
     .eat_sound:       resd 1
     .dead:            resd 1
     .death_cause:     resd 1
+    .breath:          resd 1            ; steps of air, 0..MAX_BREATH
+    .drown_timer:     resd 1            ; steps at 0 breath
 endstruc
 
 struc MOB
@@ -890,18 +980,19 @@ struc MOBSAVE
     .z:      resd 1
 endstruc
 
-; a furnace or chest, stored in the world header
+; a furnace or chest (runtime table conts[], absolute cell coordinates)
 struc CONTAINER
-    .x:        resb 1
-    .y:        resb 1
-    .z:        resb 1
+    .x:        resd 1
+    .y:        resd 1
+    .z:        resd 1
     .kind:     resb 1                   ; 0 free, CONT_FURNACE, CONT_CHEST
+    .pad0:     resb 3
     .slots:    resb 27 * 4              ; furnace: 0 input, 1 fuel, 2 output
     .burn:     resw 1                   ; steps of fuel left
     .burn_max: resw 1
     .cook:     resw 1
-    .pad:      resb 10
-endstruc                                ; 128 bytes
+    .pad:      resb 6
+endstruc                                ; 136 bytes
 
 ; RPG progression, stored in WORLDHDR.rpg; skill points are derived (level - sum of ranks)
 struc RPGSAVE
@@ -1031,12 +1122,13 @@ endstruc
 %error "TRADEOFFER must be 16 bytes"
 %endif
 
-; a generated site (village, dungeon, crypt); lo/hi = inclusive trigger box
+; a site (village, dungeon, crypt, camp); lo/hi = inclusive trigger box. Absolute coordinates in
+; region_plan's output, local ones in the runtime cache sites[]
 struc SITE
     .kind:  resd 1
-    .index: resd 1
+    .index: resd 1                      ; FAC_* for camps
     .x:     resd 1
-    .y:     resd 1                      ; ground level (village) or floor y (dungeon, crypt)
+    .y:     resd 1                      ; ground level (village, camp) or floor y (dungeon, crypt)
     .z:     resd 1
     .lo_x:  resd 1
     .lo_y:  resd 1
@@ -1044,50 +1136,117 @@ struc SITE
     .hi_x:  resd 1
     .hi_y:  resd 1
     .hi_z:  resd 1
-endstruc                                ; 44 bytes
+    .rx:    resd 1                      ; its region
+    .rz:    resd 1
+    .slot:  resd 1                      ; its index in region_plan's output
+endstruc                                ; 56 bytes
 
-; v3 world file header; offsets are load-bearing (save files, verification patches)
+; persistent state of one site, WORLDHDR.sites, keyed by (rx, rz, slot)
+struc SITESTATE
+    .rx:    resd 1
+    .rz:    resd 1
+    .slot:  resb 1
+    .kind:  resb 1
+    .kills: resb 1
+    .flags: resb 1                      ; SS_CLEARED
+endstruc                                ; 12 bytes
+
+; one loaded 16 x 256 x 16 column of the streamed world
+struc COLUMN
+    .cx:     resd 1                     ; absolute chunk coordinates
+    .cz:     resd 1
+    .state:  resd 1                     ; COL_*
+    .flags:  resd 1                     ; CF_*
+    .dirty:  resd 1                     ; bit cy = chunk cy needs a remesh
+    .top:    resd 1                     ; highest non-AIR y, -1 if none
+    .chunks: resq COL_CHUNKS            ; CHUNK_BYTES each; 0 = all AIR, light 0xF0
+    .biome:  resb 256                   ; BIOME_* at (lz<<4)|lx
+endstruc                                ; 408 bytes
+
+; a chest the generator placed; its loot is rolled on install
+struc GENCHEST
+    .x:     resd 1                      ; absolute cell
+    .y:     resd 1
+    .z:     resd 1
+    .table: resd 1                      ; 0 dungeon, 1 crypt
+endstruc                                ; 16 bytes
+
+; a column being generated (worker thread) or decoded from a region file
+struc GENBUF
+    .cx:      resd 1                    ; absolute chunk coordinates
+    .cz:      resd 1
+    .state:   resd 1                    ; GB_*
+    .session: resd 1
+    .top:     resd 1
+    .nchests: resd 1
+    .nconts:  resd 1                    ; containers decoded from a region blob
+    .pad:     resd 1
+    .blocks:  resb 65536                ; (y<<8)|(lz<<4)|lx
+    .biome:   resb 256
+    .chests:  resb MAX_GEN_CHESTS * GENCHEST_size
+    .conts:   resb MAX_COL_CONTS * CONTAINER_size
+endstruc
+
+; a boat: boats[MAX_BOATS] in boats.asm, local coordinates; named BOATENT because BOAT is the item id
+struc BOATENT
+    .body:  resb BODY_size              ; y = bottom; yaw = heading
+    .used:  resd 1
+    .speed: resd 1                      ; float, blocks/s along yaw
+endstruc                                ; 76 bytes
+
+struc BOATSAVE
+    .x:   resd 1                        ; floats, local
+    .y:   resd 1
+    .z:   resd 1
+    .yaw: resd 1
+endstruc                                ; 16 bytes
+
+; v6 world header (world.hdr); offsets are load-bearing (save files, verification patches)
 struc WORLDHDR
-    .magic:      resb 8                 ; "ACRAFT05" (v4 "ACRAFT04": 16384-byte header; v3 "ACRAFT03": old item ids)
+    .magic:      resb 8                 ; "ACRAFT06"
     .seed:       resd 1
     .mode:       resd 1
     .time:       resd 1
     .name:       resb 33                ; NUL-terminated, <= 32 chars
     .pad0:       resb 3
-    .spawn_x:    resd 1
+    .spawn_x:    resd 1                 ; world spawn cell, absolute
     .spawn_y:    resd 1
     .spawn_z:    resd 1
-    .player:     resb BODY_size         ; @68
+    .player:     resb BODY_size         ; @68, local
     .health:     resd 1                 ; @136
     .food:       resd 1
     .saturation: resd 1                 ; float
     .exhaustion: resd 1                 ; float
     .sel:        resd 1                 ; @152
     .inventory:  resb INV_SLOTS * 4     ; @156
-    .mob_count:  resd 1                 ; @300
-    .mobs:       resb MAX_MOBS * MOBSAVE_size ; @304
+    .origin_x:   resd 1                 ; @300
+    .origin_z:   resd 1                 ; @304
+    .bed_x:      resd 1                 ; @308: absolute foot cell
+    .bed_y:      resd 1
+    .bed_z:      resd 1
+    .bed_set:    resd 1                 ; @320
+    .breath:     resd 1                 ; @324
+    .boat_count: resd 1                 ; @328
+    .boats:      resb MAX_BOATS * BOATSAVE_size ; @332
+    .pad_a:      resb 944 - 588
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
-    .containers: resb MAX_CONTAINERS * CONTAINER_size ; @1024
-    .pad1:       resb 16384 - 1024 - MAX_CONTAINERS * CONTAINER_size
+    .mob_count:  resd 1                 ; @1024
+    .mobs:       resb MAX_MOBS * MOBSAVE_size ; @1028, local floats
+    .site_count: resd 1                 ; @2308
+    .sites:      resb MAX_SITESTATES * SITESTATE_size ; @2312
+    .pad1:       resb 16384 - 14600
     .jewelry:    resb 16                ; @16384: 3 ITEMSTACKs + 4 spare
     .rpgx:       resb RPGEXT_size       ; @16400
-    .pad2:       resb WORLD_HDR_SIZE - 16400 - RPGEXT_size
+    .containers_v5: resb MAX_CONTAINERS_V5 * CONTAINER_size ; @16656; removed at wave-1 integration
+    .pad2:       resb WORLD_HDR_SIZE - 16656 - MAX_CONTAINERS_V5 * CONTAINER_size
 endstruc                                ; 32768 bytes
 %if WORLDHDR_size != WORLD_HDR_SIZE
 %error "WORLDHDR must be WORLD_HDR_SIZE bytes"
 %endif
-
-; 0.1 header (48 bytes, magic "ACRAFT01")
-%define V1_SEED    8
-%define V1_PX      12
-%define V1_PY      16
-%define V1_PZ      20
-%define V1_YAW     24
-%define V1_PITCH   28
-%define V1_FLYING  32
-%define V1_SEL     33
-%define V1_HOTBAR  34
+%if WORLDHDR.boats + MAX_BOATS * BOATSAVE_size != 588 || WORLDHDR.mobs + MAX_MOBS * MOBSAVE_size != 2308 || WORLDHDR.sites + MAX_SITESTATES * SITESTATE_size != 14600 || WORLDHDR.rpgx + RPGEXT_size != 16656
+%error "WORLDHDR v6 layout drifted"
+%endif
 
 struc SETTINGS
     .fov:          resd 1               ; 50..110, default 70
@@ -1122,9 +1281,9 @@ struc WORLDENTRY
     .name:  resb 33
     .pad:   resb 7
     .mtime: resq 1
-    .mode:  resd 1                      ; 0, 1, or 2 = legacy v1
+    .mode:  resd 1                      ; MODE_*
     .seed:  resd 1
-    .valid: resd 1
+    .valid: resd 1                      ; 0 unreadable, 1 ok, 2 old version (pre-0.9)
     .pad2:  resd 1
 endstruc                                ; 128 bytes
 

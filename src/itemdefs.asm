@@ -1,6 +1,6 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..223 (NUM_ITEMS).
-; Ids 0..110 are the blocks (variant ids: the item form is block_base), 111..143 are unused,
-; 144..223 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry.
+; itemdefs.asm - per-item data tables, indexed by item id 0..224 (NUM_ITEMS).
+; Ids 0..129 are the blocks (variant ids: the item form is block_base), 130..143 are unused,
+; 144..224 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel
@@ -83,6 +83,19 @@ n_ladder:   db "Ladder", 0
 n_torch:    db "Torch", 0
 n_fence:    db "Fence", 0
 n_pane:     db "Glass Pane", 0
+n_water:    db "Water", 0
+n_ice:      db "Ice", 0
+n_snow:     db "Snow", 0
+n_snowblk:  db "Snow Block", 0
+n_mud:      db "Mud", 0
+n_tgrass:   db "Tall Grass", 0
+n_cactus:   db "Cactus", 0
+n_plog:     db "Pine Log", 0
+n_pleaves:  db "Pine Leaves", 0
+n_blog:     db "Birch Log", 0
+n_bleaves:  db "Birch Leaves", 0
+n_bed:      db "Bed", 0
+n_boat:     db "Boat", 0
 n_unused:   db "?", 0
 n_stick:    db "Stick", 0
 n_wpick:    db "Wooden Pickaxe", 0
@@ -186,6 +199,9 @@ item_names:
     times 4 dq n_ladder
     times 5 dq n_torch
     dq n_fence, n_pane
+    dq n_water, n_ice, n_snow, n_snowblk, n_mud, n_tgrass, n_cactus
+    dq n_plog, n_pleaves, n_blog, n_bleaves
+    times 8 dq n_bed
     PAD_TO item_names, STICK, 8, n_unused
     dq n_stick, n_wpick, n_waxe, n_wshovel, n_wsword
     dq n_spick, n_saxe, n_sshovel, n_ssword, n_apple, n_pork
@@ -204,6 +220,7 @@ item_names:
     dq n_hpotion, n_mpotion, n_coin
     dq n_ring, n_amulet, n_phoenix, n_storm, n_ember, n_viper
     dq n_ihammer, n_dhammer, n_ispear, n_dspear
+    dq n_boat
     END_TABLE item_names, 8, n_unused
 
 ; atlas tile of the inventory icon: a block's side tile or icon tile (0 for non-base
@@ -235,6 +252,10 @@ item_icon:
     db TILE_LADDER, 0, 0, 0
     db TILE_TORCH, 0, 0, 0, 0
     db TILE_ICON_FENCE, TILE_ICON_GLASS_PANE
+    db 0, TILE_ICE, 0, TILE_SNOW, TILE_MUD, 0, TILE_CACTUS_SIDE ; WATER .. CACTUS
+    db TILE_PINE_LOG, TILE_PINE_LEAVES, TILE_BIRCH_LOG, TILE_BIRCH_LEAVES
+    db TILE_ICON_BED
+    times 7 db 0
     PAD_TO item_icon, STICK, 1, 0
 %assign i 0
 %rep COAL - STICK
@@ -249,6 +270,7 @@ item_icon:
     db TILE_RING, TILE_AMULET, TILE_RING, TILE_RING ; ring, amulet, Phoenix Ring, Band of Storms
     db TILE_AMULET, TILE_AMULET         ; Ember, Viper amulets
     db TILE_IRON_HAMMER, TILE_DIAMOND_HAMMER, TILE_IRON_SPEAR, TILE_DIAMOND_SPEAR
+    db TILE_ICON_BOAT
     END_TABLE item_icon, 1, 0
 
 ; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
@@ -273,6 +295,10 @@ item_max_stack:
     db 64, 0, 0, 0                      ; LADDER
     db 64, 0, 0, 0, 0                   ; TORCH, TORCH_WALL
     db 64, 64                           ; FENCE, GLASS_PANE
+    db 0, 64, 0, 64, 64, 0, 64          ; WATER .. CACTUS (water, snow layer, grass: no item)
+    times 4 db 64                       ; pine, birch
+    db 1                                ; BED
+    times 7 db 0
     PAD_TO item_max_stack, STICK, 1, 0
     db 64                               ; stick
     times 8 db 1                        ; tools
@@ -290,6 +316,7 @@ item_max_stack:
     db 16, 16                           ; potions
     db 64                               ; gold coin
     times 10 db 1                       ; jewelry, hammers, spears
+    db 1                                ; boat
     END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD
@@ -449,6 +476,8 @@ item_burn:
     BURN TRAPDOOR, 300
     BURN LADDER, 300
     BURN FENCE, 300
+    BURN PINE_LOG, 300
+    BURN BIRCH_LOG, 300
     BURN STICK, 100
     BURN WOOD_PICKAXE, 200
     BURN WOOD_AXE, 200

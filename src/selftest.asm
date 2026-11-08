@@ -6,7 +6,6 @@ global selftest_run
 
 extern sys_print, i32_to_str, str_append
 extern test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-extern test_world_load_v1_converts, test_world_load_v2_converts, test_world_load_v3_migrates_items
 extern test_worldgen_deterministic, test_worldgen_shape, test_worldgen_ores
 extern test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
 extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
@@ -51,7 +50,6 @@ extern test_light_sky_and_shadow, test_torch_light_falloff, test_light_update_on
 extern test_step_up_slab_not_block, test_stairs_then_block, test_door_blocks_until_opened
 extern test_ladder_climb, test_fence_cannot_jump, test_place_variants
 extern test_door_break_removes_pair_and_support, test_raycast_shapes
-extern test_world_load_v4_converts
 extern test_rpg_attributes_and_respec, test_rpg_keystones_and_caps
 extern test_gear_decode_deterministic, test_gear_stats_and_powers
 extern test_gear_drops_and_chests, test_gear_jewelry_and_no_wear
@@ -72,9 +70,6 @@ tests:
     TEST world_bounds
     TEST world_set_marks_dirty
     TEST world_save_load
-    TEST world_load_v1_converts
-    TEST world_load_v2_converts
-    TEST world_load_v3_migrates_items
     TEST worldgen_deterministic
     TEST worldgen_shape
     TEST worldgen_ores
@@ -184,7 +179,6 @@ tests:
     TEST place_variants
     TEST door_break_removes_pair_and_support
     TEST raycast_shapes
-    TEST world_load_v4_converts
     TEST rpg_attributes_and_respec
     TEST rpg_keystones_and_caps
     TEST gear_decode_deterministic
@@ -204,9 +198,6 @@ section .rodata
     TESTNAME world_bounds
     TESTNAME world_set_marks_dirty
     TESTNAME world_save_load
-    TESTNAME world_load_v1_converts
-    TESTNAME world_load_v2_converts
-    TESTNAME world_load_v3_migrates_items
     TESTNAME worldgen_deterministic
     TESTNAME worldgen_shape
     TESTNAME worldgen_ores
@@ -316,7 +307,6 @@ section .rodata
     TESTNAME place_variants
     TESTNAME door_break_removes_pair_and_support
     TESTNAME raycast_shapes
-    TESTNAME world_load_v4_converts
     TESTNAME rpg_attributes_and_respec
     TESTNAME rpg_keystones_and_caps
     TESTNAME gear_decode_deterministic

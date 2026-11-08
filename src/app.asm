@@ -265,13 +265,6 @@ app_play_world:
     call    app_goto
     jmp     .ret
 .loaded:
-    cmp     dword [r12 + WORLDENTRY.mode], 2
-    jne     .named
-    lea     rdi, [world_header + WORLDHDR.name] ; legacy world: keep its list name
-    lea     rsi, [r12 + WORLDENTRY.name]
-    mov     edx, 32
-    call    str_copy
-.named:
     call    enter_world
 .ret:
     pop     r12

@@ -1,5 +1,5 @@
 ; containers.asm - furnaces and chests. The records live in the world header
-; (WORLDHDR.containers: MAX_CONTAINERS x CONTAINER), so they are saved with the world.
+; (WORLDHDR.containers_v5: MAX_CONTAINERS_V5 x CONTAINER), so they are saved with the world.
 ; A record is free while its kind byte is 0. A furnace uses cells 0 input, 1 fuel, 2 output.
 %include "common.inc"
 default rel
@@ -21,7 +21,6 @@ c_half: dd 0.5
 section .text
 
 ; cont_at(edi x, esi y, edx z) -> rax CONTAINER* at that cell, or 0
-; The first dword of a record is x | y << 8 | z << 16 | kind << 24.
 cont_at:
     xor     eax, eax
     cmp     edi, WORLD_X - 1
@@ -30,18 +29,16 @@ cont_at:
     ja      .ret
     cmp     edx, WORLD_Z - 1
     ja      .ret
-    shl     esi, 8
-    shl     edx, 16
-    or      edi, esi
-    or      edi, edx                    ; edi = x | y << 8 | z << 16
-    lea     rcx, [world_header + WORLDHDR.containers]
-    mov     r8d, MAX_CONTAINERS
+    lea     rcx, [world_header + WORLDHDR.containers_v5]
+    mov     r8d, MAX_CONTAINERS_V5
 .l:
-    mov     esi, [rcx]
-    test    esi, 0xFF000000
-    jz      .n                          ; free record
-    and     esi, 0x00FFFFFF
-    cmp     esi, edi
+    cmp     byte [rcx + CONTAINER.kind], 0
+    je      .n                          ; free record
+    cmp     [rcx + CONTAINER.x], edi
+    jne     .n
+    cmp     [rcx + CONTAINER.y], esi
+    jne     .n
+    cmp     [rcx + CONTAINER.z], edx
     je      .found
 .n:
     add     rcx, CONTAINER_size
@@ -64,27 +61,23 @@ cont_create:
     ja      .ret
     cmp     edx, WORLD_Z - 1
     ja      .ret
-    shl     esi, 8
-    shl     edx, 16
-    or      edi, esi
-    or      edi, edx                    ; edi = x | y << 8 | z << 16
-    shl     ecx, 24
-    or      ecx, edi
-    mov     r11d, ecx                   ; the finished first dword of the record
-    lea     r8, [world_header + WORLDHDR.containers]
+    mov     r11d, ecx                   ; kind
+    lea     r8, [world_header + WORLDHDR.containers_v5]
     xor     r9d, r9d                    ; first free record
-    mov     r10d, MAX_CONTAINERS
+    mov     r10d, MAX_CONTAINERS_V5
 .scan:
-    mov     esi, [r8]
-    test    esi, 0xFF000000
-    jnz     .used
+    cmp     byte [r8 + CONTAINER.kind], 0
+    jne     .used
     test    r9, r9
     jnz     .next
     mov     r9, r8
     jmp     .next
 .used:
-    and     esi, 0x00FFFFFF
-    cmp     esi, edi
+    cmp     [r8 + CONTAINER.x], edi
+    jne     .next
+    cmp     [r8 + CONTAINER.y], esi
+    jne     .next
+    cmp     [r8 + CONTAINER.z], edx
     jne     .next
     mov     r9, r8                      ; a record already sits here: reuse it
     jmp     .fill
@@ -95,11 +88,16 @@ cont_create:
     test    r9, r9
     jz      .ret                        ; table full
 .fill:
+    mov     ecx, edi
     mov     rdi, r9
+    mov     r10d, ecx                   ; x
     mov     ecx, CONTAINER_size / 8
     xor     eax, eax
     rep     stosq
-    mov     [r9], r11d
+    mov     [r9 + CONTAINER.x], r10d
+    mov     [r9 + CONTAINER.y], esi
+    mov     [r9 + CONTAINER.z], edx
+    mov     [r9 + CONTAINER.kind], r11b
     mov     rax, r9
 .ret:
     ret
@@ -301,9 +299,9 @@ furnace_step:
     mov     word [rbx + CONTAINER.cook], 0
 .block:
     ; the block shows the fire while fuel is burning
-    movzx   edi, byte [rbx + CONTAINER.x]
-    movzx   esi, byte [rbx + CONTAINER.y]
-    movzx   edx, byte [rbx + CONTAINER.z]
+    mov     edi, [rbx + CONTAINER.x]
+    mov     esi, [rbx + CONTAINER.y]
+    mov     edx, [rbx + CONTAINER.z]
     call    world_get
     xor     ecx, ecx
     cmp     word [rbx + CONTAINER.burn], 0
@@ -317,9 +315,9 @@ furnace_step:
     jne     .done
     mov     ecx, FURNACE
 .set:
-    movzx   edi, byte [rbx + CONTAINER.x]
-    movzx   esi, byte [rbx + CONTAINER.y]
-    movzx   edx, byte [rbx + CONTAINER.z]
+    mov     edi, [rbx + CONTAINER.x]
+    mov     esi, [rbx + CONTAINER.y]
+    mov     edx, [rbx + CONTAINER.z]
     call    world_set
 .done:
     add     rsp, 8
@@ -333,8 +331,8 @@ conts_step:
     mov     rbp, rsp
     push    rbx
     push    r12
-    lea     rbx, [world_header + WORLDHDR.containers]
-    mov     r12d, MAX_CONTAINERS
+    lea     rbx, [world_header + WORLDHDR.containers_v5]
+    mov     r12d, MAX_CONTAINERS_V5
 .l:
     cmp     byte [rbx + CONTAINER.kind], CONT_FURNACE
     jne     .n
@@ -357,8 +355,8 @@ conts_validate:
     mov     rbp, rsp
     push    rbx
     push    r12
-    lea     rbx, [world_header + WORLDHDR.containers]
-    mov     r12d, MAX_CONTAINERS
+    lea     rbx, [world_header + WORLDHDR.containers_v5]
+    mov     r12d, MAX_CONTAINERS_V5
 .rec:
     movzx   eax, byte [rbx + CONTAINER.kind]
     cmp     eax, CONT_FURNACE
@@ -366,11 +364,15 @@ conts_validate:
     cmp     eax, CONT_CHEST
     jne     .zero                       ; free, or garbage
 .check:
-    movzx   edi, byte [rbx + CONTAINER.x]
-    movzx   esi, byte [rbx + CONTAINER.y]
-    movzx   edx, byte [rbx + CONTAINER.z]
+    mov     edi, [rbx + CONTAINER.x]
+    mov     esi, [rbx + CONTAINER.y]
+    mov     edx, [rbx + CONTAINER.z]
+    cmp     edi, WORLD_X - 1
+    ja      .zero
     cmp     esi, WORLD_Y - 1
-    ja      .zero                       ; x and z are bytes: always inside the world
+    ja      .zero
+    cmp     edx, WORLD_Z - 1
+    ja      .zero
     call    world_get
     cmp     byte [rbx + CONTAINER.kind], CONT_CHEST
     je      .want_chest

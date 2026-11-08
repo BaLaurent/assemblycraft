@@ -34,8 +34,8 @@ section .text
 
 ; zero_conts(): empties the container table in the world header
 zero_conts:
-    lea     rdi, [world_header + WORLDHDR.containers]
-    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    lea     rdi, [world_header + WORLDHDR.containers_v5]
+    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
     xor     eax, eax
     rep     stosb
     ret
@@ -205,30 +205,30 @@ chests_in:
     mov     [rsp + 12], edx
     mov     [rsp + 16], ecx
     mov     rbx, rdi
-    lea     r12, [world_header + WORLDHDR.containers]
-    mov     r13d, MAX_CONTAINERS
+    lea     r12, [world_header + WORLDHDR.containers_v5]
+    mov     r13d, MAX_CONTAINERS_V5
     xor     r14d, r14d                  ; chests inside the box
 .rec:
     cmp     byte [r12 + CONTAINER.kind], CONT_CHEST
     jne     .rnext
-    movzx   eax, byte [r12 + CONTAINER.x]
+    mov     eax, [r12 + CONTAINER.x]
     cmp     eax, [rbx + SITE.lo_x]
     jl      .rnext
     cmp     eax, [rbx + SITE.hi_x]
     jg      .rnext
-    movzx   eax, byte [r12 + CONTAINER.y]
+    mov     eax, [r12 + CONTAINER.y]
     cmp     eax, [rbx + SITE.lo_y]
     jl      .rnext
     cmp     eax, [rbx + SITE.hi_y]
     jg      .rnext
-    movzx   eax, byte [r12 + CONTAINER.z]
+    mov     eax, [r12 + CONTAINER.z]
     cmp     eax, [rbx + SITE.lo_z]
     jl      .rnext
     cmp     eax, [rbx + SITE.hi_z]
     jg      .rnext
-    movzx   edi, byte [r12 + CONTAINER.x]
-    movzx   esi, byte [r12 + CONTAINER.y]
-    movzx   edx, byte [r12 + CONTAINER.z]
+    mov     edi, [r12 + CONTAINER.x]
+    mov     esi, [r12 + CONTAINER.y]
+    mov     edx, [r12 + CONTAINER.z]
     call    world_get
     cmp     eax, CHEST
     jne     .bad

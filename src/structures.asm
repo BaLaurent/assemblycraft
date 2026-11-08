@@ -1033,8 +1033,8 @@ structures_generate:
     push    r14
     push    r15
     sub     rsp, 8
-    lea     rdi, [world_header + WORLDHDR.containers]
-    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    lea     rdi, [world_header + WORLDHDR.containers_v5]
+    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
     xor     eax, eax
     rep     stosb
     xor     r13d, r13d                  ; kind - 1

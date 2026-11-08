@@ -27,11 +27,7 @@ s_min:      db " min ago", 0
 s_hour:     db " h ago", 0
 s_day:      db " day ago", 0
 s_days:     db " days ago", 0
-m_v5:       db "ACRAFT05"
-m_v4:       db "ACRAFT04"
-m_v3:       db "ACRAFT03"
-m_v2:       db "ACRAFT02"
-m_v1:       db "ACRAFT01"
+m_v6:       db "ACRAFT06"
 
 section .bss
 align 8
@@ -44,7 +40,7 @@ alignb 8
 dents:         resb DENTS_SIZE
 path_buf:      resb 4200
 tmp_entry:     resb WORLDENTRY_size
-hdr_buf:       resb WORLD_BASE_HDR
+hdr_buf:       resb 1024               ; the header fields a listing reads (name, mode, seed)
 name_buf:      resb 40
 
 section .text
@@ -259,20 +255,13 @@ add_entry:
     call    str_copy
     lea     rdi, [path_buf]
     lea     rsi, [hdr_buf]
-    mov     edx, WORLD_BASE_HDR
+    mov     edx, 1024
     call    file_read
-    cmp     rax, WORLD_BASE_HDR
-    jl      .try_v1
+    cmp     rax, 1024
+    jl      .insert
     mov     rdx, [hdr_buf]
-    cmp     rdx, [m_v5]
-    je      .v2v3
-    cmp     rdx, [m_v4]
-    je      .v2v3
-    cmp     rdx, [m_v3]
-    je      .v2v3
-    cmp     rdx, [m_v2]
-    jne     .try_v1
-.v2v3:
+    cmp     rdx, [m_v6]
+    jne     .insert
     mov     eax, [hdr_buf + WORLDHDR.mode]
     cmp     eax, MODE_CREATIVE
     ja      .insert                     ; garbage mode: unreadable
@@ -286,17 +275,6 @@ add_entry:
     lea     rsi, [hdr_buf + WORLDHDR.name]
     mov     edx, 32
     call    str_copy
-    jmp     .insert
-.try_v1:
-    cmp     rax, WORLD_V1_HDR
-    jl      .insert
-    mov     rdx, [hdr_buf]
-    cmp     rdx, [m_v1]
-    jne     .insert
-    mov     dword [tmp_entry + WORLDENTRY.mode], 2
-    mov     eax, [hdr_buf + V1_SEED]
-    mov     [tmp_entry + WORLDENTRY.seed], eax
-    mov     dword [tmp_entry + WORLDENTRY.valid], 1
 .insert:
     mov     rax, [tmp_entry + WORLDENTRY.mtime]
     lea     rdi, [world_list]

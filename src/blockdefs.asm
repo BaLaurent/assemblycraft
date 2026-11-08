@@ -1,5 +1,5 @@
 ; blockdefs.asm - per-block flags, atlas tiles, digging and harvest rules, shapes, light.
-; Indexed by block id 0..110 (NUM_BLOCKS). Display names live in itemdefs.asm.
+; Indexed by block id 0..129 (NUM_BLOCKS). Display names live in itemdefs.asm.
 ; Variant groups (stairs, doors, trapdoors, ladders, wall torches) take one id per
 ; orientation/state: param = id - block_base[id] (see common.inc).
 ;
@@ -41,6 +41,9 @@ block_flags: db 0,  3,    3,    3,   3,     3,     3,  1,     3,   5,    3,    3
     times 4 db 0                        ; ladders
     times 5 db 0                        ; torches
     db 1, 1                             ; FENCE, GLASS_PANE
+;      WATER ICE SNOWL SNOWB MUD GRASS CACTUS PLOG PLEAF BLOG BLEAF
+    db 8,    9,  0,    3,    3,  0,    1,     3,   1,    3,   1
+    times 8 db 1                        ; BED (foot 0..3, head 4..7)
     SIZECHECK block_flags, 1
 
 ; tiles per block: top, side, bottom
@@ -118,6 +121,23 @@ block_tiles:
     times 5 * 3 db TILE_TORCH
     db T_PLANKS                         ; FENCE
     db 10, 10, 10                       ; GLASS_PANE
+    times 3 db TILE_WATER
+    times 3 db TILE_ICE
+    times 3 db TILE_SNOW                ; SNOW_LAYER
+    times 3 db TILE_SNOW                ; SNOW_BLOCK
+    times 3 db TILE_MUD
+    times 3 db TILE_TALL_GRASS
+    db TILE_CACTUS_TOP, TILE_CACTUS_SIDE, TILE_CACTUS_TOP
+    db TILE_PINE_LOG_TOP, TILE_PINE_LOG, TILE_PINE_LOG_TOP
+    times 3 db TILE_PINE_LEAVES
+    db 7, TILE_BIRCH_LOG, 7             ; BIRCH_LOG: LOG's ring top
+    times 3 db TILE_BIRCH_LEAVES
+%rep 4
+    db TILE_BED_FOOT_TOP, TILE_BED_FOOT_SIDE, 5
+%endrep
+%rep 4
+    db TILE_BED_HEAD_TOP, TILE_BED_HEAD_SIDE, 5
+%endrep
     SIZECHECK block_tiles, 3
 
 align 4
@@ -139,6 +159,9 @@ block_hardness:
     times 4 dd 0.4                      ; LADDER
     times 5 dd 0.0                      ; torches
     dd 2.0, 0.3                         ; FENCE, GLASS_PANE
+    ;  WATER ICE  SNOWL SNOWB MUD  TGRASS CACTUS PLOG PLEAF BLOG BLEAF
+    dd -1.0, 0.5, 0.1, 0.4, 0.6, 0.0, 0.4, 2.0, 0.2, 2.0, 0.2
+    times 8 dd 0.2                      ; BED
     SIZECHECK block_hardness, 4
 
 %define M_TOOLS TOOL_AXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE, TOOL_PICKAXE
@@ -158,6 +181,9 @@ block_tool:       db 0, TOOL_PICKAXE, TOOL_SHOVEL, TOOL_SHOVEL, TOOL_PICKAXE, TO
                   times 4 db TOOL_AXE    ; LADDER
                   times 5 db 0           ; torches
                   db TOOL_AXE, 0         ; FENCE, GLASS_PANE
+                  db 0, TOOL_PICKAXE, 0, TOOL_SHOVEL, TOOL_SHOVEL, 0, 0 ; WATER .. CACTUS
+                  db TOOL_AXE, 0, TOOL_AXE, 0 ; PINE_LOG .. BIRCH_LEAVES
+                  times 8 db 0           ; BED
     SIZECHECK block_tool, 1
 
 ; minimum pickaxe level to harvest (0 = anything; 1 wood, 2 stone, 3 iron/diamond)
@@ -170,6 +196,7 @@ block_harvest_level: db 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0
                   times 16 db 0          ; WOOD_DOOR
                   times 16 db 1          ; IRON_DOOR
                   times 8 + 4 + 5 + 2 db 0
+                  times 11 + 8 db 0      ; WATER .. BED
     SIZECHECK block_harvest_level, 1
 
 ; harvested item (LEAVES: 0, the apple chance is rolled by the game)
@@ -187,6 +214,9 @@ block_drop:       db 0, COBBLE, DIRT, DIRT, COBBLE, PLANKS, LOG, 0, SAND, 0, BRI
                   times 4 db LADDER
                   times 5 db TORCH
                   db FENCE, 0            ; GLASS_PANE drops nothing, like glass
+                  db 0, 0, 0, SNOW_BLOCK, MUD, 0, CACTUS ; WATER .. CACTUS
+                  db PINE_LOG, 0, BIRCH_LOG, 0 ; leaves: the game rolls their drops
+                  times 8 db BED         ; either half drops the one bed
     SIZECHECK block_drop, 1
 
 %define DS_STONE SND_DIG_STONE
@@ -206,6 +236,9 @@ block_dig_sound:
     times 16 db DS_STONE                ; IRON_DOOR
     times 8 + 4 + 5 db DS_WOOD          ; trapdoors, ladders, torches
     db DS_WOOD, SND_DIG_GLASS           ; FENCE, GLASS_PANE
+    db 0, DS_STONE, SND_DIG_SOFT, DS_STONE, SND_DIG_SOFT, SND_DIG_SOFT, SND_DIG_SOFT ; WATER .. CACTUS
+    db DS_WOOD, SND_DIG_SOFT, DS_WOOD, SND_DIG_SOFT ; pine, birch
+    times 8 db DS_WOOD                  ; BED
     SIZECHECK block_dig_sound, 1
 
 %define SS_STONE SND_STEP_STONE
@@ -225,6 +258,9 @@ block_step_sound:
     times 16 db SS_STONE                ; IRON_DOOR
     times 8 + 4 + 5 db SS_WOOD
     db SS_WOOD, SS_STONE                ; FENCE, GLASS_PANE
+    db 0, SS_STONE, SND_STEP_SOFT, SS_STONE, SND_STEP_SOFT, SND_STEP_SOFT, SND_STEP_SOFT ; WATER .. CACTUS
+    db SS_WOOD, SND_STEP_SOFT, SS_WOOD, SND_STEP_SOFT ; pine, birch
+    times 8 db SS_WOOD                  ; BED
     SIZECHECK block_step_sound, 1
 
 ; chance in % per fire tick that a neighbouring fire burns the block (TNT: ignites)
@@ -241,6 +277,9 @@ block_flammable: db 0, 0,    0,    0,   0,     20,    5,  30,    0,   0,    0,  
                  times 8 + 4 db 20       ; trapdoors, ladders
                  times 5 db 0            ; torches
                  db 20, 0                ; FENCE, GLASS_PANE
+                 times 7 db 0            ; WATER .. CACTUS
+                 db 5, 30, 5, 30         ; PINE_LOG, PINE_LEAVES, BIRCH_LOG, BIRCH_LEAVES
+                 times 8 db 20           ; BED
     SIZECHECK block_flammable, 1
 
 ; SHAPE_* of each block (shapes.asm turns it into boxes)
@@ -256,6 +295,9 @@ block_shape:
     times 4 db SHAPE_LADDER
     times 5 db SHAPE_TORCH
     db SHAPE_FENCE, SHAPE_PANE
+    db SHAPE_LIQUID, SHAPE_CUBE, SHAPE_SNOW, SHAPE_CUBE, SHAPE_CUBE, SHAPE_CROSS, SHAPE_CACTUS
+    times 4 db SHAPE_CUBE               ; pine, birch
+    times 8 db SHAPE_BED
     SIZECHECK block_shape, 1
 
 ; the base id of a variant group (param = id - base); the item form of a block, 0 = none
@@ -277,6 +319,9 @@ block_base:
     times 4 db LADDER
     times 5 db TORCH                    ; TORCH, TORCH_WALL variants: param = 1 + support side
     db FENCE, GLASS_PANE
+    db 0, ICE, 0, SNOW_BLOCK, MUD, 0    ; WATER .. TALL_GRASS (water, snow layer, grass: no item)
+    GROUP_IDS CACTUS, BED - CACTUS      ; CACTUS .. BIRCH_LEAVES
+    times 8 db BED
     SIZECHECK block_base, 1
 
 ; block light emitted (0..15)
@@ -287,5 +332,6 @@ block_light:
     db 15                               ; FIRE
     times TORCH - STONE_BRICK db 0
     times 5 db 14                       ; TORCH, TORCH_WALL variants
-    db 0, 0
+    db 0, 0                             ; FENCE, GLASS_PANE
+    times 11 + 8 db 0                   ; WATER .. BED
     SIZECHECK block_light, 1

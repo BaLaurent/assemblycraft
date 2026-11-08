@@ -3,8 +3,6 @@
 default rel
 
 global test_world_bounds, test_world_set_marks_dirty, test_world_save_load
-global test_world_load_v1_converts, test_world_load_v2_converts, test_world_load_v3_migrates_items
-global test_world_load_v4_converts
 
 extern blocks, chunk_dirty, world_header
 extern world_get, world_set, world_is_solid, world_clear, world_save, world_load
@@ -12,15 +10,8 @@ extern file_write_atomic, file_unlink, file_read, fnv1a
 
 section .rodata
 save_path: db "/tmp/assemblycraft-selftest.acw", 0
-v1_path:   db "/tmp/assemblycraft-selftest-v1.acw", 0
-v2_path:   db "/tmp/assemblycraft-selftest-v2.acw", 0
 garbage:   db "garbage!!!"
-v1_magic:  db "ACRAFT01"
-v2_magic:  db "ACRAFT02"
-v3_magic:  db "ACRAFT03"
-v4_magic:  db "ACRAFT04"
-v5_magic:  db "ACRAFT05"
-v1_hotbar: db 1, 3, 2, 4, 5, 6, 7, 9, 10
+v6_magic:  db "ACRAFT06"
 
 section .text
 
@@ -127,16 +118,19 @@ test_world_save_load:
     push    rbx
     sub     rsp, 8
     call    world_clear
-%if WORLDHDR_size != 32768 || WORLDHDR.armor != 944 || WORLDHDR.containers != 1024 || CONTAINER_size != 128
+%if WORLDHDR_size != 32768 || WORLDHDR.armor != 944 || WORLDHDR.rpg != 960 || CONTAINER_size != 136
     jmp     .fail
 %endif
 %if WORLDHDR.jewelry != 16384 || WORLDHDR.rpgx != 16400 || RPGEXT_size != 256
     jmp     .fail
 %endif
-%if MOB_size != 228 || INVENTORY_size != 216
+%if MOB_size != 228 || INVENTORY_size != 216 || SITE_size != 56 || COLUMN_size != 408
     jmp     .fail
 %endif
-%if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.mobs != 304
+%if WORLDHDR.player != 68 || WORLDHDR.health != 136 || WORLDHDR.inventory != 156 || WORLDHDR.origin_x != 300
+    jmp     .fail
+%endif
+%if WORLDHDR.bed_set != 320 || WORLDHDR.boats != 332 || WORLDHDR.mob_count != 1024 || WORLDHDR.mobs != 1028 || WORLDHDR.sites != 2312
     jmp     .fail
 %endif
     mov     edi, 1
@@ -168,6 +162,9 @@ test_world_save_load:
     EXPECT_EAX ebx
     cmp     dword [world_header + WORLDHDR.seed], 7
     jne     .fail
+    mov     rax, [v6_magic]
+    cmp     [world_header + WORLDHDR.magic], rax
+    jne     .fail
     mov     edi, 1
     mov     esi, 2
     mov     edx, 3
@@ -194,338 +191,5 @@ test_world_save_load:
 .ret:
     add     rsp, 8
     pop     rbx
-    pop     rbp
-    ret
-
-; A 0.1 file (48-byte header + blocks) loads as a v3 Creative world.
-test_world_load_v1_converts:
-    push    rbp
-    mov     rbp, rsp
-    call    world_clear
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    mov     ecx, BRICK
-    call    world_set
-    lea     rdi, [world_header]
-    mov     ecx, WORLD_V1_HDR
-    xor     eax, eax
-    rep     stosb
-    mov     rax, [v1_magic]
-    mov     [world_header], rax
-    mov     dword [world_header + V1_SEED], 77
-    mov     byte [world_header + V1_SEL], 2
-    lea     rsi, [v1_hotbar]
-    lea     rdi, [world_header + V1_HOTBAR]
-    mov     ecx, 9
-    rep     movsb
-    ; blocks forward to world_header+48 (dest < src, so a forward copy is safe)
-    lea     rsi, [blocks]
-    lea     rdi, [world_header + WORLD_V1_HDR]
-    mov     ecx, WORLD_VOLUME
-    rep     movsb
-    lea     rdi, [v1_path]
-    lea     rsi, [world_header]
-    mov     edx, WORLD_V1_SIZE
-    call    file_write_atomic
-    EXPECT_EAX 0
-    call    world_clear
-    lea     rdi, [v1_path]
-    call    world_load
-    EXPECT_EAX 0
-    mov     rax, [v5_magic]
-    cmp     [world_header + WORLDHDR.magic], rax
-    jne     .fail
-    cmp     dword [world_header + WORLDHDR.seed], 77
-    jne     .fail
-    cmp     dword [world_header + WORLDHDR.mode], MODE_CREATIVE
-    jne     .fail
-    cmp     byte [world_header + WORLDHDR.inventory + 2*4 + ITEMSTACK.id], GRASS
-    jne     .fail
-    cmp     dword [world_header + WORLDHDR.sel], 2
-    jne     .fail
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    call    world_get
-    EXPECT_EAX BRICK
-    lea     rdi, [v1_path]
-    call    file_unlink
-    xor     eax, eax
-    pop     rbp
-    ret
-.fail:
-    lea     rdi, [v1_path]
-    call    file_unlink
-    mov     eax, 1
-    pop     rbp
-    ret
-
-; A v2 file (1024-byte header + blocks) loads as v3 with the v3-only fields zeroed.
-test_world_load_v2_converts:
-    push    rbp
-    mov     rbp, rsp
-    call    world_clear
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    mov     ecx, BRICK
-    call    world_set
-    ; lands on containers record 0's .kind while the v2 image sits at world_header
-    mov     edi, 3
-    xor     esi, esi
-    xor     edx, edx
-    mov     ecx, STONE
-    call    world_set
-    lea     rdi, [world_header]
-    mov     ecx, WORLD_BASE_HDR
-    xor     eax, eax
-    rep     stosb
-    mov     rax, [v2_magic]
-    mov     [world_header], rax
-    mov     dword [world_header + WORLDHDR.seed], 55
-    mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
-    mov     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
-    mov     byte [world_header + WORLDHDR.inventory + 4 + ITEMSTACK.id], V3_FIRST_ITEM ; old STICK
-    mov     byte [world_header + WORLDHDR.inventory + 4 + ITEMSTACK.count], 2
-    ; blocks forward to world_header+1024 (dest < src, so a forward copy is safe)
-    lea     rsi, [blocks]
-    lea     rdi, [world_header + WORLD_BASE_HDR]
-    mov     ecx, WORLD_VOLUME
-    rep     movsb
-    lea     rdi, [v2_path]
-    lea     rsi, [world_header]
-    mov     edx, WORLD_V2_SIZE
-    call    file_write_atomic
-    EXPECT_EAX 0
-    call    world_clear
-    lea     rdi, [v2_path]
-    call    world_load
-    EXPECT_EAX 0
-    mov     rax, [v5_magic]
-    cmp     [world_header + WORLDHDR.magic], rax
-    jne     .fail
-    cmp     dword [world_header + WORLDHDR.seed], 55
-    jne     .fail
-    cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.id], DIRT
-    jne     .fail
-    cmp     byte [world_header + WORLDHDR.inventory + ITEMSTACK.count], 5
-    jne     .fail
-    cmp     word [world_header + WORLDHDR.inventory + 4], STICK | (2 << 8)
-    jne     .fail
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    call    world_get
-    EXPECT_EAX BRICK
-    cmp     byte [world_header + WORLDHDR.containers + CONTAINER.kind], 0
-    jne     .fail
-    cmp     dword [world_header + WORLDHDR.armor], 0
-    jne     .fail
-    lea     rdi, [v2_path]
-    call    file_unlink
-    xor     eax, eax
-    pop     rbp
-    ret
-.fail:
-    lea     rdi, [v2_path]
-    call    file_unlink
-    mov     eax, 1
-    pop     rbp
-    ret
-
-; A v3 (0.6) file loads with its item ids moved to the v4 numbering: blocks keep their
-; id, items move up by FIRST_ITEM - V3_FIRST_ITEM, unused ids are emptied; a v4 save is
-; not migrated a second time.
-test_world_load_v3_migrates_items:
-    push    rbp
-    mov     rbp, rsp
-    call    world_clear
-    mov     edi, 10
-    mov     esi, 5
-    mov     edx, 10
-    mov     ecx, CHEST
-    call    world_set
-    lea     rdi, [world_header]
-    mov     ecx, WORLD_V4_HDR
-    xor     eax, eax
-    rep     stosb
-    mov     rax, [v3_magic]
-    mov     [world_header], rax
-    lea     rax, [world_header]
-    mov     word [rax + WORLDHDR.inventory], 32 | (5 << 8)          ; old STICK x5
-    mov     word [rax + WORLDHDR.inventory + 4], 24 | (3 << 8)      ; MOSSY_STONE_BRICK x3
-    mov     word [rax + WORLDHDR.armor + 4], 79 | (1 << 8)          ; old DIAMOND_CHESTPLATE
-    lea     rax, [world_header + WORLDHDR.containers]
-    mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
-    mov     word [rax + CONTAINER.slots], 44 | (7 << 8)             ; old IRON_INGOT x7
-    mov     word [rax + CONTAINER.slots + 4], 27 | (1 << 8)         ; unused v3 id
-    ; blocks forward to world_header+16384 (dest < src, so a forward copy is safe)
-    lea     rsi, [blocks]
-    lea     rdi, [world_header + WORLD_V4_HDR]
-    mov     ecx, WORLD_VOLUME
-    rep     movsb
-    lea     rdi, [save_path]
-    lea     rsi, [world_header]
-    mov     edx, WORLD_V4_SIZE
-    call    file_write_atomic
-    EXPECT_EAX 0
-    call    world_clear
-    mov     qword [world_header], 0
-    lea     rdi, [save_path]
-    call    world_load
-    EXPECT_EAX 0
-    lea     rax, [world_header]
-    cmp     word [rax + WORLDHDR.inventory], STICK | (5 << 8)
-    jne     .fail
-    cmp     word [rax + WORLDHDR.inventory + 4], MOSSY_STONE_BRICK | (3 << 8)
-    jne     .fail
-    cmp     byte [rax + WORLDHDR.armor + 4], DIAMOND_CHESTPLATE
-    jne     .fail
-    lea     rax, [world_header + WORLDHDR.containers]
-    cmp     word [rax + CONTAINER.slots], IRON_INGOT | (7 << 8)
-    jne     .fail
-    cmp     dword [rax + CONTAINER.slots + 4], 0
-    jne     .fail
-    mov     edi, 10
-    mov     esi, 5
-    mov     edx, 10
-    call    world_get
-    EXPECT_EAX CHEST
-    lea     rdi, [save_path]
-    call    world_save
-    EXPECT_EAX 0
-    mov     rax, [v5_magic]
-    cmp     [world_header + WORLDHDR.magic], rax
-    jne     .fail
-    lea     rdi, [save_path]
-    call    world_load
-    EXPECT_EAX 0
-    cmp     word [world_header + WORLDHDR.inventory], STICK | (5 << 8)
-    jne     .fail
-    lea     rdi, [save_path]
-    call    file_unlink
-    xor     eax, eax
-    pop     rbp
-    ret
-.fail:
-    lea     rdi, [save_path]
-    call    file_unlink
-    mov     eax, 1
-    pop     rbp
-    ret
-
-; A v4 (0.7) file: the blocks move up past the 32768-byte v5 header, the v5-only header
-; bytes (jewelry, rpgx) are zeroed, gear loses its old wear (dmg is now the roll) while tools
-; keep theirs, and the next save is a full v5 file.
-test_world_load_v4_converts:
-    push    rbp
-    mov     rbp, rsp
-    call    world_clear
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    mov     ecx, BRICK
-    call    world_set
-    mov     edi, 10
-    mov     esi, 5
-    mov     edx, 10
-    mov     ecx, CHEST
-    call    world_set
-    ; cells 0 and 16 sit at image bytes 16384 / 16400: the v5 jewelry / rpgx offsets
-    xor     edi, edi
-    xor     esi, esi
-    xor     edx, edx
-    mov     ecx, STONE
-    call    world_set
-    mov     edi, 16
-    xor     esi, esi
-    xor     edx, edx
-    mov     ecx, STONE
-    call    world_set
-    lea     rdi, [world_header]
-    mov     ecx, WORLD_V4_HDR
-    xor     eax, eax
-    rep     stosb
-    lea     rax, [world_header]
-    mov     rcx, [v4_magic]
-    mov     [rax], rcx
-    mov     dword [rax + WORLDHDR.inventory], IRON_SWORD | (1 << 8) | (37 << 16)
-    mov     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
-    mov     dword [rax + WORLDHDR.inventory + 8], KINGS_BLADE | (1 << 8) | (50 << 16)
-    mov     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8) | (3 << 16)
-    lea     rax, [world_header + WORLDHDR.containers]
-    mov     dword [rax], 10 | (5 << 8) | (10 << 16) | (CONT_CHEST << 24)
-    mov     dword [rax + CONTAINER.slots], BOW | (1 << 8) | (10 << 16)
-    ; blocks forward to world_header+16384 (dest < src, so a forward copy is safe)
-    lea     rsi, [blocks]
-    lea     rdi, [world_header + WORLD_V4_HDR]
-    mov     ecx, WORLD_VOLUME
-    rep     movsb
-    lea     rdi, [save_path]
-    lea     rsi, [world_header]
-    mov     edx, WORLD_V4_SIZE
-    call    file_write_atomic
-    EXPECT_EAX 0
-    call    world_clear
-    mov     qword [world_header], 0
-    lea     rdi, [save_path]
-    call    world_load
-    EXPECT_EAX 0
-    lea     rax, [world_header]
-    mov     rcx, [v5_magic]
-    cmp     [rax + WORLDHDR.magic], rcx
-    jne     .fail
-    cmp     dword [rax + WORLDHDR.inventory], IRON_SWORD | (1 << 8)
-    jne     .fail
-    cmp     dword [rax + WORLDHDR.inventory + 4], STONE_PICKAXE | (1 << 8) | (7 << 16)
-    jne     .fail
-    cmp     dword [rax + WORLDHDR.inventory + 8], KINGS_BLADE | (1 << 8) | (((RAR_RARE << GEAR_RARITY_SHIFT) | 1) << 16)
-    jne     .fail                       ; an old legendary rolls like a new one: rare bits, 4 affixes
-    cmp     dword [rax + WORLDHDR.armor + 4], IRON_CHESTPLATE | (1 << 8)
-    jne     .fail
-    cmp     dword [rax + WORLDHDR.containers + CONTAINER.slots], BOW | (1 << 8)
-    jne     .fail
-    lea     rdi, [world_header + WORLDHDR.jewelry]
-    mov     ecx, 16 + RPGEXT_size
-    xor     eax, eax
-    repe    scasb
-    jne     .fail
-    mov     edi, 1
-    mov     esi, 2
-    mov     edx, 3
-    call    world_get
-    EXPECT_EAX BRICK
-    mov     edi, 16
-    xor     esi, esi
-    xor     edx, edx
-    call    world_get
-    EXPECT_EAX STONE
-    mov     edi, 10
-    mov     esi, 5
-    mov     edx, 10
-    call    world_get
-    EXPECT_EAX CHEST
-    lea     rdi, [save_path]
-    call    world_save
-    EXPECT_EAX 0
-    lea     rdi, [save_path]
-    lea     rsi, [world_header]
-    mov     edx, WORLD_FILE_SIZE + 1
-    call    file_read
-    cmp     rax, WORLD_FILE_SIZE
-    jne     .fail
-    mov     rax, [v5_magic]
-    cmp     [world_header + WORLDHDR.magic], rax
-    jne     .fail
-    lea     rdi, [save_path]
-    call    file_unlink
-    xor     eax, eax
-    pop     rbp
-    ret
-.fail:
-    lea     rdi, [save_path]
-    call    file_unlink
-    mov     eax, 1
     pop     rbp
     ret

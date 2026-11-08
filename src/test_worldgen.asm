@@ -19,8 +19,8 @@ section .text
 ; zero_conts(): empties the container table in the world header (world_generate fills it with
 ; the chests of the dungeons and the crypt)
 zero_conts:
-    lea     rdi, [world_header + WORLDHDR.containers]
-    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    lea     rdi, [world_header + WORLDHDR.containers_v5]
+    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
     xor     eax, eax
     rep     stosb
     ret

@@ -17,8 +17,8 @@ section .text
 
 ; zero_conts() - empties the whole container table
 zero_conts:
-    lea     rdi, [world_header + WORLDHDR.containers]
-    mov     ecx, MAX_CONTAINERS * CONTAINER_size
+    lea     rdi, [world_header + WORLDHDR.containers_v5]
+    mov     ecx, MAX_CONTAINERS_V5 * CONTAINER_size
     xor     eax, eax
     rep     stosb
     ret
@@ -205,7 +205,7 @@ test_chest_spills_on_break:
     test    rax, rax
     jz      .fail
     mov     rbx, rax
-    lea     rax, [world_header + WORLDHDR.containers]
+    lea     rax, [world_header + WORLDHDR.containers_v5]
     cmp     rbx, rax
     jne     .fail                       ; the first record of the table
     mov     dword [rbx + CONTAINER.slots], STK(DIRT, 10, 0)
@@ -280,7 +280,7 @@ test_chest_spills_on_break:
     call    cont_create
     test    rax, rax
     jnz     .fail
-    ; all 120 records in use: no new cell fits, a cell that has a record still resolves
+    ; all 118 records in use: no new cell fits, a cell that has a record still resolves
     xor     r12d, r12d
 .fill:
     mov     edi, r12d
@@ -291,7 +291,7 @@ test_chest_spills_on_break:
     test    rax, rax
     jz      .fail
     inc     r12d
-    cmp     r12d, MAX_CONTAINERS
+    cmp     r12d, MAX_CONTAINERS_V5
     jb      .fill
     mov     edi, 200
     mov     esi, 20
@@ -327,7 +327,7 @@ test_chest_spills_on_break:
     PLACE   10, 11, 5, CHEST, 3         ; a kind that does not exist
     PLACE   11, 11, 5, CHEST, CONT_CHEST
     mov     r12, rax
-    mov     byte [r12 + CONTAINER.y], WORLD_Y ; and a cell above the world
+    mov     dword [r12 + CONTAINER.y], WORLD_Y ; and a cell above the world
     call    conts_validate
     EXPECT_AT 5, 11, 5, rbx
     cmp     dword [rbx + CONTAINER.slots], 0
