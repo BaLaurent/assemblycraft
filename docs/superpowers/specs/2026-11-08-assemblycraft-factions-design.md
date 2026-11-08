@@ -794,3 +794,60 @@ structures_mark_freed(edi x, esi z) -> eax 1 when (x, z) lies in a cached camp (
 - **Road cost.** If `gen_column` with roads exceeds 0.5 ms per column on average (measure 64 columns as in 0.9), keep the stamp and replace `road_mask`'s per-cell segment test with a bounding-box rejection per segment first.
 - **Rival pair missing.** If seed 42 has no rival pair on a chained road within reach for check 3h, prove the fight by unit test only and note it in As built.
 - **Unbreakable blocks in explosions.** `explode_at` skipping every `hardness < 0` block also protects BEDROCK, unchanged.
+
+## As built (deviations from this plan)
+
+**Factions and trading (W1)**
+- `faction_tribute` returns the standing actually gained after the clamp, and refuses (taking nothing) when that gain would be 0, for example 3 coins.
+
+**Folk (W2)**
+- `folk_rivals_fight` runs 900 steps, not 600: with the specified brute numbers (32 health, blows of 5, a 28 + 70 step cycle) the first death lands at step 671.
+- `mobs_shift` moves `dest_x/dest_z` only for patrol members (`MOB.patrol != 0`).
+- A rival's blow or bolt wakes a sleeping champion silently; the "<Champion> wakes!" banner stays player-only (a Hated standing shows it too).
+- New `FF_FOLKDOT` (fflags bit 4, in common.inc): a burn or poison set by another folk's weapon is nobody's kill, so it never moves the player's standing.
+- `folk_travel_tick` tries up to 8 spots on its step, since the cadence fires on a single step.
+- Explosions no longer remove WATER: its hardness is −1, so the `hardness < 0` rule covers it.
+- Extra folk.asm globals: `folk_scare`, `folk_is_fighter`, `folk_base_speed`. `test_npc_immune_and_not_saved` became `test_npc_hurt_and_not_saved`.
+
+**Camps and roads (W3)**
+- Extra structures.asm exports for tests: `camp_plan`, `road_mark`, `roads_in_rect`, `camp_main`.
+- `patrol_consider` has no explicit WATER test: water is not solid, so the solid-top test rejects it.
+- `gen_column` averages 0.20–0.22 ms per column with roads, so the bounding-box contingency was not needed.
+- First visit (fixed in the live checks): `ensure_folk` returns 0 only while a slot's column is loading; a full mob table skips the slot (1). A first visit with a full table therefore still marks the site seen, and a cleared camp stays clear while the player stands in it; the skipped folk come back from the 32..96 band. Regression in `camp_npcs_recreated`.
+
+**Screens, HUD and flow (W4)**
+- game.asm: only the right click belongs to a folk (talk, and the click is spent: no use, place or potion). The left button reaches heavy, melee, staff and gun as on any mob.
+- `screen_trade`'s panel is `26 + 21 × trade_count` high (236 for the Villagers' 10 rows, as before).
+- `hud_banner_paint(edi y)` is split out of the banner draw. `screen_shrine` paints a tier banner above its panel, and the HUD skips its own copy under the shrine screen (so it shows once; fixed in the live checks).
+- Death strings are the spec's literal texts ("Slain by Bandits"), with a size check on the table.
+- A creative left click never breaks a block with `hardness < 0` (a shrine; bedrock as before). Regression in `shrine_and_folk_dispatch`.
+
+**Art (W5)**
+- `render_box`, `render_box_px` and `render_box16` share one body, `box_draw`. Outside tiles 228, 229 and 304..323, the atlas is byte-identical to 0.9.
+- The helmet and hood boxes are the spec's: they cover the top of the face tile.
+
+**Integration**
+- `FF_FOLKDOT`, `GROUND_HOSTILE`/`GROUND_PASSIVE` and `STUN_PARRIED` live in common.inc (each was defined in several files).
+- `kill_xp[MOB_FOLK] = 12`. `NUM_TRADES` is gone; `trade_count` replaces it.
+
+**Live checks**
+- Mouse look does not reach the game in omabox, so aiming used patched yaw/pitch plus timed movement keys.
+- For 3e, the guards watching the captive were removed through a gdb breakpoint on `folk_interact` (MOB.type = 0, like a despawn); the right click itself, the +25, the banner, SS_FREED and its persistence ran through the real code. Player kills are covered by 3c and 3f.
+- 3f: the "Morvael the Ashen has fallen!" banner expired before the screenshot. The kill's standing changes, the King's Blade legendary and champions bit 2 were checked live, and the banner text by its unit test.
+- 3h: the Cult patrol reached the Beastfolk camp and shot a Beastfolk guard three times with fire bolts (gdb trace on `folk_hit_by`, health 42 → 24); the player's standings did not change. The fight then stood off at the palisade (see Deferred).
+- Balance seen live: the four Bandit guards killed a level-5 player with no armour in about 6 s, and the awake Cult champion with his camp at Hated in about 5 s.
+- Performance: 2,000-block flight at render 16, vsync off, audio off: 71,843 frames, max 15.8 ms, p99 5.3 ms, p50 1.6 ms, 0 frames over 50 ms. Village with its folk at render 8: 1,045 FPS.
+
+**V1 sweep (three reviewers; structures.asm and worldgen.asm had no findings)**
+- A champion that dies some other way than by the player (TNT, a rival) drops a guard's loot. Before, it dropped its legendary hoard and then came back unbeaten, so legendaries could be farmed. Regression in `folk_kill_reputation_and_drops`.
+- A fighter keeps its target until it leaves 24 blocks, as specified. Before, the 20-step look-around replaced it with nothing at 16. Regression in `folk_targets_and_standing`.
+- A creative pick-block on a shrine gives nothing; before, it put an unplaceable "Shrine" item in the hand. Regression in `shrine_and_folk_dispatch`.
+
+## Deferred
+
+The repo has no remote, so these are listed here instead of GitHub issues.
+- Folk steer in straight lines, so rival fighters on either side of a camp palisade stand off instead of going through the gates.
+- Leader quests and allied rewards (0.11 arcs), and roads to villages.
+- A 0.9 world loads with every standing at 0 (Villagers 0, not +200): the header pad is zero and there is no migration. In a 0.9 world, columns generated before the upgrade keep their 0.9 blocks: a camp whose position moved, or that lies in such a column, has folk but no buildings there, and roads stop at those columns' edges.
+- The elder dialog's "Quest complete!" banner is painted under its panel (the shrine's repaint was not applied there).
+- Balance: guard and champion damage against an unarmoured player is high (see As built).

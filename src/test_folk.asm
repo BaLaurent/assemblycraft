@@ -28,6 +28,7 @@ k_speed:  dd 4.317
 k_3_5:    dd 3.5
 k_60_5:   dd 60.5
 k_30:     dd 30.0
+k_20:     dd 20.0
 k_10:     dd 10.0
 k_529:    dd 529.0                      ; 23 blocks, squared
 k_1:      dd 1.0
@@ -603,6 +604,29 @@ test_folk_targets_and_standing:
     call    mob_is_hostile
     cmp     eax, 1
     jne     .fail
+    mov     edi, ebx                    ; 20 blocks off he stays its target (it keeps one to 24)...
+    call    mob_ptr
+    mov     r13, rax
+    movss   xmm0, [r13 + BODY.x]
+    addss   xmm0, [k_20]
+    movss   [player + BODY.x], xmm0
+    mov     eax, [r13 + BODY.z]
+    mov     [player + BODY.z], eax
+    mov     edi, 21
+    call    steps
+    cmp     dword [r13 + MOB.target], 1
+    jne     .fail
+    movss   xmm0, [r13 + BODY.x]        ; ...and 30 off he is not
+    addss   xmm0, [k_30]
+    movss   [player + BODY.x], xmm0
+    mov     eax, [r13 + BODY.z]
+    mov     [player + BODY.z], eax
+    mov     edi, 2
+    call    steps
+    cmp     dword [r13 + MOB.target], 0
+    jne     .fail
+    SETF    [player + BODY.x], 100.5
+    SETF    [player + BODY.z], 100.5
     call    mobs_clear
     mov     edi, FAC_BANDITS            ; at standing 0 the same guard ignores him
     xor     esi, esi
@@ -1330,6 +1354,34 @@ test_folk_kill_reputation_and_drops:
     mov     edi, 25
     call    steps
     cmp     dword [r12 + MOB.target], 1
+    jne     .fail
+    call    mobs_clear                  ; a champion the player did not slay (TNT, a rival) is not defeated:
+    call    drops_clear                 ; no legendary, no hoard of coins, its bit stays clear
+    mov     byte [world_header + WORLDHDR.champions], 0
+    FOLK    FAC_CULT, ROLE_CHAMPION, FCLASS_ACOLYTE, 104.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    call    folk_make_champion
+    mov     byte [combat_hit_flags], 0
+    mov     edi, ebx
+    mov     esi, 100000
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    mob_strike
+    mov     edi, ebx
+    call    mob_ptr
+    cmp     dword [rax + MOB.type], MOB_NONE
+    jne     .fail                       ; it died
+    call    has_legendary
+    test    eax, eax
+    jnz     .fail
+    mov     edi, GOLD_COIN
+    call    drop_count
+    cmp     eax, 20
+    jae     .fail
+    cmp     byte [world_header + WORLDHDR.champions], 0
     jne     .fail
     xor     eax, eax
     jmp     .ret

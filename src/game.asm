@@ -1951,6 +1951,9 @@ game_frame:
     movzx   eax, byte [block_base + rax] ; the item form of the block: a lit furnace gives a furnace
     test    eax, eax
     jz      .bow                        ; flames have no item
+    lea     rcx, [item_max_stack]
+    cmp     byte [rcx + rax], 0
+    je      .bow                        ; nor do shrines
 .pick_id:
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .pick_survival

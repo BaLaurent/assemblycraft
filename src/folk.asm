@@ -703,9 +703,10 @@ folk_drop_weapon:
     ret
 
 ; folk_drops(rdi mob): the loot of a dead folk (mob_drops calls it instead of the type tables):
-; a guard or patrol 1 + level / 10 coins and, one time in four, its weapon; a champion its weapon, the
-; gear of the Fallen King's kind (gear_drop_from_mob: his class's legendary, 3 boss rolls and a jewel
-; one time in four) and 20 + level coins; a leader 5 + level / 5 coins; a trader or traveller 3; a
+; a guard or patrol 1 + level / 10 coins and, one time in four, its weapon; a champion the player
+; slew (tagged) its weapon, the gear of the Fallen King's kind (gear_drop_from_mob: his class's
+; legendary, 3 boss rolls and a jewel one time in four) and 20 + level coins, one that died some
+; other way (it comes back) a guard's; a leader 5 + level / 5 coins; a trader or traveller 3; a
 ; worker or captive nothing.
 folk_drops:
     push    rbp
@@ -746,6 +747,8 @@ folk_drops:
     lea     edx, [rax + 1]
     jmp     .coins
 .champion:
+    cmp     dword [rbx + MOB.tagged], 0
+    jle     .fighter                    ; not the player's kill: it is not defeated, so no hoard
     mov     rdi, rbx
     call    folk_drop_weapon
     mov     rdi, rbx
@@ -1551,6 +1554,8 @@ folk_fight:
     jg      .check
     mov     rdi, rbx
     call    folk_find_target
+    test    eax, eax
+    jz      .seen                       ; nobody within 16: the current target stays until it leaves 24
     cmp     eax, [rbx + MOB.target]
     je      .seen
     mov     [rbx + MOB.target], eax

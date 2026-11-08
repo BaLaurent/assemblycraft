@@ -964,6 +964,16 @@ test_shrine_and_folk_dispatch:
     call    world_get
     cmp     eax, SHRINE + FAC_STONEKIN
     jne     .fail
+    mov     dword [frame_input + FRAMEINPUT.lmb_pressed], 0 ; nor does a creative pick give it as an item
+    mov     dword [frame_input + FRAMEINPUT.lmb_held], 0
+    mov     dword [frame_input + FRAMEINPUT.mmb_pressed], 1
+    movss   xmm0, [k_step]
+    call    game_frame
+    mov     dword [frame_input + FRAMEINPUT.mmb_pressed], 0
+    mov     eax, [inv_sel]
+    lea     rcx, [inv + INVENTORY.slots]
+    cmp     byte [rcx + rax*4 + ITEMSTACK.id], SHRINE
+    je      .fail
     mov     dword [game_mode], MODE_SURVIVAL        ; frame_arena's mode
     mov     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
     mov     dword [frame_input + FRAMEINPUT.lmb_held], 0
