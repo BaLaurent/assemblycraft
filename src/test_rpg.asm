@@ -14,7 +14,7 @@ extern surv, survival_reset, surv_max_health
 extern combat_reset, combat_mana, combat_stamina
 extern rpg_state, rpg_ext, rpg_stats, rpg_keystones, rpg_reset, rpg_set_class, rpg_class
 extern rpg_level, rpg_points, rpg_xp_need, rpg_add_xp, rpg_can_spend, rpg_spend, rpg_rank
-extern rpg_stat, rpg_recompute, rpg_clamp_stats, rpg_ability_unlocked, rpg_class_info
+extern rpg_stat, rpg_recompute, rpg_clamp_stats, rpg_ability_unlocked, rpg_class_info, rpg_ability_tile
 extern rpg_node_info, rpg_ability_info, rpg_branch_name, rpg_stat_info, rpg_format_stat
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
 extern rpg_respec_cost, rpg_respec, rpg_keystone
@@ -1104,6 +1104,16 @@ test_rpg_stats_from_class_and_ranks:
     jz      .fail
     mov     rax, [rax + ABILINFO.name]
     STR_IS  s_empty
+    ; the HUD and skill-screen icon of each ability slot follows the current class
+    mov     edi, CLASS_ARCHER
+    mov     esi, 1
+    call    use_class
+    CALL1   rpg_ability_tile, 0, TILE_ABILITY0 + 6
+    CALL1   rpg_ability_tile, 2, TILE_ABILITY0 + 8
+    CALL1   rpg_ability_tile, 3, TILE_ABILITY3_0 + 2
+    CALL1   rpg_ability_tile, NUM_ABILITY_SLOTS, 0
+    call    reset_all
+    CALL1   rpg_ability_tile, 0, 0              ; no class, no icon
     ; every class, node by node, as the plan lists them: name, kind, stat / slot / keystone id,
     ; max rank (5, or 1 for abilities and keystones), value, and the text: none for a stat node, the
     ; ability's own for an ability, the keystone's description for a keystone

@@ -7,7 +7,7 @@ global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 
-extern inv, inv_sel, craft_size, inv_container
+extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
 extern inv_clear, inv_add, inv_click, craft_update
 extern recipes, recipes_end, recipe_sets, recipe_fits, recipe_fill
@@ -458,8 +458,36 @@ test_inv_click_armor_containers:
     push    rbx
     push    r12
     TEST_INIT
+    mov     r12d, [game_mode]           ; the screen rules below are survival's
+    mov     dword [game_mode], MODE_SURVIVAL
     call    zero_conts
     mov     qword [inv_container], 0
+
+    ; the crafting table and the creative palette draw no armor or jewelry cells: shift-click
+    ; keeps the piece in the inventory (hotbar -> main) instead of hiding it in a worn cell
+    mov     dword [craft_size], 3
+    SET     0, IRON_HELMET, 1, 0
+    CLICKR  0, 0, 1, 1
+    EXPECT  ARMOR_REF(0), 0, 0, 0
+    EXPECT  9, IRON_HELMET, 1, 0
+    SET     1, RING, 1, 0
+    CLICKR  1, 0, 1, 1
+    cmp     dword [inv + INVENTORY.jewelry], 0
+    jne     .fail
+    EXPECT  10, RING, 1, 0
+    mov     dword [craft_size], 2
+    mov     dword [game_mode], MODE_CREATIVE
+    SET     2, AMULET, 1, 0
+    CLICKR  2, 0, 1, 1
+    cmp     dword [inv + INVENTORY.jewelry + 8], 0
+    jne     .fail
+    EXPECT  11, AMULET, 1, 0
+    SET     3, IRON_HELMET, 1, 0
+    CLICKR  3, 0, 1, 1
+    EXPECT  ARMOR_REF(0), 0, 0, 0
+    EXPECT  12, IRON_HELMET, 1, 0
+    mov     dword [game_mode], MODE_SURVIVAL
+    call    inv_clear
 
     ; shift-click sends a helmet to the empty head cell
     SET     0, IRON_HELMET, 1, 0
@@ -717,6 +745,7 @@ test_inv_click_armor_containers:
     mov     eax, 1
 .out:
     mov     ebx, eax
+    mov     [game_mode], r12d
     call    inv_clear
     mov     qword [inv_container], 0
     call    zero_conts

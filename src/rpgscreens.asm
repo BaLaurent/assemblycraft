@@ -27,7 +27,7 @@ extern rpg_state, rpg_stats, rpg_class, rpg_level, rpg_points, rpg_xp_need, rpg_
 extern rpg_can_spend, rpg_spend, rpg_set_class, rpg_class_info, rpg_node_info
 extern rpg_branch_name, rpg_stat_info, rpg_format_stat, rpg_recompute
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
-extern rpg_respec_cost, rpg_respec
+extern rpg_respec_cost, rpg_respec, rpg_ability_tile
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 extern trade_offer, trade_can, trade_execute
 
@@ -973,16 +973,8 @@ screen_skills:
     mov     eax, TILE_KEYSTONE
     jmp     .icon
 .ability_icon:
-    movzx   eax, byte [r14 + NODEINFO.stat]     ; the ability slot
-    mov     ecx, [rsp + 4]
-    dec     ecx                         ; class - 1
-    cmp     eax, 2
-    ja      .slot3
-    lea     ecx, [rcx + rcx*2]
-    lea     eax, [rax + rcx + TILE_ABILITY0]
-    jmp     .icon
-.slot3:
-    lea     eax, [rcx + TILE_ABILITY3_0]
+    movzx   edi, byte [r14 + NODEINFO.stat]     ; the ability slot
+    call    rpg_ability_tile
 .icon:
     mov     edi, eax
     mov     esi, [rsp + 24]

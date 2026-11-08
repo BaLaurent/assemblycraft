@@ -1485,6 +1485,8 @@ ai_boss:
     mov     rsi, r12
     mov     edx, r13d
     call    boss_slam
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .done                       ; Thorns killed it mid-slam: the slot is dead or reused
 .timers:
     cmp     dword [rbx + MOB.timer_a], 0
     jne     .volley

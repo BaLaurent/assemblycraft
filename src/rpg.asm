@@ -14,7 +14,7 @@ global rpg_reset, rpg_set_class, rpg_class, rpg_level, rpg_points, rpg_xp_need, 
 global rpg_rank, rpg_can_spend, rpg_spend, rpg_stat, rpg_recompute, rpg_clamp_stats
 global rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
 global rpg_respec_cost, rpg_respec, rpg_keystone, rpg_ability_unlocked
-global rpg_class_info, rpg_node_info, rpg_ability_info, rpg_stat_info, rpg_format_stat
+global rpg_class_info, rpg_node_info, rpg_ability_info, rpg_ability_tile, rpg_stat_info, rpg_format_stat
 global rpg_branch_name
 global rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save, rpg_give_item
 
@@ -576,6 +576,26 @@ rpg_ability_info:
     ret
 .blank:
     lea     rax, [abil_blank]
+    ret
+
+; rpg_ability_tile(edi slot) -> eax atlas tile of the current class's ability icon:
+; TILE_ABILITY0 + (class - 1) * 3 + slot for slots 0..2, TILE_ABILITY3_0 + class - 1 for slot 3;
+; 0 without a class or for another slot. Leaf, clobbers ecx.
+rpg_ability_tile:
+    xor     eax, eax
+    movzx   ecx, byte [rpg_state + RPGSAVE.class]
+    dec     ecx
+    cmp     ecx, NUM_CLASSES
+    jae     .ret
+    cmp     edi, NUM_ABILITY_SLOTS
+    jae     .ret
+    lea     eax, [rcx + TILE_ABILITY3_0]
+    cmp     edi, 3
+    je      .ret
+    lea     ecx, [rcx + rcx*2]
+    mov     eax, edi
+    lea     eax, [rax + rcx + TILE_ABILITY0]
+.ret:
     ret
 
 ; rpg_stat_info(edi stat) -> rax STATINFO* of stat 0..43; anything else -> an empty record

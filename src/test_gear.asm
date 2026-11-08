@@ -11,7 +11,7 @@ extern gear_add_stats, gear_powers, gear_has_power, gear_make, gear_roll
 extern gear_tier_for_level, gear_pick_base, gear_drop_from_mob, gear_fill_chest
 extern item_tooltip, gear_equipped_for
 extern item_gear, item_durability
-extern inv, inv_sel, inv_clear, inv_click, inv_damage_held, inv_container
+extern inv, inv_sel, inv_clear, inv_click, inv_damage_held, inv_container, craft_size, game_mode
 extern rng_seed, world_clear, drops, drops_clear, mobs, mobs_clear, mob_spawn
 extern rpg_stats, rpg_state, rpg_format_stat, str_eq
 
@@ -96,6 +96,7 @@ t_stats:  resd NUM_STATS
 t_exp:    resd NUM_STATS                ; expected stats of the aggregate check
 t_lines:  resq 12                       ; item_tooltip results
 t_cols:   resd 12
+jew_mode: resd 1                        ; game_mode to restore after the jewelry test
 t_lines2: resq 12                       ; a copy of the first tooltip's pointers
 t_text:   resb 64
 t_stack:  resd 2
@@ -1513,6 +1514,10 @@ test_gear_jewelry_and_no_wear:
     call    inv_clear
     mov     dword [inv_sel], 0
     mov     qword [inv_container], 0
+    mov     dword [craft_size], 2       ; the survival inventory screen: shift-click fills worn cells
+    mov     eax, [game_mode]
+    mov     [jew_mode], eax
+    mov     dword [game_mode], MODE_SURVIVAL
 
     ; a ring goes into a ring cell; an amulet is refused there and fits the amulet cell
     mov     dword [CURSOR], RING_A
@@ -1597,6 +1602,37 @@ test_gear_jewelry_and_no_wear:
     CLICKR  7, 0, 1, 1
     IS      JEWEL(2), AMULET_B
     IS      inv + 7*4, 0
+
+    ; "Shift: compare": a worn ring is its own comparison in either ring cell (gear_equipped_for
+    ; only ever returns the first occupied one); the same ring lying in the inventory is compared
+    lea     rdi, [JEWEL(1)]
+    lea     rsi, [t_lines]
+    lea     rdx, [t_cols]
+    call    item_tooltip
+    mov     r12d, eax
+    lea     rdi, [JEWEL(0)]
+    lea     rsi, [t_lines]
+    lea     rdx, [t_cols]
+    call    item_tooltip
+    mov     ebx, eax
+    mov     dword [inv + 12*4], RING_B
+    lea     rdi, [inv + 12*4]
+    lea     rsi, [t_lines]
+    lea     rdx, [t_cols]
+    call    item_tooltip
+    mov     dword [inv + 12*4], 0
+    dec     eax
+    cmp     eax, r12d                   ; the inventory copy has the extra "Shift: compare"
+    jne     .fail
+    mov     dword [inv + 12*4], RING_A
+    lea     rdi, [inv + 12*4]
+    lea     rsi, [t_lines]
+    lea     rdx, [t_cols]
+    call    item_tooltip
+    mov     dword [inv + 12*4], 0
+    dec     eax
+    cmp     eax, ebx
+    jne     .fail
 
     ; gear_equipped_for: the ring cells in order, the amulet cell, the worn piece, the held weapon
     mov     edi, RING
@@ -1692,6 +1728,8 @@ test_gear_jewelry_and_no_wear:
     mov     ebx, eax
     call    inv_clear
     mov     dword [inv_sel], 0
+    mov     eax, [jew_mode]
+    mov     [game_mode], eax
     mov     eax, ebx
     pop     r12
     pop     rbx

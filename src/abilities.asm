@@ -1020,8 +1020,10 @@ ab_warcry:
     addss   xmm0, xmm2
     comiss  xmm0, [rsp + 12]
     jae     .next
+    test    dword [rbx + MOB.affix], AFX_JUGGERNAUT
+    jnz     .next                       ; juggernauts ignore stuns
     cmp     dword [rbx + MOB.stun], 20
-    jge     .next
+    jge     .next                       ; never shortening a longer stun
     mov     edi, r12d
     call    mob_is_hostile
     test    eax, eax
@@ -1554,6 +1556,10 @@ ab_charge_step:
     bts     r13d, r12d
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next                       ; it died
+    test    dword [rbx + MOB.affix], AFX_JUGGERNAUT
+    jnz     .next                       ; juggernauts ignore stuns
+    cmp     dword [rbx + MOB.stun], 30
+    jge     .next                       ; never shortening a longer stun (a freeze)
     mov     dword [rbx + MOB.stun], 30
 .next:
     add     rbx, MOB_size

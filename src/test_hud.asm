@@ -8,7 +8,7 @@ global test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
 extern world_clear, player, body_init, player_eye, player_forward
 extern settings, game_aim, ui_w, ui_h, world_to_ui
 extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list, dmgnum_style
-extern hud_heart_level
+extern hud_heart_level, hud_ability_pos
 
 ; layout of one dmgnum_list entry (struc DMGNUM in dmgnum.asm)
 %define DN_Y        4
@@ -59,6 +59,16 @@ word_rows:
     dd TXT_STUNNED, RGBA(255, 160, 60, 0), 1
     dd TXT_FROZEN, RGBA(130, 200, 255, 0), 1
     dd TXT_IMMUNE, RGBA(200, 200, 200, 0), 1
+
+%define ABILITY_ROWS 5
+
+; hud_ability_pos cases: x0, y0, top of the left stack -> slot 0 x, y, above the stack
+ability_rows:
+    dd 149, 218, 203, 56, 219, 0
+    dd 69, 218, 203, 69, 181, 1
+    dd 95, 218, 203, 2, 219, 0
+    dd 94, 218, 203, 94, 181, 1
+    dd 79, 218, 187, 79, 165, 1
 
 ; hud_heart_level cases: heart index, health, max health, expected 2 full / 1 half / 0 empty
 %define HEART_ROWS 14
@@ -411,6 +421,9 @@ test_dmgnum_rises_and_expires:
     test    eax, eax
     jnz     .out
     call    check_heart_levels
+    test    eax, eax
+    jnz     .out
+    call    check_ability_pos
     jmp     .out
 .fail1:
     mov     eax, 1
@@ -525,6 +538,45 @@ check_dmgnum_styles:
     call    dmgnum_clear
     mov     eax, ebx
     add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; check_ability_pos() -> eax 0, else 500 + the failing ability_rows row
+; hud_ability_pos puts the four slots left of the hotbar while that fits on screen (x0 - 93 >= 2),
+; else in a row 2 over the left stack: GUI widths 480, 320 (x0 69 would start at -24), the exact
+; edge, one under it and 341 with a tall stack
+check_ability_pos:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    xor     ebx, ebx
+.row:
+    cmp     ebx, ABILITY_ROWS
+    jae     .ok
+    imul    eax, ebx, 24
+    lea     r12, [ability_rows]
+    add     r12, rax
+    mov     edi, [r12]
+    mov     esi, [r12 + 4]
+    mov     edx, [r12 + 8]
+    call    hud_ability_pos
+    cmp     eax, [r12 + 12]
+    jne     .bad
+    cmp     edx, [r12 + 16]
+    jne     .bad
+    cmp     ecx, [r12 + 20]
+    jne     .bad
+    inc     ebx
+    jmp     .row
+.bad:
+    lea     eax, [rbx + 500]
+    jmp     .ret
+.ok:
+    xor     eax, eax
+.ret:
     pop     r12
     pop     rbx
     pop     rbp

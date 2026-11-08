@@ -1801,6 +1801,77 @@ na_projectile_bases:
     leave
     ret
 
+; War Cry and Charge stun rules. Warrior L15 with the war cry bought: the war cry stuns the plain
+; zombie 3 blocks ahead 20 steps, leaves the Juggernaut elite 3 blocks east unstunned and never
+; shortens the 90 step freeze of the zombie 3 blocks west. A charge into a Juggernaut leaves its
+; stun at 0 (the blow still lands), and into a frozen zombie leaves the freeze at 90.
+; frame: eye[3] @0, dir[3] @12, the health of mob 0 @24, the result @40
+na_stun_rules:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
+    mov     edi, CLASS_WARRIOR
+    mov     esi, 15
+    call    set_class
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0                  ; yaw 0: facing -z
+    xorps   xmm1, xmm1
+    call    view
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_13_5    ; mob 0: 3 blocks ahead
+    SPAWN   MOB_ZOMBIE, k_19_5, k_11, k_16_5    ; mob 1: 3 blocks east, a Juggernaut
+    mov     dword MOBF(1, MOB.affix), AFX_JUGGERNAUT
+    SPAWN   MOB_ZOMBIE, k_13_5, k_11, k_16_5    ; mob 2: 3 blocks west, frozen
+    mov     dword MOBF(2, MOB.stun), 90
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword MOBF(0, MOB.stun), 20
+    jne     .fail
+    cmp     dword MOBF(1, MOB.stun), 0
+    jne     .fail
+    cmp     dword MOBF(2, MOB.stun), 90
+    jne     .fail
+    call    mobs_clear                  ; ---- Charge into a Juggernaut
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_15_5    ; one block ahead
+    mov     dword MOBF(0, MOB.affix), AFX_JUGGERNAUT
+    SAVE_HEALTH 0, 24
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    call    abilities_step
+    mov     eax, MOBF(0, MOB.health)
+    cmp     eax, [rsp + 24]
+    jge     .fail                       ; the blow landed
+    cmp     dword MOBF(0, MOB.stun), 0
+    jne     .fail
+    call    mobs_clear                  ; ---- Charge into a frozen zombie
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_15_5
+    mov     dword MOBF(0, MOB.stun), 90
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    call    abilities_step
+    cmp     dword MOBF(0, MOB.stun), 90
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
 ; SCENE function, number: run the scene; a failure ends test_new_abilities with the scene's number
 %macro SCENE 2
     call    %1
@@ -1813,7 +1884,7 @@ na_projectile_bases:
 
 ; Every scene above in turn: 0 when all held, else the number of the first scene that failed
 ; (1 ground slam, 2 frost nova, 3 hunter's mark, 4 fan of knives, 5 blood magic, 6 barrage, 7 staff
-; bolt, 8 whirlwind and smoke bomb, 9 shadowstep, 10 projectile bases)
+; bolt, 8 whirlwind and smoke bomb, 9 shadowstep, 10 projectile bases, 11 stun rules)
 test_new_abilities:
     push    rbp
     mov     rbp, rsp
@@ -1827,6 +1898,7 @@ test_new_abilities:
     SCENE   na_whirl_and_smoke, 8
     SCENE   na_shadowstep, 9
     SCENE   na_projectile_bases, 10
+    SCENE   na_stun_rules, 11
     xor     eax, eax
 .ret:
     pop     rbp

@@ -8,7 +8,7 @@
 %include "gl.inc"
 default rel
 
-global hud_draw, hud_dt, hud_banner, hud_heart_level
+global hud_draw, hud_dt, hud_banner, hud_heart_level, hud_ability_pos
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon
@@ -19,8 +19,8 @@ extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw, 
 extern item_names, item_durability, armor_points
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
 extern str_append, str_copy, i32_to_str, f32_to_str, fx_flash, atan2_deg
-extern rpg_state, rpg_class, rpg_level, rpg_xp_need, rpg_stat, rpg_ability_unlocked
-extern rpg_class_info, rpg_ability_info, quests_current, quests_progress
+extern rpg_state, rpg_class, rpg_level, rpg_xp_need, rpg_stat, rpg_ability_unlocked, rpg_keystones
+extern rpg_class_info, rpg_ability_info, rpg_ability_tile, quests_current, quests_progress
 extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
 extern abilities_cd, abilities_cd_total, structures_nearest
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
@@ -123,14 +123,15 @@ quest_buf:  resb 128
 section .text
 
 ; hud_draw(): everything the player sees on top of the world
-; ebx = x0, r12d = y0, r13d = y of the held item's name
+; ebx = x0, r12d = y0, r13d = y of the held item's name, r14d = y of the top of the left stack over the
+; hotbar (the hearts, mana bar and armor row; the XP bar in creative)
 hud_draw:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 8
+    push    r14                         ; five pushes and the return address: rsp stays 16-aligned
     mov     ebx, [ui_w]
     shr     ebx, 1
     sub     ebx, 91                     ; x0
@@ -149,28 +150,34 @@ hud_draw:
     mov     esi, r12d
     call    hud_hotbar
     lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar
-    call    rpg_class
-    test    eax, eax
-    jz      .no_class
-    mov     edi, ebx
-    mov     esi, r12d
-    call    hud_xp
-    mov     edi, ebx
-    mov     esi, r12d
-    call    hud_abilities
-.no_class:
+    lea     r14d, [r12 - 5]             ; without hearts the XP bar is the top of the stack
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .name
+    jne     .class
     mov     edi, ebx
     mov     esi, r12d
     call    hud_status_pips
     mov     edi, ebx
     mov     esi, r12d
     call    hud_bars                    ; eax = top of the left stack
+    mov     r14d, eax
     lea     edx, [r12 - 21]
     cmp     eax, edx
     cmovg   eax, edx                    ; or of the stamina bar, whichever is higher
     lea     r13d, [rax - 12]            ; over the bars in survival
+.class:
+    call    rpg_class
+    test    eax, eax
+    jz      .name
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_xp
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r14d
+    call    hud_abilities               ; eax = top of its key labels when it is above the stack
+    lea     ecx, [rax - 12]
+    cmp     r13d, ecx
+    cmovg   r13d, ecx                   ; the held name clears the ability bar
 .name:
     mov     edi, r13d
     call    hud_held_name
@@ -193,7 +200,7 @@ hud_draw:
     je      .ret
     call    hud_debug
 .ret:
-    add     rsp, 8
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -903,7 +910,8 @@ armor_effective:
 
 ; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and "Level N" right of the hotbar, followed
 ; by " (<skills key>)" while skill or attribute points are unspent
-; ebx = x0, r12d = y0, r13d = level, r14 = end of the level text; [rsp] level text (64)
+; ebx = x0, r12d = y0, r13d = level, then the x right of the hotbar; r14 = end of the level text, where
+; the hint starts; [rsp] level text (64)
 hud_xp:
     push    rbp
     mov     rbp, rsp
@@ -960,12 +968,34 @@ hud_xp:
 .plain:
     mov     byte [r14], 0
 .draw:
+    lea     r13d, [rbx + 186]           ; the level is spent: r13d = x right of the hotbar
     mov     rdi, rsp
-    lea     esi, [rbx + 186]
+    mov     esi, 1
+    call    ui_text_width
+    lea     eax, [rax + r13 + 2]
+    cmp     eax, [ui_w]
+    jle     .whole                      ; fits right of the hotbar
+    cmp     byte [r14], 0
+    je      .whole
+    mov     byte [r14], 0               ; too narrow: "Level N" and the hint "(K)" on two lines
+    mov     rdi, rsp
+    mov     esi, r13d
     lea     edx, [r12 + 2]
     mov     ecx, RGBA(140, 255, 90, 255)
-    mov     r8d, 1
-    call    ui_text
+    call    hud_text_clamped
+    lea     rdi, [r14 + 1]
+    mov     esi, r13d
+    lea     edx, [r12 + 12]
+    mov     ecx, RGBA(140, 255, 90, 255)
+    call    hud_text_clamped
+    jmp     .done
+.whole:
+    mov     rdi, rsp
+    mov     esi, r13d
+    lea     edx, [r12 + 2]
+    mov     ecx, RGBA(140, 255, 90, 255)
+    call    hud_text_clamped
+.done:
     add     rsp, 64
     pop     r14
     pop     r13
@@ -974,10 +1004,62 @@ hud_xp:
     pop     rbp
     ret
 
-; hud_abilities(edi x0, esi y0): the four ability slots left of the hotbar: the icon (dimmed while
-; locked, red while the resource is short), the cooldown sweeping down from the top, and the key
-; ebx = x0, r12d = y0, r13d = slot, r14d = class, r15d = slot x
-; [rsp] icon tint, [rsp+4] sweep height, [rsp+16] key label
+; hud_text_clamped(rdi s, esi x, edx y, ecx rgba): s at scale 1, its x pulled left so that it ends at
+; most 2 units inside the right edge
+; rbx = s, r12d = x, r13d = y, r14d = rgba
+hud_text_clamped:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, [ui_w]
+    sub     esi, eax
+    sub     esi, 2
+    cmp     r12d, esi
+    cmovg   r12d, esi
+    mov     rdi, rbx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    mov     r8d, 1
+    call    ui_text
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; hud_ability_pos(edi x0, esi y0, edx top) -> eax x, edx y of the first ability slot (20 x 20), ecx 1 when
+; the bar sits above the left stack. The slots go left of the hotbar at (x0 - 93, y0 + 1) unless that
+; starts under 2 (a narrow GUI), then in a row above the left stack of hearts, mana and armor (top =
+; y of its top; the XP bar when there is none) with their key labels 9 above: (x0, top - 22)
+hud_ability_pos:
+    lea     eax, [rdi - 93]
+    cmp     eax, 2
+    jl      .above
+    lea     edx, [rsi + 1]
+    xor     ecx, ecx
+    ret
+.above:
+    mov     eax, edi
+    sub     edx, 22
+    mov     ecx, 1
+    ret
+
+; hud_abilities(edi x0, esi y0, edx top) -> eax y of the top of the key labels when the bar is above the
+; left stack (see hud_ability_pos), else 0x7FFFFFFF: the four ability slots: the icon (dimmed while
+; locked, red while the resource is short: stamina or mana, or with Blood Magic the health it would
+; take), the cooldown sweeping down from the top, and the key
+; ebx = x of slot 0, r12d = slot 0 y - 1, r13d = slot, r14d = class, r15d = slot x
+; [rsp] icon tint, [rsp+4] sweep height, [rsp+8] above the stack, [rsp+16] key label
 hud_abilities:
     push    rbp
     mov     rbp, rsp
@@ -987,14 +1069,16 @@ hud_abilities:
     push    r14
     push    r15
     sub     rsp, 56
-    mov     ebx, edi
-    mov     r12d, esi
+    call    hud_ability_pos
+    mov     ebx, eax
+    lea     r12d, [rdx - 1]
+    mov     [rsp + 8], ecx
     call    rpg_class
     mov     r14d, eax
     xor     r13d, r13d
 .slot:
     imul    r15d, r13d, 23
-    lea     r15d, [r15 + rbx - 93]      ; slot x = x0 - 93 + 23 * slot
+    add     r15d, ebx                   ; slot x = x of slot 0 + 23 * slot
     mov     edi, r15d
     lea     esi, [r12 + 1]              ; slot y = y0 + 1
     mov     edx, 20
@@ -1019,11 +1103,23 @@ hud_abilities:
     movss   xmm0, [combat_stamina]
     cmp     dword [rax + ABILINFO.resource], RES_MANA
     jne     .have
+    test    dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
+    jnz     .blood
     movss   xmm0, [combat_mana]
 .have:
     comiss  xmm0, xmm1
     jae     .sweep
+.short:
     mov     dword [rsp], RGBA(255, 90, 90, 255)         ; the resource is short: red
+    jmp     .sweep
+.blood:
+    mov     eax, [rax + ABILINFO.cost]  ; Blood Magic pays ceil(cost / 5) health, leaving at least 1
+    add     eax, 4
+    xor     edx, edx
+    mov     ecx, 5
+    div     ecx
+    cmp     [surv + SURVIVAL.health], eax
+    jle     .short
 .sweep:
     lea     rcx, [abilities_cd]
     mov     eax, [rcx + r13*4]          ; steps left
@@ -1041,14 +1137,9 @@ hud_abilities:
     cmova   eax, edx
     mov     [rsp + 4], eax              ; 20 * left / total
 .icon:
-    lea     edi, [r14 + TILE_ABILITY3_0 - 1]    ; slot 3: TILE_ABILITY3_0 + class - 1
-    cmp     r13d, 3
-    jae     .tile
-    lea     eax, [r14 - 1]
-    lea     eax, [rax + rax*2]
-    add     eax, r13d
-    lea     edi, [rax + TILE_ABILITY0]  ; TILE_ABILITY0 + (class - 1) * 3 + slot
-.tile:
+    mov     edi, r13d
+    call    rpg_ability_tile
+    mov     edi, eax
     lea     esi, [r15 + 2]
     lea     edx, [r12 + 3]
     mov     ecx, 16
@@ -1081,6 +1172,11 @@ hud_abilities:
     inc     r13d
     cmp     r13d, NUM_ABILITY_SLOTS
     jb      .slot
+    mov     eax, 0x7FFFFFFF             ; beside the hotbar nothing needs clearing
+    mov     ecx, r12d
+    sub     ecx, 8                      ; the top of the key labels
+    cmp     dword [rsp + 8], 0
+    cmovne  eax, ecx
     add     rsp, 56
     pop     r15
     pop     r14
@@ -1159,7 +1255,9 @@ hud_mobs:
     cmp     dword [rbx + MOB.bar], 0
     jg      .bar
     cmp     dword [rbx + MOB.elite], 0
-    je      .next
+    jne     .bar
+    cmp     dword [rbx + MOB.mark_t], 0 ; a marked foe keeps its plate for the whole mark
+    jle     .next
 .bar:
     comiss  xmm0, [f_24sq]
     ja      .next

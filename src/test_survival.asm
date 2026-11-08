@@ -7,6 +7,7 @@ global test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
 global test_armor_reduces_damage
 
 extern surv, survival_reset, survival_damage, survival_land, survival_exhaust, survival_step
+extern surv_max_health
 extern sky_brightness, sky_is_night
 extern game_mode, settings, world_clear
 extern inv, inv_clear, armor_points
@@ -203,6 +204,25 @@ test_starvation_floor:
     call    steps
     cmp     dword [surv + SURVIVAL.health], 1
     jne     .fail
+    call    setup                       ; max 30: a tick is round(30/20) = 2 and must not cross the floor
+    mov     dword [surv_max_health], 30
+    mov     dword [surv + SURVIVAL.food], 0
+    mov     dword [surv + SURVIVAL.saturation], 0
+    mov     dword [surv + SURVIVAL.health], 2
+    mov     edi, 1200
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 2
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.dead], 0
+    jne     .fail
+    mov     dword [surv + SURVIVAL.health], 3
+    mov     edi, 1200
+    call    steps
+    cmp     dword [surv + SURVIVAL.health], 1
+    jne     .fail
+    cmp     dword [surv + SURVIVAL.dead], 0
+    jne     .fail
+    mov     dword [surv_max_health], 20
     call    setup
     mov     dword [settings + SETTINGS.difficulty], DIFF_HARD
     mov     dword [surv + SURVIVAL.food], 0
@@ -221,6 +241,7 @@ test_starvation_floor:
     pop     rbp
     ret
 .fail:
+    mov     dword [surv_max_health], 20
     mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
     mov     eax, 1
     pop     rbp

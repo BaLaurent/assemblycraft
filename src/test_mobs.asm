@@ -814,7 +814,8 @@ test_npc_immune_and_not_saved:
 ; The Fallen King (Normal): 300 health, a 36-step wind-up and a slam of 8 on a player 2 blocks
 ; away (one slam in 40 steps, the 70-step cooldown holds the next), skeletons rise when timer_a
 ; runs out, a volley of 5 arrows comes every 240 steps from phase 2 on, and below a third of his
-; health the wind-up shortens to 24.
+; health the wind-up shortens to 24. A boss that Thorns kill in the middle of his slam summons and
+; fires nothing that step.
 test_boss_phases_slam_and_summons:
     push    rbp
     mov     rbp, rsp
@@ -906,6 +907,37 @@ test_boss_phases_slam_and_summons:
     jz      .fail
     ucomiss xmm0, [k_10]                ; the fan spans well over 10 blocks/s sideways
     jbe     .fail
+    call    mobs_clear                  ; ---- Thorns kill the boss mid-slam: no summon, no volley
+    call    arrows_clear
+    call    reset_player
+    call    survival_reset
+    call    combat_reset
+    SETF    [player + BODY.x], 18.5
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 16.5
+    SPAWN   MOB_BOSS, k_16_5, k_16_5
+    test    eax, eax
+    js      .fail
+    mov     edi, eax
+    call    mob_ptr
+    mov     r12, rax
+    mov     dword [r12 + MOB.health], 1
+    mov     dword [r12 + MOB.windup], 1     ; the slam lands this step
+    mov     dword [r12 + MOB.cooldown], 0
+    mov     dword [r12 + MOB.timer_a], 0    ; a summon and a volley are due
+    mov     dword [r12 + MOB.timer_b], 0
+    mov     dword [rpg_stats + STAT_THORNS * 4], 1000
+    call    mobs_step
+    mov     dword [rpg_stats + STAT_THORNS * 4], 0
+    cmp     dword [r12 + MOB.type], MOB_NONE
+    jne     .fail                           ; the thorns killed him
+    mov     edi, MOB_SKELETON
+    call    mob_count_type
+    test    eax, eax
+    jnz     .fail                           ; the dead boss summoned nobody
+    call    arrow_stats
+    test    eax, eax
+    jnz     .fail                           ; and fired nothing
     xor     ebx, ebx
     jmp     .ret
 .fail:

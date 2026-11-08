@@ -362,14 +362,13 @@ survival_step:
     cmp     dword [surv + SURVIVAL.starve_timer], 240
     jb      .suffocate
     mov     dword [surv + SURVIVAL.starve_timer], 0
-    mov     eax, [settings + SETTINGS.difficulty]
-    and     eax, 3
+    mov     edi, 1
+    call    env_scale                   ; one starvation tick, in the unit survival_damage applies
+    mov     edx, [settings + SETTINGS.difficulty]
+    and     edx, 3
     lea     rcx, [starve_floor]
-    movzx   eax, byte [rcx + rax]
-    imul    eax, [surv_max_health]      ; the floor scales with the maximum health
-    xor     edx, edx
-    mov     ecx, 20
-    div     ecx
+    movzx   edx, byte [rcx + rdx]
+    imul    eax, edx                    ; the floor is whole ticks, so a tick never crosses it
     cmp     [surv + SURVIVAL.health], eax
     jle     .suffocate
     mov     edi, 1

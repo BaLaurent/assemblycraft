@@ -363,12 +363,13 @@ load_panorama:
     pop     rbp
     ret
 
-; app_quit_to_title(): save, leave the world, back to the title screen
+; app_quit_to_title(): return screen items, save, leave the world, back to the title screen
 app_quit_to_title:
     push    rbp
     mov     rbp, rsp
     lea     rdi, [s_saving]
     call    show_loading
+    call    inv_close_screen            ; cursor and grid items go back before the save
     call    save_world
     mov     dword [app_in_world], 0
     call    load_panorama
@@ -773,6 +774,7 @@ app_run:
 .quit:
     cmp     dword [app_in_world], 0
     je      .done
+    call    inv_close_screen            ; cursor and grid items go back before the save
     call    save_world
     mov     [exit_code], eax
 .done:

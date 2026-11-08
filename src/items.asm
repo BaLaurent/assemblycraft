@@ -14,7 +14,7 @@ global item_break_time, item_harvest_drop, item_attack_damage
 global recipes, recipes_end
 global recipe_uses, recipe_have, recipe_sets, recipe_fits, recipe_fill, inv_take_stack
 
-extern item_max_stack, item_tool, item_tier, item_durability, item_attack, item_gear
+extern item_max_stack, item_tool, item_tier, item_durability, item_attack, item_gear, game_mode
 extern item_burn, item_smelt, item_armor_slot, item_armor_points
 extern block_hardness, block_tool, block_harvest_level, block_drop
 extern audio_play, drops_toss
@@ -823,7 +823,9 @@ recipe_fill:
 
 ; inv_click(edi slotref, esi button 0 left/1 right, edx shift) -> eax 1 if anything changed
 ; Refs: 0..35 slots, 36..44 grid, 45 craft result, 46 none (the cursor), 47..50 armor,
-; 51..77 cells of the open container (inv_container), 78..80 jewelry (ring, ring, amulet)
+; 51..77 cells of the open container (inv_container), 78..80 jewelry (ring, ring, amulet).
+; Shift-clicking armor, a ring or an amulet from the inventory fills its worn cell only on the survival
+; inventory screen (craft_size 2, survival, no container): no other screen draws those cells.
 inv_click:
     push    rbp
     mov     rbp, rsp
@@ -1090,6 +1092,10 @@ inv_click:
     add     rdi, 4                      ; fuel -> fuel cell
     jmp     .sh_go
 .sh_nocont:
+    cmp     dword [craft_size], 2       ; only the survival inventory screen shows the armor and
+    jne     .sh_hm                      ; jewelry cells: not the crafting table, not the creative palette
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .sh_hm
     lea     r9, [item_armor_slot]       ; armor goes to its free cell first
     movzx   eax, byte [r9 + rdx]
     test    eax, eax

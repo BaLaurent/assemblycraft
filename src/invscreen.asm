@@ -21,7 +21,7 @@ extern app_goto, app_entered
 extern ui_w, ui_h, ui_mx, ui_my
 extern ui_rect, ui_frame, ui_text, ui_text_width, ui_slot, ui_item_icon, ui_tooltip
 extern ui_tooltip_lines
-extern inv_click, inv_close_screen, item_tooltip, gear_equipped_for, rpg_recompute
+extern inv_click, inv_close_screen, item_tooltip, gear_equipped_for, gear_stack_worn, rpg_recompute
 extern item_max_stack, i32_to_str
 extern book_reset, book_draw, book_ghost_draw, book_tip
 
@@ -538,6 +538,10 @@ draw_overlay:
     mov     r12d, eax                   ; the hovered stack's lines
     cmp     dword [ui_input + UIINPUT.shift], 0
     je      .draw
+    mov     rdi, rbx
+    call    gear_stack_worn
+    test    eax, eax
+    jnz     .draw                       ; a worn piece is its own comparison
     movzx   edi, byte [rbx + ITEMSTACK.id]
     call    gear_equipped_for
     test    rax, rax

@@ -14,7 +14,7 @@ global affix_tab
 global gear_affixes, gear_rarity, gear_rarity_color, gear_name
 global gear_add_stats, gear_powers, gear_has_power
 global gear_make, gear_roll, gear_tier_for_level, gear_pick_base
-global gear_drop_from_mob, gear_fill_chest, item_tooltip, gear_equipped_for
+global gear_drop_from_mob, gear_fill_chest, item_tooltip, gear_equipped_for, gear_stack_worn
 
 extern item_gear, item_legendary, item_names, item_attack, item_armor_points
 extern item_durability, item_tool
@@ -658,6 +658,19 @@ gear_equipped_for:
 .ret:
     ret
 
+; gear_stack_worn(rdi ITEMSTACK*) -> eax 1 when the pointer is one of the armor or jewelry cells of
+; inv: a worn piece, which is its own comparison however many of its kind are worn
+gear_stack_worn:
+    lea     rax, [inv + INVENTORY.armor]
+    lea     rcx, [inv + INVENTORY_size]
+    cmp     rdi, rax
+    setae   al
+    cmp     rdi, rcx
+    setb    cl
+    and     al, cl
+    movzx   eax, al
+    ret
+
 ; ---- rolling ----------------------------------------------------------------------------------
 
 ; gear_make(edi id, esi tier, edx rarity, ecx seed) -> eax dmg
@@ -1222,7 +1235,8 @@ gear_fill_chest:
 ; The lines of a stack's tooltip. Gear: its name in the rarity colour; "<Rarity> <kind> - Tier T"
 ; (no tier for a common stack); "Attack N" or "Armor N" (a weapon's base attack, an armor piece's
 ; points) plus a note for hammers and spears; one line per affix; the legendary power; and
-; "Shift: compare" when something else of its kind is equipped. Any other item: its name and its
+; "Shift: compare" when something else of its kind is equipped (not for a stack that is itself worn).
+; Any other item: its name and its
 ; durability left. 0 lines for an empty stack or an unknown id. The texts live in two static
 ; buffers used alternately, so the lines of the last two calls stay valid (the inventory draws the
 ; hovered stack and the equipped one together).
@@ -1442,6 +1456,10 @@ item_tooltip:
 
     ; something else of its kind is equipped
 .compare:
+    mov     rdi, rbx
+    call    gear_stack_worn
+    test    eax, eax
+    jnz     .done                       ; it is itself worn: nothing to compare with
     mov     edi, [rsp + 48]
     call    gear_equipped_for
     test    rax, rax
