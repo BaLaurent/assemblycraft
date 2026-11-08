@@ -636,8 +636,9 @@ run_boxes:
     ret
 
 ; stair_tunnel(edi sx, esi sz, edx y0): from an opening in the wall at x = sx a 3 x 3 passage
-; climbs west one block per column (floor y0 + i at x = sx - i) until the ground is reached, then
-; an entrance frame closes it. The ground test reads world_top_y before the column is touched.
+; climbs west one block per column (floor y0 + i at x = sx - i) until the ground of the column
+; and of the next one west is at or below the floor, so the exit is walkable without a jump;
+; then an entrance frame closes it. The ground test reads world_top_y before the column is touched.
 stair_tunnel:
     push    rbp
     mov     rbp, rsp
@@ -658,7 +659,15 @@ stair_tunnel:
     call    world_top_y
     lea     ecx, [r13 + r14 + 1]        ; Yf + 1: where the player's feet would stand
     cmp     eax, ecx
-    jl      .exit                       ; the ground is at or below the floor: we are out
+    jge     .dig                        ; the ground is above the floor: keep digging
+    lea     edi, [rbx - 1]
+    sub     edi, r14d                   ; the next column west, where the player walks out
+    mov     esi, r12d
+    call    world_top_y
+    lea     ecx, [r13 + r14 + 1]
+    cmp     eax, ecx
+    jl      .exit                       ; both at or below the floor: we are out
+.dig:
     lea     rdi, [stair_step]
     mov     esi, STAIR_STEP
     mov     edx, ebx

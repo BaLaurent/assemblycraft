@@ -276,6 +276,48 @@ tun_at:
     mov     esi, eax
     jmp     world_get
 
+; tun_frame() -> eax 1 when tunnel column r15d of the dungeon in rbx carries the entrance frame:
+; mossy brick at dy 4 for dz -2..2 and at dy 1..3 for dz -2 and 2 (a shell column of random
+; stone/mossy brick matches all 11 cells with odds of about 2e-6)
+tun_frame:
+    push    r12
+    push    r13
+    push    r14
+    mov     r12d, -2
+.lintel:
+    mov     esi, 4
+    mov     ecx, r12d
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .no
+    inc     r12d
+    cmp     r12d, 2
+    jle     .lintel
+    mov     r13d, 1
+.pillar:
+    mov     esi, r13d
+    mov     ecx, -2
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .no
+    mov     esi, r13d
+    mov     ecx, 2
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .no
+    inc     r13d
+    cmp     r13d, 3
+    jbe     .pillar
+    mov     eax, 1
+    jmp     .ret
+.no:
+    xor     eax, eax
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    ret
+
 ; EXPECT_AIR dx, y, dz: the block at that offset from the site in rbx is AIR
 %macro EXPECT_AIR 3
     mov     rdi, rbx
@@ -352,21 +394,9 @@ test_dungeon_built_with_chests:
     je      .floor
     cmp     r15d, 1                     ; column 1 must have the stair floor
     je      .fail
-    mov     esi, 4                      ; no stair floor: the entrance frame stands here
-    xor     ecx, ecx
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK      ; lintel
-    jne     .fail
-    mov     esi, 1
-    mov     ecx, -2
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK      ; pillars
-    jne     .fail
-    mov     esi, 3
-    mov     ecx, 2
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK
-    jne     .fail
+    call    tun_frame                   ; no stair floor: the entrance frame stands here
+    test    eax, eax
+    jz      .fail
     mov     esi, 1
     xor     ecx, ecx
     call    tun_at
@@ -384,21 +414,9 @@ test_dungeon_built_with_chests:
     inc     r14d
     cmp     r14d, 3
     jbe     .pass
-    mov     esi, 4                      ; stair floor under the entrance frame: the last column
-    xor     ecx, ecx
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK
-    jne     .next_column
-    mov     esi, 1
-    mov     ecx, -2
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK
-    jne     .next_column
-    mov     esi, 3
-    mov     ecx, 2
-    call    tun_at
-    cmp     eax, MOSSY_STONE_BRICK
-    jne     .next_column
+    call    tun_frame                   ; stair floor under the entrance frame: the last column
+    test    eax, eax
+    jz      .next_column
     jmp     .tunnel_done
 .next_column:
     inc     r15d
@@ -406,6 +424,35 @@ test_dungeon_built_with_chests:
     jbe     .column
     jmp     .fail                       ; it never came out of the ground
 .tunnel_done:
+    ; every dungeon's tunnel exit: one column past the entrance frame, at the exit's feet
+    ; level, is open, so walking out needs no jump
+    xor     r12d, r12d                  ; dungeon index
+.exit_site:
+    mov     edi, SITE_DUNGEON
+    mov     esi, r12d
+    call    find_site
+    test    rax, rax
+    jz      .fail
+    mov     rbx, rax
+    mov     r15d, 1
+.exit_scan:
+    call    tun_frame
+    test    eax, eax
+    jnz     .exit_found
+    inc     r15d
+    cmp     r15d, 60
+    jbe     .exit_scan
+    jmp     .fail
+.exit_found:
+    inc     r15d
+    xor     esi, esi
+    xor     ecx, ecx
+    call    tun_at
+    test    eax, eax
+    jnz     .fail
+    inc     r12d
+    cmp     r12d, NUM_DUNGEONS
+    jb      .exit_site
     mov     edi, SITE_CRYPT
     xor     esi, esi
     call    find_site
