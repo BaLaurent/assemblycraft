@@ -3,6 +3,9 @@
 ; creative item palette. Immediate mode: every frame draws the panel and its slots,
 ; turns presses on hovered slots into inv_click calls, then draws the tooltip and the
 ; stack held on the cursor.
+; The survival inventory, the crafting table and the furnace screen carry the recipe book
+; (recipebook.asm) on the left of the panel; the tooltip of its hovered entry (book_tip) takes the
+; place of the slot tooltip.
 ; Slot references (inv_click): 0..35 slots, 36..44 grid cells, 45 result, 47..50 armor
 ; (all at inv + ref*4), 51.. cells of the open container (inv_container).
 %include "common.inc"
@@ -16,6 +19,7 @@ extern ui_w, ui_h, ui_mx, ui_my
 extern ui_rect, ui_frame, ui_text, ui_text_width, ui_slot, ui_item_icon, ui_tooltip
 extern inv_click, inv_close_screen
 extern item_names, item_max_stack, i32_to_str
+extern book_reset, book_draw, book_ghost_draw, book_tip
 
 %define PANEL_W     176
 %define PANEL_H     166
@@ -24,6 +28,11 @@ extern item_names, item_max_stack, i32_to_str
 %define EDGE_COL    RGBA(255, 255, 255, 70)
 %define PAL_VISIBLE 6
 %define PAL_TRACK   (PAL_VISIBLE * 18)
+
+%define BOOK_W      124                 ; the recipe book panel (recipebook.asm) and its gap to the panel
+%define BOOK_GAP    2
+%define BOOK_CRAFT  0                   ; book kinds; screen_begin takes kind + 1, 0 = no book
+%define BOOK_FURNACE 1
 
 %define CLOSE_INVENTORY 0               ; do_close / check_close screen kinds
 %define CLOSE_CRAFTING  1
@@ -73,15 +82,32 @@ label:
     mov     r8d, 1
     jmp     ui_text
 
-; screen_begin(edi show_counts): reset per-frame state, draw the dimmer and the panel
+; screen_begin(edi show_counts, esi with_book): reset per-frame state, draw the dimmer, the panel
+; and, for with_book = 1 + BOOK_CRAFT or 1 + BOOK_FURNACE (0 = none), the recipe book to the
+; left of the panel. With a book the pair is centred; the panel never moves left of the book.
 screen_begin:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, esi
     mov     [show_counts], edi
     mov     dword [hover_id], 0
+    mov     byte [book_tip], 0
     mov     eax, [ui_w]
     sub     eax, PANEL_W
+    test    ebx, ebx
+    jz      .centre
+    sub     eax, BOOK_W + BOOK_GAP
     sar     eax, 1
+    add     eax, BOOK_W + BOOK_GAP
+    mov     ecx, BOOK_W + BOOK_GAP
+    cmp     eax, ecx
+    cmovl   eax, ecx                    ; a narrow window pushes the panel right, not the book off
+    jmp     .have_x
+.centre:
+    sar     eax, 1
+.have_x:
     mov     [s_px], eax
     mov     eax, [ui_h]
     sub     eax, PANEL_H
@@ -105,6 +131,16 @@ screen_begin:
     mov     ecx, PANEL_H
     mov     r8d, EDGE_COL
     call    ui_frame
+    test    ebx, ebx
+    jz      .done
+    mov     edi, [s_px]
+    sub     edi, BOOK_W + BOOK_GAP
+    mov     esi, [s_py]
+    lea     edx, [rbx - 1]
+    call    book_draw
+.done:
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 
@@ -420,32 +456,43 @@ container_gone:
     mov     eax, 1
     ret
 
-; container_begin() -> eax 1 if the screen closed: Escape/inventory key, or the block
-; behind it is gone. Otherwise draws the dimmer and the panel.
+; container_begin(edi with_book) -> eax 1 if the screen closed: Escape/inventory key, or the block
+; behind it is gone. Otherwise draws the dimmer, the panel and the book (with_book as for
+; screen_begin). A freshly entered screen resets the book first.
 container_begin:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
     call    container_gone
     test    eax, eax
     jz      .open
     mov     edi, CLOSE_CONTAINER
     call    do_close
     mov     eax, 1
-    pop     rbp
-    ret
+    jmp     .ret
 .open:
+    cmp     dword [app_entered], 0
+    je      .check
+    call    book_reset
+.check:
     mov     edi, CLOSE_CONTAINER
     call    check_close
     test    eax, eax
     jnz     .ret
     mov     edi, 1
+    mov     esi, ebx
     call    screen_begin
     xor     eax, eax
 .ret:
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 
-; draw_overlay(): tooltip (empty cursor only) or the stack carried on the cursor
+; draw_overlay(): the recipe book's tooltip or the hovered slot's (empty cursor only), or the
+; stack carried on the cursor
 draw_overlay:
     push    rbp
     mov     rbp, rsp
@@ -454,6 +501,12 @@ draw_overlay:
     lea     rbx, [inv + INVENTORY.cursor]
     cmp     byte [rbx + ITEMSTACK.count], 0
     jne     .cursor
+    cmp     byte [book_tip], 0
+    je      .hover
+    lea     rdi, [book_tip]
+    call    ui_tooltip
+    jmp     .ret
+.hover:
     mov     eax, [hover_id]
     test    eax, eax
     jz      .ret
@@ -502,7 +555,8 @@ draw_overlay:
     pop     rbp
     ret
 
-; screen_inventory(): survival 2x2 inventory, or the creative palette in creative mode
+; screen_inventory(): survival 2x2 inventory with the recipe book, or the creative palette in
+; creative mode
 screen_inventory:
     push    rbp
     mov     rbp, rsp
@@ -517,6 +571,7 @@ screen_inventory:
     cmp     dword [app_entered], 0
     je      .entered
     mov     dword [pal_scroll], 0
+    call    book_reset
 .entered:
     mov     edi, CLOSE_INVENTORY
     call    check_close
@@ -525,6 +580,7 @@ screen_inventory:
     xor     edi, edi
     cmp     dword [game_mode], MODE_SURVIVAL
     sete    dil
+    mov     esi, edi                    ; survival: the crafting book beside the panel
     call    screen_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
@@ -538,6 +594,9 @@ screen_inventory:
     lea     esi, [r13 + 18]
     mov     edx, 2
     call    draw_grid
+    lea     edi, [r12 + 98]
+    lea     esi, [r13 + 18]
+    call    book_ghost_draw
     lea     rdi, [s_arrow]
     lea     esi, [r12 + 138]
     lea     edx, [r13 + 32]
@@ -660,11 +719,16 @@ screen_crafting:
     push    r12
     push    r13
     push    r14
+    cmp     dword [app_entered], 0
+    je      .check
+    call    book_reset
+.check:
     mov     edi, CLOSE_CRAFTING
     call    check_close
     test    eax, eax
     jnz     .ret
     mov     edi, 1
+    mov     esi, 1 + BOOK_CRAFT
     call    screen_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
@@ -676,6 +740,9 @@ screen_crafting:
     lea     esi, [r13 + 17]
     mov     edx, 3
     call    draw_grid
+    lea     edi, [r12 + 30]
+    lea     esi, [r13 + 17]
+    call    book_ghost_draw
     lea     rdi, [s_arrow]
     lea     esi, [r12 + 92]
     lea     edx, [r13 + 39]
@@ -705,6 +772,7 @@ screen_furnace:
     push    r12
     push    r13
     push    r14
+    mov     edi, 1 + BOOK_FURNACE
     call    container_begin
     test    eax, eax
     jnz     .ret
@@ -798,6 +866,7 @@ screen_chest:
     push    r12
     push    r13
     push    r14
+    xor     edi, edi                    ; no book on a chest
     call    container_begin
     test    eax, eax
     jnz     .ret

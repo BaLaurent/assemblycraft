@@ -7,8 +7,8 @@ default rel
 
 global hand_render, hand_swing
 
-extern player, inv_held, sky_brightness, game_time, sincos_deg, game_bow_charge, gun_kick
-extern render_box, item_model_draw, tex_id, gun_model_draw, game_aim
+extern player, inv_held, player_eye, light_brightness_at, sincos_deg, game_bow_charge, gun_kick
+extern render_box, item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim
 extern gun_reload, gun_reload_total, item_tool, combat_guard_t, combat_dodge_t
 
 section .rodata
@@ -112,7 +112,7 @@ hand_render:
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 8
+    sub     rsp, 24                     ; 12 bytes for the eye position, aligned
     mov     r12d, edi
     mov     r13d, esi
 
@@ -167,8 +167,12 @@ hand_render:
     movss   [bob_s], xmm0
     andps   xmm1, [rel f_abs_vec]
     movss   [bob_c], xmm1
-    mov     edi, [game_time]
-    call    sky_brightness
+    mov     rdi, rsp
+    call    player_eye                  ; the hand is lit by the light at the eye
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    call    light_brightness_at
     movss   [light], xmm0
 
     ; ---- view: own projection, fresh depth --------------------------------------
@@ -293,9 +297,11 @@ hand_render:
     lea     rdi, [pose_arm]
     test    ebx, ebx
     jz      .pose
+    mov     edi, ebx
+    call    item_model_is_block
     lea     rdi, [pose_block]
-    cmp     ebx, NUM_BLOCKS
-    jb      .pose
+    test    eax, eax
+    jnz     .pose
     lea     rdi, [pose_item]
 .pose:
     call    apply_pose
@@ -394,7 +400,7 @@ hand_render:
     movss   xmm2, [f_one]
     call    render_box
 .ret:
-    add     rsp, 8
+    add     rsp, 24
     pop     r13
     pop     r12
     pop     rbx

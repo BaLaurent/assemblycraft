@@ -5,13 +5,15 @@ default rel
 global test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_log
 global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
+global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 
 extern inv, inv_sel, craft_size, inv_container
 extern inv_count, inv_remove_one, armor_points, armor_wear, inv_damage_held
 extern inv_clear, inv_add, inv_click, craft_update
+extern recipes, recipes_end, recipe_sets, recipe_fits, recipe_fill
 extern item_break_time, item_harvest_drop
 extern world_clear, world_set, world_header
-extern cont_create
+extern cont_create, cont_fill_from_inv
 
 section .rodata
 align 16
@@ -301,11 +303,54 @@ craft_cases:
     CASE SHOTGUN_SHELL, 4,    IRON_INGOT, 0, 0,  GUNPOWDER, 0, 0,  FEATHER, 0, 0
     CASE RIFLE_ROUND, 16,     0, IRON_INGOT, 0,  0, GUNPOWDER, 0,  0, GUNPOWDER, 0
     CASE ROCKET, 1,           0, IRON_INGOT, 0,  0, TNT, 0,  0, GUNPOWDER, 0
+    ; 0.7: building blocks, storage blocks both ways, slabs, stairs (both mirrors), doors,
+    ; trapdoor, ladder, torch, fence, glass pane
+    CASE SANDSTONE, 1,        SAND, SAND, 0,  SAND, SAND, 0,  0, 0, 0
+    CASE MOSSY_COBBLESTONE, 1, COBBLE, LEAVES, 0,  0, 0, 0,  0, 0, 0
+    CASE MOSSY_STONE_BRICK, 1, 0, 0, 0,  0, STONE_BRICK, LEAVES,  0, 0, 0
+    CASE BOOKSHELF, 1,        PLANKS, PLANKS, PLANKS,  STICK, STICK, STICK,  PLANKS, PLANKS, PLANKS
+    CASE WOOL, 1,             0, STRING, STRING,  0, STRING, STRING,  0, 0, 0
+    CASE IRON_BLOCK, 1,       IRON_INGOT, IRON_INGOT, IRON_INGOT,  IRON_INGOT, IRON_INGOT, IRON_INGOT,  IRON_INGOT, IRON_INGOT, IRON_INGOT
+    CASE IRON_INGOT, 9,       0, 0, 0,  0, IRON_BLOCK, 0,  0, 0, 0
+    CASE GOLD_BLOCK, 1,       GOLD_INGOT, GOLD_INGOT, GOLD_INGOT,  GOLD_INGOT, GOLD_INGOT, GOLD_INGOT,  GOLD_INGOT, GOLD_INGOT, GOLD_INGOT
+    CASE GOLD_INGOT, 9,       0, 0, 0,  0, 0, 0,  0, 0, GOLD_BLOCK
+    CASE DIAMOND_BLOCK, 1,    DIAMOND, DIAMOND, DIAMOND,  DIAMOND, DIAMOND, DIAMOND,  DIAMOND, DIAMOND, DIAMOND
+    CASE DIAMOND, 9,          DIAMOND_BLOCK, 0, 0,  0, 0, 0,  0, 0, 0
+    CASE COAL_BLOCK, 1,       COAL, COAL, COAL,  COAL, COAL, COAL,  COAL, COAL, COAL
+    CASE COAL, 9,             0, 0, 0,  COAL_BLOCK, 0, 0,  0, 0, 0
+    CASE PLANK_SLAB, 6,       PLANKS, PLANKS, PLANKS,  0, 0, 0,  0, 0, 0
+    CASE COBBLE_SLAB, 6,      0, 0, 0,  COBBLE, COBBLE, COBBLE,  0, 0, 0
+    CASE STONE_BRICK_SLAB, 6, 0, 0, 0,  0, 0, 0,  STONE_BRICK, STONE_BRICK, STONE_BRICK
+    CASE BRICK_SLAB, 6,       BRICK, BRICK, BRICK,  0, 0, 0,  0, 0, 0
+    CASE SANDSTONE_SLAB, 6,   0, 0, 0,  SANDSTONE, SANDSTONE, SANDSTONE,  0, 0, 0
+    CASE PLANK_STAIRS, 4,     PLANKS, 0, 0,  PLANKS, PLANKS, 0,  PLANKS, PLANKS, PLANKS
+    CASE PLANK_STAIRS, 4,     0, 0, PLANKS,  0, PLANKS, PLANKS,  PLANKS, PLANKS, PLANKS
+    CASE COBBLE_STAIRS, 4,    COBBLE, 0, 0,  COBBLE, COBBLE, 0,  COBBLE, COBBLE, COBBLE
+    CASE COBBLE_STAIRS, 4,    0, 0, COBBLE,  0, COBBLE, COBBLE,  COBBLE, COBBLE, COBBLE
+    CASE STONE_BRICK_STAIRS, 4, STONE_BRICK, 0, 0,  STONE_BRICK, STONE_BRICK, 0,  STONE_BRICK, STONE_BRICK, STONE_BRICK
+    CASE STONE_BRICK_STAIRS, 4, 0, 0, STONE_BRICK,  0, STONE_BRICK, STONE_BRICK,  STONE_BRICK, STONE_BRICK, STONE_BRICK
+    CASE BRICK_STAIRS, 4,     BRICK, 0, 0,  BRICK, BRICK, 0,  BRICK, BRICK, BRICK
+    CASE BRICK_STAIRS, 4,     0, 0, BRICK,  0, BRICK, BRICK,  BRICK, BRICK, BRICK
+    CASE SANDSTONE_STAIRS, 4, SANDSTONE, 0, 0,  SANDSTONE, SANDSTONE, 0,  SANDSTONE, SANDSTONE, SANDSTONE
+    CASE SANDSTONE_STAIRS, 4, 0, 0, SANDSTONE,  0, SANDSTONE, SANDSTONE,  SANDSTONE, SANDSTONE, SANDSTONE
+    CASE WOOD_DOOR, 3,        PLANKS, PLANKS, 0,  PLANKS, PLANKS, 0,  PLANKS, PLANKS, 0
+    CASE IRON_DOOR, 3,        0, IRON_INGOT, IRON_INGOT,  0, IRON_INGOT, IRON_INGOT,  0, IRON_INGOT, IRON_INGOT
+    CASE TRAPDOOR, 2,         0, 0, 0,  PLANKS, PLANKS, PLANKS,  PLANKS, PLANKS, PLANKS
+    CASE LADDER, 3,           STICK, 0, STICK,  STICK, STICK, STICK,  STICK, 0, STICK
+    CASE TORCH, 4,            0, 0, 0,  0, COAL, 0,  0, STICK, 0
+    CASE FENCE, 3,            PLANKS, STICK, PLANKS,  PLANKS, STICK, PLANKS,  0, 0, 0
+    CASE GLASS_PANE, 16,      0, 0, 0,  GLASS, GLASS, GLASS,  GLASS, GLASS, GLASS
     ; near misses craft nothing
     CASE 0, 0,          COBBLE, COBBLE, COBBLE,    COBBLE, COBBLE, COBBLE,  COBBLE, COBBLE, COBBLE
     CASE 0, 0,          0, IRON_INGOT, 0,          0, FLINT, 0,          0, 0, 0
     CASE 0, 0,          0, STICK, STRING,          STICK, 0, STRING,     STICK, 0, STRING
     CASE 0, 0,          0, 0, 0,  IRON_INGOT, IRON_INGOT, IRON_INGOT,  0, PLANKS, 0
+    CASE 0, 0,          PLANKS, 0, PLANKS,  0, 0, 0,  0, 0, 0
+    CASE 0, 0,          COBBLE, 0, 0,  COBBLE, COBBLE, 0,  COBBLE, COBBLE, 0
+    CASE 0, 0,          STICK, 0, 0,  COAL, 0, 0,  0, 0, 0
+    CASE 0, 0,          STICK, PLANKS, STICK,  STICK, PLANKS, STICK,  0, 0, 0
+    CASE 0, 0,          STRING, STRING, 0,  STRING, 0, 0,  0, 0, 0
+    CASE 0, 0,          IRON_INGOT, IRON_INGOT, 0,  IRON_INGOT, IRON_INGOT, 0,  0, 0, 0
 craft_cases_end:
 
 section .text
@@ -658,6 +703,331 @@ test_inv_click_armor_containers:
     test    eax, eax
     jnz     .fail
     EXPECT  0, DIRT, 5, 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    inv_clear
+    mov     qword [inv_container], 0
+    call    zero_conts
+    mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- recipe book support: recipe_sets / recipe_fits / recipe_fill, cont_fill_from_inv -----
+
+; find_recipe(edi out id) -> rax the first record of the recipe table that makes that item, or 0
+find_recipe:
+    lea     rax, [recipes]
+    lea     rdx, [recipes_end]
+.l:
+    cmp     rax, rdx
+    jae     .none
+    cmp     [rax + 2], dil
+    je      .ret
+    add     rax, RECIPE_SIZE
+    jmp     .l
+.none:
+    xor     eax, eax
+.ret:
+    ret
+
+%macro FIND 1                           ; the record that makes item %1 -> rbx
+    mov     edi, %1
+    call    find_recipe
+    mov     rbx, rax
+    test    rax, rax
+    jz      .fail
+%endmacro
+%macro SETS_EQ 1                        ; recipe_sets(rbx) == %1
+    mov     rdi, rbx
+    call    recipe_sets
+    cmp     eax, %1
+    jne     .fail
+%endmacro
+%macro FILL_EQ 2                        ; recipe_fill(rbx, %1) == %2
+    mov     rdi, rbx
+    mov     esi, %1
+    call    recipe_fill
+    cmp     eax, %2
+    jne     .fail
+%endmacro
+%macro FITS_EQ 1                        ; recipe_fits(rbx) == %1
+    mov     rdi, rbx
+    call    recipe_fits
+    cmp     eax, %1
+    jne     .fail
+%endmacro
+%macro CFILL 3                          ; cont_fill_from_inv(cell %1, item %2) == %3
+    mov     edi, %1
+    mov     esi, %2
+    call    cont_fill_from_inv
+    cmp     eax, %3
+    jne     .fail
+%endmacro
+
+test_recipe_fill_and_sets:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    TEST_INIT
+    mov     dword [craft_size], 3
+    ; 4 ingots and 3 sticks make the iron pickaxe once
+    SET     0, IRON_INGOT, 4, 0
+    SET     1, STICK, 3, 0
+    FIND    IRON_PICKAXE
+    SETS_EQ 1
+    FILL_EQ 1, 1
+    EXPECT  CELL(0), IRON_INGOT, 1, 0
+    EXPECT  CELL(1), IRON_INGOT, 1, 0
+    EXPECT  CELL(2), IRON_INGOT, 1, 0
+    EXPECT  CELL(3), 0, 0, 0
+    EXPECT  CELL(4), STICK, 1, 0
+    EXPECT  CELL(5), 0, 0, 0
+    EXPECT  CELL(6), 0, 0, 0
+    EXPECT  CELL(7), STICK, 1, 0
+    EXPECT  CELL(8), 0, 0, 0
+    EXPECT  SLOTREF_RESULT, IRON_PICKAXE, 1, 0
+    EXPECT  0, IRON_INGOT, 1, 0
+    EXPECT  1, STICK, 1, 0
+    SETS_EQ 1                           ; the grid counts as stock: 1 + 3 ingots, 1 + 2 sticks
+    FILL_EQ 1, 1                        ; filling again returns the grid and lays it out anew
+    EXPECT  CELL(0), IRON_INGOT, 1, 0
+    EXPECT  CELL(7), STICK, 1, 0
+    EXPECT  SLOTREF_RESULT, IRON_PICKAXE, 1, 0
+    EXPECT  0, IRON_INGOT, 1, 0
+    EXPECT  1, STICK, 1, 0
+    ; too little of one ingredient: no sets, and a refused fill moves nothing
+    call    inv_clear
+    SET     0, IRON_INGOT, 2, 0
+    SET     1, STICK, 5, 0
+    SETS_EQ 0
+    FILL_EQ 1, 0
+    EXPECT  0, IRON_INGOT, 2, 0
+    EXPECT  1, STICK, 5, 0
+    EXPECT  CELL(0), 0, 0, 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    ; 7 ingots (2 sets) and 9 sticks (4 sets): max_sets 64 gives the 2 the ingots allow
+    call    inv_clear
+    SET     0, IRON_INGOT, 7, 0
+    SET     1, STICK, 9, 0
+    SETS_EQ 2
+    FILL_EQ 64, 2
+    EXPECT  CELL(0), IRON_INGOT, 2, 0
+    EXPECT  CELL(4), STICK, 2, 0
+    EXPECT  SLOTREF_RESULT, IRON_PICKAXE, 1, 0
+    EXPECT  0, IRON_INGOT, 1, 0
+    EXPECT  1, STICK, 5, 0
+    ; the pistol uses 2 ingots and a plank: 5 ingots and 1 plank are 1 set, with 4 planks 2
+    call    inv_clear
+    SET     0, IRON_INGOT, 5, 0
+    SET     1, PLANKS, 1, 0
+    FIND    PISTOL
+    SETS_EQ 1
+    SET     1, PLANKS, 4, 0
+    SETS_EQ 2
+    ; 10 logs: every log goes into the one cell, the result is the single craft's planks
+    call    inv_clear
+    SET     0, LOG, 10, 0
+    FIND    PLANKS
+    SETS_EQ 10
+    FILL_EQ 64, 10
+    EXPECT  CELL(0), LOG, 10, 0
+    EXPECT  SLOTREF_RESULT, PLANKS, 4, 0
+    EXPECT  0, 0, 0, 0
+    ; a cell holds one stack: 150 logs are capped at 64 sets
+    call    inv_clear
+    SET     0, LOG, 64, 0
+    SET     1, LOG, 64, 0
+    SET     2, LOG, 22, 0
+    SETS_EQ 64
+    FILL_EQ 64, 64
+    EXPECT  CELL(0), LOG, 64, 0
+    EXPECT  0, 0, 0, 0
+    EXPECT  1, LOG, 64, 0
+    EXPECT  2, LOG, 22, 0
+    ; a stray stack in the grid goes back to the inventory; grid items count as stock
+    call    inv_clear
+    SET     0, LOG, 3, 0
+    SET     CELL(4), DIRT, 5, 0
+    FILL_EQ 1, 1
+    EXPECT  CELL(0), LOG, 1, 0
+    EXPECT  CELL(4), 0, 0, 0
+    mov     edi, DIRT
+    call    inv_count
+    cmp     eax, 5
+    jne     .fail
+    call    inv_clear
+    SET     CELL(0), LOG, 3, 0
+    SETS_EQ 3
+    FILL_EQ 64, 3
+    EXPECT  CELL(0), LOG, 3, 0
+    ; an ingredient that does not stack keeps its wear, and caps the sets at 1
+    call    inv_clear
+    SET     0, IRON_INGOT, 5, 0
+    SET     1, FLINT_AND_STEEL, 1, 7
+    SET     2, LOG, 3, 0
+    SET     3, FLINT_AND_STEEL, 1, 40
+    FIND    MUSKET
+    SETS_EQ 1
+    FILL_EQ 64, 1
+    EXPECT  CELL(2), IRON_INGOT, 1, 0
+    EXPECT  CELL(4), IRON_INGOT, 1, 0
+    EXPECT  CELL(5), FLINT_AND_STEEL, 1, 7
+    EXPECT  CELL(6), LOG, 1, 0
+    EXPECT  SLOTREF_RESULT, MUSKET, 1, 0
+    EXPECT  0, IRON_INGOT, 3, 0
+    EXPECT  1, 0, 0, 0
+    EXPECT  2, LOG, 2, 0
+    EXPECT  3, FLINT_AND_STEEL, 1, 40
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    inv_clear
+    mov     dword [craft_size], 2
+    mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+test_recipe_fits_grid:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    TEST_INIT                           ; the 2x2 inventory grid
+    FIND    CRAFTING_TABLE
+    FITS_EQ 1
+    FIND    IRON_PICKAXE
+    FITS_EQ 0
+    FIND    PLANK_SLAB                  ; 3 wide
+    FITS_EQ 0
+    FIND    TORCH                       ; 1x2
+    FITS_EQ 1
+    ; the pickaxe does not fit: fill is refused and the grid is left alone
+    SET     0, IRON_INGOT, 3, 0
+    SET     1, STICK, 2, 0
+    SET     CELL(0), DIRT, 2, 0
+    FIND    IRON_PICKAXE
+    FILL_EQ 1, 0
+    EXPECT  CELL(0), DIRT, 2, 0
+    EXPECT  0, IRON_INGOT, 3, 0
+    EXPECT  1, STICK, 2, 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    ; a 2x2 recipe is laid out on the 2x2 cells (0, 1, 3, 4)
+    call    inv_clear
+    SET     0, STONE, 9, 0
+    FIND    STONE_BRICK
+    FITS_EQ 1
+    FILL_EQ 64, 2
+    EXPECT  CELL(0), STONE, 2, 0
+    EXPECT  CELL(1), STONE, 2, 0
+    EXPECT  CELL(2), 0, 0, 0
+    EXPECT  CELL(3), STONE, 2, 0
+    EXPECT  CELL(4), STONE, 2, 0
+    EXPECT  SLOTREF_RESULT, STONE_BRICK, 4, 0
+    EXPECT  0, STONE, 1, 0
+    ; at the crafting table the pickaxe fits and the same fill works
+    call    inv_clear
+    mov     dword [craft_size], 3
+    SET     0, IRON_INGOT, 3, 0
+    SET     1, STICK, 2, 0
+    FIND    IRON_PICKAXE
+    FITS_EQ 1
+    FILL_EQ 1, 1
+    EXPECT  SLOTREF_RESULT, IRON_PICKAXE, 1, 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    inv_clear
+    mov     dword [craft_size], 2
+    mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+test_furnace_book_fill:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    TEST_INIT
+    call    zero_conts
+    mov     qword [inv_container], 0
+    ; no container open: nothing moves
+    SET     0, IRON_ORE, 5, 0
+    CFILL   0, IRON_ORE, 0
+    EXPECT  0, IRON_ORE, 5, 0
+    MAKE_CONT 6, 11, 5, FURNACE, CONT_FURNACE
+    test    rax, rax
+    jz      .fail
+    mov     [inv_container], rax
+    ; 70 ore: a full stack goes into the input cell, 6 stay
+    SET     0, IRON_ORE, 64, 0
+    SET     1, IRON_ORE, 6, 0
+    CFILL   0, IRON_ORE, 64
+    CEXPECT 0, IRON_ORE, 64, 0
+    EXPECT  0, 0, 0, 0
+    EXPECT  1, IRON_ORE, 6, 0
+    CFILL   0, IRON_ORE, 0              ; the cell is full
+    CFILL   0, COAL, 0                  ; and holds another item
+    EXPECT  1, IRON_ORE, 6, 0
+    ; fuel: the fuel cell takes the coal
+    SET     2, COAL, 5, 0
+    CFILL   1, COAL, 5
+    CEXPECT 1, COAL, 5, 0
+    EXPECT  2, 0, 0, 0
+    ; topping up moves only what the stack has room for
+    SET     3, COAL, 64, 0
+    SET     4, COAL, 10, 0
+    CFILL   1, COAL, 59
+    CEXPECT 1, COAL, 64, 0
+    EXPECT  3, COAL, 5, 0
+    EXPECT  4, COAL, 10, 0
+    ; nothing of the item in the inventory, and a furnace has three cells
+    CFILL   2, GOLD_ORE, 0
+    CEXPECT 2, 0, 0, 0
+    CFILL   3, COAL, 0
+    ; a cell holding another item is left alone even when it has room
+    CSET    2, IRON_INGOT, 3, 0
+    SET     8, COAL, 4, 0
+    CFILL   2, COAL, 0
+    CEXPECT 2, IRON_INGOT, 3, 0
+    EXPECT  8, COAL, 4, 0
+    CSET    2, 0, 0, 0
+    SET     8, 0, 0, 0
+    ; a wooden tool burns as fuel and moves with its wear; a second one finds the cell taken
+    CSET    1, 0, 0, 0
+    SET     5, WOOD_PICKAXE, 1, 20
+    SET     6, WOOD_PICKAXE, 1, 3
+    CFILL   1, WOOD_PICKAXE, 1
+    CEXPECT 1, WOOD_PICKAXE, 1, 20
+    EXPECT  5, 0, 0, 0
+    CFILL   1, WOOD_PICKAXE, 0
+    EXPECT  6, WOOD_PICKAXE, 1, 3
+    ; a chest has 27 cells and no input rule
+    MAKE_CONT 5, 11, 5, CHEST, CONT_CHEST
+    test    rax, rax
+    jz      .fail
+    mov     [inv_container], rax
+    SET     7, DIRT, 3, 0
+    CFILL   27, DIRT, 0
+    CFILL   26, DIRT, 3
+    CEXPECT 26, DIRT, 3, 0
+    EXPECT  7, 0, 0, 0
     xor     eax, eax
     jmp     .out
 .fail:

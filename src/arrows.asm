@@ -39,7 +39,6 @@ c_dt:        dd 0.016666668
 c_gravity:   dd 0.33333334              ; arrows: 20 blocks/s^2 per step
 c_tiny:      dd 0.000001
 c_hdir_min:  dd 0.0001
-c_one:       dd 1.0
 c_embed:     dd 0.05                    ; an arrow stops this far short of the surface it hit
 c_out_y:     dd -8.0
 c_pick_r2:   dd 1.0                     ; horizontal pickup radius^2
@@ -262,28 +261,7 @@ arrows_step:
     movss   xmm0, [rsp + S_LEN]
     call    raycast
     mov     [rsp + S_BLK], eax
-    movss   xmm0, [rsp + S_LEN]
-    movss   [rsp + S_TMAX], xmm0        ; no block: the whole segment is free
-    test    eax, eax
-    jz      .creature
-    xor     ecx, ecx                    ; the cell's box [b, b + 1]
-.cell_box:
-    cvtsi2ss xmm0, dword [rsp + S_HIT + rcx*4]
-    movss   [rsp + S_LO + rcx*4], xmm0
-    addss   xmm0, [c_one]
-    movss   [rsp + S_HI + rcx*4], xmm0
-    inc     ecx
-    cmp     ecx, 3
-    jb      .cell_box
-    mov     rdi, rbx
-    lea     rsi, [rsp + S_DIR]
-    lea     rdx, [rsp + S_LO]
-    lea     rcx, [rsp + S_HI]
-    movss   xmm0, [rsp + S_LEN]
-    call    ray_aabb
-    test    eax, eax
-    jz      .creature                   ; a grazing miss of the box: keep the whole segment
-    movss   [rsp + S_TMAX], xmm0
+    movss   [rsp + S_TMAX], xmm0        ; where the segment meets a block (its whole length: none)
 
     ; ---- a creature nearer than the block ----------------------------------------
 .creature:

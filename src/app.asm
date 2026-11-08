@@ -24,7 +24,7 @@ extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim
 extern screen_trade, screen_dialog, screen_class, screen_skills
-extern rpg_class, rpg_reset, combat_reset, dmgnum_clear
+extern rpg_class, rpg_reset, combat_reset, dmgnum_clear, light_update
 
 section .rodata
 s_loading:    db "Loading world...", 0
@@ -736,6 +736,7 @@ app_run:
 .same_state:
     movss   xmm0, [frame_dt]
     call    audio_update
+    call    light_update                ; queued light changes first: they dirty chunks
     call    render_update_chunks
     movss   xmm0, [app_message_timer]
     subss   xmm0, [frame_dt]

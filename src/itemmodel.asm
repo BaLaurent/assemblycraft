@@ -1,13 +1,16 @@
 ; itemmodel.asm - 3D model of an item, shared by the first-person hand and dropped items.
-; Blocks are a textured cube; other items are their icon extruded 1/16 thick (front and
-; back faces plus a side face on every pixel edge that borders transparency).
+; Cubes, slabs and stairs are boxes carrying the block's own tiles (slabs and stairs in the
+; north-facing item form of shapes.asm); every other item - tools, food, doors, torches,
+; ladders, fences, panes - is its icon extruded 1/16 thick (front and back faces plus a side
+; face on every pixel edge that borders transparency).
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global item_model_draw
+global item_model_draw, item_model_is_block
 
-extern render_box, atlas, block_tiles, item_icon, item_max_stack
+extern render_box, render_box_px, atlas, block_tiles, block_shape, item_icon, item_max_stack
+extern shape_boxes
 
 section .rodata
 align 4
@@ -30,8 +33,30 @@ quad_x0:     resd 1                     ; current pixel box
 quad_x1:     resd 1
 quad_y0:     resd 1
 quad_y1:     resd 1
+pxboxes:     resb 6 * MAX_SHAPE_BOXES   ; shape boxes in 1/16 block, cell-relative
+alignb 4
+fbox:        resd 6                     ; one of them in model space
 
 section .text
+
+; item_model_is_block(edi id) -> eax 1 when the id is a block drawn as boxes with its own tiles
+; (cube, slab or stairs); 0 for items and for the blocks drawn as icon sprites
+item_model_is_block:
+    mov     edi, edi
+    xor     eax, eax
+    cmp     edi, NUM_BLOCKS
+    jae     .ret
+    movzx   ecx, byte [block_shape + rdi]
+    cmp     ecx, SHAPE_CUBE
+    je      .yes
+    cmp     ecx, SHAPE_SLAB
+    je      .yes
+    cmp     ecx, SHAPE_STAIRS
+    jne     .ret
+.yes:
+    mov     eax, 1
+.ret:
+    ret
 
 ; item_model_draw(edi id, xmm0 light): model centred on the origin, 1 unit wide, in the
 ; current modelview; the atlas must be bound on texture unit 0 with alpha test on.
@@ -50,10 +75,12 @@ item_model_draw:
     jae     .ret
     cmp     byte [item_max_stack + rbx], 0
     je      .ret                        ; air and unused ids
-    cmp     ebx, NUM_BLOCKS
-    jae     .sprite
+    mov     edi, ebx
+    call    item_model_is_block
+    test    eax, eax
+    jz      .sprite
 
-    ; ---- block: a cube with the block's own tiles ------------------------------
+    ; ---- block: the block's own tiles on a cube, or on the boxes of a slab / stairs ------
     lea     eax, [rbx + rbx*2]
     movzx   ecx, byte [block_tiles + rax]      ; top
     movzx   edx, byte [block_tiles + rax + 1]  ; side
@@ -72,6 +99,8 @@ item_model_draw:
     inc     ecx
     cmp     ecx, 6
     jb      .shade
+    cmp     byte [block_shape + rbx], SHAPE_CUBE
+    jne     .boxes
     lea     rdi, [cube]
     lea     rsi, [tiles]
     lea     rdx, [shades]
@@ -80,6 +109,44 @@ item_model_draw:
     movss   xmm2, [f_one]
     call    render_box
     jmp     .ret
+
+    ; slab / stairs: the RENDER boxes of the item form, each mapped to model space as px / 16 - 0.5
+.boxes:
+    mov     edi, ebx
+    xor     esi, esi
+    xor     edx, edx
+    xor     ecx, ecx
+    lea     r8, [pxboxes]
+    mov     r9d, BOXES_RENDER
+    call    shape_boxes
+    mov     r12d, eax                   ; box count
+    xor     r13d, r13d
+.box:
+    cmp     r13d, r12d
+    jae     .ret
+    imul    eax, r13d, 6
+    lea     r14, [pxboxes]
+    add     r14, rax
+    xor     ecx, ecx
+.model_box:
+    movzx   eax, byte [r14 + rcx]
+    cvtsi2ss xmm0, eax
+    mulss   xmm0, [f_px]
+    subss   xmm0, [f_half]
+    movss   [fbox + rcx*4], xmm0
+    inc     ecx
+    cmp     ecx, 6
+    jb      .model_box
+    lea     rdi, [fbox]
+    lea     rsi, [tiles]
+    lea     rdx, [shades]
+    movss   xmm0, [f_one]
+    movss   xmm1, [f_one]
+    movss   xmm2, [f_one]
+    mov     rcx, r14
+    call    render_box_px
+    inc     r13d
+    jmp     .box
 
     ; ---- sprite: front and back faces with the whole icon ----------------------
 .sprite:

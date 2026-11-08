@@ -8,7 +8,8 @@ default rel
 global drops, drops_clear, drops_spawn, drops_toss, drops_step, drops_render
 
 extern player, player_eye, player_forward, world_is_solid, rng_next, sincos_deg
-extern inv_add_dmg, audio_play, surv, item_max_stack, item_model_draw
+extern inv_add_dmg, audio_play, surv, item_max_stack, item_model_draw, item_model_is_block
+extern light_bind_at, light_bind_index
 
 %define DESPAWN_STEPS 18000             ; 5 minutes
 %define SPAWN_DELAY   10                ; steps before a fresh drop can be picked up
@@ -41,6 +42,7 @@ c_spin_rate: dd 2.0
 c_block_sc:  dd 0.25
 c_item_sc:   dd 0.45
 c_stack_off: dd 0.25                    ; second copy of a stack, in model units
+c_light_dy:  dd 0.25                    ; the light is sampled this far above the drop's bottom
 
 section .bss
 alignb 16
@@ -364,7 +366,8 @@ drops_step:
     ret
 
 ; drops_render(): every drop spinning and bobbing above its spot. Called inside the world
-; pass (atlas bound, alpha test on, night darkening active), so the model light is 1.
+; pass (atlas bound, alpha test on, light map active): each drop binds the light of the cell it
+; floats in on unit 1 (sky-full again afterwards), so the model light is 1.
 drops_render:
     push    rbp
     mov     rbp, rsp
@@ -376,6 +379,11 @@ drops_render:
     movzx   r12d, byte [rbx + DROP.id]
     test    r12d, r12d
     jz      .next
+    movss   xmm0, [rbx + DROP.x]
+    movss   xmm1, [rbx + DROP.y]
+    addss   xmm1, [c_light_dy]
+    movss   xmm2, [rbx + DROP.z]
+    call    light_bind_at
     call    glPushMatrix
     cvtsi2ss xmm0, dword [rbx + DROP.age]
     mulss   xmm0, [c_bob_rate]
@@ -393,9 +401,11 @@ drops_render:
     movss   xmm2, [c_one]
     xorps   xmm3, xmm3
     call    glRotatef
+    mov     edi, r12d
+    call    item_model_is_block
     movss   xmm0, [c_item_sc]
-    cmp     r12d, NUM_BLOCKS
-    jae     .scale
+    test    eax, eax
+    jz      .scale
     movss   xmm0, [c_block_sc]
 .scale:
     movss   xmm1, xmm0
@@ -421,6 +431,8 @@ drops_render:
     lea     rax, [drops_end]
     cmp     rbx, rax
     jb      .loop
+    mov     edi, LIGHT_SKY_FULL
+    call    light_bind_index
     add     rsp, 16
     pop     r12
     pop     rbx

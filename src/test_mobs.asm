@@ -14,7 +14,7 @@ extern player, body_init, rng_seed, world_clear, world_set, world_mark_all_dirty
 extern game_mode, game_time, settings, surv, survival_reset, inv, inv_clear
 extern drops, drops_clear, arrows, arrows_clear, tnt_clear, fx_clear
 extern combat_reset, combat_hit_flags, combat_guard_t
-extern rpg_state, rpg_reset, structures_reset
+extern rpg_state, rpg_reset, structures_reset, light_cells, light_fill_sky
 
 section .rodata
 align 4
@@ -313,12 +313,29 @@ test_mob_spawn_rules:
     call    mob_count_kind
     test    eax, eax
     jnz     .fail
+    ; block light 8+ everywhere (a torch-lit area): no hostile mob spawns at night
+    mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
+    lea     rdi, [light_cells]
+    mov     ecx, WORLD_VOLUME
+    mov     al, 0xF8                    ; sky 15, block 8
+    rep     stosb
+    mov     ebx, 600
+.lit:
+    call    mobs_step
+    inc     dword [game_time]
+    dec     ebx
+    jnz     .lit
+    mov     edi, 1
+    call    mob_count_kind
+    test    eax, eax
+    jnz     .fail
     xor     ebx, ebx
     jmp     .ret
 .fail:
     mov     ebx, 1
 .ret:
     mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
+    call    light_fill_sky
     call    mobs_clear
     call    arrows_clear                ; skeletons and creepers may have left arrows, drops, TNT
     call    tnt_clear

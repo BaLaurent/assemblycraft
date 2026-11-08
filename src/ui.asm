@@ -1169,7 +1169,9 @@ ui_slot:
     pop     rbp
     ret
 
-; ui_tooltip(rdi s): panel with the text at the mouse, kept inside the screen
+; ui_tooltip(rdi s): panel with the text at the mouse, kept inside the screen. Text wider than
+; the screen breaks at the last space that lets the first line fit, onto a second line.
+; Frame: [rsp] copy of the text (192 bytes) when it is split, [rsp+192] panel height.
 ui_tooltip:
     push    rbp
     mov     rbp, rsp
@@ -1177,14 +1179,73 @@ ui_tooltip:
     push    r12
     push    r13
     push    r14
+    push    r15
+    sub     rsp, 200
     mov     rbx, rdi
+    xor     r15d, r15d                  ; offset of the second line in the copy, 0 = one line
+    mov     dword [rsp + 192], 14
     test    rbx, rbx
     jz      .ret
     cmp     byte [rbx], 0
     je      .ret
+    mov     rdi, rbx
     mov     esi, 1
     call    ui_text_width
     lea     r12d, [rax + 6]             ; panel width: text + 3 padding each side
+    cmp     r12d, [ui_w]
+    jle     .place
+    ; copy (at most 191 chars), then try the spaces from the end: first only those before
+    ; a " - " suffix, then any space
+    xor     ecx, ecx
+.copy:
+    mov     al, [rbx + rcx]
+    mov     [rsp + rcx], al
+    test    al, al
+    jz      .copied
+    inc     ecx
+    cmp     ecx, 191
+    jb      .copy
+    mov     byte [rsp + rcx], 0
+.copied:
+    mov     r14d, 1                     ; pass 1: the break must start a " - " suffix
+    mov     [rsp + 196], ecx            ; length
+.pass:
+    mov     r13d, [rsp + 196]           ; candidate break index
+.split:
+    dec     r13d
+    jle     .next_pass
+    cmp     byte [rsp + r13], ' '
+    jne     .split
+    test    r14d, r14d
+    jz      .try
+    cmp     byte [rsp + r13 + 1], '-'
+    jne     .split
+.try:
+    mov     byte [rsp + r13], 0
+    mov     rdi, rsp
+    mov     esi, 1
+    call    ui_text_width
+    add     eax, 6
+    cmp     eax, [ui_w]
+    jle     .two_lines
+    mov     byte [rsp + r13], ' '
+    jmp     .split
+.next_pass:
+    dec     r14d
+    jz      .pass                       ; pass 2: any space
+    jmp     .place                      ; no space lets it fit: keep one line
+.two_lines:
+    mov     r12d, eax
+    lea     r15d, [r13 + 1]
+    lea     rdi, [rsp + r15]
+    mov     esi, 1
+    call    ui_text_width
+    add     eax, 6
+    cmp     eax, r12d
+    cmovg   r12d, eax
+    mov     rbx, rsp
+    mov     dword [rsp + 192], 25
+.place:
     mov     r13d, [ui_mx]
     add     r13d, 12
     mov     r14d, [ui_my]
@@ -1197,7 +1258,7 @@ ui_tooltip:
     test    r13d, r13d
     cmovs   r13d, eax
     mov     eax, [ui_h]
-    sub     eax, 14
+    sub     eax, [rsp + 192]
     cmp     r14d, eax
     cmovg   r14d, eax
     xor     eax, eax
@@ -1206,7 +1267,7 @@ ui_tooltip:
     mov     edi, r13d
     mov     esi, r14d
     mov     edx, r12d
-    mov     ecx, 14
+    mov     ecx, [rsp + 192]
     call    ui_panel
     mov     rdi, rbx
     lea     esi, [r13 + 3]
@@ -1214,7 +1275,17 @@ ui_tooltip:
     mov     ecx, WHITE
     mov     r8d, 1
     call    ui_text
+    test    r15d, r15d
+    jz      .ret
+    lea     rdi, [rsp + r15]
+    lea     esi, [r13 + 3]
+    lea     edx, [r14 + 14]
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text
 .ret:
+    add     rsp, 200
+    pop     r15
     pop     r14
     pop     r13
     pop     r12

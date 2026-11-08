@@ -77,6 +77,9 @@ dungeon_boxes:
     BOX  13,  8,   5,  15, 10,   5, AIR
     BOX  13,  8,   9,  15, 10,   9, AIR
     BOX  -5,  8,  -1,  -5, 10,   1, AIR
+    BOX   0, 10,  -4,   0, 10,  -4, TORCH_WALL + DIR_N ; torches on the walls, lit rooms
+    BOX  14, 10,  -4,  14, 10,  -4, TORCH_WALL + DIR_N
+    BOX  14, 10,  18,  14, 10,  18, TORCH_WALL + DIR_S
 %define DUNGEON_BOXES ((dungeon_boxes_end - dungeon_boxes) / 8)
 dungeon_boxes_end:
 
@@ -98,6 +101,10 @@ crypt_boxes:
     BOX   4,  6,  -4,   4, 13,  -4, STONE_BRICK
     BOX  -4,  6,   4,  -4, 13,   4, STONE_BRICK
     BOX   4,  6,   4,   4, 13,   4, STONE_BRICK
+    BOX   3,  9,  -4,   3,  9,  -4, TORCH_WALL + DIR_E ; torches on the pillars
+    BOX   3,  9,   4,   3,  9,   4, TORCH_WALL + DIR_E
+    BOX  -3,  9,  -4,  -3,  9,  -4, TORCH_WALL + DIR_W
+    BOX  -3,  9,   4,  -3,  9,   4, TORCH_WALL + DIR_W
     BOX  -8,  6,  -1,  -8,  8,   1, AIR
 %define CRYPT_BOXES ((crypt_boxes_end - crypt_boxes) / 8)
 crypt_boxes_end:
@@ -106,7 +113,7 @@ crypt_boxes_end:
 ; then the walls and the ceiling wherever there is ground to line; the entrance frame closes the
 ; tunnel where it comes out
 stair_step:
-    BOX   0, 0, -1,  0, 0,  1, OP_SHELL
+    BOX   0, 0, -1,  0, 0,  1, STONE_BRICK_STAIRS + DIR_W
     BOX   0, 1, -1,  0, 3,  1, AIR
     BOX   0, 0, -2,  0, 4, -2, OP_SHELL, OP_IFSOLID
     BOX   0, 0,  2,  0, 4,  2, OP_SHELL, OP_IFSOLID
@@ -114,6 +121,7 @@ stair_step:
 %define STAIR_STEP ((stair_step_end - stair_step) / 8)
 stair_step_end:
 stair_exit:
+    BOX   0, 0, -1,  0, 0,  1, STONE_BRICK_STAIRS + DIR_W, OP_IFSOLID
     BOX   0, 1, -2,  0, 3, -2, MOSSY_STONE_BRICK
     BOX   0, 1,  2,  0, 3,  2, MOSSY_STONE_BRICK
     BOX   0, 4, -2,  0, 4,  2, MOSSY_STONE_BRICK
@@ -159,13 +167,15 @@ house_boxes:
     BOX  -1, 6, -1,  1, 6,  1, BRICK
 %define HOUSE_BOXES ((house_boxes_end - house_boxes) / 8)
 house_boxes_end:
-; per house: centre dx, dz from the village centre, then the door cell's dx, dz from the house
-; centre (the middle of the wall that faces the well)
+; per house, 8 bytes: centre dx, dz from the village centre; the door cell's dx, dz from the house
+; centre (the middle of the wall that faces the well); the door's facing (the direction of that
+; offset from the centre); the wall torch's dx, dz from the centre (interior cell next to the
+; window, against the wall opposite the door) and its id TORCH_WALL + opposite(facing)
 house_tab:
-    db   9,  0, -2,  0
-    db  -9,  0,  2,  0
-    db   0,  9,  0, -2
-    db   0, -9,  0,  2
+    db   9,  0, -2,  0, DIR_W,  1,  1, TORCH_WALL + DIR_E
+    db  -9,  0,  2,  0, DIR_E, -1,  1, TORCH_WALL + DIR_W
+    db   0,  9,  0, -2, DIR_N,  1,  1, TORCH_WALL + DIR_S
+    db   0, -9,  0,  2, DIR_S,  1, -1, TORCH_WALL + DIR_N
 
 ; loot tables, one entry per 4 bytes: weight, item, min count, max count
 loot_dungeon:
@@ -897,8 +907,8 @@ build_crypt:
     ret
 
 ; build_village(rdi SITE*): the ground flattened to the village's height over x, z +-15 (trees
-; cut away), a well in the middle, gravel paths along both axes and four houses whose doors face
-; the well
+; cut away), a well in the middle, gravel paths along both axes and four houses whose closed
+; wooden doors face the well, each with a wall torch inside
 ; Frame: [rsp] house x, [rsp+4] house z.
 build_village:
     push    rbp
@@ -931,17 +941,39 @@ build_village:
     mov     esi, HOUSE_BOXES
     mov     ecx, r13d
     call    run_boxes
-    movsx   edi, byte [rbx + 2]         ; the door: two cells of the wall facing the well
-    add     edi, [rsp]
+    movsx   edi, byte [rbx + 2]         ; the door: a closed wooden door in the wall facing the
+    add     edi, [rsp]                  ; well, lower half then upper half (param bit 0)
     movsx   edx, byte [rbx + 3]
     add     edx, [rsp + 4]
     lea     esi, [r13 + 1]
     mov     ecx, edi
-    lea     r8d, [r13 + 2]
+    lea     r8d, [r13 + 1]
     mov     r9d, edx
-    xor     eax, eax
+    movzx   eax, byte [rbx + 4]
+    lea     eax, [WOOD_DOOR + rax*4]
     call    box_fill
-    add     rbx, 4
+    movsx   edi, byte [rbx + 2]
+    add     edi, [rsp]
+    movsx   edx, byte [rbx + 3]
+    add     edx, [rsp + 4]
+    lea     esi, [r13 + 2]
+    mov     ecx, edi
+    mov     r8d, esi
+    mov     r9d, edx
+    movzx   eax, byte [rbx + 4]
+    lea     eax, [WOOD_DOOR + 1 + rax*4]
+    call    box_fill
+    movsx   edi, byte [rbx + 5]         ; the wall torch inside, against the opposite plank wall
+    add     edi, [rsp]
+    movsx   edx, byte [rbx + 6]
+    add     edx, [rsp + 4]
+    lea     esi, [r13 + 2]
+    mov     ecx, edi
+    mov     r8d, esi
+    mov     r9d, edx
+    movzx   eax, byte [rbx + 7]
+    call    box_fill
+    add     rbx, 8
     dec     r15d
     jnz     .house
     add     rsp, 8

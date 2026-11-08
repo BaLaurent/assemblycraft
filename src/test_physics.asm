@@ -356,6 +356,7 @@ test_physics_jump_clears_one_block:
     mov     esi, %1
     mov     edx, %2
     mov     ecx, %3
+    mov     r8d, STONE
     call    body_intersects_block
     cmp     eax, %4
     jne     .fail

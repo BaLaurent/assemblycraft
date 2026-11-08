@@ -12,7 +12,7 @@ global mobs_save, mobs_load, yaw_from
 
 extern body_init, body_step, body_intersects_block, player, player_eye
 extern rng_next, sincos_deg, atan2_deg
-extern world_top_y, world_get, raycast
+extern world_top_y, world_get, raycast, light_get
 extern sky_brightness, sky_is_night
 extern surv, drops_spawn, audio_play_at
 extern settings, game_mode, game_time
@@ -1435,7 +1435,8 @@ mob_update:
 
 ; spawn_at_ground(edi type, esi x, edx z, ecx ground mask) -> eax slot index, or -1.
 ; Needs 1 <= x, z <= 254, a surface at y + 1 <= 62 and a top block whose bit is set in the mask;
-; a spider (1.4 blocks wide) also needs the 3 x 3 cells above that block free.
+; a hostile type also needs block light < 8 in the cell above that block (a torch keeps its
+; surroundings clear); a spider (1.4 blocks wide) also needs the 3 x 3 cells above it free.
 spawn_at_ground:
     push    rbp
     mov     rbp, rsp
@@ -1471,6 +1472,19 @@ spawn_at_ground:
     ja      .fail
     bt      r14d, eax
     jnc     .fail
+    lea     eax, [rbx - 1]
+    cmp     eax, NUM_MOB_TYPES
+    jae     .lit_ok
+    cmp     byte [t_hostile + rax], 0
+    je      .lit_ok
+    mov     edi, r12d
+    lea     esi, [r15 + 1]
+    mov     edx, r13d
+    call    light_get
+    and     eax, 15                     ; the block-light nibble
+    cmp     eax, 8
+    jae     .fail
+.lit_ok:
     cmp     ebx, MOB_SPIDER
     jne     .place
     mov     edi, r12d
@@ -2138,7 +2152,8 @@ mob_damage:
     pop     rbp
     ret
 
-; mobs_intersect_block(edi x, esi y, edx z) -> eax 1 if any live mob's box strictly overlaps the block
+; mobs_intersect_block(edi x, esi y, edx z, ecx id) -> eax 1 if any live mob's box strictly overlaps
+; the collision boxes block `id` would have in that cell
 mobs_intersect_block:
     push    rbp
     mov     rbp, rsp
@@ -2151,6 +2166,7 @@ mobs_intersect_block:
     mov     r13d, edi
     mov     r14d, esi
     mov     r15d, edx
+    mov     [rsp], ecx
     lea     rbx, [mobs]
     lea     r12, [mobs_end]
 .loop:
@@ -2160,6 +2176,7 @@ mobs_intersect_block:
     mov     esi, r13d
     mov     edx, r14d
     mov     ecx, r15d
+    mov     r8d, [rsp]
     call    body_intersects_block
     test    eax, eax
     jnz     .ret

@@ -11,6 +11,7 @@ global inv_consume_held, inv_damage_held, inv_find_hotbar, inv_click
 global inv_close_screen, craft_update, inv_count, inv_remove_one, armor_points, armor_wear
 global item_break_time, item_harvest_drop, item_attack_damage
 global recipes, recipes_end
+global recipe_uses, recipe_have, recipe_sets, recipe_fits, recipe_fill, inv_take_stack
 
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack
 extern item_burn, item_smelt, item_armor_slot, item_armor_points
@@ -377,6 +378,27 @@ inv_remove_one:
     mov     eax, 1
     ret
 
+; inv_take_stack(edi id) -> eax the first of the 36 slots holding that item, taken whole (count
+; and wear intact); the slot is emptied. 0 when the inventory holds none.
+inv_take_stack:
+    lea     rsi, [inv]
+    xor     ecx, ecx
+.l:
+    cmp     byte [rsi + rcx*4 + 1], 0
+    je      .n
+    cmp     byte [rsi + rcx*4], dil
+    je      .found
+.n:
+    inc     ecx
+    cmp     ecx, INV_SLOTS
+    jb      .l
+    xor     eax, eax
+    ret
+.found:
+    mov     eax, [rsi + rcx*4]
+    mov     dword [rsi + rcx*4], 0
+    ret
+
 ; armor_points() -> eax sum of item_armor_points over the worn pieces
 armor_points:
     lea     rsi, [inv + INVENTORY.armor]
@@ -603,6 +625,225 @@ inv_close_screen:
     mov     qword [inv_container], 0
     mov     dword [craft_size], 2
     call    craft_update
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- recipe book support ------------------------------------------------------------------
+; A recipe record is w, h, out id, out count, cells[9] (row-major in w x h, 0 = empty).
+
+; recipe_uses(rdi rec, esi id) -> eax how many cells of the recipe hold that ingredient
+recipe_uses:
+    xor     eax, eax
+    xor     ecx, ecx
+.l:
+    cmp     [rdi + 4 + rcx], sil
+    jne     .n
+    inc     eax
+.n:
+    inc     ecx
+    cmp     ecx, 9
+    jb      .l
+    ret
+
+; recipe_have(edi id) -> eax how many of that item the 36 slots and the 9 grid cells hold
+recipe_have:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    movzx   r12d, dil
+    call    inv_count
+    mov     ebx, eax
+    lea     rsi, [inv + INVENTORY.grid]
+    xor     ecx, ecx
+.l:
+    cmp     byte [rsi + rcx*4], r12b
+    jne     .n
+    movzx   edx, byte [rsi + rcx*4 + 1]
+    add     ebx, edx
+.n:
+    inc     ecx
+    cmp     ecx, 9
+    jb      .l
+    mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; recipe_fits(rdi rec) -> eax 1 if the recipe fits the active grid: w <= craft_size and
+; h <= craft_size
+recipe_fits:
+    mov     eax, [craft_size]
+    movzx   ecx, byte [rdi]
+    cmp     ecx, eax
+    ja      .no
+    movzx   ecx, byte [rdi + 1]
+    cmp     ecx, eax
+    ja      .no
+    mov     eax, 1
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; recipe_sets(rdi rec) -> eax how many times the recipe can be made from the 36 slots plus the
+; current grid: for each distinct ingredient floor(held / cells using it), the smallest of those,
+; capped by the smallest item_max_stack among the ingredients (that is what one grid cell holds).
+; 0 when any ingredient is missing. The grid size is not looked at (recipe_fits does that).
+recipe_sets:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [rsp] = uses of the ingredient at hand
+    mov     rbx, rdi
+    mov     r13d, 0xFFFF                ; smallest held / uses
+    mov     r14d, 255                   ; smallest max stack; 255 = no ingredient seen yet
+    xor     r12d, r12d                  ; cell
+.cell:
+    movzx   r15d, byte [rbx + 4 + r12]
+    test    r15d, r15d
+    jz      .next
+    xor     ecx, ecx
+.dup:                                   ; only the first cell holding an ingredient counts it
+    cmp     ecx, r12d
+    jae     .new
+    cmp     [rbx + 4 + rcx], r15b
+    je      .next
+    inc     ecx
+    jmp     .dup
+.new:
+    mov     rdi, rbx
+    mov     esi, r15d
+    call    recipe_uses
+    mov     [rsp], eax
+    mov     edi, r15d
+    call    recipe_have
+    xor     edx, edx
+    div     dword [rsp]
+    cmp     eax, r13d
+    cmovb   r13d, eax
+    lea     rax, [item_max_stack]
+    movzx   eax, byte [rax + r15]
+    cmp     eax, r14d
+    cmovb   r14d, eax
+.next:
+    inc     r12d
+    cmp     r12d, 9
+    jb      .cell
+    xor     eax, eax
+    cmp     r14d, 255
+    je      .ret                        ; no ingredient at all: nothing to make
+    mov     eax, r13d
+    cmp     eax, r14d
+    cmova   eax, r14d
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; recipe_fill(rdi rec, esi max_sets) -> eax sets placed
+; Lays the recipe out in the grid, top-left aligned, with as many sets as the inventory holds (at
+; most max_sets): the grid first goes back to the inventory, then every ingredient cell {id, n}
+; is taken from slots 0..35 in order (an ingredient that does not stack moves its slot's stack as
+; it is, wear kept). craft_update then fills the result. 0, and nothing touched, when the
+; recipe does not fit the grid or something is missing.
+recipe_fill:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [rsp] ingredient, [rsp + 4] items taken
+    mov     rbx, rdi
+    mov     r12d, esi                   ; max_sets
+    call    recipe_fits
+    test    eax, eax
+    jz      .none
+    mov     rdi, rbx
+    call    recipe_sets
+    test    eax, eax
+    jz      .none
+    lea     r13, [inv + INVENTORY.grid]
+    xor     r14d, r14d
+.back:                                  ; the grid goes back to the inventory first
+    lea     rdi, [r13 + r14*4]
+    call    return_stack
+    inc     r14d
+    cmp     r14d, 9
+    jb      .back
+    mov     rdi, rbx
+    call    recipe_sets                 ; now from the inventory alone
+    cmp     eax, r12d
+    cmova   eax, r12d
+    mov     r12d, eax                   ; n
+    test    eax, eax
+    jz      .done
+    xor     r14d, r14d                  ; row
+.row:
+    xor     r15d, r15d                  ; column
+.col:
+    movzx   eax, byte [rbx]             ; w
+    imul    eax, r14d
+    add     eax, r15d
+    movzx   edi, byte [rbx + 4 + rax]   ; the recipe cell
+    test    edi, edi
+    jz      .skip
+    lea     rcx, [item_max_stack]
+    cmp     byte [rcx + rdi], 1
+    ja      .many
+    call    inv_take_stack              ; does not stack: the slot's stack as it is
+    jmp     .store
+.many:
+    mov     [rsp], edi
+    mov     dword [rsp + 4], 0
+.take:
+    mov     edi, [rsp]
+    call    inv_remove_one
+    inc     dword [rsp + 4]
+    mov     eax, [rsp + 4]
+    cmp     eax, r12d
+    jb      .take
+    mov     eax, r12d
+    shl     eax, 8
+    or      eax, [rsp]                  ; {id, n, 0}
+.store:
+    lea     ecx, [r14 + r14*2]
+    add     ecx, r15d                   ; grid cell 3 * row + column
+    mov     [r13 + rcx*4], eax
+.skip:
+    inc     r15d
+    movzx   eax, byte [rbx]
+    cmp     r15d, eax
+    jb      .col
+    inc     r14d
+    movzx   eax, byte [rbx + 1]
+    cmp     r14d, eax
+    jb      .row
+.done:
+    call    craft_update
+    mov     eax, r12d
+    jmp     .out
+.none:
+    xor     eax, eax
+.out:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

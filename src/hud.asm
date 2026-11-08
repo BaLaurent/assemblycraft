@@ -14,7 +14,7 @@ extern ui_item_icon, ui_icon9, ui_tile_icon
 extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
 extern surv, surv_max_health, inv, inv_sel, player, mobs, mob_count_kind, mob_is_hostile
-extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw
+extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw, light_get
 extern item_names, item_durability, armor_points
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
 extern str_append, str_copy, i32_to_str, f32_to_str, fx_flash, atan2_deg
@@ -43,7 +43,8 @@ f_22_5:     dd 22.5
 f_45:       dd 45.0
 f_360:      dd 360.0
 f_2_5:      dd 2.5                      ; seconds a banner stays
-s_dbg_title: db "AssemblyCraft 0.6  ", 0
+f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
+s_dbg_title: db "AssemblyCraft 0.7  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -62,8 +63,10 @@ s_colon:    db ":", 0
 s_mobs:     db "Mobs: ", 0
 s_hostile:  db " hostile, ", 0
 s_passive:  db " passive", 0
-s_light:    db "Light: ", 0
-s_percent:  db "%", 0
+s_light:    db "Light: sky ", 0
+s_light_b:  db " block ", 0
+s_light_d:  db " (", 0
+s_light_e:  db "%)", 0
 s_health:   db "Health ", 0
 s_food:     db "  Food ", 0
 s_sat:      db "/20  Sat ", 0
@@ -1499,12 +1502,29 @@ hud_debug:
     EMIT
 
     APPEND_STR s_light
+    roundss xmm0, [player + BODY.x], 9  ; light of the cell the feet are in
+    cvttss2si edi, xmm0
+    movss   xmm1, [player + BODY.y]
+    addss   xmm1, [f_feet_eps]
+    roundss xmm1, xmm1, 9
+    cvttss2si esi, xmm1
+    roundss xmm2, [player + BODY.z], 9
+    cvttss2si edx, xmm2
+    call    light_get
+    mov     r13d, eax
+    shr     eax, 4
+    APPEND_EAX                          ; sky
+    APPEND_STR s_light_b
+    mov     eax, r13d
+    and     eax, 15
+    APPEND_EAX                          ; block
+    APPEND_STR s_light_d
     mov     edi, [game_time]
     call    sky_brightness
     mulss   xmm0, [f_100]
     cvttss2si eax, xmm0
-    APPEND_EAX
-    APPEND_STR s_percent
+    APPEND_EAX                          ; day brightness in percent
+    APPEND_STR s_light_e
     EMIT
 
     cmp     dword [game_mode], MODE_SURVIVAL

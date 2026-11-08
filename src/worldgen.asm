@@ -5,7 +5,7 @@ default rel
 global world_generate, hash32, worldgen_height, worldgen_set_seed
 
 extern blocks, world_header
-extern world_clear, world_mark_all_dirty
+extern world_clear, world_mark_all_dirty, light_compute_all
 extern structures_plan, structures_generate
 
 section .rodata
@@ -597,6 +597,7 @@ world_generate:
     mov     edi, eax
     call    structures_plan             ; sites from the seed (no block writes)
     call    structures_generate         ; then their blocks, chests and loot
+    call    light_compute_all           ; the light of the finished world
     call    world_mark_all_dirty
     add     rsp, 8
     pop     r15

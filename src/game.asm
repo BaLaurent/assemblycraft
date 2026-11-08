@@ -9,7 +9,7 @@ global game_new, game_load, game_save, game_frame, game_respawn
 
 extern world_header, world_get, world_set, world_load, world_save, world_generate, world_top_y
 extern player, player_spawn, body_step, player_look, player_eye, player_forward
-extern body_intersects_block, raycast, frame_input, settings
+extern raycast, frame_input, settings
 extern inv, inv_sel, inv_clear, inv_set_creative_default, inv_held
 extern inv_consume_held, inv_damage_held, inv_find_hotbar, inv_container
 extern inv_count, inv_remove_one
@@ -19,7 +19,7 @@ extern block_hardness, block_dig_sound, block_step_sound
 extern surv, survival_reset, survival_land, survival_step, survival_eat_step
 extern survival_can_sprint, survival_exhaust
 extern mobs, mobs_clear, mobs_populate, mobs_step, mobs_raycast, mob_hurt
-extern mobs_intersect_block, mobs_save, mobs_load
+extern mobs_save, mobs_load
 extern audio_play, audio_play_at, rng_next, str_copy, input_captured
 extern drops_clear, drops_spawn, drops_step, hand_swing
 extern arrows_clear, arrows_step, arrows_spawn, tnt_clear, tnt_step, tnt_prime
@@ -34,6 +34,7 @@ extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt
 extern dmgnum_clear, dmgnum_step
 extern structures_plan, structures_reset, structures_spawn_npcs, structures_step
 extern surv_max_health
+extern place_block, block_use, block_removed, block_is_usable, block_base
 
 section .rodata
 align 4
@@ -49,7 +50,6 @@ f_hundred:    dd 100.0
 f_step_len:   dd 1.6
 vol_step:     dd 0.35
 vol_crack:    dd 0.4
-vol_place:    dd 0.8
 exh_attack:   dd 0.1
 exh_break:    dd 0.005
 abs_mask:     dd 0x7FFFFFFF
@@ -417,10 +417,15 @@ target_block:
     mov     edx, [game_target + RAYHIT.bz]
     jmp     world_get
 
-; remove_target_block(): game_target's block becomes AIR; a furnace or chest spills
+; remove_target_block(): game_target's block becomes AIR; a furnace or chest spills, a door
+; loses its other half and whatever hung on the block (torches, ladders) pops off
 remove_target_block:
     push    rbp
     mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    target_block
+    mov     ebx, eax                    ; the id that goes away
     mov     edi, [game_target + RAYHIT.bx]
     mov     esi, [game_target + RAYHIT.by]
     mov     edx, [game_target + RAYHIT.bz]
@@ -430,6 +435,13 @@ remove_target_block:
     mov     edx, [game_target + RAYHIT.bz]
     mov     ecx, AIR
     call    world_set
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    mov     ecx, ebx
+    call    block_removed
+    add     rsp, 8
+    pop     rbx
     pop     rbp
     ret
 
@@ -481,7 +493,7 @@ try_potion:
 
 ; want_guard(edi targeted mob or -1) -> eax 1 when the player raises the guard this frame:
 ; RMB held with a sword, axe or dagger, unless this frame's RMB press talks to a merchant or
-; elder or opens a crafting table, furnace or chest
+; elder or uses a block (crafting table, furnace, chest, door, trapdoor)
 want_guard:
     push    rbp
     mov     rbp, rsp
@@ -516,14 +528,10 @@ want_guard:
     cmp     dword [game_has_target], 0
     je      .ret
     call    target_block
-    cmp     eax, CRAFTING_TABLE
-    je      .no
-    cmp     eax, FURNACE
-    je      .no
-    cmp     eax, FURNACE_LIT
-    je      .no
-    cmp     eax, CHEST
-    je      .no
+    mov     edi, eax
+    call    block_is_usable
+    test    eax, eax
+    jnz     .no
     mov     eax, 1
     jmp     .ret
 .no:
@@ -916,6 +924,12 @@ game_frame:
 .no_mined_xp:
     cmp     r12d, LEAVES
     jne     .not_leaves
+    call    held_id
+    cmp     byte [item_tool + rax], TOOL_AXE
+    jne     .leaf_roll
+    mov     ebx, LEAVES                 ; an axe takes the leaves themselves
+    jmp     .drop_ready
+.leaf_roll:
     call    rng_next
     test    eax, 15
     jnz     .drop_ready
@@ -986,6 +1000,15 @@ game_frame:
     jne     .not_use
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
     je      .not_use
+    mov     edi, [game_target + RAYHIT.bx]
+    mov     esi, [game_target + RAYHIT.by]
+    mov     edx, [game_target + RAYHIT.bz]
+    call    block_use                   ; a door or trapdoor swings
+    test    eax, eax
+    jz      .not_door
+    call    hand_swing
+    jmp     .pick
+.not_door:
     cmp     ebx, CRAFTING_TABLE
     jne     .not_table
     mov     dword [game_open_screen], ST_CRAFTING
@@ -1071,56 +1094,11 @@ game_frame:
 .not_food:
     test    r12d, r12d
     jz      .pick
-    cmp     r12d, NUM_BLOCKS
-    jae     .pick
-    cmp     dword [game_target + RAYHIT.px], WORLD_X - 1
-    ja      .pick
-    cmp     dword [game_target + RAYHIT.py], WORLD_Y - 1
-    ja      .pick
-    cmp     dword [game_target + RAYHIT.pz], WORLD_Z - 1
-    ja      .pick
-    mov     edi, [game_target + RAYHIT.px]
-    mov     esi, [game_target + RAYHIT.py]
-    mov     edx, [game_target + RAYHIT.pz]
-    call    world_get
-    test    eax, eax
-    jnz     .pick
-    lea     rdi, [player]
-    mov     esi, [game_target + RAYHIT.px]
-    mov     edx, [game_target + RAYHIT.py]
-    mov     ecx, [game_target + RAYHIT.pz]
-    call    body_intersects_block
-    test    eax, eax
-    jnz     .pick
-    mov     edi, [game_target + RAYHIT.px]
-    mov     esi, [game_target + RAYHIT.py]
-    mov     edx, [game_target + RAYHIT.pz]
-    call    mobs_intersect_block
-    test    eax, eax
-    jnz     .pick
-    mov     ecx, CONT_FURNACE
-    cmp     r12d, FURNACE
-    je      .place_cont
-    mov     ecx, CONT_CHEST
-    cmp     r12d, CHEST
-    jne     .place_block
-.place_cont:
-    mov     edi, [game_target + RAYHIT.px]
-    mov     esi, [game_target + RAYHIT.py]
-    mov     edx, [game_target + RAYHIT.pz]
-    call    cont_create
-    test    rax, rax
-    jz      .pick                       ; no free container record: nothing placed
-.place_block:
-    mov     edi, [game_target + RAYHIT.px]
-    mov     esi, [game_target + RAYHIT.py]
-    mov     edx, [game_target + RAYHIT.pz]
-    mov     ecx, r12d
-    call    world_set
     mov     edi, r12d
-    lea     rsi, [block_dig_sound]
-    movss   xmm0, [vol_place]
-    call    play_block_sound
+    lea     rsi, [game_target]
+    call    place_block                 ; checks the item and the cell, picks the variant, plays the sound
+    test    eax, eax
+    jz      .pick
     call    hand_swing
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .pick
@@ -1134,11 +1112,9 @@ game_frame:
     cmp     dword [game_has_target], 0
     je      .bow
     call    target_block
+    movzx   eax, byte [block_base + rax] ; the item form of the block: a lit furnace gives a furnace
     test    eax, eax
-    jz      .bow
-    cmp     eax, FURNACE_LIT
-    jne     .pick_id
-    mov     eax, FURNACE
+    jz      .bow                        ; flames have no item
 .pick_id:
     cmp     dword [game_mode], MODE_CREATIVE
     jne     .pick_survival

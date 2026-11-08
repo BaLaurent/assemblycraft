@@ -1,12 +1,14 @@
-; world.asm - block storage, chunk dirty flags, save/load of the world file image.
+; world.asm - block storage, chunk dirty flags, the light hooks (world_set queues light changes,
+; world_clear / world_load reset or compute the light), save/load of the world file image.
 %include "common.inc"
 default rel
 
 global world_header, blocks, chunk_dirty
 global world_get, world_set, world_is_solid, world_is_opaque, world_top_y
-global world_clear, world_mark_all_dirty, world_save, world_load
+global world_clear, world_mark_all_dirty, world_mark_cell_dirty, world_save, world_load
 
-extern block_flags, file_read, file_write_atomic
+extern block_flags, block_light, file_read, file_write_atomic
+extern light_mark, light_fill_sky, light_compute_all
 
 section .rodata
 world_magic:    db "ACRAFT04"
@@ -46,8 +48,9 @@ world_get:
     xor     eax, eax
     ret
 
-; world_set(edi x, esi y, edx z, ecx id). Marks dirty every chunk containing an
-; in-bounds cell of the 3x3x3 neighbourhood (a box, so mark the clamped box).
+; world_set(edi x, esi y, edx z, ecx id): store the block. When the cell's opacity or light
+; emission changes, queue its light recompute (light_mark); then mark its chunks dirty.
+; Preserves rdi and rbx; out-of-bounds cells are ignored.
 world_set:
     cmp     edi, WORLD_X - 1
     ja      .ret
@@ -61,7 +64,32 @@ world_set:
     shl     r8d, 8
     or      eax, r8d
     or      eax, edi
+    movzx   r8d, byte [blocks + rax]    ; the old id
     mov     [blocks + rax], cl
+    movzx   r9d, cl                     ; the new id
+    movzx   eax, byte [block_flags + r8]
+    xor     al, [block_flags + r9]
+    test    al, FLAG_OPAQUE
+    jnz     .light
+    mov     al, [block_light + r8]
+    cmp     al, [block_light + r9]
+    je      world_mark_cell_dirty       ; tail jump: marks the neighbourhood, returns to the caller
+.light:
+    push    rdi
+    push    rsi
+    push    rdx
+    call    light_mark
+    pop     rdx
+    pop     rsi
+    pop     rdi
+    jmp     world_mark_cell_dirty
+.ret:
+    ret
+
+; world_mark_cell_dirty(edi x, esi y, edx z): flag every chunk that contains an in-bounds cell of
+; the 3x3x3 neighbourhood of an in-bounds cell (a box, so mark the clamped box). Also the mesher's
+; hook for light changes. Preserves rdi and rbx; clobbers eax, ecx, edx, esi, r8-r11.
+world_mark_cell_dirty:
     push    rbx
     ; chunk ranges: lo = max(c-1,0)>>4, hi = min(c+1,max)>>4
 %macro CRANGE 4                         ; coord, max, lo, hi
@@ -101,7 +129,6 @@ world_set:
     cmp     r10d, r11d
     jbe     .ly
     pop     rbx
-.ret:
     ret
 
 ; world_is_solid(edi x, esi y, edx z) -> eax 0/1
@@ -173,12 +200,16 @@ world_top_y:
 .ret:
     ret
 
-; world_clear(): zero every block
+; world_clear(): zero every block (an empty world is all sky: light_fill_sky). Returns eax = 0.
 world_clear:
+    sub     rsp, 8
     lea     rdi, [blocks]
     mov     ecx, WORLD_VOLUME / 8
     xor     eax, eax
     rep     stosq
+    call    light_fill_sky
+    xor     eax, eax
+    add     rsp, 8
     ret
 
 ; world_mark_all_dirty(): flag all chunks for remeshing
@@ -237,6 +268,7 @@ world_load:
     mov     rax, [world_magic]
     mov     [world_header + WORLDHDR.magic], rax
 .ok:
+    call    light_compute_all
     call    world_mark_all_dirty
     xor     eax, eax
     pop     rbp

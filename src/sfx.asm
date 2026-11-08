@@ -1,4 +1,4 @@
-; sfx.asm - procedural sound effects: the 53 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural sound effects: the 55 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few layers (noise / square / saw through a one-pole filter and an
 ; envelope). sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
@@ -153,6 +153,12 @@ layers:
     LAYER SND_DRINK,         W_SQUARE, 220.0,  350.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.10, 0.07, 0.35, 0.0,  0.0
     LAYER SND_DRINK,         W_SQUARE, 200.0,  300.0,  0.3,  0, E_LIN, 0.0,   0.0,  0.20, 0.07, 0.35, 0.0,  0.0
     LAYER SND_DRINK,         W_NOISE,  0.0,    0.0,    0.1,  0, E_LIN, 0.0,   0.0,  0.0,  0.27, 0.40, 0.0,  0.0
+    ; --- 0.7 door sounds 53..54 (peak target: inside -18 .. -0.1 dBFS, measured with the harness) ---
+    LAYER SND_DOOR_OPEN,     W_SAW,    220.0,  180.0,  0.12, 0, E_LIN, 0.0,   0.03, 0.0,  0.25, 0.45, 12.0, 16.0 ; creak
+    LAYER SND_DOOR_OPEN,     W_SAW,    330.0,  260.0,  0.08, 0, E_LIN, 0.0,   0.05, 0.02, 0.20, 0.10, 20.0, 23.0
+    LAYER SND_DOOR_OPEN,     W_NOISE,  0.0,    0.0,    0.5,  1, E_EXP, 0.008, 0.0,  0.0,  0.04, 0.35, 0.0,  0.0  ; latch click
+    LAYER SND_DOOR_CLOSE,    W_NOISE,  0.0,    0.0,    0.06, 0, E_EXP, 0.03,  0.0,  0.0,  0.15, 1.3,  0.0,  0.0  ; thud
+    LAYER SND_DOOR_CLOSE,    W_SQUARE, 90.0,   90.0,   0.2,  0, E_EXP, 0.04,  0.0,  0.0,  0.15, 0.30, 0.0,  0.0
 layers_end:
 
 section .bss

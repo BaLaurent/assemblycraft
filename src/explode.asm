@@ -8,6 +8,7 @@ default rel
 global explode_at, explode_magic, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
+extern block_removed, light_bind_at, light_bind_index
 extern audio_play_at, player, settings, survival_damage
 extern mobs, mob_hurt, mob_strike, item_model_draw, body_init, body_step
 extern combat_hit_flags
@@ -95,6 +96,11 @@ tnt_prime:
     cmovl   ebx, eax
     xor     ecx, ecx
     call    world_set                   ; edi, esi, edx are still x, y, z
+    mov     edi, r12d                   ; what hung on the TNT pops off
+    mov     esi, r13d
+    mov     edx, r14d
+    mov     ecx, TNT
+    call    block_removed
     lea     rcx, [primed]
     mov     r15, rcx                    ; slot to use
     mov     edx, 0x7FFFFFFF             ; shortest fuse seen
@@ -229,6 +235,11 @@ tnt_render:
     shr     eax, 3
     and     eax, 1
     mov     [rsp], eax                  ; flash this frame?
+    movss   xmm0, [rbx + PRIMED.body + BODY.x] ; lit by the cell it sits in
+    movss   xmm1, [rbx + PRIMED.body + BODY.y]
+    addss   xmm1, [c_tnt_half]
+    movss   xmm2, [rbx + PRIMED.body + BODY.z]
+    call    light_bind_at
     call    glPushMatrix
     movss   xmm0, [rbx + PRIMED.body + BODY.x]
     movss   xmm1, [rbx + PRIMED.body + BODY.y]
@@ -253,6 +264,8 @@ tnt_render:
     add     rbx, PRIMED_size
     cmp     rbx, r12
     jb      .loop
+    mov     edi, LIGHT_SKY_FULL         ; the entities after this one are lit by their own cells
+    call    light_bind_index
     add     rsp, 16
     pop     r12
     pop     rbx
@@ -371,6 +384,11 @@ explode_at:
     mov     edx, [rsp + X_CELL + 8]
     xor     ecx, ecx
     call    world_set
+    mov     edi, [rsp + X_CELL]
+    mov     esi, [rsp + X_CELL + 4]
+    mov     edx, [rsp + X_CELL + 8]
+    mov     ecx, ebx
+    call    block_removed               ; torches and ladders on the block pop off, a door loses its half
     inc     dword [rsp + X_NDEB]        ; every second destroyed block flies off as debris
     mov     eax, [rsp + X_NDEB]
     xor     edx, edx

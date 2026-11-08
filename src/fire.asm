@@ -9,12 +9,13 @@ global fires, fire_clear, fire_place, fire_step, fire_render, fire_rebuild
 
 extern world_get, world_set, blocks, rng_next, block_flammable
 extern survival_damage, mobs, mob_hurt, player
-extern tnt_prime, cont_block_removed
-extern game_time, render_box
+extern tnt_prime, cont_block_removed, block_removed
+extern game_time, render_box, light_bind_at, light_bind_index
 
 section .rodata
 align 4
 c_one:       dd 1.0
+c_half:      dd 0.5
 c_pw:        dd 0.3                     ; player box half width, height
 c_ph:        dd 1.8
 c_lo:        dd 0.48                    ; crossed slabs: 0.04 thick, centred in the cell
@@ -326,6 +327,9 @@ fire_one:
     call    dir_cell
     xor     ecx, ecx
     call    world_set
+    call    dir_cell
+    mov     ecx, [rsp + 4]              ; the id that burned away
+    call    block_removed               ; torches, ladders and door halves on it pop off
     mov     edi, 2
     call    rng_mod
     test    eax, eax
@@ -416,6 +420,13 @@ fire_render:
 .l:
     cmp     dword [rbx + FIREENT.x], -1
     je      .next
+    cvtsi2ss xmm0, dword [rbx + FIREENT.x] ; lit by the cell the flames stand in
+    addss   xmm0, [c_half]
+    cvtsi2ss xmm1, dword [rbx + FIREENT.y]
+    addss   xmm1, [c_half]
+    cvtsi2ss xmm2, dword [rbx + FIREENT.z]
+    addss   xmm2, [c_half]
+    call    light_bind_at
     mov     eax, [game_time]
     xor     edx, edx
     mov     ecx, 6
@@ -459,6 +470,8 @@ fire_render:
     inc     r12d
     cmp     r12d, MAX_FIRES
     jb      .l
+    mov     edi, LIGHT_SKY_FULL
+    call    light_bind_index
     add     rsp, 24
     pop     r13
     pop     r12

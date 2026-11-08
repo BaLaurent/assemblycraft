@@ -12,6 +12,8 @@
 ; textures are 16x16 bitmaps shaded by one draw per pixel (173 is plain noise), the icons are
 ; draw-free bitmaps. The font is painted last (white glyph texels) at atlas
 ; rows FONT_Y..FONT_Y+47.
+; The 0.7 building art (tiles 15, 61..63, 180..191, 200..202, 240..253) is drawn after the 0.6 art
+; and before the font: noise tiles take one draw per pixel (NFUNC), icons copy earlier tiles.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -224,6 +226,43 @@ shade:
 %macro NOISE_PIXEL 3                    ; base, mbase, mask
     DRAW_M  %2, %3
     SHADE_IMM %1
+%endmacro
+
+; 0.7 colour names (macro arguments cannot carry RGB(r,g,b): the commas split them)
+%define C_SANDSTONE    RGB(222,206,154)
+%define C_SANDSTONE_DK RGB(200,182,128)
+%define C_SANDBOT      RGB(206,190,140)
+%define C_SANDBOT_DK   RGB(186,168,118)
+%define C_IRON         RGB(206,206,210)
+%define C_IRON_HI      RGB(244,244,248)
+%define C_GOLD         RGB(240,200,48)
+%define C_GOLD_HI      RGB(255,238,120)
+%define C_DIAM         RGB(70,206,196)
+%define C_DIAM_HI      RGB(170,250,244)
+
+; noise-shaded tile drawn by a per-pixel base-colour routine: tile, mbase, mask, shift, func,
+; r10d, r11d. One rng draw per pixel (m = mbase + ((draw >> shift) & mask)); func gets px r15d,
+; py r14d, draw r9d, parameters r10d/r11d and returns esi = base colour, 0 = transparent.
+%macro NFUNC 7
+    TILE_BEGIN %1
+    mov     r10d, %6
+    mov     r11d, %7
+    call    rng
+    mov     r9d, eax
+    shr     eax, %4
+    and     eax, %3
+    add     eax, %2
+    mov     r8d, eax
+    call    %5
+    test    esi, esi
+    jz      %$clear
+    mov     edx, r8d
+    call    shade
+    jmp     %$next
+%$clear:
+    mov     dword [rdi], 0
+%$next:
+    TILE_END
 %endmacro
 
 texgen_build:
@@ -853,6 +892,54 @@ texgen_build:
     NBMP    177, npc_bossrobe_bmp, pal_npc_bossrobe, 224, 31
     NBMP    178, npc_bossface_bmp, pal_npc_bossface, 224, 31
     NBMP    179, npc_crown_bmp, pal_npc_crown, 224, 31
+
+    ; ---- 0.7 building art (drawn after every older rng draw, before the font; the atlas outside
+    ;      these tiles is untouched). Noise tiles take one draw per pixel via NFUNC. Source tiles
+    ;      first, then the icons that copy them. ----
+    ; 61, 62, 63 sandstone top, side, bottom
+    NFUNC   61, 224, 31, 0, px_speckle, C_SANDSTONE, C_SANDSTONE_DK
+    NFUNC   62, 224, 31, 0, px_sand_side, 0, 0
+    NFUNC   63, 216, 31, 0, px_speckle, C_SANDBOT, C_SANDBOT_DK
+    ; 180 smooth stone, 181 mossy cobblestone
+    NFUNC   180, 236, 15, 0, px_smooth, 0, 0
+    NFUNC   181, 176, 63, 0, px_cobble_mossy, 0, 0
+    ; 182 cracked stone bricks: tile 59's bitmap with dark crack pixels
+    NBMP    182, cracked_bmp, pal_cracked, 232, 23
+    ; 183 bookshelf side, 184 wool
+    NFUNC   183, 232, 23, 0, px_bookshelf, 0, 0
+    NFUNC   184, 224, 31, 0, px_wool, 0, 0
+    ; 185..187 blocks of iron, gold, diamond: 2x2 bevelled plates (base, highlight)
+    NFUNC   185, 240, 15, 0, px_plates, C_IRON, C_IRON_HI
+    NFUNC   186, 240, 15, 0, px_plates, C_GOLD, C_GOLD_HI
+    NFUNC   187, 240, 15, 0, px_plates, C_DIAM, C_DIAM_HI
+    ; 188 block of coal
+    NFUNC   188, 160, 127, 0, px_coal, 0, 0
+    ; 189, 190 wooden door lower, upper; 191, 15 iron door lower, upper
+    NFUNC   189, 232, 23, 0, px_wood_door, 0, 0
+    NFUNC   190, 232, 23, 0, px_wood_door, 1, 0
+    NFUNC   191, 240, 15, 0, px_iron_door, 0, 0
+    NFUNC   15, 240, 15, 0, px_iron_door, 1, 0
+    ; 200 trapdoor, 201 ladder
+    NFUNC   200, 232, 23, 0, px_trapdoor, 0, 0
+    NFUNC   201, 224, 31, 0, px_ladder, 0, 0
+    ; 202 torch (no rng)
+    ICON    202, icon_torch
+    ; 240..244 stair icons and 245..249 slab icons: planks, cobble, stone brick, brick, sandstone
+    ICONT   240, icon_stair, 5, 0
+    ICONT   241, icon_stair, 4, 0
+    ICONT   242, icon_stair, 59, 0
+    ICONT   243, icon_stair, 11, 0
+    ICONT   244, icon_stair, 62, 0
+    ICONT   245, icon_slab, 5, 0
+    ICONT   246, icon_slab, 4, 0
+    ICONT   247, icon_slab, 59, 0
+    ICONT   248, icon_slab, 11, 0
+    ICONT   249, icon_slab, 62, 0
+    ; 250, 251 door icons (upper tile, lower tile), 252 fence, 253 glass pane
+    ICONT   250, icon_door, 190, 189
+    ICONT   251, icon_door, 15, 191
+    BMP     252, fence_icon_bmp, pal_fence_icon
+    BMP     253, pane_icon_bmp, pal_pane_icon
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -3509,3 +3596,515 @@ pal_npc_crown:
     dq 0
 
 section .text
+
+; ---------------------------------------------------------------------------
+; 0.7 building art. Base-colour routines for NFUNC tiles: in r15d = px, r14d = py, r9d = the
+; pixel's rng draw, r10d/r11d = parameters; out esi = base colour (0 = transparent). They clobber
+; eax, ecx, edx only. Then the icon routines (out eax = packed RGBA) and the bitmaps.
+; ---------------------------------------------------------------------------
+section .rodata
+; bookshelf: spine colour index per column (6 = dark gap between books)
+spine_idx:
+    db 0, 1, 1, 6, 2, 2, 2, 6, 3, 3, 6, 4, 4, 6, 5, 5
+align 4
+spine_pal:
+    dd RGB(150,44,40), RGB(52,72,150), RGB(56,120,60), RGB(120,78,44)
+    dd RGB(196,166,58), RGB(110,54,130), RGB(36,26,16), RGB(36,26,16)
+
+; tile 59's bitmap with dark cracks ('x') running down two bricks
+cracked_bmp:
+    db "hhhhhhhDhhhhhhhD"
+    db "caaxabaDacbaaacD"
+    db "baaxbcbDcaaaxaaD"
+    db "ccaaxaaDaaaaxbbD"
+    db "acaaxaaDaacxaccD"
+    db "baabaxcDbaaacaaD"
+    db "lllllxlDlllllllD"
+    db "DDDDDDDDDDDDDDDD"
+    db "hhhDhhhhhhhDhhhh"
+    db "babDbbbxaaaDcaca"
+    db "aaaDbaaxacbDcabc"
+    db "aaaDaaaaxabDacba"
+    db "bcbDacbaxaaDcaab"
+    db "cacDcaaaaxaDbaca"
+    db "lllDlllllxlDllll"
+    db "DDDDDDDDDDDDDDDD"
+pal_cracked:
+    PAL 'D', 66, 66, 70
+    PAL 'a', 132, 132, 134
+    PAL 'b', 120, 120, 124
+    PAL 'c', 144, 144, 146
+    PAL 'h', 160, 160, 162
+    PAL 'l', 108, 108, 112
+    PAL 'x', 34, 34, 38
+    dq 0
+
+; fence icon: two posts and two rails
+fence_icon_bmp:
+    db "................"
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...WWWWWWWWWW..."
+    db "...dddddddddd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...WWWWWWWWWW..."
+    db "...dddddddddd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+    db "...Wd......Wd..."
+pal_fence_icon:
+    PAL 'W', 176, 142, 84
+    PAL 'd', 110, 84, 48
+    dq 0
+
+; glass pane icon: thin frame, clear inside with two shine strokes
+pane_icon_bmp:
+    db "................"
+    db "....FFFFFFFF...."
+    db "....F....W.F...."
+    db "....F...W..F...."
+    db "....F..W...F...."
+    db "....F.W....F...."
+    db "....F......F...."
+    db "....F.....WF...."
+    db "....F....W.F...."
+    db "....F...W..F...."
+    db "....F......F...."
+    db "....F......F...."
+    db "....F......F...."
+    db "....F......F...."
+    db "....FFFFFFFF...."
+    db "................"
+pal_pane_icon:
+    PAL 'F', 216, 238, 244
+    PAL 'W', 255, 255, 255
+    dq 0
+
+section .text
+
+; atlas_px: ecx = tile, eax = x, edx = y (0..15 inside the tile) -> eax = the pixel already drawn
+; in the atlas at r12. Clobbers ecx, edx, r8d.
+atlas_px:
+    mov     r8d, ecx
+    and     r8d, 15
+    shl     r8d, 4
+    add     eax, r8d                    ; x + tile col * 16
+    shr     ecx, 4
+    shl     ecx, 4
+    add     edx, ecx                    ; y + tile row * 16
+    shl     edx, 8
+    add     eax, edx
+    mov     eax, [r12 + rax * 4]
+    ret
+
+; speckled flat colour: r10d = base, r11d = speck (1 pixel in 16)
+px_speckle:
+    mov     esi, r10d
+    mov     eax, r9d
+    shr     eax, 9
+    and     eax, 15
+    jnz     .done
+    mov     esi, r11d
+.done:
+    ret
+
+; sandstone side: darker band on rows 0..1, strata on rows 5, 10 and 13, sparse specks
+px_sand_side:
+    mov     esi, RGB(196,174,120)
+    cmp     r14d, 2
+    jb      .done
+    mov     esi, RGB(206,188,136)
+    cmp     r14d, 5
+    je      .done
+    cmp     r14d, 10
+    je      .done
+    cmp     r14d, 13
+    je      .done
+    mov     esi, RGB(222,206,154)
+    mov     eax, r9d
+    shr     eax, 9
+    and     eax, 15
+    jnz     .done
+    mov     esi, RGB(200,182,128)
+.done:
+    ret
+
+; smooth stone: light grey with a faint darker outline
+px_smooth:
+    mov     esi, RGB(128,128,130)
+    IF_BORDER .done
+    mov     esi, RGB(162,162,164)
+.done:
+    ret
+
+; mossy cobblestone: tile 4's pattern with moss patches on the stones and some of the mortar
+px_cobble_mossy:
+    mov     eax, r14d
+    and     eax, 3
+    cmp     eax, 3
+    je      .mortar
+    mov     eax, r14d
+    shr     eax, 2
+    lea     eax, [rax + rax * 2]
+    add     eax, r15d
+    xor     edx, edx
+    mov     ecx, 5
+    div     ecx
+    cmp     edx, 4
+    je      .mortar
+    mov     esi, RGB(130,130,130)
+    mov     eax, r9d
+    shr     eax, 12
+    and     eax, 15
+    cmp     eax, 4
+    jae     .done
+    mov     esi, RGB(84,132,54)
+    test    eax, eax
+    jnz     .done
+    mov     esi, RGB(66,108,42)
+    ret
+.mortar:
+    mov     esi, RGB(70,70,70)
+    mov     eax, r9d
+    shr     eax, 10
+    and     eax, 3
+    jnz     .done
+    mov     esi, RGB(56,92,40)
+.done:
+    ret
+
+; bookshelf side: plank frame (rows 0..1, 7..8, 14..15, columns 0 and 15) around two shelves of
+; coloured spines (rows 2..6 and 9..13)
+px_bookshelf:
+    lea     eax, [r14 - 2]
+    cmp     eax, 4
+    jbe     .shelf0
+    lea     eax, [r14 - 9]
+    cmp     eax, 4
+    jbe     .shelf1
+.plank:
+    mov     esi, RGB(158,124,74)
+    cmp     r14d, 1
+    je      .shadow
+    cmp     r14d, 8
+    je      .shadow
+    cmp     r14d, 15
+    je      .shadow
+    ret
+.shadow:
+    mov     esi, RGB(112,88,52)
+    ret
+.shelf0:
+    xor     ecx, ecx
+    jmp     .book
+.shelf1:
+    mov     ecx, 5                      ; the second shelf is shifted so the spines differ
+.book:
+    test    r15d, r15d
+    jz      .plank
+    cmp     r15d, 15
+    je      .plank
+    lea     eax, [r15 + rcx]
+    and     eax, 15
+    lea     rdx, [spine_idx]
+    movzx   eax, byte [rdx + rax]
+    lea     rdx, [spine_pal]
+    mov     esi, [rdx + rax * 4]
+    ret
+
+; wool: off-white with a diagonal knit pattern
+px_wool:
+    mov     esi, RGB(232,232,226)
+    lea     eax, [r15 + r14 * 2]
+    and     eax, 3
+    jnz     .done
+    mov     esi, RGB(212,212,206)
+.done:
+    ret
+
+; metal blocks: four 8x8 bevelled plates; r10d = plate colour, r11d = highlight (top and left edge),
+; the bottom and right edges are 3/4 of the plate colour
+px_plates:
+    mov     eax, r15d
+    and     eax, 7
+    mov     ecx, r14d
+    and     ecx, 7
+    mov     esi, r11d
+    test    eax, eax
+    jz      .done
+    test    ecx, ecx
+    jz      .done
+    cmp     eax, 7
+    je      .dark
+    cmp     ecx, 7
+    je      .dark
+    mov     esi, r10d
+    ret
+.dark:
+    mov     esi, r10d
+    shr     esi, 1
+    and     esi, 0x007F7F7F
+    mov     eax, r10d
+    shr     eax, 2
+    and     eax, 0x003F3F3F
+    add     esi, eax                    ; 0.5 + 0.25 of each channel
+.done:
+    ret
+
+; coal block: near-black with sparse lighter flecks
+px_coal:
+    mov     esi, RGB(40,40,44)
+    mov     eax, r9d
+    shr     eax, 9
+    and     eax, 7
+    jnz     .done
+    mov     esi, RGB(78,78,84)
+.done:
+    ret
+
+; wooden door (r10d = 0 lower, 1 upper): dark frame; the lower half has two raised panels and a
+; handle, the upper half 2x2 transparent window panes
+px_wood_door:
+    mov     esi, RGB(104,74,38)
+    IF_BORDER .done
+    mov     esi, RGB(150,110,60)
+    test    r10d, r10d
+    jnz     .upper
+    lea     eax, [r14 - 2]
+    cmp     eax, 4
+    jbe     .panel
+    lea     eax, [r14 - 9]
+    cmp     eax, 4
+    jbe     .panel
+    cmp     r15d, 12
+    jne     .done
+    lea     eax, [r14 - 7]
+    cmp     eax, 1
+    ja      .done
+    mov     esi, RGB(228,204,112)       ; handle on rows 7..8
+    ret
+.panel:                                 ; eax = row inside the panel 0..4
+    lea     ecx, [r15 - 2]
+    cmp     ecx, 11
+    ja      .done                       ; panels span px 2..13
+    test    eax, eax
+    jz      .pdark
+    test    ecx, ecx
+    jz      .pdark
+    cmp     eax, 4
+    je      .plite
+    cmp     ecx, 11
+    je      .plite
+    mov     esi, RGB(166,124,70)
+    ret
+.pdark:
+    mov     esi, RGB(116,84,44)
+    ret
+.plite:
+    mov     esi, RGB(182,140,84)
+    ret
+.upper:
+    lea     eax, [r15 - 3]
+    cmp     eax, 3
+    jbe     .wx
+    lea     eax, [r15 - 9]
+    cmp     eax, 3
+    ja      .done
+.wx:
+    lea     eax, [r14 - 3]
+    cmp     eax, 3
+    jbe     .hole
+    lea     eax, [r14 - 8]
+    cmp     eax, 3
+    ja      .done
+.hole:
+    xor     esi, esi
+.done:
+    ret
+
+; iron door (r10d = 0 lower, 1 upper): riveted grey plates; the lower half has a seam and a handle,
+; the upper half a barred window (bars every 3 columns, transparent between)
+px_iron_door:
+    mov     esi, RGB(120,120,128)
+    IF_BORDER .done
+    mov     esi, RGB(198,198,206)
+    lea     eax, [r15 - 2]              ; rivets at (2|13, 2|13)
+    test    eax, eax
+    jz      .rx
+    cmp     eax, 11
+    jne     .norivet
+.rx:
+    lea     eax, [r14 - 2]
+    test    eax, eax
+    jz      .rivet
+    cmp     eax, 11
+    jne     .norivet
+.rivet:
+    mov     esi, RGB(132,132,140)
+    ret
+.norivet:
+    test    r10d, r10d
+    jnz     .upper
+    cmp     r14d, 7
+    jne     .nohseam
+    mov     esi, RGB(148,148,156)       ; seam
+    ret
+.nohseam:
+    cmp     r15d, 12
+    jne     .done
+    lea     eax, [r14 - 8]
+    cmp     eax, 1
+    ja      .done
+    mov     esi, RGB(70,70,78)          ; handle on rows 8..9
+    ret
+.upper:
+    lea     eax, [r15 - 3]
+    cmp     eax, 9
+    ja      .done                       ; window px 3..12
+    lea     ecx, [r14 - 3]
+    cmp     ecx, 6
+    ja      .done                       ; window py 3..9
+    mov     esi, RGB(90,90,98)
+    test    ecx, ecx
+    jz      .done
+    cmp     ecx, 6
+    je      .done                       ; top and bottom bars
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx                         ; eax = px-3
+    test    edx, edx
+    jz      .done                       ; vertical bars
+    xor     esi, esi                    ; open
+.done:
+    ret
+
+; trapdoor: dark rim, plank frame, four transparent holes
+px_trapdoor:
+    mov     esi, RGB(104,76,40)
+    IF_BORDER .done
+    mov     esi, RGB(152,114,64)
+    lea     eax, [r15 - 2]
+    cmp     eax, 4
+    jbe     .hx
+    lea     eax, [r15 - 9]
+    cmp     eax, 4
+    ja      .done
+.hx:
+    lea     eax, [r14 - 2]
+    cmp     eax, 4
+    jbe     .hole
+    lea     eax, [r14 - 9]
+    cmp     eax, 4
+    ja      .done
+.hole:
+    xor     esi, esi
+.done:
+    ret
+
+; ladder: rails at px 2..3 and 12..13, rungs every 4 rows (1, 5, 9, 13); the rest transparent
+px_ladder:
+    xor     esi, esi
+    lea     eax, [r15 - 2]
+    cmp     eax, 1
+    jbe     .rail
+    lea     eax, [r15 - 12]
+    cmp     eax, 1
+    jbe     .rail
+    lea     eax, [r15 - 4]
+    cmp     eax, 7
+    ja      .done
+    mov     eax, r14d
+    and     eax, 3
+    cmp     eax, 1
+    jne     .done
+    mov     esi, RGB(120,86,44)
+    ret
+.rail:
+    mov     esi, RGB(146,108,58)
+.done:
+    ret
+
+; torch: px 7..8 only. Rows 6..7 flame, rows 8..15 wood (right column darker)
+icon_torch:
+    xor     eax, eax
+    lea     ecx, [r15 - 7]
+    cmp     ecx, 1
+    ja      .done
+    cmp     r14d, 6
+    jb      .done
+    je      .flame0
+    cmp     r14d, 7
+    je      .flame1
+    mov     eax, RGBO(120,85,45)
+    test    ecx, ecx
+    jz      .done
+    mov     eax, RGBO(96,68,36)
+    ret
+.flame0:
+    mov     eax, RGBO(255,230,120)
+    ret
+.flame1:
+    mov     eax, RGBO(255,160,40)
+.done:
+    ret
+
+; stair icon: material tile r10d masked to a stair silhouette (rows 8..15 full width, rows 0..7
+; the right half)
+icon_stair:
+    cmp     r14d, 8
+    jae     .copy
+    cmp     r15d, 8
+    jb      .none
+.copy:
+    mov     ecx, r10d
+    mov     eax, r15d
+    mov     edx, r14d
+    jmp     atlas_px
+.none:
+    xor     eax, eax
+    ret
+
+; slab icon: rows 8..15 of the material tile r10d
+icon_slab:
+    cmp     r14d, 8
+    jb      .none
+    mov     ecx, r10d
+    mov     eax, r15d
+    mov     edx, r14d
+    jmp     atlas_px
+.none:
+    xor     eax, eax
+    ret
+
+; door icon: the whole door (upper tile r10d over lower tile r11d, 16x32) squeezed into px 4..11 by
+; point sampling at 2n (n = 7 -> 15)
+icon_door:
+    lea     ecx, [r15 - 4]
+    cmp     ecx, 7
+    ja      .none
+    lea     eax, [rcx * 2]
+    cmp     ecx, 7
+    jne     .x
+    inc     eax
+.x:
+    mov     ecx, r10d
+    mov     edx, r14d
+    cmp     r14d, 8
+    jb      .y
+    mov     ecx, r11d
+    sub     edx, 8
+.y:
+    cmp     edx, 7
+    lea     edx, [rdx * 2]
+    jne     .go
+    inc     edx
+.go:
+    jmp     atlas_px
+.none:
+    xor     eax, eax
+    ret

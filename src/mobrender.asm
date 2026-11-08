@@ -1,6 +1,7 @@
 ; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, the villagers
 ; (merchant, elder) and the Fallen King boss, drawn with the state render_world leaves set up:
-; atlas on unit 0, night combiner on unit 1, fog, alpha test, face culling.
+; atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog,
+; alpha test, face culling.
 ; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
 ; is doing (hit red, wind-up red flicker, stun yellow flicker, elite gold) and sized by what it is
 ; (elite 1.2 x, wind-up surge 1.05 x, creeper swell).
@@ -10,7 +11,7 @@ default rel
 
 global mobs_render
 
-extern mobs, render_box, sincos_deg
+extern mobs, render_box, sincos_deg, light_bind_at, light_bind_index
 
 ; part record: box (lo xyz, hi xyz), tile per face (+X -X +Y -Y +Z -Z), pivot y, pivot z,
 ; swing factor (limb angle = factor * walk swing; 0 = rigid)
@@ -208,6 +209,13 @@ mobs_render:
     movss   [rsp + 4], xmm0
     movss   [rsp + 8], xmm1
     movss   [rsp + 12], xmm2
+    movss   xmm0, [rbx + BODY.height]   ; lit by the cell at the middle of the body
+    mulss   xmm0, [f_half]
+    addss   xmm0, [rbx + BODY.y]
+    movaps  xmm1, xmm0
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm2, [rbx + BODY.z]
+    call    light_bind_at
     call    glPushMatrix
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
@@ -309,6 +317,8 @@ mobs_render:
     add     rbx, MOB_size
     cmp     rbx, r12
     jb      .mob
+    mov     edi, LIGHT_SKY_FULL
+    call    light_bind_index
     add     rsp, 40
     pop     r15
     pop     r14

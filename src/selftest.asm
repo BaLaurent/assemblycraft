@@ -10,6 +10,7 @@ extern test_world_load_v1_converts, test_world_load_v2_converts, test_world_load
 extern test_worldgen_deterministic, test_worldgen_shape, test_worldgen_ores
 extern test_mesh_single_block, test_mesh_adjacent_opaque, test_mesh_adjacent_leaves
 extern test_mesh_adjacent_glass, test_mesh_chunk_boundary
+extern test_mesh_slab_half_height, test_mesh_stairs_quads, test_mesh_light_packed
 extern test_raycast_hit_forward, test_raycast_miss_beyond_reach, test_raycast_hit_from_above
 extern test_physics_land_on_floor, test_physics_wall_blocks
 extern test_physics_jump_clears_one_block, test_body_intersects_block
@@ -21,6 +22,7 @@ extern test_armor_reduces_damage
 extern test_saves_sanitize_name, test_saves_scan_rename_delete
 extern test_settings_roundtrip, test_settings_clamps_bad_values, test_settings_reload_key
 extern test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
+extern test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 extern test_furnace_smelts, test_chest_spills_on_break
 extern test_mob_raycast_hits, test_mob_hurt_pig_drops_food, test_zombie_attacks_player
 extern test_mob_spawn_rules, test_game_save_load_roundtrip, test_drops_fall_and_pickup
@@ -45,6 +47,10 @@ extern test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
 extern test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
 extern test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn
 extern test_shapes_boxes
+extern test_light_sky_and_shadow, test_torch_light_falloff, test_light_update_on_change, test_light_lut
+extern test_step_up_slab_not_block, test_stairs_then_block, test_door_blocks_until_opened
+extern test_ladder_climb, test_fence_cannot_jump, test_place_variants
+extern test_door_break_removes_pair_and_support, test_raycast_shapes
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -70,6 +76,9 @@ tests:
     TEST mesh_adjacent_leaves
     TEST mesh_adjacent_glass
     TEST mesh_chunk_boundary
+    TEST mesh_slab_half_height
+    TEST mesh_stairs_quads
+    TEST mesh_light_packed
     TEST raycast_hit_forward
     TEST raycast_miss_beyond_reach
     TEST raycast_hit_from_above
@@ -86,6 +95,9 @@ tests:
     TEST craft_advanced_recipes
     TEST break_tiers
     TEST inv_click_armor_containers
+    TEST recipe_fill_and_sets
+    TEST recipe_fits_grid
+    TEST furnace_book_fill
     TEST fall_damage
     TEST exhaustion_drains
     TEST regen_when_fed
@@ -153,6 +165,18 @@ tests:
     TEST blink_stops_before_wall
     TEST volley_and_arrow_rain_spawn
     TEST shapes_boxes
+    TEST light_sky_and_shadow
+    TEST torch_light_falloff
+    TEST light_update_on_change
+    TEST light_lut
+    TEST step_up_slab_not_block
+    TEST stairs_then_block
+    TEST door_blocks_until_opened
+    TEST ladder_climb
+    TEST fence_cannot_jump
+    TEST place_variants
+    TEST door_break_removes_pair_and_support
+    TEST raycast_shapes
     dq 0
 
 section .rodata
@@ -170,6 +194,9 @@ section .rodata
     TESTNAME mesh_adjacent_leaves
     TESTNAME mesh_adjacent_glass
     TESTNAME mesh_chunk_boundary
+    TESTNAME mesh_slab_half_height
+    TESTNAME mesh_stairs_quads
+    TESTNAME mesh_light_packed
     TESTNAME raycast_hit_forward
     TESTNAME raycast_miss_beyond_reach
     TESTNAME raycast_hit_from_above
@@ -186,6 +213,9 @@ section .rodata
     TESTNAME craft_advanced_recipes
     TESTNAME break_tiers
     TESTNAME inv_click_armor_containers
+    TESTNAME recipe_fill_and_sets
+    TESTNAME recipe_fits_grid
+    TESTNAME furnace_book_fill
     TESTNAME fall_damage
     TESTNAME exhaustion_drains
     TESTNAME regen_when_fed
@@ -253,6 +283,18 @@ section .rodata
     TESTNAME blink_stops_before_wall
     TESTNAME volley_and_arrow_rain_spawn
     TESTNAME shapes_boxes
+    TESTNAME light_sky_and_shadow
+    TESTNAME torch_light_falloff
+    TESTNAME light_update_on_change
+    TESTNAME light_lut
+    TESTNAME step_up_slab_not_block
+    TESTNAME stairs_then_block
+    TESTNAME door_blocks_until_opened
+    TESTNAME ladder_climb
+    TESTNAME fence_cannot_jump
+    TESTNAME place_variants
+    TESTNAME door_break_removes_pair_and_support
+    TESTNAME raycast_shapes
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

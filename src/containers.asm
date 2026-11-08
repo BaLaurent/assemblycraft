@@ -4,10 +4,11 @@
 %include "common.inc"
 default rel
 
-global cont_at, cont_create, cont_block_removed, conts_step, conts_validate
+global cont_at, cont_create, cont_block_removed, conts_step, conts_validate, cont_fill_from_inv
 
 extern world_header, world_get, world_set, drops_spawn
 extern item_max_stack, item_burn, item_smelt
+extern inv_container, inv_count, inv_remove_one, inv_take_stack
 
 %define SLOT_IN   (CONTAINER.slots)
 %define SLOT_FUEL (CONTAINER.slots + 4)
@@ -146,6 +147,83 @@ cont_block_removed:
 .ret:
     add     rsp, 8
     pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; cont_fill_from_inv(edi cell, esi id) -> eax items moved
+; The recipe book's click on a furnace entry: moves the inventory's stock of that item into cell
+; `cell` of the open container (inv_container). The cell must be empty or already hold the same
+; item unworn; at most item_max_stack end up in it. An item that does not stack (a wooden tool
+; as fuel) moves its slot's stack as it is, wear kept. Nothing moves, and 0 comes back, when
+; no container is open, the cell does not exist, or the cell holds something else.
+cont_fill_from_inv:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    xor     r13d, r13d                  ; items moved
+    mov     rbx, [inv_container]
+    test    rbx, rbx
+    jz      .out
+    cmp     edi, 26
+    ja      .out
+    cmp     byte [rbx + CONTAINER.kind], CONT_FURNACE
+    jne     .cell_ok
+    cmp     edi, 2
+    ja      .out                        ; a furnace has three cells
+.cell_ok:
+    mov     edi, edi
+    lea     rbx, [rbx + CONTAINER.slots + rdi*4]
+    movzx   r12d, sil                   ; id
+    lea     rax, [item_max_stack]
+    movzx   r14d, byte [rax + r12]
+    test    r14d, r14d
+    jz      .out                        ; not an item
+    movzx   ecx, byte [rbx + ITEMSTACK.count]
+    test    ecx, ecx
+    jz      .room
+    cmp     byte [rbx + ITEMSTACK.id], r12b
+    jne     .out                        ; another item sits there
+    cmp     word [rbx + ITEMSTACK.dmg], 0
+    jne     .out
+    sub     r14d, ecx
+    jbe     .out                        ; the stack is full
+.room:                                  ; r14d = room in the cell
+    lea     rax, [item_max_stack]
+    cmp     byte [rax + r12], 1
+    ja      .many
+    mov     edi, r12d
+    call    inv_take_stack              ; does not stack: the slot's stack as it is
+    test    eax, eax
+    jz      .out
+    mov     [rbx], eax
+    mov     r13d, 1
+    jmp     .out
+.many:
+    mov     edi, r12d
+    call    inv_count
+    cmp     eax, r14d
+    cmova   eax, r14d                   ; min(room, stock)
+    mov     r14d, eax
+    test    eax, eax
+    jz      .out
+.one:
+    mov     edi, r12d
+    call    inv_remove_one
+    inc     r13d
+    cmp     r13d, r14d
+    jb      .one
+    mov     [rbx + ITEMSTACK.id], r12b
+    add     [rbx + ITEMSTACK.count], r13b
+    mov     word [rbx + ITEMSTACK.dmg], 0
+.out:
+    mov     eax, r13d
     pop     r14
     pop     r13
     pop     r12

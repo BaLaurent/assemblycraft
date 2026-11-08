@@ -287,6 +287,17 @@ tun_at:
     jnz     .fail
 %endmacro
 
+; EXPECT_ID dx, y, dz, id: the block at that offset from the site in rbx is `id`
+%macro EXPECT_ID 4
+    mov     rdi, rbx
+    mov     esi, %1
+    mov     edx, %2
+    mov     ecx, %3
+    call    block_at
+    cmp     eax, %4
+    jne     .fail
+%endmacro
+
 ; world_generate(42): the first dungeon has open rooms, corridor and west opening, a brick west
 ; wall, four loaded chests, and a stair tunnel with brick floor and open passage that ends in the
 ; entrance frame; the crypt has an open hall, its pillars and two loaded chests
@@ -315,6 +326,9 @@ test_dungeon_built_with_chests:
     EXPECT_AIR 7, 9, 0                  ; the corridor between the first two
     EXPECT_AIR 14, 9, 7                 ; and the one between the last two
     EXPECT_AIR -5, 10, 1                ; the opening in the west wall
+    EXPECT_ID 0, 10, -4, TORCH_WALL + DIR_N     ; the torches of the rooms
+    EXPECT_ID 14, 10, -4, TORCH_WALL + DIR_N
+    EXPECT_ID 14, 10, 18, TORCH_WALL + DIR_S
     mov     rdi, rbx                    ; the west wall beside it is brick
     mov     esi, -5
     mov     edx, 9
@@ -334,11 +348,11 @@ test_dungeon_built_with_chests:
     xor     esi, esi
     xor     ecx, ecx
     call    tun_at
-    cmp     eax, STONE_BRICK
+    cmp     eax, STONE_BRICK_STAIRS + DIR_W
     je      .floor
-    cmp     eax, MOSSY_STONE_BRICK
-    je      .floor
-    mov     esi, 4                      ; no floor block: the entrance frame stands here
+    cmp     r15d, 1                     ; column 1 must have the stair floor
+    je      .fail
+    mov     esi, 4                      ; no stair floor: the entrance frame stands here
     xor     ecx, ecx
     call    tun_at
     cmp     eax, MOSSY_STONE_BRICK      ; lintel
@@ -370,6 +384,23 @@ test_dungeon_built_with_chests:
     inc     r14d
     cmp     r14d, 3
     jbe     .pass
+    mov     esi, 4                      ; stair floor under the entrance frame: the last column
+    xor     ecx, ecx
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .next_column
+    mov     esi, 1
+    mov     ecx, -2
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .next_column
+    mov     esi, 3
+    mov     ecx, 2
+    call    tun_at
+    cmp     eax, MOSSY_STONE_BRICK
+    jne     .next_column
+    jmp     .tunnel_done
+.next_column:
     inc     r15d
     cmp     r15d, 60
     jbe     .column
@@ -383,6 +414,10 @@ test_dungeon_built_with_chests:
     mov     rbx, rax
     EXPECT_AIR 0, 7, 0                  ; the hall
     EXPECT_AIR -8, 7, 0                 ; and its west opening
+    EXPECT_ID 3, 9, -4, TORCH_WALL + DIR_E      ; its torches, on the pillars
+    EXPECT_ID 3, 9, 4, TORCH_WALL + DIR_E
+    EXPECT_ID -3, 9, -4, TORCH_WALL + DIR_W
+    EXPECT_ID -3, 9, 4, TORCH_WALL + DIR_W
     mov     rdi, rbx                    ; a pillar
     mov     esi, 4
     mov     edx, 8
@@ -414,8 +449,8 @@ test_dungeon_built_with_chests:
     ret
 
 ; world_generate(42) + structures_spawn_npcs: one merchant and one elder per village, the well's
-; glass at the village's middle, and the first house with its cobble floor, plank roof, open door
-; (west wall, facing the well) and plank wall opposite it
+; glass at the village's middle, and the first house with its cobble floor, plank roof, closed
+; wooden door (west wall, facing the well), wall torch inside and plank wall opposite the door
 test_village_built_with_npcs:
     push    rbp
     mov     rbp, rsp
@@ -458,14 +493,31 @@ test_village_built_with_npcs:
     call    world_get
     cmp     eax, PLANKS
     jne     .fail
-    mov     edi, [rbx + SITE.x]
+    mov     edi, [rbx + SITE.x]         ; the door: a closed wooden door facing west, both halves
     add     edi, 7
     mov     esi, [rbx + SITE.y]
     inc     esi
     mov     edx, [rbx + SITE.z]
     call    world_get
-    test    eax, eax
-    jnz     .fail
+    cmp     eax, WOOD_DOOR + DIR_W * 4
+    jne     .fail
+    mov     edi, [rbx + SITE.x]
+    add     edi, 7
+    mov     esi, [rbx + SITE.y]
+    add     esi, 2
+    mov     edx, [rbx + SITE.z]
+    call    world_get
+    cmp     eax, WOOD_DOOR + DIR_W * 4 + 1
+    jne     .fail
+    mov     edi, [rbx + SITE.x]         ; the wall torch inside, leaning on the east wall
+    add     edi, 10
+    mov     esi, [rbx + SITE.y]
+    add     esi, 2
+    mov     edx, [rbx + SITE.z]
+    inc     edx
+    call    world_get
+    cmp     eax, TORCH_WALL + DIR_E
+    jne     .fail
     mov     edi, [rbx + SITE.x]
     add     edi, 11
     mov     esi, [rbx + SITE.y]
