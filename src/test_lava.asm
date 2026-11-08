@@ -700,6 +700,8 @@ check_zombie:
     sub     eax, 6
     cmp     [rbx + MOB.health], eax
     jne     .fail                       ; struck once (4) and burnt once (2)
+    cmp     dword [rbx + MOB.tagged], 0
+    jg      .fail                       ; the burn is nobody's: the player did not hit it
     mov     r13d, 35
     call    mob_steps
     cmp     dword [rbx + MOB.type], MOB_NONE

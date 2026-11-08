@@ -904,6 +904,7 @@ mob_ai:
 ; 3 s of burn, a tick of 2 every 30 steps, renewed while it stays) and on every LAVA_PERIOD-th step of
 ; game_time takes a strike of LAVA_STRIKE health (mob_strike lands inside the hurt window, with no
 ; knockback). A mob the strike kills is gone (MOB.type = MOB_NONE, its loot dropped): look at the type again.
+; Its burn is flagged FF_FOLKDOT: the player gets no XP and no standing change for a mob the lava kills.
 ; r12d = the mob's slot
 mob_lava_burn:
     push    rbp
@@ -916,6 +917,9 @@ mob_lava_burn:
     mov     esi, STS_BURN
     movss   xmm0, [c_lava_burn]
     call    status_apply
+    imul    eax, r12d, MOB_size
+    lea     rcx, [mobs]
+    or      byte [rcx + rax + MOB.fflags], FF_FOLKDOT
     mov     eax, [game_time]
     xor     edx, edx
     mov     ecx, LAVA_PERIOD
@@ -2925,8 +2929,6 @@ mob_damage:
     mov     dword [rbx + MOB.bar], BAR_STEPS
     test    byte [combat_hit_flags], HF_PLAYER
     jz      .tag_done
-    cmp     dword [rbx + MOB.type], MOB_FOLK
-    jne     .tag
     test    byte [combat_hit_flags], HF_DOT
     jz      .tag
     test    byte [rbx + MOB.fflags], FF_FOLKDOT

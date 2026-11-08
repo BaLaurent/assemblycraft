@@ -14,7 +14,7 @@
 %include "common.inc"
 default rel
 
-global worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn
+global worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn, veg_kind
 
 extern hash32, noise2, fbm2, gen_seed
 extern structures_stamp, roads_prepare, road_mask, gen_underground, carved_at
@@ -1140,7 +1140,7 @@ veg_kind:
 .snow:
     cmp     r8d, 3
     jae     .out
-    mov     eax, 3
+    mov     eax, 5
     ret
 .taiga:
     cmp     r8d, 8

@@ -7,7 +7,7 @@ global test_worldgen_biomes, test_worldgen_column_independence
 global test_worldgen_spawn, test_worldgen_water_ice, test_biome_ladder
 
 extern world_clear, fnv1a
-extern worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn
+extern worldgen_set_seed, gen_column, gen_height, gen_biome, gen_surface, gen_find_spawn, veg_kind
 
 %define BIOME_TOTAL 148225              ; 385 x 385 samples of the 16 block grid over |x|, |z| <= 3072
 %define GB_SCRATCH  8                   ; generator buffers below
@@ -1539,6 +1539,62 @@ sg_check:
     pop     rbp
     ret
 
+; veg_rows: biome, h, top, t, the veg_kind that cell must give (0 none, 1 oak, 2 birch, 3 pine, 4 cactus,
+; 5 snowy pine, 6 acacia): the planting rules of the design, one row at and one row past each threshold
+section .rodata
+align 4
+veg_rows:
+    dd BIOME_PLAINS,    100, GRASS,     0,       1
+    dd BIOME_PLAINS,    100, GRASS,     1,       0
+    dd BIOME_PLAINS,    96,  GRASS,     0,       0
+    dd BIOME_PLAINS,    100, DRY_GRASS, 0,       0
+    dd BIOME_FOREST,    100, GRASS,     6,       2
+    dd BIOME_FOREST,    100, GRASS,     256 + 6, 1
+    dd BIOME_FOREST,    100, GRASS,     7,       0
+    dd BIOME_BIRCH,     100, GRASS,     6,       2
+    dd BIOME_BIRCH,     100, GRASS,     7,       0
+    dd BIOME_SNOW,      100, GRASS,     2,       5
+    dd BIOME_SNOW,      100, GRASS,     3,       0
+    dd BIOME_TAIGA,     100, GRASS,     7,       5
+    dd BIOME_TAIGA,     100, GRASS,     8,       0
+    dd BIOME_MOUNTAINS, 149, GRASS,     1,       3
+    dd BIOME_MOUNTAINS, 149, GRASS,     2,       0
+    dd BIOME_MOUNTAINS, 150, GRASS,     1,       0
+    dd BIOME_SWAMP,     100, GRASS,     2,       1
+    dd BIOME_SWAMP,     100, GRASS,     3,       0
+    dd BIOME_DESERT,    100, SAND,      1,       4
+    dd BIOME_DESERT,    100, GRASS,     1,       0
+    dd BIOME_SAVANNA,   100, DRY_GRASS, 1,       6
+    dd BIOME_SAVANNA,   100, GRASS,     1,       0
+    dd BIOME_SHORE,     100, GRASS,     0,       0
+    dd BIOME_OCEAN,     100, GRASS,     0,       0
+veg_rows_end:
+
+section .text
+; veg_rows_ok() -> eax 0 when veg_kind gives every veg_rows row its kind
+veg_rows_ok:
+    push    rbx
+    lea     rbx, [veg_rows]
+.row:
+    mov     edi, [rbx]
+    mov     esi, [rbx + 4]
+    mov     edx, [rbx + 8]
+    mov     ecx, [rbx + 12]
+    call    veg_kind
+    cmp     eax, [rbx + 16]
+    jne     .bad
+    add     rbx, 20
+    lea     rax, [veg_rows_end]
+    cmp     rbx, rax
+    jb      .row
+    xor     eax, eax
+    pop     rbx
+    ret
+.bad:
+    mov     eax, 1
+    pop     rbx
+    ret
+
 ; The climate ladder. Seeds 42 and 7: over the window |x|, |z| <= 512 at 4 blocks no two 4-neighbours are snow
 ; beside plains, birch forest, forest, swamp, savanna or desert, taiga beside swamp, savanna or desert, swamp
 ; beside savanna or desert, or desert beside plains, birch forest or forest. Seed 42, the 16 block grid over
@@ -1548,7 +1604,7 @@ sg_check:
 ; check failed: 1 forbidden neighbours with seed 42, 2 with seed 7, 3 gen_surface's layering, 4 snow within 32
 ; blocks of a desert, 5 no dry grass patch in a temperate biome, 6 no snow patch in one, 7 no sand patch in a
 ; savanna, 8 a sand patch far from a desert, 9 dry grass patches far from a savanna, 10 snow patches far from a
-; taiga or snow biome, 11 forbidden neighbours on the grid.
+; taiga or snow biome, 11 forbidden neighbours on the grid, 12 a plant decision of veg_kind (veg_rows).
 test_biome_ladder:
     push    rbp
     mov     rbp, rsp
@@ -1585,8 +1641,14 @@ test_biome_ladder:
     mov     edi, SG_N
     call    ladder_pairs_ok
     test    eax, eax
-    jz      .out
+    jz      .veg
     mov     eax, 11
+    jmp     .out
+.veg:
+    call    veg_rows_ok
+    test    eax, eax
+    jz      .out
+    mov     eax, 12
 .out:
     mov     ebx, eax
     mov     edi, 42

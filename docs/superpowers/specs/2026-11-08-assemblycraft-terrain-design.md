@@ -465,3 +465,44 @@ gcc -O1 -no-pie -pthread -o cal cal.c $(ls build/*.o | grep -v '/main.o') -lglfw
 - **`gen_column` above 0.5 ms average:**
   - first compute the pool neighbours' `carved_at` only for candidates on the column border;
   - then skip `cave_dress` floors above y 56.
+
+## As built (deviations from this plan)
+
+Commits: design doc, prep A (16-bit block tiles), prep B (caves.asm split, gen_column hashes identical), contracts, core, tuning, sweep. 178 selftests pass (172 + `terrain_blocks_tables`, `mesher_lava`, `biome_ladder`, `lava_burns`, `new_biome_consumers`, `caves_reworked`); the build is warning-free.
+
+**Biomes (W1).**
+- Seed-42 percentiles, hard-coded: T snow -0.345, taiga -0.164, swamp -0.057 .. 0.178, savanna 0.255, desert 0.400; M plains -0.122, birch 0.056, desert 0.100. Shares on the +-3072 / 16 grid: ocean 39.2, plains 6.1, forest 7.9, desert 5.7, snow 8.3, swamp 3.5, mountains 3.9, river 3.5, taiga 6.8, savanna 8.7, shore 2.4, birch 4.0 (%). Seed 1234 is under 2 % for desert and swamp (not a test seed).
+- Wobble stays 0.015: the measured p95 blend distance was 36 / 40 / 54 blocks at three step sizes, which straddles the plan's 40-block rule; the live shots (savanna to desert sand patches, forest to taiga snow bands) read as gradual.
+- `test_biome_ladder` is the name (the TEST macro prefixes `test_`). Checks (b) and (c) ask 90 % of dither patches within 48 blocks of their neighbour biome, not 100 %: where T peaks just short of a rung the dither makes isolated patches (22 of 272 dry-grass, 10 of 281 snow samples on seed 42). (d) ignores beach sand. Extra checks: gen_surface layering, the forbidden pairs on the grid, and a `veg_rows` table for `veg_kind` (added by the sweep).
+- Ocean `cold` uses T (the wobble is land only). Taiga tall grass chance is inert (taiga cells carry snow cover).
+- Measured: desert cells with a snowy surface within 32 / 64 / 128 blocks: 0.00 % on seeds 42, 7, 1234.
+
+**Caves (W2).**
+- Pools are the STONE floor cell turned liquid (AIR above, a non-AIR cell below, pool noise > 0.40, none of the 4 same-level neighbours carved), not the air cell above the floor: the plan's Cand/Pool rule left 31 % of pool cells with AIR beside them (target < 5 %); ring-2 did not help (28 %). Result: 0 % exposed, one deep, about 17 pool cells per column, about 44 % of them lava. Dressing order is pools, floors, exposed ore. In test (f) liquid cells are not carved, so the oracle is `gen_carved == (block is AIR)`.
+- `k_cav_t` is 0.44 (0.52 gave 3.8 % overall air but 43 % of 20 x 20 windows outside 3.5-6.5 %). Mouth contingencies applied in order: mouth noise 0.65, then `|A|,|B| < 0.05` above y 72 (`k_tun_up`). Open mouth cells: 38 per 4096 x 4096, so a mouth is rare. The "skip floors above 56" and "border-only carved_at" contingencies were not needed.
+- Test additions: (e) also requires ore >= 1.8 % of exposed stone and ore; (g) regenerates six columns in another order; (h) bare-window seam check of `carved_at` against the lattice pass.
+- Metrics, seed 42, 4096 x 4096 (before -> after): underground air 8.21 -> 4.77 %; land columns open from the surface >= 4 deep 0.48 -> 0.002 % (deepest 186 -> 7); 79,862 columns open >= 60 -> 0; gen_column mean 0.20 -> 0.27 ms. Headless gen + install + light of 289 columns: 0.48 + 0.04 + 0.37 ms (0.10: 0.50 + 0.04 + 0.42 ms).
+
+**Blocks and consumers (W3, W4).**
+- LAVA culls its faces only against LAVA (WATER output is unchanged); extra test `mesher_lava`.
+- `placeable_cell` is `cell_free` (not exported): tested through `place_block`. `build_camp` calls `camp_clearing(site, top, filler)` so a test can drive it; `hud_biome_name` and `camp_homes` are exported.
+- Sweep fix: lava burn is flagged FF_FOLKDOT for every mob, so a mob the lava kills pays the player no XP and no faction standing (`mob_damage` no longer limits that flag to folk).
+- Sweep fix: `veg_kind` returned a plain pine in SNOW (now the snowy pine, kind 5); exported for the table test.
+- Version strings: menus "AssemblyCraft 0.10.1", F3 title "AssemblyCraft 0.10.1".
+
+**Integration and seed-42 tests.**
+- `first_road` now returns the first road that crosses water (`wet_road_in`): seed 42's first road no longer does, and `roads_stamped` needs water on it. The seed-42 patrol constants are re-derived for road A (6072, -3764), B (5132, -4502): world origin (5888, -3840), claimed chunk (379, -236), stone at local (184, 10, 76), player (124.5, 76.5), destination (-755.5, -661.5), home (184.5, 76.5).
+- `camp_of_faction` searches 100 super-regions (-5..4) instead of 16: seed 42 has 4 cult and 9 stonekin camps in 100 super-regions (0.10: 19 and 8).
+- `roads_stamped` skips the trunk / tall grass check at points a site's builder owns (a village house across a road is no growth).
+- A debris assertion (DRY_GRASS side tile 325) was added to `fx_debris_falls_and_bounces`.
+
+**Live checks (omabox, seed 42, Creative) done:** F3 names (Savanna and Snowy Taiga read at their own cells, (0, 0) and (440, -804); Stony Shore at (44, -172); Birch Forest at (-308, 372)); savanna to desert sand patches and cacti; forest to taiga patchy snow (a forest cell with snow cover at (446..458, -790)); acacia crowns; a lava pool glowing in a dark cavern with a gravel floor; a hillside tunnel mouth at (262, 118, -61); survival lava death ("You burned to death"); an old 0.10 world opens (a snow field seam beside a village). Not done: cavern pillars and moss floors were not seen live (covered by the `caves_reworked` counts), breaking a block live for debris (covered by the unit assertion), the burn pip, and the 2,000-block flight at render distance 16: the box's Hyprland stopped starting after a restart (status 1), so the perf check is the headless timing above.
+
+## Deferred
+
+No git remote exists for this repo, so no GitHub issues were filed for these items (AGENTS.md asks for `need-triage` / `ready-for-human` issues).
+
+- Cult camps are about 5 times rarer than in 0.10 (swamp is 3.5 % of the map). Fix options: add a second home biome to the cult row of `camp_homes`, or widen the swamp M gate.
+- The 2,000-block perf flight at render distance 16 (0 frames over 50 ms) was not run.
+- Lava burn strength is scaled by the player's damage-over-time stat (`status_apply`); `mob_water_ahead` only looks at the feet and the cell below, so mobs still walk off ledges into lava and water; dungeons and crypts still accept SHORE.
+- Tunnel mouths are rare (38 open cells per 4096 x 4096); lowering the mouth threshold trades against deep surface openings.
