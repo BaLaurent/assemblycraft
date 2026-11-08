@@ -500,7 +500,7 @@ Commits: design doc, prep A (16-bit block tiles), prep B (caves.asm split, gen_c
 
 ## Deferred
 
-No git remote exists for this repo, so no GitHub issues were filed for these items (AGENTS.md asks for `need-triage` / `ready-for-human` issues).
+Filed on BaLaurent/assemblycraft (`need-triage`, `ready-for-human`): #1 cult camps, #2 perf flight, #3 lava DoT scaling / mobs at ledges / SHORE dungeons, #4 rare tunnel mouths.
 
 - Cult camps are about 5 times rarer than in 0.10 (swamp is 3.5 % of the map). Fix options: add a second home biome to the cult row of `camp_homes`, or widen the swamp M gate.
 - The 2,000-block perf flight at render distance 16 (0 frames over 50 ms) was not run.
