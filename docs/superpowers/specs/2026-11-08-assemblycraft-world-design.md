@@ -1289,7 +1289,7 @@ Recorded at the end of milestone 0.9. Everything not listed here was built as sp
 ### Wave 3 review fixes
 Four read-only reviewers found no crash. Every fix below has a regression assertion inside an existing test (the count stays 154), each proven to fail on the unfixed code.
 - **Column top after a dig** (storage): removing a block from a column's top layer rescanned from the layer below, so `COLUMN.top`, `world_top_y` and the light cap dropped while other blocks stayed on that layer (mobs spawned inside the ground, platforms lost their light). The rescan now starts at the cleared layer.
-- **Full container table froze streaming** (softlock): one column that `world_install` refused blocked every collect and dispatch. Now only that column waits 60 frames (`fail_until` per slot); every other column carries on.
+- **Full container table froze streaming** (softlock): one column that `world_install` refused blocked every collect and dispatch. Now only that column waits 60 frames (`fail_until` per slot); every other column carries on. A generated column that does not fit also frees its generator buffer and goes back to FREE, to be generated again after its backoff (generation is deterministic), so no number of failing columns can hold every buffer.
 - **Mesh budget after long uptime:** see Storage above (`time_mono_ns`).
 - **Far moored boats were dropped on load** (save loss): the load bound is now ±2^24.
 - **Sites:** about a third of crypts sat under oceans or rivers with the entrance on the seabed, and ~2% of dungeon tunnels dead-ended in rock under mountains. A pure `tunnel_exit` walk (shared with `stair_tunnel`) now lets the planner reject a dungeon or crypt whose tunnel has no exit within 60 columns or exits at or below sea level, and crypts reject OCEAN/RIVER centres. Seed 42 over regions −6..6: 207 dungeons (was 211), 39 crypts (was 49); 8 of the 9 even regions in −2..2 keep a crypt.
@@ -1303,6 +1303,5 @@ Four read-only reviewers found no crash. Every fix below has a regression assert
 - Region writes are not crash-atomic (planned for 1.0); absolute coordinates wrap at ±2^31 (not handled, per the plan).
 - Rivers are shallow and their biome edges dry; cold rivers freeze.
 - Explosions destroy WATER cells like any other block (no flowing water exists to refill them).
-- If 8 freshly generated chest columns fail to install at once (container table full), no generator buffer is free that frame; it resolves as soon as the table has room.
 - The breath bubbles share their row with the held-item name for the few seconds that name shows.
 - No unit test covers the right-click order "board the boat in front before placing one"; it was verified live.

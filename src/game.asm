@@ -361,9 +361,12 @@ game_load:
     mov     [player + BODY.kbz], eax
     mov     [player + BODY.fall], eax
     mov     [player + BODY.blocked], eax
-    mov     dword [player + BODY.half_w], __float32__(0.3)
-    mov     dword [player + BODY.height], __float32__(1.8)
-    mov     dword [player + BODY.speed], __float32__(4.317)
+    mov     eax, [f_p_half_w]           ; the player's box, as game_new's body_init sets it
+    mov     [player + BODY.half_w], eax
+    mov     eax, [f_p_height]
+    mov     [player + BODY.height], eax
+    mov     eax, [walk_speed]
+    mov     [player + BODY.speed], eax
     and     dword [player + BODY.flying], 1
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .fly_ok

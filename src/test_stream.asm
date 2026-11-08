@@ -7,7 +7,7 @@ global test_stream_sync, test_stream_thread
 extern settings, world_clear, world_set, world_get, world_column, world_chunk, world_origin_x, world_origin_z
 extern stream_begin, stream_end, stream_update, stream_thread_start, stream_thread_stop
 extern gen_column, time_mono, dir_remove_tree, region_set_dir, region_write_column, region_plan
-extern worldgen_set_seed, conts, cont_create, cont_at
+extern worldgen_set_seed, conts, cont_create, cont_at, gen_bufs, fail_until, stream_frame
 
 section .rodata
 dir_stream:     db "/tmp/ac9t-stream", 0
@@ -26,6 +26,8 @@ plan:           resb MAX_REGION_SITES * SITE_size
 has_chest:      resb 16                ; per column of the 3 x 3 around the chest column: it holds generated chests
 t_ccx:          resd 1                 ; the chest column
 t_ccz:          resd 1
+pinned:         resd 1                 ; a DONE buffer was seen holding a column that backs off
+pinned_n:       resd 1
 
 section .text
 
@@ -293,6 +295,32 @@ window_ok:
     pop     rbx
     ret
 
+; pinned_check(): sets [pinned] when a DONE generator buffer belongs to a column whose install is
+; backing off - such a buffer would stay held, and 8 of them would stop all generation for the session
+pinned_check:
+    lea     rdx, [gen_bufs]
+    mov     ecx, GEN_SLOTS
+.l:
+    cmp     dword [rdx + GENBUF.state], GB_DONE
+    jne     .n
+    mov     eax, [rdx + GENBUF.cz]
+    and     eax, 63
+    shl     eax, 6
+    mov     r8d, [rdx + GENBUF.cx]
+    and     r8d, 63
+    or      eax, r8d                    ; the column's slot
+    lea     r8, [fail_until]
+    mov     eax, [r8 + rax*4]
+    sub     eax, [stream_frame]
+    test    eax, eax
+    jle     .n
+    mov     dword [pinned], 1
+.n:
+    add     rdx, GENBUF_size
+    dec     ecx
+    jnz     .l
+    ret
+
 ; no worker: stream_update generates inline. Load the columns around (8, 8), compare one with a direct
 ; gen_column, edit it, walk 3000 cells away so it is unloaded (and saved), walk back: the edit is read
 ; from its region file. Then conts_full_sync: a column that cannot be installed holds back only itself
@@ -549,9 +577,10 @@ conts_full_sync:
     ret
 
 ; with the generator thread, the container table full: the first dungeon of region (0, 0) (seed 42) has
-; a chest in the column of (x + 3, z + 3); that column is generated on the worker, cannot be installed,
-; and its buffer stays DONE - the columns around it (the 3 x 3 window, centred on it so that it is the
-; first request and the first buffer) still load. Once the table has room, it installs. -> eax 0 = pass
+; a chest in the column of (x + 3, z + 3); that column is generated on the worker and cannot be installed:
+; it backs off and frees its buffer (no buffer is ever seen DONE for a column that backs off, over 300
+; more updates) while the columns around it (the 3 x 3 window, centred on it so that it is the first
+; request and the first buffer) still load. Once the table has room, it installs. -> eax 0 = pass
 thread_conts_full:
     push    rbp
     mov     rbp, rsp
@@ -630,6 +659,15 @@ thread_conts_full:
     jbe     .spin_full
     jmp     .bad                        ; not within 5 seconds: the failing column held the others back
 .others:
+    mov     dword [pinned], 0
+    mov     dword [pinned_n], 300
+.pin_loop:
+    call    pump_chest_column
+    call    pinned_check
+    dec     dword [pinned_n]
+    jnz     .pin_loop
+    cmp     dword [pinned], 0
+    jne     .bad                        ; a column that cannot install held its buffer
     mov     edi, 1
     call    window_ok
     test    eax, eax

@@ -16,6 +16,7 @@ default rel
 
 global stream_begin, stream_end, stream_update, stream_area_ready, stream_thread_start
 global stream_thread_stop, stream_stats, stream_spiral, stream_spiral_n
+global gen_bufs, fail_until, stream_frame  ; read by test_stream's buffer-pinning check
 
 extern settings
 extern world_origin_x, world_origin_z, columns, chunk_pool_used
@@ -642,19 +643,21 @@ stream_update:
     mov     eax, [r15 + GENBUF.session]
     cmp     eax, [stream_session]
     jne     .c_free                     ; a result of an old session
-    mov     edi, [r15 + GENBUF.cx]
-    mov     esi, [r15 + GENBUF.cz]
-    call    install_waiting
-    test    eax, eax
-    jnz     .c_next                     ; its install did not fit lately: later; the other buffers go on
     mov     rdi, r15
     call    world_install
     test    eax, eax
     jns     .c_free
+    mov     edi, [r15 + GENBUF.cx]      ; it did not fit: that column backs off and is generated
+    mov     esi, [r15 + GENBUF.cz]      ; again afterwards (generation is deterministic), so no
+    call    install_failed              ; buffer is ever held by a column that cannot install
     mov     edi, [r15 + GENBUF.cx]
     mov     esi, [r15 + GENBUF.cz]
-    call    install_failed              ; the buffer stays DONE: it is tried again when the backoff is over
-    jmp     .c_next
+    call    world_column
+    test    rax, rax
+    jz      .c_free
+    cmp     dword [rax + COLUMN.state], COL_PENDING
+    jne     .c_free
+    mov     dword [rax + COLUMN.state], COL_FREE
 .c_free:
     mov     rdi, r15
     mov     esi, GB_FREE
