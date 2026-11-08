@@ -1758,7 +1758,7 @@ hud_banner:
     ret
 
 ; hud_banner_draw(): count the banner down (hud_dt) and paint it in the middle of the screen,
-; ui_h/2 - 50
+; ui_h/2 - 50; under the shrine screen, which paints it above its panel itself, it only counts down
 hud_banner_draw:
     movss   xmm0, [banner_timer]
     xorps   xmm1, xmm1
@@ -1766,6 +1766,8 @@ hud_banner_draw:
     jbe     .ret
     subss   xmm0, [hud_dt]
     movss   [banner_timer], xmm0
+    cmp     dword [app_state], ST_SHRINE
+    je      .ret
     mov     edi, [ui_h]
     shr     edi, 1
     sub     edi, 50

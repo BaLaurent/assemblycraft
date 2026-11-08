@@ -2747,12 +2747,12 @@ site_state:
 
 ; ---- NPCs, spawners, counters, queries ----------------------------------------------------------
 
-; ensure_folk(edi faction, esi role, edx fclass, ecx dx, r8d dz, r9 SITE* site) -> eax 1 when that folk is
-; there: the folk of that faction and role with its home in the cell (site x + dx, site z + dz), at the
-; site's ground level + 1, is spawned (folk_spawn) unless a live one of that faction and role already has
-; that home (within 0.01) or, for a champion, the faction's champion is defeated (both count as there).
+; ensure_folk(edi faction, esi role, edx fclass, ecx dx, r8d dz, r9 SITE* site) -> eax 0 while that folk's
+; column is not loaded, else 1: the folk of that faction and role with its home in the cell (site x + dx,
+; site z + dz), at the site's ground level + 1, is spawned (folk_spawn) unless a live one of that faction
+; and role already has that home (within 0.01) or, for a champion, the faction's champion is defeated.
 ; A new champion is made one (folk_make_champion); a new captive is held by the site's faction
-; (MOB.captor). 0 when it could not be spawned: its column is not loaded or no mob slot is free.
+; (MOB.captor). A full mob table skips it (1): camp_npcs brings it later, from 32 .. 96 blocks away.
 ; Frame: [rsp] home x, [rsp+4] y, [rsp+8] home z, [rsp+12] fclass, [rsp+16] the site's faction.
 ensure_folk:
     push    rbp
@@ -2828,7 +2828,7 @@ ensure_folk:
     movss   xmm2, [rsp + 8]
     call    folk_spawn
     test    eax, eax
-    js      .later                      ; no free slot: the next check tries again
+    js      .done                       ; no free slot: skipped, not a column still loading
     cmp     r14d, ROLE_CHAMPION
     je      .champion
     cmp     r14d, ROLE_CAPTIVE
@@ -2892,7 +2892,7 @@ ensure_slots:
     pop     rbx
     ret
 
-; populate_site(rdi SITE*) -> eax 1 when every folk slot of the village or camp is there (ensure_folk).
+; populate_site(rdi SITE*) -> eax 1 unless a folk slot's column is still loading (ensure_folk).
 ; A village holds its seven Villagers (village_slots). A camp its leader, trader and two workers
 ; (camp_slots), its guards (camp_guards, camp_guard_n of them), the captive its faction holds
 ; (camp_captive; none once the camp's state says SS_FREED) at (6, 5) and its champion (champion_class)
@@ -3024,10 +3024,10 @@ pop_add:
 
 ; camp_npcs(): the folk of every cached village and camp whose centre column is loaded. A site not yet
 ; populated this session (pop_seen) with its centre within 96 blocks of the player gets every slot
-; (populate_site) and is remembered once all of them are there (a slot in a column still loading is
-; tried again at the next check); after that its missing folk are re-created only while the player is
-; 32 .. 96 blocks from the centre, so a camp cleared stays clear while the player stands in it. Folk are
-; not saved.
+; (populate_site) and is remembered once no slot's column is still loading (such a slot is tried again at
+; the next check; one a full mob table skipped is not); after that its missing folk are re-created only
+; while the player is 32 .. 96 blocks from the centre, so a camp cleared stays clear while the player
+; stands in it. Folk are not saved.
 ; Frame: [rsp] the squared distance of the site (float).
 camp_npcs:
     push    rbp
@@ -3071,7 +3071,7 @@ camp_npcs:
     mov     rdi, rbx                    ; the first visit: everyone, once
     call    populate_site
     test    eax, eax
-    jz      .next                       ; some of it is not loaded yet: still the first visit
+    jz      .next                       ; a slot's column is still loading: still the first visit
     mov     rdi, rbx
     call    pop_add
     jmp     .next

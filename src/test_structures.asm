@@ -3759,6 +3759,52 @@ test_camp_npcs_recreated:
     call    check_village_folk
     test    eax, eax
     jnz     .fail
+    call    mobs_clear                  ; a first visit with only 3 free mob slots: the village is seen all
+    call    structures_reset            ; the same, so a Villager killed while the player stands in it,
+    lea     rdi, [sites]                ; once the table has room again, stays gone
+    mov     esi, SITE_VILLAGE
+    mov     edx, 100
+    mov     ecx, 60
+    mov     r8d, 100
+    xor     r9d, r9d
+    call    fab_site
+    mov     dword [site_count], 1
+    mov     r12d, MAX_MOBS - 3
+.full:
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [k_8_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_8_5]
+    call    mob_spawn
+    dec     r12d
+    jnz     .full
+    mov     edi, 60
+    call    steps
+    call    count_folk
+    cmp     eax, 3
+    jne     .fail
+    lea     rcx, [mobs]                 ; the zombies leave, and so does one of the three Villagers
+    mov     edx, MAX_MOBS
+    xor     r12d, r12d
+.room:
+    cmp     dword [rcx + MOB.type], MOB_ZOMBIE
+    je      .gone
+    cmp     dword [rcx + MOB.type], MOB_FOLK
+    jne     .room_next
+    test    r12d, r12d
+    jnz     .room_next
+    inc     r12d
+.gone:
+    mov     dword [rcx + MOB.type], MOB_NONE
+.room_next:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .room
+    mov     edi, 120
+    call    steps
+    call    count_folk
+    cmp     eax, 2
+    jne     .fail
     xor     eax, eax
     jmp     .out
 .fail:
