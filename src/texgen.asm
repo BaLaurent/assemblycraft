@@ -1,6 +1,7 @@
-; texgen.asm - procedural 256x256 RGBA texture atlas (16x16 tiles plus the 8x8 font).
+; texgen.asm - procedural 256x512 RGBA texture atlas (16x16 tiles in rows 0..255, the 8x8 font
+; at FONT_Y = 256).
 ;
-; texgen_build(rdi out): zero out[262144], then draw tiles in order using a single
+; texgen_build(rdi out): zero out[ATLAS_W * ATLAS_H * 4], then draw tiles in order using a single
 ; xorshift32 stream (state 0x12345678, x ^= x<<13; x ^= x>>17; x ^= x<<5; a "draw"
 ; returns the NEW state). Pixel = base*m >> 8 per channel, alpha 255. Tiles 13, 14,
 ; the crack stages (256 draws first) and 64..70 continue the stream after tile 12;
@@ -278,7 +279,7 @@ texgen_build:
 
     mov     r12, rdi
     xor     eax, eax
-    mov     ecx, 262144 / 8
+    mov     ecx, ATLAS_W * ATLAS_H * 4 / 8
     rep stosq                           ; rdi advances; r12 keeps the base
     mov     r13d, 0x12345678
 

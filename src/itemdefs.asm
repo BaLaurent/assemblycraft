@@ -1,6 +1,6 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..207 (NUM_ITEMS).
-; Ids 0..110 are the blocks (variant ids: the item form is block_base), 111..127 are unused,
-; 128..207 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry.
+; itemdefs.asm - per-item data tables, indexed by item id 0..223 (NUM_ITEMS).
+; Ids 0..110 are the blocks (variant ids: the item form is block_base), 111..143 are unused,
+; 144..223 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel

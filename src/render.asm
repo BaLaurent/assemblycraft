@@ -23,7 +23,8 @@ align 8
 d_near:     dq 0.05
 d_far:      dq 300.0
 align 4
-f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units
+f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units (u, 256 px)
+f_texscale_v: dd 0.0001220703125        ; 1/8192: v over the 512 px atlas height
 f_one:      dd 1.0
 f_aim_zoom: dd 0.3                     ; fully aimed the FOV narrows by 30 %
 f_two:      dd 2.0
@@ -58,7 +59,7 @@ face_corners:
 
 section .bss
 alignb 16
-atlas:       resb ATLAS_PX * ATLAS_PX * 4
+atlas:       resb ATLAS_W * ATLAS_H * 4
 chunk_vbo:   resd NUM_CHUNKS
 chunk_count: resd NUM_CHUNKS
 tex_id:      resd 1
@@ -125,14 +126,14 @@ render_init:
     mov     edi, GL_UNPACK_ALIGNMENT
     mov     esi, 1
     call    glPixelStorei
-    TEXIMAGE ATLAS_PX, ATLAS_PX, atlas
+    TEXIMAGE ATLAS_W, ATLAS_H, atlas
     NEAREST_CLAMP
 
     mov     edi, GL_TEXTURE
     call    glMatrixMode
     call    glLoadIdentity
     movss   xmm0, [f_texscale]
-    movss   xmm1, [f_texscale]
+    movss   xmm1, [f_texscale_v]
     movss   xmm2, [f_one]
     call    glScalef
     mov     edi, GL_MODELVIEW

@@ -71,10 +71,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TORCH_WALL     105              ; 105..108: param = 1 + support side
 %define FENCE          109
 %define GLASS_PANE     110
-%define NUM_BLOCKS     111              ; ids 111..127 unused
+%define NUM_BLOCKS     111              ; ids 111..143 unused
 
 ; ---- item ids -------------------------------------------------------------
-%define FIRST_ITEM     128
+%define FIRST_ITEM     144
 %define STICK          (FIRST_ITEM + 0)
 %define WOOD_PICKAXE   (FIRST_ITEM + 1)
 %define WOOD_AXE       (FIRST_ITEM + 2)
@@ -155,7 +155,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define DIAMOND_HAMMER (FIRST_ITEM + 77)
 %define IRON_SPEAR     (FIRST_ITEM + 78)
 %define DIAMOND_SPEAR  (FIRST_ITEM + 79)
-%define NUM_ITEMS      (FIRST_ITEM + 80) ; 208
+%define NUM_ITEMS      (FIRST_ITEM + 80) ; 224
 
 ; v3 (0.6) id space, for save migration
 %define V3_NUM_BLOCKS  25
@@ -212,9 +212,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 ; ---- mesh / texture -------------------------------------------------------
 %define MAX_CHUNK_VERTS    196608       ; cubes need <= 98304; shaped blocks use the rest
 %define VERTEX_SIZE        16
-%define ATLAS_PX           256
+%define ATLAS_W            256
+%define ATLAS_H            512
 %define TILE_PX            16
-%define TEX_UNITS_PER_TILE 256          ; texcoords in 1/16 px; atlas = 4096 units
+%define TEX_UNITS_PER_TILE 256          ; texcoords in 1/16 px; atlas = 4096 x 8192 units
 
 ; atlas tiles beyond the 0.1 block tiles 0..12
 %define TILE_TABLE_TOP     13
@@ -318,7 +319,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_STAT_AREA     239
 %define TILE_STAT_ELITE    254
 %define TILE_KEYSTONE      255
-%define FONT_Y             192          ; glyph rows at atlas y 192..239, x 0..127
+%define FONT_Y             256          ; glyph rows at atlas y 256..303, x 0..127
 
 ; ---- save file ------------------------------------------------------------
 %define WORLD_HDR_SIZE  32768

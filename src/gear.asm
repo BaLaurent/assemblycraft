@@ -275,8 +275,8 @@ gr_next:
 ; decode(edi id, esi dmg, rdx out GEARAFFIX[5], rcx rows byte[5]) -> eax count
 ; The affixes of a stack, a pure function of (id, dmg). Their number follows the rarity bits (0, 2,
 ; 4, 5 for common .. epic). Affix k is entry h % size of the pool (the affix_tab rows whose kinds
-; include the item's gear kind, in table order), h = mix32(seed ^ id << 10 ^ k << 20 ^
-; 0x9E3779B9), moved on (wrapping) past the rows already taken. Its value lies between
+; include the item's gear kind, in table order), h = mix32(seed ^ id' << 10 ^ k << 20 ^
+; 0x9E3779B9) with id' = id - FIRST_ITEM + 128, moved on (wrapping) past the rows already taken. Its value lies between
 ; lo + tier * tlo and hi + tier * thi, at r = (h >> 16) & 255 of 255, times 5/4 for an epic, and is
 ; at least 1. rows[k] receives the affix_tab row of affix k. 0 for non-gear ids and common stacks.
 ; Frame: [rsp] pool[44], +44 pool size, +48 count, +52 rarity bits, +56 k.
@@ -336,8 +336,8 @@ decode:
     cmp     eax, [rsp + 48]
     jae     .done
     shl     eax, 20                     ; k << 20
-    mov     ecx, r12d
-    shl     ecx, 10                     ; id << 10
+    lea     ecx, [r12 - FIRST_ITEM + 128]   ; the 0.8 numbering (items from 128): rolls are
+    shl     ecx, 10                     ; unchanged by moving FIRST_ITEM; id' << 10
     xor     eax, ecx
     xor     eax, r13d
     xor     eax, 0x9E3779B9
