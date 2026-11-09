@@ -541,3 +541,8 @@ Approved by the user on 2026-11-09 from `docs/superpowers/specs/grimoire-mockup/
 ## Deferred
 
 Filed as GitHub issues #5 (live-verify trade/dialog/leader/shrine on the merged build), #6 (mock gaps: tooltip lines, quest objective text, book centring, compass crispness, extra Tab hint), #7 (inventory book narrower than 316 units cannot equip armor), #8 (test gaps: `gear_pick_base` archetype argument, respec guard, GL-only `ui_line`/`ui_clip`).
+
+## Post-review changes
+
+- Grimoire is one wide page (`ui_book` with no left page): the spine of the validated mockup cut through the web centre and hid nodes. The inventory book keeps its spine.
+- Contrast: umber backing behind web icons, `C_EDGE_LOCKED` for untouched web edges, `C_GOLD_DEEP` for gold lines and rings on parchment.

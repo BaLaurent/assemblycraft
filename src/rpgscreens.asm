@@ -1409,9 +1409,9 @@ web_tooltip:
 .ret:
     LEAVE_FRAME 24
 
-; web_book(): the open book of the grimoire: a dimmer over the world, the book (ui_book: two pages 4 units apart
-; round the spine, 14 units in from the screen edge), the ribbon "Grimoire" hanging over its top and the header line
-; (screen_header, s_px / s_py = 16 / 13 so that its text lands at x 24, y 22 and ends at ui_w - 24).
+; web_book(): the grimoire's page: a dimmer over the world, one wide leather-bound page (ui_book with no left page, so
+; no spine cuts the web), 14 units in from the screen edge, the ribbon "Grimoire" hanging over its top and the header
+; line (screen_header, s_px / s_py = 16 / 13 so that its text lands at x 24, y 22 and ends at ui_w - 24).
 web_book:
     ENTER_FRAME 8
     xor     edi, edi
@@ -1420,10 +1420,9 @@ web_book:
     mov     ecx, [ui_h]
     mov     r8d, C_DIM
     call    ui_rect
+    xor     edx, edx                    ; no left page: no spine across the web
     mov     ecx, [ui_w]
-    sub     ecx, 32
-    shr     ecx, 1                      ; page width: two pages and the spine fill ui_w - 28
-    mov     edx, ecx
+    sub     ecx, 28
     mov     r8d, [ui_h]
     sub     r8d, 28
     mov     edi, 14
