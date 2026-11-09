@@ -2,6 +2,12 @@
 ; Every .asm file includes this first. It switches to .note.GNU-stack, so the
 ; including file MUST select its own section before emitting anything.
 
+; Windows build (-DWIN64, see win/): every `syscall` becomes a call into the emulation layer
+%ifdef WIN64
+%define syscall call syscall_stub
+extern syscall_stub
+%endif
+
 section .note.GNU-stack noalloc noexec nowrite progbits
 
 ; ---- world: infinite, streamed; 16x16 columns of 16 chunks, local = absolute - world_origin ----

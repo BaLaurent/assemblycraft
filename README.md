@@ -31,6 +31,18 @@ make relay    # build the rendezvous/relay server, build/acrelay (static, no lib
 make clean
 ```
 
+### Windows build
+
+A native 64-bit Windows `.exe` is cross-built on Linux: the game's assembly is assembled with `nasm -f win64`, and a small C platform layer in `win/` (Linux-syscall emulation on Win32/Winsock, GL/GLFW wrappers, threads, waveOut audio) bridges the System V convention the assembly uses to Windows. It needs Docker for the mingw-w64 toolchain.
+
+```sh
+make windows-image   # once: builds the ac-mingw docker image (gcc-mingw-w64)
+make windows         # build/win/assemblycraft.exe
+make windows-zip     # build/win/AssemblyCraft-0.11.0-win64.zip (exe + README-WINDOWS.txt + licenses)
+```
+
+The full selftest suite runs under Wine: `wine build/win/assemblycraft.exe --selftest`. Windows and Linux builds play together in the same multiplayer world.
+
 ## Multiplayer
 
 The host is authoritative: it owns the world (blocks, mobs, drops, time, quests) and every guest simulates only its own player. Guests' characters are saved by the host under `<world>/players/<name>.hdr`.
