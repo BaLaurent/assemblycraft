@@ -215,7 +215,6 @@ sheet_sec:      resb 32                 ; the stat ids of the section being draw
 hdr_buf:        resb 64                 ; "<title> - Level N" / "<Faction> Leader" / "Wanted: <item>"
 pts_buf:        resb 32                 ; "Points: N" / "Attribute points: N"
 coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / "Standing: N (Tier)" / counts / summary lines
-rank_buf:       resb 16                 ; "r/m" on a skill node
 fmt_buf:        resb 48                 ; one formatted stat
 sheet_rows:     resb 64                 ; the stat list's visible rows (sheet_build)
 tip_buf:        resb 256                ; skill tooltip text
@@ -626,21 +625,6 @@ tooltip_wrapped:
     jb      .draw
 .ret:
     LEAVE_FRAME 40
-
-; rank_text(edi rank, esi max, rdx buf) -> rax end (NUL written): "rank/max"
-rank_text:
-    push    r12
-    mov     r12d, esi
-    mov     rsi, rdx
-    call    i32_to_str
-    mov     byte [rax], '/'
-    inc     rax
-    mov     edi, r12d
-    mov     rsi, rax
-    call    i32_to_str
-    mov     byte [rax], 0
-    pop     r12
-    ret
 
 ; ---- the grimoire: header and shared helpers ---------------------------------------------------
 
@@ -1155,8 +1139,8 @@ web_draw_compass:
 ; web_draw_node(edi node): the node's frame by kind (NINE_NODE_STAT + kind: stat, ability, keystone, path), 22 x 22
 ; (path 28 x 28) with its 16 x 16 icon at zoom 1, 7 x 7 (path 10 x 10) without one at zoom 0, centred on its cell. A
 ; node that no ranked node links to is drawn faint (frame and icon tinted TINT_FAINT); a node a point could go into
-; that has none yet gets a 1-unit gold ring just outside its frame; at zoom 1 a ranked node of more than one rank
-; hangs "r/m" in ink off its bottom right corner (right edge - 4, bottom - 2). The viewport clip cuts what runs out.
+; or that has a rank gets the 1-unit progress ring of web_ring just outside its frame (no number: the ring is the
+; rank, filled clockwise in proportion to rank / max). The viewport clip cuts what runs out.
 ; Locals: [rsp] rank, [rsp+4] tint, [rsp+8] size, [rsp+12] frame x, [rsp+16] frame y, [rsp+20] centre x,
 ; [rsp+24] centre y, [rsp+28] reachable
 ; ebx = node, r12 = WEBNODE*
@@ -1192,19 +1176,15 @@ web_draw_node:
     mov     eax, [rsp + 24]
     sub     eax, edx
     mov     [rsp + 16], eax
-    cmp     dword [rsp + 28], 0
-    je      .frame
-    cmp     dword [rsp], 0
-    jne     .frame
-    mov     edi, [rsp + 12]             ; the ring of a node a point could go into
-    dec     edi
+    mov     eax, [rsp]
+    or      eax, [rsp + 28]
+    jz      .frame                      ; unranked and unreachable: no ring
+    mov     edi, [rsp + 12]
     mov     esi, [rsp + 16]
-    dec     esi
     mov     edx, [rsp + 8]
-    add     edx, 2
-    mov     ecx, edx
-    mov     r8d, C_GOLD_DEEP
-    call    ui_frame
+    mov     ecx, [rsp]
+    movzx   r8d, byte [r12 + WEBNODE.max]
+    call    web_ring
 .frame:
     movzx   edi, byte [r12 + WEBNODE.kind]
     add     edi, NINE_NODE_STAT
@@ -1261,25 +1241,86 @@ web_draw_node:
     mov     ecx, 16
     mov     r8d, [rsp + 4]
     call    ui_tile_icon
-    cmp     dword [rsp], 0
-    je      .ret
-    movzx   esi, byte [r12 + WEBNODE.max]
-    cmp     esi, 1
-    jbe     .ret                        ; a one-rank node has nothing to count
-    mov     edi, [rsp]
-    lea     rdx, [rank_buf]
-    call    rank_text
-    lea     rdi, [rank_buf]
-    mov     esi, [rsp + 12]
-    add     esi, [rsp + 8]
-    sub     esi, 4
-    mov     edx, [rsp + 16]
-    add     edx, [rsp + 8]
-    sub     edx, 2
-    mov     ecx, C_INK
-    mov     r8d, 1
-    call    ui_text_ink
 .ret:
+    LEAVE_FRAME 40
+
+; web_ring(edi x, esi y, edx size, ecx rank, r8d max): the progress ring of a node whose frame is size x size at
+; (x, y): a 1-unit track just outside the frame (C_LOCKED) and over it the first rank / max of the ring's
+; perimeter in C_GOLD_DEEP, running clockwise from the top left corner (a one-rank node is lit all round, a
+; five-rank node by fifths). max is at least 1.
+; Locals: [rsp] x, [rsp+4] y, [rsp+8] size, [rsp+12] rank, [rsp+16] max, [rsp+20] lit units, [rsp+24] edge
+; ebx / r12d = ring x / y, r13d = ring side, r14d = lit units of the current edge (at most side - 1)
+web_ring:
+    ENTER_FRAME 40
+    mov     [rsp], edi
+    mov     [rsp + 4], esi
+    mov     [rsp + 8], edx
+    mov     [rsp + 12], ecx
+    mov     [rsp + 16], r8d
+    lea     ebx, [rdi - 1]
+    lea     r12d, [rsi - 1]
+    lea     r13d, [rdx + 2]
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r13d
+    mov     r8d, C_LOCKED
+    call    ui_frame
+    lea     eax, [r13 - 1]
+    shl     eax, 2                      ; perimeter units
+    imul    eax, [rsp + 12]
+    xor     edx, edx
+    div     dword [rsp + 16]
+    mov     [rsp + 20], eax
+    mov     dword [rsp + 24], 0
+.edge:
+    mov     eax, [rsp + 20]
+    mov     ecx, [rsp + 24]
+    lea     edx, [r13 - 1]
+    imul    ecx, edx
+    sub     eax, ecx                    ; units left for this edge and the ones after it
+    jle     .next
+    cmp     eax, edx
+    cmova   eax, edx
+    mov     r14d, eax
+    mov     ecx, [rsp + 24]
+    cmp     ecx, 1
+    je      .e1
+    cmp     ecx, 2
+    je      .e2
+    cmp     ecx, 3
+    je      .e3
+    mov     edi, ebx                    ; top edge, left to right
+    mov     esi, r12d
+    mov     edx, r14d
+    mov     ecx, 1
+    jmp     .draw
+.e1:                                    ; right edge, downwards
+    lea     edi, [rbx + r13 - 1]
+    mov     esi, r12d
+    mov     edx, 1
+    mov     ecx, r14d
+    jmp     .draw
+.e2:                                    ; bottom edge, right to left
+    lea     edi, [rbx + r13]
+    sub     edi, r14d
+    lea     esi, [r12 + r13 - 1]
+    mov     edx, r14d
+    mov     ecx, 1
+    jmp     .draw
+.e3:                                    ; left edge, upwards
+    mov     edi, ebx
+    lea     esi, [r12 + r13]
+    sub     esi, r14d
+    mov     edx, 1
+    mov     ecx, r14d
+.draw:
+    mov     r8d, C_GOLD_DEEP
+    call    ui_rect
+.next:
+    inc     dword [rsp + 24]
+    cmp     dword [rsp + 24], 4
+    jb      .edge
     LEAVE_FRAME 40
 
 ; web_tooltip(edi node): the hovered node's tooltip at the mouse (tooltip_wrapped): its name in gold (" (Keystone)"
