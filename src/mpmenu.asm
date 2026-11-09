@@ -4,7 +4,9 @@
 ; world to others, then show the room code, the direct address and the PvP switch) and the chat bar
 ; (ST_CHAT: one text field over the bottom of the world). Every screen_*() runs once per frame after
 ; ui_begin and acts on ui_input; a screen that changes state returns at once, so one click never
-; reaches two widgets. The name and target fields are reset when app_entered is set (and clear it).
+; reaches two widgets. The name and target fields are reset when app_entered is set (and clear it);
+; a --join run enters the join screen with its target already being joined (net_cli_join) and shows
+; that target in the field.
 %include "common.inc"
 %include "theme.inc"
 default rel
@@ -19,7 +21,7 @@ extern str_copy, str_append, i32_to_str
 extern net_role, net_pvp, net_cfg_name, net_cfg_port, net_cfg_save, net_valid_name
 extern net_join_begin, net_join_cancel, net_join_status, net_ep, net_ep_join_state
 extern net_host_open, net_host_close, net_ep_rv_state, net_room_code, net_lan_text
-extern net_set_pvp, net_chat_send
+extern net_set_pvp, net_chat_send, net_cli_join
 
 %define TARGET_MAX      24              ; "255.255.255.255:65535" is 21
 %define CHAT_MAX        32              ; the TEXTFIELD limit
@@ -170,6 +172,9 @@ has_text:
 ; screen_mp_join(): the join page over the dimmed title panorama. While a join runs (NJ_RV ..
 ; NJ_CONNECTED) the Join button is Cancel and the status line follows net_join_status; a failed
 ; join shows its reason in red. Join needs a valid name and a target; Enter in a field joins too.
+; A --join run is entered with its join under way: net_cli_join (0 otherwise; netsync clears it when
+; that join completes or is cancelled, so it is read on entry) is the target text it joins, and
+; fills the target field, which then holds no focus: nothing is waiting to be typed.
 ; rbx = a join is running, r12d = cx, r13d = ui_h, r14d = the join state, r15d = Enter pressed
 ; [rsp] Join is possible
 screen_mp_join:
@@ -187,9 +192,14 @@ screen_mp_join:
     call    field_set
     lea     rdi, [tf_target]
     lea     rsi, [s_empty]
+    mov     rax, [net_cli_join]
+    test    rax, rax
+    cmovnz  rsi, rax                    ; --join: the target being joined
     mov     edx, TARGET_MAX
     call    field_set
     mov     dword [join_failed], 0
+    cmp     qword [net_cli_join], 0
+    jne     .fields_ready
     lea     rax, [tf_target]
     mov     [ui_focus], rax
 .fields_ready:
