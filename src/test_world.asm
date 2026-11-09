@@ -317,7 +317,7 @@ test_world_save_load:
 %if WORLDHDR.jewelry != 16384 || WORLDHDR.rpgx != 16400 || RPGEXT_size != 256
     jmp     .fail
 %endif
-%if MOB_size != 260 || INVENTORY_size != 216 || SITE_size != 56 || COLUMN_size != 408
+%if MOB_size != 264 || INVENTORY_size != 216 || SITE_size != 56 || COLUMN_size != 408
     jmp     .fail
 %endif
 %if WORLDHDR.standing != 588 || WORLDHDR.champions != 604

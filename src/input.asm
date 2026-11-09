@@ -56,7 +56,8 @@ prev_reload:    resd 1
 prev_skills:    resd 1
 prev_dodge:     resd 1
 prev_ability:   resd 4
-cap_edges:      resd 5                 ; dodge, ability 1..4 edges until the captured branch
+cap_edges:      resd 7                 ; dodge, ability 1..4 edges, chat edge, player-list held until the captured branch
+prev_chat:      resd 1
 prev_num:       resd 9
 
 section .text
@@ -411,6 +412,11 @@ input_poll:
     BIND    BIND_ABILITY4
     EDGE    prev_ability + 12
     mov     [cap_edges + 16], edx
+    BIND    BIND_CHAT
+    EDGE    prev_chat
+    mov     [cap_edges + 20], edx
+    BIND    BIND_PLAYERS
+    mov     [cap_edges + 24], eax
     xor     ecx, ecx
 .num:
     push    rcx
@@ -471,6 +477,10 @@ input_poll:
     mov     [frame_input + FRAMEINPUT.ability + 8], eax
     mov     eax, [cap_edges + 16]
     mov     [frame_input + FRAMEINPUT.ability + 12], eax
+    mov     eax, [cap_edges + 20]
+    mov     [frame_input + FRAMEINPUT.chat], eax
+    mov     eax, [cap_edges + 24]
+    mov     [frame_input + FRAMEINPUT.players], eax
     ; buttons, ignoring the click that captured the mouse until both are released
     cmp     dword [suppress], 0
     je      .buttons

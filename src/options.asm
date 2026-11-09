@@ -25,7 +25,7 @@ extern str_append, i32_to_str
 %define CTRL_PAGE_PAD   16
 %define CTRL_WIDE_W     (465 + CTRL_PAGE_PAD)
 %define CTRL_COMPACT_W  (401 + CTRL_PAGE_PAD)
-%define CTRL_ROWS       8
+%define CTRL_ROWS       9
 
 section .rodata
 s_empty:        db 0
@@ -81,11 +81,13 @@ s_b_ability2:   db "Ability 2", 0
 s_b_ability3:   db "Ability 3", 0
 s_b_skills:     db "Grimoire", 0
 s_b_ability4:   db "Ability 4", 0
+s_b_chat:       db "Chat", 0
+s_b_players:    db "Player list", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump
                 dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly, s_b_reload
                 dq s_b_dodge, s_b_ability1, s_b_ability2, s_b_ability3, s_b_skills
-                dq s_b_ability4
+                dq s_b_ability4, s_b_chat, s_b_players
 
 ; Names of keys that glfwGetKeyName does not report: dw key, zstr; dw 0 ends it.
 %macro KEY 2

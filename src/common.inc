@@ -11,7 +11,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define COL_GRID       64               ; toroidal column table: slot (acz & 63)*64 + (acx & 63)
 %define MAX_COLUMNS    4096
 %define CHUNK_BYTES    8192             ; 4096 block bytes, then 4096 packed-light bytes
-%define POOL_CHUNKS    24576
+%define POOL_CHUNKS    32768
 %define REGION_COLS    32               ; 32x32 columns per region file
 %define SEA_LEVEL      96
 %define REBASE_AT      1024
@@ -487,7 +487,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_POISON    10
 %define CAUSE_DROWN     11
 %define CAUSE_FOLK      12              ; + faction: slain by a faction's folk (12..16)
-%define CAUSE_LAST      16
+%define CAUSE_PLAYER    17              ; slain by another player (multiplayer PvP)
+%define CAUSE_LAST      17
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
 
@@ -830,6 +831,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_SHRINE       19
 %define ST_LEADER       20
 %define ST_DEBUG        21              ; the debug menu (debugmenu.asm)
+%define ST_MP_JOIN      22              ; multiplayer: join screen (mpmenu.asm)
+%define ST_MP_HOST      23              ; multiplayer: host screen (mpmenu.asm)
+%define ST_CHAT         24              ; multiplayer: chat input (mpmenu.asm)
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -848,7 +852,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIND_ABILITY3   13
 %define BIND_SKILLS     14
 %define BIND_ABILITY4   15
-%define NUM_BINDINGS    16
+%define NUM_BINDINGS    18
+%define BIND_CHAT       16
+%define BIND_PLAYERS    17
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0
@@ -984,6 +990,8 @@ struc FRAMEINPUT
     .skills:      resd 1                ; edge of the Skill Tree binding (every state)
     .dodge:       resd 1                ; edges below: only while the cursor is captured
     .ability:     resd 4
+    .chat:        resd 1                ; edge of the Chat binding (captured only)
+    .players:     resd 1                ; Player list binding held (captured only)
 endstruc
 
 struc UIINPUT
@@ -1117,6 +1125,7 @@ struc MOB
     .dest_x:   resd 1                   ; patrol: the end it walks to (local float); home_x/home_z hold the other end
     .dest_z:   resd 1
     .greet:    resd 1                   ; steps before this guard greets again
+    .peer:     resd 1                   ; slot of the last player who hit this mob: XP credit, folk retaliation
 endstruc
 
 struc MOBSAVE
@@ -1588,4 +1597,263 @@ struc VERTEX
     .g:   resb 1
     .b:   resb 1
     .a:   resb 1
+endstruc
+
+; ---- multiplayer (0.11) ----------------------------------------------------------------------
+%define NET_VERSION      1
+%define NET_MAGIC        0xAC17           ; game packet magic (u16 LE)
+%define RV_MAGIC         0xAC52           ; rendezvous packet magic (u16 LE)
+%define NET_PORT         27615            ; host UDP port, tries +0..+9
+%define RV_PORT          27600
+%define RV_DEFAULT_IP    0xE2A37F5D       ; 93.127.163.226, network byte order read as LE dword
+%define NET_MAX_PEERS    8                ; slot 0 host, 1..7 guests
+%define NET_MTU          1200             ; max UDP payload we send
+%define NET_PKT_HDR      16
+%define NET_MSG_MAX      1100             ; max message payload
+%define NET_PART_MAX     1088             ; data bytes per MT_BLOB_PART
+%define NET_RQ           2048             ; reliable send-queue entries per connection
+%define NET_RWIN         512              ; reliable receive window
+%define NET_BLOB_MAX     262144           ; largest big message
+%define NET_PKTS_FRAME   8                ; packets per connection per flush
+%define NET_TIMEOUT_MS   10000
+%define NET_KEEPALIVE_MS 50
+%define NET_RTO_MIN_MS   100
+%define NAME_MAX         16
+%define PLAYER_IMG_SIZE  16748            ; WORLDHDR bytes 0 .. end of .debug_stats
+%define MP_SIM_R         4                ; host loads radius 4 (+1 load, +2 keep) around remote players
+%define MP_HOST_RDIST    12               ; host render distance cap while hosting
+%define SNAP_STEPS       3                ; snapshots / PSTATE every 3 sim steps (20 Hz)
+
+%define NET_ROLE_OFF     0
+%define NET_ROLE_HOST    1
+%define NET_ROLE_GUEST   2
+
+%define PK_CONNECT 1
+%define PK_ACCEPT 2
+%define PK_DENY 3
+%define PK_DATA 4
+%define PK_DISCONNECT 5
+%define PK_PUNCH 6
+%define DENY_FULL 1
+%define DENY_VERSION 2
+%define DENY_NAME 3
+%define DENY_CLOSED 4
+
+%define RV_HOST 1
+%define RV_ROOM 2
+%define RV_JOIN 3
+%define RV_PEER 4
+%define RV_NOROOM 5
+%define RV_RELAY 6
+%define RVS_NONE 0                        ; NETEP.rv_state
+%define RVS_PENDING 1
+%define RVS_OK 2
+%define RVS_FAIL 3
+
+%define NJ_IDLE 0                         ; NETEP.join_state
+%define NJ_RV 1
+%define NJ_PUNCH 2
+%define NJ_RELAY 3
+%define NJ_CONNECT 4
+%define NJ_CONNECTED 5
+%define NJ_FAILED 6
+%define NJE_RV_TIMEOUT 1                  ; NETEP.join_err
+%define NJE_NOROOM 2
+%define NJE_UNREACHABLE 3
+%define NJE_DENY_FULL 4
+%define NJE_DENY_VERSION 5
+%define NJE_DENY_NAME 6
+%define NJE_DENY_CLOSED 7
+%define NJE_SOCKET 8
+
+%define NE_CONNECT_REQ 1                  ; NETEVENT.kind
+%define NE_ACCEPTED 2
+%define NE_TIMEOUT 3
+%define NE_DISCONNECTED 4
+
+; message types (MT_*), dispatch index into net_handlers (64 entries)
+%define MT_WORLDINFO 1
+%define MT_PEER_JOIN 2
+%define MT_PEER_LEAVE 3
+%define MT_PLAYER_IMAGE 4
+%define MT_PLAYER_FRESH 5
+%define MT_READY 6
+%define MT_PLAYER_SAVE 7
+%define MT_HOST_CLOSING 8
+%define MT_PSTATE 9
+%define MT_PLAYERS 10
+%define MT_CHAT 11
+%define MT_SYS 12
+%define MT_PVP 13
+%define MT_DIED 14
+%define MT_BLOB_PART 15                   ; transport-internal (net.asm)
+%define MT_SAVE_ACK 16
+%define MT_BLOCK 20
+%define MT_COL_REQ 21
+%define MT_COL_DATA 22
+%define MT_COL_PRISTINE 23
+%define MT_CONT_OPEN 24
+%define MT_CONT_DATA 25
+%define MT_CONT_PUT 26
+%define MT_CONT_CLOSE 27
+%define MT_CONT_GONE 28
+%define MT_TNT_PRIME 29
+%define MT_BOAT_PLACE 30
+%define MT_BOAT_MOUNT 31
+%define MT_BOAT_MOUNT_OK 32
+%define MT_BOAT_DISMOUNT 33
+%define MT_BOAT_BREAK 34
+%define MT_BOAT_POSE 35
+%define MT_SNAP_MOBS 40
+%define MT_SNAP_DROPS 41
+%define MT_SNAP_MISC 42
+%define MT_HIT 43
+%define MT_STATUS 44
+%define MT_MOBFX 45
+%define MT_KILL 46
+%define MT_HURT 47
+%define MT_PVP_HIT 48
+%define MT_INTERACT 49
+%define MT_PROJ 50
+%define MT_PROJ_END 51
+%define MT_SOUND 52
+%define MT_FX 53
+%define MT_EVENT 54
+%define MT_STANDING 55
+%define MT_FACTION_ADD 56
+%define MT_QUEST_SYNC 57
+%define MT_QUEST_ACCEPT 58
+%define MT_QUEST_BUMP 59
+%define MT_QUEST_COMPLETE 60
+%define MT_QUEST_REWARD 61
+%define MT_DROP_SPAWN 62
+%define MT_GIVE 63
+%define NUM_MT 64
+
+%define SYS_JOINED 1
+%define SYS_LEFT 2
+%define SYS_TIMEOUT 3
+%define SYS_DIED 4
+%define SYS_PVP 5
+%define SYS_HOST_CLOSED 6
+%define PS_GROUND 1                       ; PSTATE.flags
+%define PS_FLY 2
+%define PS_SNEAK 4
+%define PS_SLEEP 8
+%define PS_ASLEEP 16                      ; sleep_timer reached SLEEP_STEPS: ready to skip the night
+%define PS_DEAD 32
+%define PS_SWING 64
+%define PS_GUARD 128
+%define PS_HURT 256
+%define PS_STEALTH 512
+%define MFX_STUN 1
+%define MFX_MARK 2
+%define MFX_LAUNCH 3
+%define HM_HIT 0                          ; MT_HURT.mode: player_take_hit
+%define HM_DIRECT 1                       ;               survival_damage (explosions)
+%define IA_FREE_CAPTIVE 1
+%define EV_DUNGEON_CLEARED 1
+%define EV_BOSS_KILLED 2
+%define FXN_EXPLOSION 0
+%define FXN_BURST 1
+%define PEER_FREE 0
+%define PEER_JOINING 1
+%define PEER_READY 2
+
+%define HIT_REMOTE       4                ; mob_hit_player: the target is another peer's player
+%define AF_GHOST         128              ; a mirrored projectile: no hits, no pickup, no explosion
+%define COL_INDEX        8192             ; hashed column index (u16 slot+1, 0 = empty)
+
+struc NADDR                               ; IPv4 endpoint, network byte order (as in sockaddr_in)
+    .ip:   resd 1
+    .port: resw 1
+    .pad:  resw 1
+endstruc                                  ; 8
+struc NPOS                                ; absolute position on the wire: x = ax + fx/65536
+    .ax: resd 1
+    .az: resd 1
+    .fx: resw 1
+    .fz: resw 1
+    .y:  resd 1                           ; float
+endstruc                                  ; 16
+struc PSTATE
+    .slot:   resb 1
+    .boat:   resb 1                       ; ridden boat slot + 1, 0 none
+    .flags:  resw 1                       ; PS_*
+    .pos:    resb NPOS_size
+    .yaw:    resd 1
+    .pitch:  resd 1
+    .health: resw 1
+    .max_health: resw 1
+    .level:  resb 1
+    .arch:   resb 1                       ; rpg_archetype
+    .held:   resb 1                       ; held item id
+    .pad:    resb 1
+endstruc                                  ; 36
+struc MOBREC
+    .slot: resb 1
+    .type: resb 1
+    .faction: resb 1
+    .role: resb 1
+    .fclass: resb 1
+    .fflags: resb 1
+    .wid: resb 1
+    .vis: resb 1                          ; 1 elite, 2 hurt, 4 burn, 8 poison, 16 chill, 32 frozen, 64 windup, 128 bar
+    .pos: resb NPOS_size
+    .yaw: resd 1
+    .health: resd 1
+    .max_health: resd 1
+    .level: resw 1
+    .stun: resb 1                         ; min(MOB.stun, 255)
+    .peer: resb 1
+endstruc                                  ; 40
+struc DROPREC
+    .slot: resb 1
+    .id: resb 1
+    .count: resb 1
+    .rar: resb 1                          ; beam_rar
+    .dmg: resw 1
+    .pad: resw 1
+    .pos: resb NPOS_size
+endstruc                                  ; 24
+struc BOATREC
+    .slot: resb 1
+    .rider: resb 1                        ; peer slot + 1, 0 none
+    .pad: resw 1
+    .pos: resb NPOS_size
+    .yaw: resd 1
+endstruc                                  ; 24
+struc TNTREC
+    .fuse: resw 1
+    .pad: resw 1
+    .pos: resb NPOS_size
+endstruc                                  ; 20
+struc NETEVENT
+    .kind: resb 1                         ; NE_*
+    .slot: resb 1
+    .reason: resb 1
+    .relay: resb 1                        ; 1 when the connection runs through acrelay
+    .addr: resb NADDR_size
+    .nonce: resd 1
+    .name: resb 17
+    .pad: resb 3
+endstruc                                  ; 36
+struc PEER
+    .state: resd 1                        ; PEER_*
+    .name: resb 17
+    .pad0: resb 3
+    .ps: resb PSTATE_size                 ; last PSTATE received
+    .body: resb BODY_size                 ; proxy in local coordinates (rendering, targeting, hit tests)
+    .tx: resd 1                           ; interpolation targets, local floats
+    .ty: resd 1
+    .tz: resd 1
+    .tyaw: resd 1
+    .tpitch: resd 1
+    .walk: resd 1                         ; float, degrees of walk-cycle phase
+    .open_x: resd 1                       ; host: the container this peer has open (absolute), kind 0 = none
+    .open_y: resd 1
+    .open_z: resd 1
+    .open_kind: resd 1
+    .put_seq: resd 1                      ; host: last CONT_PUT seq applied from this peer
+    .saved: resd 1                        ; host: a PLAYER_SAVE arrived since HOST_CLOSING
 endstruc
