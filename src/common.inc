@@ -1420,7 +1420,7 @@ struc SFXLAYER
     .wave:      resd 1                  ; int32 W_*
     .start:     resd 1                  ; floats from here on: seconds
     .dur:       resd 1
-    .amp:       resd 1                  ; relative within the sound (normalised to SFXINFO.peak)
+    .amp:       resd 1                  ; relative within the sound (normalised to SFXINFO.level)
     .note0:     resd 1                  ; MIDI note numbers (noise: clock = 16 x the note's Hz)
     .note1:     resd 1
     .glide:     resd 1                  ; seconds from note0 to note1, 0 = hold note0
@@ -1442,7 +1442,7 @@ endstruc                                ; 88 bytes
 
 ; per-sound mixing info (sfx_info[NUM_SOUNDS], sfx.asm)
 struc SFXINFO
-    .peak:   resw 1                     ; target peak, int16 units
+    .level:  resw 1                     ; target loudness: K-weighted RMS of the loudest 100 ms, int16 units
     .jitter: resw 1                     ; +- cents of random pitch per play
     .cap:    resb 1                     ; most simultaneous voices of this sound
     .send:   resb 1                     ; echo send 0..255

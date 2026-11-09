@@ -2,7 +2,9 @@
 ; Each sound is the sum of a few chip-instrument layers: band-limited pulse (variable duty) and saw,
 ; a 2A03-style 32-step triangle and a 15-bit LFSR noise channel (long or short mode), with a
 ; per-32-sample pitch tick (glide, tracker arpeggio, delayed vibrato), one-pole high/low-pass and an
-; attack/decay/sustain/release envelope. Every sound is then normalised to sfx_info[id].peak.
+; attack/decay/sustain/release envelope. Every sound is then normalised to a loudness,
+; sfx_info[id].level: the K-weighted (ITU BS.1770) RMS of its loudest 100 ms, so sounds of one
+; level are heard as equally loud whatever their length or brightness (a peak ceiling still applies).
 ; sfx_table[id] = {offset, length} in samples; sfx_pool is mono signed 16-bit, 44100 Hz.
 %include "common.inc"
 default rel
@@ -67,7 +69,7 @@ extern exp2_ss
     dd L_ATTACK, L_DECAY, L_SUSTAIN, L_RELEASE, L_LP, L_HP
 %endmacro
 
-; SINFO peak (int16), jitter (+- cents), cap (voices), send (echo 0..255)
+; SINFO level (int16 K-weighted RMS), jitter (+- cents), cap (voices), send (echo 0..255)
 %macro SINFO 4
     dw %1, %2
     db %3, %4, 0, 0
@@ -98,70 +100,88 @@ c_abs:       dd 0x7FFFFFFF
 c_pmax:      dd 32767.0
 c_pmin:      dd -32767.0
 c_ceil_tol:  dd 0.01                    ; keeps float noise in 0.18 s etc. from adding a sample
+c_peak_max:  dd 30934.0                 ; -0.5 dBFS: loudness never pushes a peak past it
+c_inv_4410:  dq 2.2675736961451248e-4   ; 1 / 4410, mean over a 100 ms window
+align 8                                 ; K-weighting at 44.1 kHz: high shelf (b, a) then RLB high-pass (c, d)
+k_b0:        dq 1.5245497507424821
+k_b1:        dq -2.5910067542593858
+k_b2:        dq 1.126819073893832
+k_a1:        dq -1.6237063834520935
+k_a2:        dq 0.68406845382902193
+k_c0:        dq 0.9945921773542088
+k_c1:        dq -1.9891843547084176
+k_c2:        dq 0.9945921773542088
+k_d1:        dq -1.9891696736297959
+k_d2:        dq 0.98919903578703927
 
-; per sound: target peak, pitch jitter, voice cap, echo send (audio.asm reads it)
+; per sound: loudness, pitch jitter, voice cap, echo send (audio.asm reads the last three). The
+; levels set the mix: each is the loudness wanted in game, less the volume its usual call site plays
+; it at (and the distance a positional sound is usually heard from), so an explosion 5 blocks off is
+; the loudest event; then guns, slam and the boss (-2..-4 dB); player hurt, jingles, crits and
+; abilities (-5..-9); mob hurts (-8); digs, mob voices, doors, eating (-11..-13); footsteps and UI
+; clicks (-16..-18).
 align 8
 sfx_info:
-    SINFO  7336,   0, 1,   0            ; 0  CLICK
-    SINFO 10362, 250, 3,   0            ; 1  DIG_STONE
-    SINFO 10362, 250, 3,   0            ; 2  DIG_WOOD
-    SINFO  9235, 300, 3,   0            ; 3  DIG_SOFT
-    SINFO 10362, 150, 2,  40            ; 4  DIG_GLASS
-    SINFO  6538, 300, 2,   0            ; 5  STEP_STONE
-    SINFO  6538, 300, 2,   0            ; 6  STEP_WOOD
-    SINFO  6538, 350, 2,   0            ; 7  STEP_SOFT
-    SINFO 14637, 120, 2,  20            ; 8  HURT
-    SINFO  8231, 300, 2,   0            ; 9  EAT
-    SINFO 11627, 150, 1,   0            ; 10 BURP
-    SINFO 13045, 200, 2,  30            ; 11 ZOMBIE_SAY
-    SINFO 14637, 150, 2,  20            ; 12 ZOMBIE_HURT
-    SINFO 10362, 200, 2,  15            ; 13 PIG_SAY
-    SINFO 13045, 150, 2,  15            ; 14 PIG_HURT
-    SINFO 13045, 100, 1,  40            ; 15 TOOL_BREAK
-    SINFO  8231, 400, 2,  15            ; 16 POP
-    SINFO 27571, 120, 3,  70            ; 17 EXPLODE
-    SINFO  5827,   0, 2,   0            ; 18 FUSE
-    SINFO 16423, 150, 3,  25            ; 19 BOW
-    SINFO 13045, 200, 3,  15            ; 20 ARROW_HIT
-    SINFO 10362, 200, 2,  25            ; 21 SKELETON_SAY
-    SINFO 14637, 150, 2,  20            ; 22 SKELETON_HURT
-    SINFO 11627, 200, 2,  15            ; 23 SPIDER_SAY
-    SINFO 14637, 150, 2,  15            ; 24 SPIDER_HURT
-    SINFO 14637, 150, 2,  15            ; 25 CREEPER_HURT
-    SINFO  8231, 200, 2,  15            ; 26 CHICKEN_SAY
-    SINFO 10362, 150, 2,  15            ; 27 CHICKEN_HURT
-    SINFO 20675,  80, 3,  55            ; 28 PISTOL
-    SINFO 23198,  80, 2,  70            ; 29 MUSKET
-    SINFO 26029,  80, 2,  65            ; 30 SHOTGUN
-    SINFO 20675,  80, 3,  50            ; 31 RIFLE
-    SINFO 20675,  60, 2,  55            ; 32 LAUNCHER
-    SINFO 10362,  60, 1,  15            ; 33 RELOAD
-    SINFO  9235,  60, 1,   0            ; 34 DRY_FIRE
-    SINFO 11627, 250, 2,   0            ; 35 SWING
-    SINFO 18427,  60, 2,  60            ; 36 PARRY
-    SINFO 18427, 100, 2,  25            ; 37 BLOCK
-    SINFO 11627, 150, 1,  10            ; 38 DODGE
-    SINFO 20675,  80, 2,  55            ; 39 CRIT
-    SINFO 16423,   0, 1,  90            ; 40 LEVELUP
-    SINFO 14637, 100, 2,  70            ; 41 SPELL
-    SINFO 18427, 100, 2,  60            ; 42 FIREBALL
-    SINFO 13045,  60, 1,  80            ; 43 BLINK
-    SINFO 18427,  60, 1,  60            ; 44 WARCRY
-    SINFO 14637, 100, 1,  25            ; 45 WHIRL
-    SINFO 13045, 100, 1,  40            ; 46 SMOKE
-    SINFO 10362,   0, 2,  45            ; 47 COIN
-    SINFO 16423,   0, 1,  90            ; 48 QUEST
-    SINFO 23198,   0, 1,  70            ; 49 BOSS_ROAR
-    SINFO 26029,  60, 1,  60            ; 50 SLAM
-    SINFO 11627, 200, 2,  20            ; 51 VILLAGER
-    SINFO 10362, 150, 1,   0            ; 52 DRINK
-    SINFO 10362, 120, 2,  20            ; 53 DOOR_OPEN
-    SINFO 13045, 120, 2,  25            ; 54 DOOR_CLOSE
-    SINFO 11627,  80, 1,  60            ; 55 FREEZE
-    SINFO 20675,  80, 1,  30            ; 56 HEAVY
-    SINFO 14637,  80, 1,  20            ; 57 KNIVES
-    SINFO 14637,   0, 1,  80            ; 58 LOOT_RARE
-    SINFO 18427,   0, 1, 100            ; 59 LEGENDARY
+    SINFO  1791,   0, 1,   0            ; 0  CLICK
+    SINFO  2145, 250, 3,   0            ; 1  DIG_STONE
+    SINFO  2145, 250, 3,   0            ; 2  DIG_WOOD
+    SINFO  2145, 300, 3,   0            ; 3  DIG_SOFT
+    SINFO  2406, 150, 2,  40            ; 4  DIG_GLASS
+    SINFO  3071, 300, 2,   0            ; 5  STEP_STONE
+    SINFO  3071, 300, 2,   0            ; 6  STEP_WOOD
+    SINFO  3071, 350, 2,   0            ; 7  STEP_SOFT
+    SINFO  4801, 120, 2,  20            ; 8  HURT
+    SINFO  3186, 300, 2,   0            ; 9  EAT
+    SINFO  3438, 150, 1,   0            ; 10 BURP
+    SINFO  5500, 200, 2,  30            ; 11 ZOMBIE_SAY
+    SINFO  4028, 150, 2,  20            ; 12 ZOMBIE_HURT
+    SINFO  4902, 200, 2,  15            ; 13 PIG_SAY
+    SINFO  4028, 150, 2,  15            ; 14 PIG_HURT
+    SINFO  3777, 100, 1,  40            ; 15 TOOL_BREAK
+    SINFO  3866, 400, 2,  15            ; 16 POP
+    SINFO 12419, 120, 3,  70            ; 17 EXPLODE
+    SINFO  3728,   0, 2,   0            ; 18 FUSE
+    SINFO  3787, 150, 3,  25            ; 19 BOW
+    SINFO  5361, 200, 3,  15            ; 20 ARROW_HIT
+    SINFO  4902, 200, 2,  25            ; 21 SKELETON_SAY
+    SINFO  4028, 150, 2,  20            ; 22 SKELETON_HURT
+    SINFO  5500, 200, 2,  15            ; 23 SPIDER_SAY
+    SINFO  4028, 150, 2,  15            ; 24 SPIDER_HURT
+    SINFO  4028, 150, 2,  15            ; 25 CREEPER_HURT
+    SINFO  4369, 200, 2,  15            ; 26 CHICKEN_SAY
+    SINFO  3590, 150, 2,  15            ; 27 CHICKEN_HURT
+    SINFO  5387,  80, 3,  55            ; 28 PISTOL
+    SINFO  6782,  80, 2,  70            ; 29 MUSKET
+    SINFO  6782,  80, 2,  65            ; 30 SHOTGUN
+    SINFO  6044,  80, 3,  50            ; 31 RIFLE
+    SINFO  6044,  60, 2,  55            ; 32 LAUNCHER
+    SINFO  2681,  60, 1,  15            ; 33 RELOAD
+    SINFO  2839,  60, 1,   0            ; 34 DRY_FIRE
+    SINFO  3574, 250, 2,   0            ; 35 SWING
+    SINFO  3814,  60, 2,  60            ; 36 PARRY
+    SINFO  3814, 100, 2,  25            ; 37 BLOCK
+    SINFO  2145, 150, 1,  10            ; 38 DODGE
+    SINFO  4279,  80, 2,  55            ; 39 CRIT
+    SINFO  4279,   0, 1,  90            ; 40 LEVELUP
+    SINFO  4249, 100, 2,  70            ; 41 SPELL
+    SINFO  5349, 100, 2,  60            ; 42 FIREBALL
+    SINFO  4249,  60, 1,  80            ; 43 BLINK
+    SINFO  5349,  60, 1,  60            ; 44 WARCRY
+    SINFO  4249, 100, 1,  25            ; 45 WHIRL
+    SINFO  3787, 100, 1,  40            ; 46 SMOKE
+    SINFO  3857,   0, 2,  45            ; 47 COIN
+    SINFO  3814,   0, 1,  90            ; 48 QUEST
+    SINFO  9864,   0, 1,  70            ; 49 BOSS_ROAR
+    SINFO  8477,  60, 1,  60            ; 50 SLAM
+    SINFO  4085, 200, 2,  20            ; 51 VILLAGER
+    SINFO  2681, 150, 1,   0            ; 52 DRINK
+    SINFO  3319, 120, 2,  20            ; 53 DOOR_OPEN
+    SINFO  3319, 120, 2,  25            ; 54 DOOR_CLOSE
+    SINFO  4249,  80, 1,  60            ; 55 FREEZE
+    SINFO  4279,  80, 1,  30            ; 56 HEAVY
+    SINFO  4249,  80, 1,  20            ; 57 KNIVES
+    SINFO  4856,   0, 1,  80            ; 58 LOOT_RARE
+    SINFO  6113,   0, 1, 100            ; 59 LEGENDARY
 %if $ - sfx_info != NUM_SOUNDS * SFXINFO_size
     %error "sfx_info must hold NUM_SOUNDS rows"
 %endif
@@ -1107,8 +1127,8 @@ sfx_acc:   resd SOUND_MAX_SAMPLES       ; float mix of the sound being built
 
 section .text
 
-; sfx_build(): render every sound into sfx_pool, normalised to sfx_info[id].peak, and fill
-; sfx_table. Safe to call again (same output).
+; sfx_build(): render every sound into sfx_pool, normalised to its sfx_info[id].level loudness under
+; a -0.5 dBFS peak ceiling, and fill sfx_table. Safe to call again (same output).
 sfx_build:
     push    rbp
     mov     rbp, rsp
@@ -1178,15 +1198,24 @@ sfx_build:
     maxss   xmm1, xmm0
     inc     ecx
     jmp     .peak_loop
-.scale:                                 ; xmm2 = sfx_info peak / peak (1 for a silent sound)
+.scale:                                 ; xmm2 = min(level / sqrt(loudest 100 ms mean square),
+    movss   [rsp], xmm1                 ;            peak ceiling / peak); 1 for a silent sound
     movss   xmm2, [c_one]
     xorps   xmm0, xmm0
     ucomiss xmm1, xmm0
     jbe     .pack
+    lea     rsi, [sfx_acc]
+    mov     edx, ebx
+    call    kweight_ms
+    sqrtss  xmm0, xmm0
     lea     rax, [sfx_info]
-    movzx   eax, word [rax + r12*SFXINFO_size + SFXINFO.peak]
+    movzx   eax, word [rax + r12*SFXINFO_size + SFXINFO.level]
     cvtsi2ss xmm2, eax
-    divss   xmm2, xmm1
+    divss   xmm2, xmm0
+    movss   xmm0, [c_peak_max]
+    divss   xmm0, [rsp]
+    minss   xmm2, xmm0
+    lea     rsi, [sfx_acc]
 .pack:                                  ; float * scale -> clamped int16 at pool + offset
     lea     rdi, [sfx_pool]
     lea     rdi, [rdi + r13*2]
@@ -1214,6 +1243,112 @@ sfx_build:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; kweight_ms(rsi float x[], edx len) -> xmm0: the largest mean square of the K-weighted signal over
+; a 100 ms window (10 blocks of 441 samples, 10 ms hops); a sound under 100 ms counts as padded with
+; silence to 100 ms. Leaf, in doubles. Clobbers xmm0..xmm11, rax, rcx, rdx, r8..r11.
+kweight_ms:
+    sub     rsp, 88                     ; [rsp] ring of the last 10 block energies
+    mov     r11d, edx                   ; len
+    xor     eax, eax
+.zero:
+    mov     qword [rsp + rax*8], 0
+    inc     eax
+    cmp     eax, 10
+    jb      .zero
+    lea     eax, [r11 + 440]
+    xor     edx, edx
+    mov     ecx, 441
+    div     ecx                         ; blocks in the sound, rounded up
+    mov     ecx, 10
+    cmp     eax, ecx
+    cmovb   eax, ecx
+    imul    r10d, eax, 441              ; samples to run, padding included
+    xorpd   xmm2, xmm2                  ; shelf input x[n-1], x[n-2]
+    xorpd   xmm3, xmm3
+    xorpd   xmm4, xmm4                  ; shelf output y[n-1], y[n-2]: also the high-pass's input history
+    xorpd   xmm5, xmm5
+    xorpd   xmm6, xmm6                  ; high-pass output z[n-1], z[n-2]
+    xorpd   xmm7, xmm7
+    xorpd   xmm10, xmm10                ; energy of the current block
+    xorpd   xmm11, xmm11                ; largest window sum
+    xor     ecx, ecx                    ; n
+    xor     r8d, r8d                    ; samples into the block
+    xor     r9d, r9d                    ; ring slot of the next block
+    xor     edx, edx                    ; blocks done
+.sample:
+    cmp     ecx, r10d
+    jae     .done
+    xorpd   xmm0, xmm0                  ; x = n < len ? x[n] : 0
+    cmp     ecx, r11d
+    jae     .filter
+    cvtss2sd xmm0, [rsi + rcx*4]
+.filter:
+    movapd  xmm1, xmm0                  ; y = b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2
+    mulsd   xmm1, [k_b0]
+    movapd  xmm8, xmm2
+    mulsd   xmm8, [k_b1]
+    addsd   xmm1, xmm8
+    movapd  xmm8, xmm3
+    mulsd   xmm8, [k_b2]
+    addsd   xmm1, xmm8
+    movapd  xmm8, xmm4
+    mulsd   xmm8, [k_a1]
+    subsd   xmm1, xmm8
+    movapd  xmm8, xmm5
+    mulsd   xmm8, [k_a2]
+    subsd   xmm1, xmm8
+    movapd  xmm9, xmm1                  ; z = c0 y + c1 y1 + c2 y2 - d1 z1 - d2 z2
+    mulsd   xmm9, [k_c0]
+    movapd  xmm8, xmm4
+    mulsd   xmm8, [k_c1]
+    addsd   xmm9, xmm8
+    movapd  xmm8, xmm5
+    mulsd   xmm8, [k_c2]
+    addsd   xmm9, xmm8
+    movapd  xmm8, xmm6
+    mulsd   xmm8, [k_d1]
+    subsd   xmm9, xmm8
+    movapd  xmm8, xmm7
+    mulsd   xmm8, [k_d2]
+    subsd   xmm9, xmm8
+    movapd  xmm3, xmm2                  ; shift the histories
+    movapd  xmm2, xmm0
+    movapd  xmm5, xmm4
+    movapd  xmm4, xmm1
+    movapd  xmm7, xmm6
+    movapd  xmm6, xmm9
+    mulsd   xmm9, xmm9
+    addsd   xmm10, xmm9
+    inc     ecx
+    inc     r8d
+    cmp     r8d, 441
+    jb      .sample
+    xor     r8d, r8d                    ; block done: into the ring, then the window sum
+    movsd   [rsp + r9*8], xmm10
+    xorpd   xmm10, xmm10
+    inc     r9d
+    cmp     r9d, 10
+    jb      .slot
+    xor     r9d, r9d
+.slot:
+    inc     edx
+    cmp     edx, 10
+    jb      .sample
+    xorpd   xmm0, xmm0
+    xor     eax, eax
+.sum:
+    addsd   xmm0, [rsp + rax*8]
+    inc     eax
+    cmp     eax, 10
+    jb      .sum
+    maxsd   xmm11, xmm0
+    jmp     .sample
+.done:
+    mulsd   xmm11, [c_inv_4410]
+    cvtsd2ss xmm0, xmm11
+    add     rsp, 88
     ret
 
 ; blep(xmm0 p, xmm1 dt) -> xmm0: polyBLEP residual of a unit upward step at phase 0. Leaf;

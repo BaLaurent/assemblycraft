@@ -261,3 +261,35 @@ Run everything from the repo root `/run/media/octopusman/Games/Experiences/assem
 ## Deferred
 
 - None.
+
+## Mix rework (after play-testing)
+
+The user said the sounds were good but the mix was bad: levels did not match from one sound to the next.
+
+**Cause.** `sfx_build` set each sound's level from its peak. At equal peaks, long low-crest noise sounds (SPELL, WHIRL, KNIVES, DODGE, BURP) were heard up to 10 dB louder than they should be. Short, spiky sounds (CLICK, STEP_WOOD, ARROW_HIT, CHICKEN_SAY, DRY_FIRE) came out up to 9 dB too quiet. Across all 60 sounds, the gap to the intended mix was 3.4 dB on average and 10 dB at worst.
+
+**Fix.** `SFXINFO.peak` is now `SFXINFO.level`, a loudness target.
+- The loudness measure is the RMS of the loudest 100 ms of the sound, after K-weighting (ITU BS.1770: high shelf, then a 38 Hz high-pass, both at 44.1 kHz in doubles). It is taken over 10 ms hops, and a sound shorter than 100 ms counts as padded with silence. `kweight_ms` in `sfx.asm` computes it.
+- `sfx_build` scales each sound to its level. The scaling stops early wherever the peak would pass -0.5 dBFS.
+- Each level equals the loudness wanted in game, less the volume of the sound's usual call site (and the distance gain for positional sounds), so the call sites stay untouched.
+
+**The mix ladder,** in dB relative to an explosion 5 blocks away:
+
+| Sounds | Level |
+|---|---|
+| Explosion | 0 |
+| Guns, slam, boss roar | -2 to -4 |
+| Player hurt, jingles, crit, heavy, block, parry, abilities | -5 to -9 |
+| Mob hurts | -8 to -9 |
+| Coin, bow | -9 to -10 |
+| Dig, mob voices, doors, eat, drink, burp, reload | -11 to -13 |
+| Arrow hit, swing, dodge | -12 |
+| Dry fire, pop | -14 to -16 |
+| Steps, click | -18 |
+
+The staff bolt keeps its 0.35 call volume, which puts it about 7 dB under the other abilities.
+
+**Checks.**
+- An independent Python model (`/tmp/acsound/loud.py`) reads back every sound within 0.0 dB of its target.
+- Every sound still passes the click checks, and the stress scene peaks at 26466.
+- The overall level moved by less than 1 dB: the explosion went from -11.1 to -11.7 dB K-weighted.
