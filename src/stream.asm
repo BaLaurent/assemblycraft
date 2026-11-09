@@ -34,7 +34,7 @@ extern worldgen_set_seed, gen_column, gen_biome
 extern time_mono_ns, sys_print
 extern pthread_create, pthread_join, pthread_mutex_lock, pthread_mutex_unlock
 extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
-extern net_role, net_rdist_cap, net_stream_centres, net_column_verdict, net_column_take, net_column_forget
+extern net_role, net_in_world, net_rdist_cap, net_stream_centres, net_column_verdict, net_column_take, net_column_forget
 
 %define SPIRAL_R        18              ; offsets -18..18: 37 x 37 = 1369 entries
 %define SPIRAL_MAX      (37 * 37)
@@ -699,7 +699,10 @@ stream_try_column:
     test    eax, eax
     jnz     .skip                       ; its install did not fit lately: the next column
     cmp     byte [net_role], NET_ROLE_GUEST
-    je      .guest
+    jne     .local
+    cmp     byte [net_in_world], 0
+    jne     .guest                      ; a guest not yet in the host's world (the title panorama streams) stays local
+.local:
     mov     edi, r12d
     mov     esi, r13d
     call    region_has_column

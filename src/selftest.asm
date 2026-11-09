@@ -92,6 +92,7 @@ extern test_debug_vitals_and_toggles, test_debug_step_clock, test_debug_to_spawn
 extern test_net_reliable_lossy, test_net_big_message, test_net_rid_wrap, test_net_timeout
 extern test_net_handshake_deny
 extern test_world_column_hash, test_stream_extra_centres, test_region_encode_roundtrip
+extern test_stream_guest_local_until_joined
 extern test_net_pos_roundtrip, test_net_player_image_roundtrip
 extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
 extern test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
@@ -323,6 +324,7 @@ tests:
     TEST world_column_hash
     TEST stream_extra_centres
     TEST region_encode_roundtrip
+    TEST stream_guest_local_until_joined
     TEST net_pos_roundtrip
     TEST net_player_image_roundtrip
     TEST net_edit_queue_replay
@@ -554,6 +556,7 @@ section .rodata
     TESTNAME world_column_hash
     TESTNAME stream_extra_centres
     TESTNAME region_encode_roundtrip
+    TESTNAME stream_guest_local_until_joined
     TESTNAME net_pos_roundtrip
     TESTNAME net_player_image_roundtrip
     TESTNAME net_edit_queue_replay

@@ -2,13 +2,16 @@
 %include "common.inc"
 default rel
 
-global test_stream_sync, test_stream_thread, test_stream_extra_centres
+global test_stream_sync, test_stream_thread, test_stream_extra_centres, test_stream_guest_local_until_joined
 
 extern settings, world_clear, world_set, world_get, world_column, world_chunk, world_origin_x, world_origin_z
 extern stream_begin, stream_end, stream_update, stream_thread_start, stream_thread_stop
 extern gen_column, time_mono, dir_remove_tree, region_set_dir, region_write_column, region_plan
 extern worldgen_set_seed, conts, cont_create, cont_at, gen_bufs, install_waiting, stream_frame
 extern net_role, net_peers, gen_seed, col_index
+extern net_in_world, net_capture, net_captured, net_column_forget, net_colv_pending
+
+%define GJ_CAP 4096                     ; the capture buffer of test_stream_guest_local_until_joined
 
 section .rodata
 dir_stream:     db "/tmp/ac9t-stream", 0
@@ -32,6 +35,8 @@ pinned_n:       resd 1
 sv_role:        resd 1                 ; test_stream_extra_centres borrows the net role and the peer in slot 1:
 sv_peer:        resd 5                 ; their state, position (ax, az, fx and fz, y)
 sv_seed:        resd 1
+gj_cap:         resb GJ_CAP            ; test_stream_guest_local_until_joined: what the capture seam recorded
+gj_pend:        resd 1                 ; ... and the column requests that were pending before it
 
 section .text
 
@@ -889,6 +894,149 @@ test_stream_extra_centres:
     je      .clean
     mov     ebx, 1
 .clean:
+    mov     edi, [sv_seed]
+    call    worldgen_set_seed
+    mov     [settings + SETTINGS.render_dist], r12d
+    mov     eax, ebx
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- a guest that is not in the host's world yet --------------------------------------------------------------
+
+; count_col_req() -> eax how many COL_REQ records the capture seam holds (a record: slot u8, type u8, len u16,
+; payload[len])
+count_col_req:
+    lea     rax, [gj_cap]
+    mov     ecx, [net_captured]
+    lea     rdx, [rax + rcx]            ; the end of what was recorded
+    xor     esi, esi
+.next:
+    cmp     rax, rdx
+    jae     .done
+    cmp     byte [rax + 1], MT_COL_REQ
+    jne     .skip
+    inc     esi
+.skip:
+    movzx   ecx, word [rax + 2]
+    lea     rax, [rax + rcx + 4]
+    jmp     .next
+.done:
+    mov     eax, esi
+    ret
+
+; forget_area(edi ccx): net_column_forget for the 7 x 7 columns around column (ccx, 0) - the requests asked of the
+; host for them go
+forget_area:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    xor     ebx, ebx
+.next:
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 7
+    div     ecx                         ; eax = the row, edx = the column
+    lea     esi, [rax - 3]
+    lea     edi, [rdx + r12 - 3]
+    call    net_column_forget
+    inc     ebx
+    cmp     ebx, 49
+    jb      .next
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; a guest asks the host for its columns only once it is in the host's world: the role is set when the host accepts
+; it, net_in_world only at game_join, and in between the title panorama streams - asking the host then floods it
+; with requests whose answers the guest drops. So with the role GUEST and net_in_world 0 the 7 x 7 columns
+; around the player are generated locally and no COL_REQ is sent; with net_in_world 1 the columns around a
+; player who walked far away are all asked of the host (49 COL_REQ, the one he stands in first) and none is
+; generated before the host answers. -> eax 0 = pass
+test_stream_guest_local_until_joined:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    xor     ebx, ebx                    ; 0 = pass
+    movzx   r13d, byte [net_role]
+    movzx   r14d, byte [net_in_world]
+    mov     eax, [net_colv_pending]
+    mov     [gj_pend], eax
+    mov     eax, [gen_seed]
+    mov     [sv_seed], eax
+    mov     r12d, [settings + SETTINGS.render_dist]
+    mov     dword [settings + SETTINGS.render_dist], 2
+    call    world_clear
+    mov     edi, 42
+    xor     esi, esi
+    call    stream_begin                ; no world directory: nothing is read back
+    lea     rdi, [gj_cap]
+    mov     esi, GJ_CAP
+    call    net_capture                 ; nothing is sent from here on
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_in_world], 0
+    mov     edi, 8
+    mov     esi, 8
+    call    pump                        ; (a) the columns around the player are generated locally ...
+    test    eax, eax
+    jnz     .bad
+    call    count_col_req
+    test    eax, eax
+    jnz     .bad                        ;     and the host is asked about none of them
+    mov     eax, [net_colv_pending]
+    cmp     eax, [gj_pend]
+    jne     .bad
+    lea     rdi, [gj_cap]               ; (b) in the world: the count of what is recorded starts again
+    mov     esi, GJ_CAP
+    call    net_capture
+    mov     byte [net_in_world], 1
+    mov     edi, 3000                   ;     the player is 3000 cells away: the columns around column (187, 0) are unknown
+    mov     esi, 8
+    movss   xmm0, [k_one]
+    call    stream_update
+    call    count_col_req
+    cmp     eax, 49
+    jne     .bad                        ;     each one is asked of the host ...
+    cmp     byte [gj_cap + 1], MT_COL_REQ
+    jne     .bad
+    cmp     dword [gj_cap + 4], 187
+    jne     .bad
+    cmp     dword [gj_cap + 8], 0
+    jne     .bad                        ;     the one the player stands in first
+    mov     edi, 187
+    xor     esi, esi
+    mov     edx, 3
+    call    count_loaded
+    test    eax, eax
+    jnz     .bad                        ;     and none is generated before the host answers
+    jmp     .done
+.bad:
+    mov     ebx, 1
+.done:
+    xor     edi, edi                    ; the requests of both areas are forgotten again (a failing run too)
+    call    forget_area
+    mov     edi, 187
+    call    forget_area
+    mov     eax, [net_colv_pending]
+    cmp     eax, [gj_pend]
+    je      .clean
+    mov     ebx, 1
+.clean:
+    xor     edi, edi
+    xor     esi, esi
+    call    net_capture                 ; the real network again
+    mov     [net_role], r13b
+    mov     [net_in_world], r14b
+    xor     edi, edi
+    call    stream_end
     mov     edi, [sv_seed]
     call    worldgen_set_seed
     mov     [settings + SETTINGS.render_dist], r12d
