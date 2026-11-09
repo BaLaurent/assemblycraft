@@ -29,6 +29,7 @@ global net_capture, netsync_dispatch, net_ready_out, net_session_reset, net_psta
 %define CLI_PORT   4
 global net_pump_now, net_peer_rx, net_peer_addr, net_peer_replaceable
 %define SILENT_NS  3000000000           ; a guest nobody has heard of for this long is gone (its name can be taken)
+global net_join_accept_ns, net_join_timeout_check, net_wait_check
 
 ; net.asm (transport)
 extern net_ep, net_ep_open, net_ep_close, net_ep_poll, net_ep_next_event, net_ep_flush
@@ -65,6 +66,10 @@ extern file_read, file_write_atomic, mkdir_p, time_mono_ns, usleep
 %define HCLOSE_WAIT_NS  2500000000              ; a guest told "host closing" waits this long for its save ack
 %define CFG_MAX         1023
 %define JERR_LOST       100                     ; join_err: the connection died after it was accepted
+%define JERR_NOANSWER   101                     ; join_err: accepted, but the host never sent the character ...
+%define JOIN_WAIT_NS    10000000000             ; ... within this long after the accept
+%define WAIT_LOST_NS    60000000000             ; a guest that waited this long behind a loading screen ...
+%define HOST_QUIET_NS   10000000000             ; ... while the host said nothing for this long has lost the host
 %define RV_PORT_BE      (((RV_PORT & 0xFF) << 8) | (RV_PORT >> 8))
 
 ; the WORLDINFO message (84 bytes, host to guest); game.asm's WINFO is the same layout
@@ -228,6 +233,7 @@ s_e_name:     db "That name is already taken", 0
 s_e_closed:   db "The host closed the world", 0
 s_e_net:      db "Network error", 0
 s_e_lost:     db "Lost connection to the host", 0
+s_e_noanswer: db "The host did not answer", 0
 code_alphabet: db "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 %define CODE_ALPHABET_LEN 32
 align 8
@@ -325,6 +331,7 @@ net_image_valid: resd 1                         ; the saved character in net_ima
 net_step_ctr:   resd 1                          ; sim steps since the last state message
 hc_t0:          resq 1                          ; time of HOST_CLOSING
 net_pump_now:   resq 1                          ; the clock (ns) at the start of this frame's pump
+net_join_accept_ns: resq 1                      ; guest: the clock (ns) when the host accepted this join
 net_peer_rx:    resq NET_MAX_PEERS              ; host: when each guest was last heard (a delivered message), ns
 net_peer_addr:  resq NET_MAX_PEERS              ; host: the address (a NADDR) each guest connected from
 net_role:       resb 1
@@ -1275,17 +1282,36 @@ net_flush:
 
 ; netsync_dispatch(edi slot, esi type, rdx payload, ecx len): the transport's deliver function. The handler
 ; of the type gets the same arguments; an unknown type is dropped, and so is everything of the world (type
-; 20 and up) that reaches a guest before game_join: the column replies cover what it missed.
+; 20 and up) that reaches a guest before game_join: the column replies cover what it missed. While a join is
+; running and the role is not set yet, the events that wait in the transport's queue are handled before the
+; message (the transport can hand the host's first messages over in the very poll that produced NE_ACCEPTED),
+; and each message stamps when its sender was last heard (net_peer_rx).
 netsync_dispatch:
     cmp     esi, NUM_MT
     jae     .drop
-    cmp     byte [net_role], NET_ROLE_HOST
-    jne     .gate
+    cmp     byte [net_role], NET_ROLE_OFF
+    jne     .stamp
+    cmp     byte [net_join_active], 0
+    je      .gate
+    push    rdi                         ; a join is running and this peer is no guest yet: the transport may hand over
+    push    rsi                         ; the host's first messages in the very poll that produced NE_ACCEPTED. The
+    push    rdx                         ; events that wait are handled first, so the role is right when the message is
+    push    rcx
+    sub     rsp, 8
+    call    join_events
+    add     rsp, 8
+    pop     rcx
+    pop     rdx
+    pop     rsi
+    pop     rdi
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .gate
+.stamp:
     cmp     edi, NET_MAX_PEERS
     jae     .gate
-    mov     r8d, edi                    ; a host notes when it last heard each guest (a name is only taken over
-    mov     r9, [net_pump_now]          ; from a guest that has gone quiet); the handler's arguments (rdx, rcx)
-    lea     r10, [net_peer_rx]          ; stay as they are
+    mov     r8d, edi                    ; each side notes when it last heard each peer (a host: its guests, so a name is
+    mov     r9, [net_pump_now]          ; only taken over from one that has gone quiet; a guest: the host, so a loading
+    lea     r10, [net_peer_rx]          ; screen can tell it is lost); the handler's arguments (rdx, rcx) stay as they are
     mov     [r10 + r8*8], r9
 .gate:
     cmp     esi, 20
@@ -2694,6 +2720,9 @@ join_error_text:
     lea     rax, [s_e_lost]
     cmp     ebx, JERR_LOST
     je      .out
+    lea     rax, [s_e_noanswer]
+    cmp     ebx, JERR_NOANSWER
+    je      .out
     lea     rcx, [join_err_text]
     cmp     ebx, NJE_SOCKET
     jbe     .known
@@ -3000,6 +3029,8 @@ net_ready_out:
     call    net_send_to
     mov     byte [ready_sent], 1
     mov     byte [net_join_active], 0
+    mov     qword [net_cli_join], 0     ; the join is complete: the command line's --join is over (until now a failure
+                                        ; of it, even after the accept, closes the game with code 3)
     movzx   edi, byte [net_self]
     call    peer_ptr
     lea     rdi, [rax + PEER.ps]
@@ -3092,6 +3123,83 @@ host_gone:
 
 ; ---- the pump -----------------------------------------------------------------------------------
 
+; join_events(): the transport's events that are waiting are handled now, in order (see netsync_dispatch)
+join_events:
+    ENTER_N 0
+.next:
+    lea     rdi, [net_ep]
+    lea     rsi, [ev_buf]
+    call    net_ep_next_event
+    test    eax, eax
+    jz      .out
+    lea     rdi, [ev_buf]
+    call    on_event
+    jmp     .next
+.out:
+    LEAVE_N 0
+    ret
+
+; net_join_timeout_check(): guest, from the pump. A guest that the host accepted but whose character (PLAYER_IMAGE
+; or PLAYER_FRESH, which set net_join_ready) has not arrived 10 s later fails the join: a message that was lost must
+; never leave the join screen on "Downloading world..." for good. It says goodbye (the host frees the slot at once),
+; closes the socket, and the join fails with a status of its own ("The host did not answer"); a --join run exits.
+net_join_timeout_check:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .ret
+    cmp     byte [net_join_active], 0
+    je      .ret
+    cmp     dword [net_join_ready], 0
+    jne     .ret
+    cmp     byte [net_in_world], 0
+    jne     .ret
+    mov     rax, [net_pump_now]
+    sub     rax, [net_join_accept_ns]
+    mov     rcx, JOIN_WAIT_NS
+    cmp     rax, rcx
+    jle     .ret
+    sub     rsp, 8
+    lea     rdi, [net_ep]
+    xor     esi, esi
+    xor     edx, edx
+    call    net_ep_drop
+    call    ep_close_stale
+    mov     edi, JERR_NOANSWER
+    call    join_fail
+    add     rsp, 8
+.ret:
+    ret
+
+; net_wait_check(rdi t0) -> eax 1 when the multiplayer session is over, else 0. For the loading screens a guest waits
+; behind (t0: the clock, in ns, when the wait began). Besides the session having ended (net_end_reason), a guest that
+; has waited more than 60 s while nothing at all was heard from the host for 10 s has lost the host: the transport
+; still hears its keepalives, but the messages the wait needs never come. The session then ends as if the transport
+; had timed out (net_end_reason = SYS_TIMEOUT). Nothing but the reason is read offline and on a host.
+net_wait_check:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .end
+    cmp     dword [net_end_reason], 0
+    jne     .end
+    mov     rax, [net_pump_now]
+    sub     rax, rdi
+    mov     rcx, WAIT_LOST_NS
+    cmp     rax, rcx
+    jle     .end
+    mov     rax, [net_pump_now]
+    lea     rdx, [net_peer_rx]
+    sub     rax, [rdx]                  ; slot 0: when the host last said anything (netsync_dispatch)
+    mov     rcx, HOST_QUIET_NS
+    cmp     rax, rcx
+    jle     .end
+    sub     rsp, 8
+    mov     edi, SYS_TIMEOUT
+    call    host_gone
+    add     rsp, 8
+.end:
+    xor     eax, eax
+    cmp     dword [net_end_reason], 0
+    setne   al
+    ret
+
 ; on_event(rdi NETEVENT*): one event of the transport
 on_event:
     ENTER_N 1
@@ -3138,8 +3246,8 @@ on_event:
     ja      .out                        ; a guest slot is 1..7
     mov     [net_self], al
     mov     byte [net_role], NET_ROLE_GUEST
-    mov     qword [net_cli_join], 0     ; accepted: the command line's --join is done; a later failed join must not
-                                        ; close the game
+    mov     rax, [net_pump_now]         ; the join timeout counts from here
+    mov     [net_join_accept_ns], rax
     mov     dword [net_step_ctr], 0
     mov     dword [chat_count], 0
     mov     dword [chat_head], 0
@@ -3217,6 +3325,7 @@ pump_flows:
     call    log_text
     jmp     .out
 .guest:
+    call    net_join_timeout_check
     cmp     byte [host_closing], 0
     je      .out
     cmp     dword [net_end_reason], 0

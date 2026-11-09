@@ -39,6 +39,7 @@ extern net_host_open, net_host_close, net_set_pvp, net_leave, net_join_begin, ne
 extern net_ready_out, net_session_reset, net_player_save, net_died_out
 extern net_title_on, net_title_text, net_cfg_name, net_cfg_port, net_winfo, net_image, net_image_valid
 extern net_cli_host, net_cli_join, net_cli_relay, net_cli_pvp, net_join_failed, game_join
+extern net_wait_check, time_mono_ns
 
 section .rodata
 s_loading:    db "Loading world", 0
@@ -121,6 +122,8 @@ app_world_path: resb 4096               ; the directory of the world that is ope
 title_buf:      resb 256
 wait_text:      resb 160               ; "<text> N%" of the loading screen
 pano_spawn:     resd 4                 ; the panorama world's spawn cell (absolute x, y, z)
+alignb 8
+app_wait_t0:    resq 1                 ; the clock (ns) when the loading wait in progress began
 
 section .text
 
@@ -331,14 +334,15 @@ show_wait:
     pop     rbp
     ret
 
-; app_wait_net() -> eax 1 when the multiplayer session is over (a guest whose host went away: the columns it
-; waits for will never come), else 0. Pumps the network first: behind a loading screen that is what tells it.
+; app_wait_net() -> eax 1 when the multiplayer session is over (a guest whose host went away or fell silent: the
+; columns it waits for will never come), else 0. Pumps the network first: behind a loading screen that is what
+; tells it. app_wait_t0 is when the wait began (net_wait_check ends the session of a guest that waited a minute
+; and lost the host).
 app_wait_net:
     sub     rsp, 8
     call    net_pump
-    xor     eax, eax
-    cmp     dword [net_end_reason], 0
-    setne   al
+    mov     rdi, [app_wait_t0]
+    call    net_wait_check
     add     rsp, 8
     ret
 
@@ -358,6 +362,8 @@ app_wait_area:
     mov     r12, rsi                    ; centre
     xor     esi, esi
     call    show_wait
+    call    time_mono_ns
+    mov     [app_wait_t0], rax          ; (a guest that waits too long without hearing the host has lost it)
 .loop:
     call    glfwPollEvents
     mov     rdi, [app_window]

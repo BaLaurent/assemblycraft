@@ -99,6 +99,8 @@ extern test_stream_pending_edit_columns
 extern test_net_pos_roundtrip, test_net_player_image_roundtrip
 extern test_world_delete_with_players, test_net_ready_resync, test_net_host_close_boats
 extern test_net_cli_join_cleared, test_net_rejoin_takeover, test_net_wait_ends_with_session
+extern test_net_early_data_before_accepted, test_net_join_timeout, test_net_wait_host_lost
+extern test_net_cli_join_done
 extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
 extern test_net_stale_verdict, test_net_block_overflow, test_net_cont_close_retry, test_net_fire_in_column
 extern test_net_boat_double_mount, test_net_fire_guest_step, test_net_column_expiry, test_net_boat_giveback
@@ -348,6 +350,10 @@ tests:
     TEST net_cli_join_cleared
     TEST net_rejoin_takeover
     TEST net_wait_ends_with_session
+    TEST net_early_data_before_accepted
+    TEST net_join_timeout
+    TEST net_wait_host_lost
+    TEST net_cli_join_done
     TEST net_edit_queue_replay
     TEST net_column_verdict
     TEST net_container_put_seq
@@ -609,6 +615,10 @@ section .rodata
     TESTNAME net_cli_join_cleared
     TESTNAME net_rejoin_takeover
     TESTNAME net_wait_ends_with_session
+    TESTNAME net_early_data_before_accepted
+    TESTNAME net_join_timeout
+    TESTNAME net_wait_host_lost
+    TESTNAME net_cli_join_done
     TESTNAME net_edit_queue_replay
     TESTNAME net_column_verdict
     TESTNAME net_container_put_seq

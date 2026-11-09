@@ -2,14 +2,18 @@
 ; under one origin, the same point under another origin), a character's image (the first PLAYER_IMG_SIZE bytes of
 ; a header image) holds the whole character, a hosted world's directory can be deleted with the characters of its
 ; guests in it, a guest that becomes ready is brought up to date (standings, quest chain, PvP), closing the
-; multiplayer frees the boats, a --join of the command line ends with its join, and a name held by a dead
-; connection can be taken over by its player coming back.
+; multiplayer frees the boats, a --join of the command line ends with its join, a name held by a dead connection
+; can be taken over by its player coming back, a guest whose host's first messages come in the very poll of its
+; accept still joins, a join whose character never comes fails after 10 s, and a loading wait ends when the host
+; is lost.
 %include "common.inc"
 default rel
 
 global test_net_pos_roundtrip, test_net_player_image_roundtrip
 global test_world_delete_with_players, test_net_ready_resync, test_net_host_close_boats
 global test_net_cli_join_cleared, test_net_rejoin_takeover, test_net_wait_ends_with_session
+global test_net_early_data_before_accepted, test_net_join_timeout, test_net_wait_host_lost
+global test_net_cli_join_done
 
 extern net_pos_out, net_pos_in, world_origin_x, world_origin_z
 extern game_player_save, game_player_load, game_mode
@@ -23,6 +27,9 @@ extern net_cli_join, net_join_exit, net_join_failed, net_join_active, net_sessio
 extern net_join_begin, net_join_cancel
 extern net_pump_now, net_peer_rx, net_peer_addr, net_peer_replaceable
 extern app_wait_net, net_end_reason
+extern net_ep, net_ep_size, net_ep_open, net_ep_close, net_ep_poll, net_ep_next_event, net_ep_flush
+extern net_ep_accept, net_ep_join_state, usleep, i32_to_str, str_eq
+extern net_join_status, net_join_accept_ns, net_join_timeout_check, net_wait_check, net_ready_out, net_join_ready
 
 section .rodata
 align 16
@@ -1031,6 +1038,497 @@ test_net_wait_ends_with_session:
     mov     eax, 1
 .out:
     mov     [net_end_reason], ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ==============================================================================================================
+; B1: a guest whose join stalled at "Downloading world..." (the transport handed over the host's first messages in
+; the very poll that produced NE_ACCEPTED, before netsync knew it was a guest, and netsync dropped them)
+; ==============================================================================================================
+
+section .rodata
+%define NSYS_MMAP    9
+%define NSYS_MUNMAP  11
+%define T_SEC        1000000000
+s_loop_pfx:   db "127.0.0.1:", 0
+s_noanswer:   db "The host did not answer", 0
+
+section .bss
+alignb 16
+t_target:     resb 32
+t_wi:         resb 96
+t_bk_winfo:   resb 96
+
+section .text
+
+; t_noop(edi slot, esi type, rdx payload, ecx len): a deliver function that drops everything
+t_noop:
+    ret
+
+; t_ep_new() -> rax a zeroed endpoint (mmap) or 0
+t_ep_new:
+    mov     eax, NSYS_MMAP
+    xor     edi, edi
+    mov     esi, [net_ep_size]
+    add     esi, 4095
+    and     esi, -4096
+    mov     edx, 3                      ; PROT_READ | PROT_WRITE
+    mov     r10d, 0x22                  ; MAP_PRIVATE | MAP_ANONYMOUS
+    mov     r8, -1
+    xor     r9d, r9d
+    syscall
+    cmp     rax, -4096
+    jbe     .ok
+    xor     eax, eax
+.ok:
+    ret
+
+; t_ep_free(rdi ep): close it and give the memory back (a null ep is ignored)
+t_ep_free:
+    test    rdi, rdi
+    jz      .ret
+    push    rdi
+    call    net_ep_close
+    pop     rdi
+    mov     esi, [net_ep_size]
+    add     esi, 4095
+    and     esi, -4096
+    mov     eax, NSYS_MUNMAP
+    syscall
+.ret:
+    ret
+
+; test_net_early_data_before_accepted: the real transport on loopback. A host endpoint accepts the game's own
+; endpoint, and the ACCEPT is read by a poll whose deliver function drops everything, so NE_ACCEPTED waits in the
+; guest's event queue and netsync has not seen it (role off). The host's first message (WORLDINFO) then reaches
+; netsync_dispatch "early", as when the transport delivers it in the poll that produced the event: the dispatch must
+; handle the waiting events first, so the guest has its role and slot and the message is taken, not dropped - and the
+; accept's stamps (the join timeout's start, the host's last-heard time) are set.
+; rbx = the host endpoint, r12d = loops left, r13d = the answer
+test_net_early_data_before_accepted:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    COPY    t_bk_peers, net_peers, PEER_size * NET_MAX_PEERS
+    COPY    t_bk_winfo, net_winfo, 84
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    movzx   eax, byte [net_self]
+    mov     [t_bk_misc + 1], al
+    movzx   eax, byte [net_join_active]
+    mov     [t_bk_misc + 2], al
+    mov     eax, [net_join_ready]
+    mov     [t_bk_misc + 4], eax
+    mov     rax, [net_cli_join]
+    mov     [t_bk_q], rax
+    mov     rax, [net_pump_now]
+    mov     [t_bk_q + 8], rax
+    mov     rax, [net_join_accept_ns]
+    mov     [t_bk_q + 16], rax
+    lea     rax, [net_peer_rx]
+    mov     rax, [rax]
+    mov     [t_bk_q + 24], rax
+    mov     dword [net_winfo], 0
+    call    t_ep_new
+    mov     rbx, rax
+    test    rax, rax
+    jz      .fail
+    mov     rdi, rbx
+    xor     esi, esi
+    mov     edx, 1
+    call    net_ep_open                 ; the host: an ephemeral loopback port
+    test    eax, eax
+    jle     .fail
+    mov     r12d, eax
+    lea     rdi, [t_target]
+    lea     rsi, [s_loop_pfx]
+    mov     edx, 20
+    call    str_copy
+    mov     rsi, rax
+    mov     edi, r12d
+    call    i32_to_str
+    mov     byte [rax], 0               ; "127.0.0.1:<port>"
+    lea     rdi, [t_target]
+    lea     rsi, [s_bob]
+    xor     edx, edx
+    call    net_join_begin              ; the game's own endpoint joins it
+    test    eax, eax
+    jnz     .fail
+    mov     r12d, 3000
+.loop:
+    lea     rdi, [net_ep]
+    call    net_ep_flush                ; the guest's CONNECT, when it is due
+    mov     rdi, rbx
+    lea     rsi, [t_noop]
+    call    net_ep_poll                 ; the host reads it ...
+.hev:
+    mov     rdi, rbx
+    lea     rsi, [t_ev]
+    call    net_ep_next_event
+    test    eax, eax
+    jz      .hev_done
+    cmp     byte [t_ev + NETEVENT.kind], NE_CONNECT_REQ
+    jne     .hev
+    mov     rdi, rbx
+    mov     esi, 1
+    lea     rdx, [t_ev]
+    call    net_ep_accept               ; ... and accepts it into slot 1: the ACCEPT goes out
+    jmp     .hev
+.hev_done:
+    lea     rdi, [net_ep]
+    lea     rsi, [t_noop]
+    call    net_ep_poll                 ; the guest reads the ACCEPT: NE_ACCEPTED is queued, netsync has not seen it
+    lea     rdi, [net_ep]
+    call    net_ep_join_state
+    cmp     eax, NJ_CONNECTED
+    je      .accepted
+    mov     edi, 1000
+    call    usleep
+    dec     r12d
+    jnz     .loop
+    jmp     .fail
+.accepted:
+    cmp     byte [net_role], NET_ROLE_OFF
+    jne     .fail                       ; (the role is not set yet)
+    mov     qword [net_pump_now], 777777
+    WIPE    t_wi, 96
+    mov     dword [t_wi], 0x1234ABCD
+    xor     edi, edi                    ; the host's first message, delivered early
+    mov     esi, MT_WORLDINFO
+    lea     rdx, [t_wi]
+    mov     ecx, 84
+    call    netsync_dispatch
+    cmp     byte [net_role], NET_ROLE_GUEST     ; the event came first: the role and the slot ...
+    jne     .fail
+    cmp     byte [net_self], 1
+    jne     .fail
+    cmp     dword [net_winfo], 0x1234ABCD       ; ... and the message was taken, not dropped
+    jne     .fail
+    cmp     qword [net_join_accept_ns], 777777  ; the accept's stamps
+    jne     .fail
+    lea     rax, [net_peer_rx]
+    cmp     qword [rax], 777777
+    jne     .fail
+    xor     r13d, r13d
+    jmp     .restore
+.fail:
+    mov     r13d, 1
+.restore:
+    call    net_join_cancel             ; (the guest says goodbye, its socket closes)
+    mov     rdi, rbx
+    call    t_ep_free
+    COPY    net_peers, t_bk_peers, PEER_size * NET_MAX_PEERS
+    COPY    net_winfo, t_bk_winfo, 84
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    movzx   eax, byte [t_bk_misc + 1]
+    mov     [net_self], al
+    movzx   eax, byte [t_bk_misc + 2]
+    mov     [net_join_active], al
+    mov     eax, [t_bk_misc + 4]
+    mov     [net_join_ready], eax
+    mov     rax, [t_bk_q]
+    mov     [net_cli_join], rax
+    mov     rax, [t_bk_q + 8]
+    mov     [net_pump_now], rax
+    mov     rax, [t_bk_q + 16]
+    mov     [net_join_accept_ns], rax
+    mov     rax, [t_bk_q + 24]
+    lea     rcx, [net_peer_rx]
+    mov     [rcx], rax
+    mov     eax, r13d
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; jt_arm(): an accepted guest that waits for its character: role guest in slot 1, join active, no character, not in
+; the world, nothing failed, no command-line join; the host accepted it at T = 100 s
+jt_arm:
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_self], 1
+    mov     byte [net_join_active], 1
+    mov     byte [net_in_world], 0
+    mov     dword [net_join_ready], 0
+    mov     byte [net_join_failed], 0
+    mov     byte [net_join_exit], 0
+    mov     qword [net_cli_join], 0
+    mov     rax, 100 * T_SEC
+    mov     [net_join_accept_ns], rax
+    ret
+
+; test_net_join_timeout: a lost message must never leave the join screen on "Downloading world..." for good. With
+; the clock injected (net_pump_now): 10 s after the accept nothing happens yet; once the character has arrived or
+; the world is entered, never; more than 10 s without the character the join fails - role off, join over, the status
+; says "The host did not answer", and a --join of the command line exits (net_join_exit).
+test_net_join_timeout:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    COPY    t_bk_peers, net_peers, PEER_size * NET_MAX_PEERS
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    movzx   eax, byte [net_self]
+    mov     [t_bk_misc + 1], al
+    movzx   eax, byte [net_join_active]
+    mov     [t_bk_misc + 2], al
+    movzx   eax, byte [net_in_world]
+    mov     [t_bk_misc + 3], al
+    mov     eax, [net_join_ready]
+    mov     [t_bk_misc + 4], eax
+    movzx   eax, byte [net_join_failed]
+    mov     [t_bk_misc + 8], al
+    movzx   eax, byte [net_join_exit]
+    mov     [t_bk_misc + 9], al
+    mov     rax, [net_join_accept_ns]
+    mov     [t_bk_q], rax
+    mov     rax, [net_pump_now]
+    mov     [t_bk_q + 8], rax
+    mov     rax, [net_cli_join]
+    mov     [t_bk_q + 16], rax
+    call    jt_arm                              ; exactly 10 s after the accept: not yet (it takes more)
+    mov     rax, 110 * T_SEC
+    mov     [net_pump_now], rax
+    call    net_join_timeout_check
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .fail
+    cmp     byte [net_join_failed], 0
+    jne     .fail
+    mov     dword [net_join_ready], 1           ; the character has arrived: 100 s later nothing happens
+    mov     rax, 200 * T_SEC
+    mov     [net_pump_now], rax
+    call    net_join_timeout_check
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .fail
+    mov     dword [net_join_ready], 0           ; the world is entered: neither
+    mov     byte [net_in_world], 1
+    call    net_join_timeout_check
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .fail
+    call    jt_arm                              ; 10.1 s and no character: the join fails
+    mov     rax, 110100000000
+    mov     [net_pump_now], rax
+    call    net_join_timeout_check
+    cmp     byte [net_role], NET_ROLE_OFF
+    jne     .fail
+    cmp     byte [net_join_failed], 1
+    jne     .fail
+    cmp     byte [net_join_active], 0
+    jne     .fail
+    cmp     byte [net_join_exit], 0             ; (a join of the join screen: the game goes on)
+    jne     .fail
+    call    net_join_status
+    mov     rdi, rax
+    lea     rsi, [s_noanswer]
+    call    str_eq
+    cmp     eax, 1
+    jne     .fail
+    call    jt_arm                              ; the same for the command line's --join: it exits
+    lea     rax, [t_bad]
+    mov     [net_cli_join], rax
+    mov     rax, 110100000000
+    mov     [net_pump_now], rax
+    call    net_join_timeout_check
+    cmp     byte [net_join_failed], 1
+    jne     .fail
+    cmp     byte [net_join_exit], 1
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+.restore:
+    call    net_session_reset
+    COPY    net_peers, t_bk_peers, PEER_size * NET_MAX_PEERS
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    movzx   eax, byte [t_bk_misc + 1]
+    mov     [net_self], al
+    movzx   eax, byte [t_bk_misc + 2]
+    mov     [net_join_active], al
+    movzx   eax, byte [t_bk_misc + 3]
+    mov     [net_in_world], al
+    mov     eax, [t_bk_misc + 4]
+    mov     [net_join_ready], eax
+    movzx   eax, byte [t_bk_misc + 8]
+    mov     [net_join_failed], al
+    movzx   eax, byte [t_bk_misc + 9]
+    mov     [net_join_exit], al
+    mov     rax, [t_bk_q]
+    mov     [net_join_accept_ns], rax
+    mov     rax, [t_bk_q + 8]
+    mov     [net_pump_now], rax
+    mov     rax, [t_bk_q + 16]
+    mov     [net_cli_join], rax
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_wait_host_lost: behind a loading screen a guest whose host fell silent must not wait for ever, though the
+; transport still hears keepalives. net_wait_check(t0) with the clock injected: before a minute of waiting nothing; a
+; minute in while the host spoke 5 s ago nothing; a minute in with the host silent for 11 s the host is lost
+; (net_end_reason = SYS_TIMEOUT, 1 back); a reason that is there stays; a host and an offline player never lose
+; themselves. The guest's last-heard stamp of the host comes from netsync_dispatch.
+test_net_wait_host_lost:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    mov     eax, [net_end_reason]
+    mov     [t_bk_misc + 4], eax
+    mov     rax, [net_pump_now]
+    mov     [t_bk_q], rax
+    lea     rax, [net_peer_rx]
+    mov     rax, [rax]
+    mov     [t_bk_q + 8], rax
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     dword [net_end_reason], 0
+    mov     rax, 1059 * T_SEC                   ; 59 s into the wait, the host silent for ages: not yet
+    mov     [net_pump_now], rax
+    lea     rdx, [net_peer_rx]
+    mov     qword [rdx], 0
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    test    eax, eax
+    jnz     .fail
+    mov     rax, 1061 * T_SEC                   ; 61 s in, the host spoke 5 s ago: the wait goes on
+    mov     [net_pump_now], rax
+    mov     rcx, 1056 * T_SEC
+    lea     rdx, [net_peer_rx]
+    mov     [rdx], rcx
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [net_end_reason], 0
+    jne     .fail
+    mov     rcx, 1050 * T_SEC                   ; 61 s in, the host silent for 11 s: lost
+    lea     rdx, [net_peer_rx]
+    mov     [rdx], rcx
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [net_end_reason], SYS_TIMEOUT
+    jne     .fail
+    mov     dword [net_end_reason], SYS_HOST_CLOSED     ; a reason that is there stays
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [net_end_reason], SYS_HOST_CLOSED
+    jne     .fail
+    mov     dword [net_end_reason], 0           ; a host never loses itself, an offline player neither
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    test    eax, eax
+    jnz     .fail
+    mov     byte [net_role], NET_ROLE_OFF
+    mov     rdi, 1000 * T_SEC
+    call    net_wait_check
+    test    eax, eax
+    jnz     .fail
+    cmp     dword [net_end_reason], 0
+    jne     .fail
+    mov     byte [net_role], NET_ROLE_GUEST     ; what feeds it: a message from the host stamps slot 0
+    mov     rax, 5000 * T_SEC
+    mov     [net_pump_now], rax
+    xor     edi, edi
+    mov     esi, MT_SAVE_ACK                    ; (a message a guest's handler takes without any side effect that lasts)
+    xor     edx, edx
+    xor     ecx, ecx
+    call    netsync_dispatch
+    lea     rax, [net_peer_rx]
+    mov     rdx, 5000 * T_SEC
+    cmp     [rax], rdx
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+.restore:
+    call    net_session_reset                   ; (the save ack of the last step goes with the session)
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    mov     eax, [t_bk_misc + 4]
+    mov     [net_end_reason], eax
+    mov     rax, [t_bk_q]
+    mov     [net_pump_now], rax
+    mov     rax, [t_bk_q + 8]
+    lea     rcx, [net_peer_rx]
+    mov     [rcx], rax
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_cli_join_done: the command line's --join lasts until the join is complete - the world entered and READY
+; sent (net_ready_out) - not until the accept: a join that fails after the accept (no character, see
+; net_join_timeout) still closes the game with code 3, a later one never does.
+test_net_cli_join_done:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    COPY    t_bk_peers, net_peers, PEER_size * NET_MAX_PEERS
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    movzx   eax, byte [net_self]
+    mov     [t_bk_misc + 1], al
+    movzx   eax, byte [net_join_active]
+    mov     [t_bk_misc + 2], al
+    mov     rax, [net_cli_join]
+    mov     [t_bk_q], rax
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_self], 1
+    mov     byte [net_join_active], 1
+    lea     rax, [t_bad]
+    mov     [net_cli_join], rax
+    lea     rdi, [t_capbuf]
+    mov     esi, 512
+    call    net_capture
+    call    net_ready_out                       ; the world is entered: READY and a first state go to the host
+    mov     edi, MT_READY
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [net_join_active], 0           ; the join is complete ...
+    jne     .fail
+    cmp     qword [net_cli_join], 0             ; ... and so is the command line's --join
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+.restore:
+    xor     edi, edi
+    xor     esi, esi
+    call    net_capture
+    call    net_session_reset                   ; (the ready flag goes with the session)
+    COPY    net_peers, t_bk_peers, PEER_size * NET_MAX_PEERS
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    movzx   eax, byte [t_bk_misc + 1]
+    mov     [net_self], al
+    movzx   eax, byte [t_bk_misc + 2]
+    mov     [net_join_active], al
+    mov     rax, [t_bk_q]
+    mov     [net_cli_join], rax
+    mov     eax, ebx
     add     rsp, 8
     pop     rbx
     pop     rbp
