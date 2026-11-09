@@ -211,7 +211,7 @@ Units are 1/8 cell (`WEB_SUB`), screen axes, y down. Path at radius 2 cells, tie
 
 - `WEB_CELL1 28` stays; `WEB_CELL0` 9 → 8. `web_node_xy`: dx = (x · pitch) `sar` 3, dy likewise. `web_dims_tab` unchanged.
 - `web_clamp` (`:829-859`): the `imul ecx, ecx, 7` (7 cells) becomes the limit `((WEB_EXTENT − WEB_SUB) · pitch) sar 3` (220 at zoom 1, 63 at zoom 0). Fix the "17 x 17" comments (`:690-696`, `:829-830`, `:56-57`, `:225`).
-- Archetype labels (`web_draw_compass`, `:1097-1165`, zoom 1 only as today): replace the `ARCH_*` if-chain with a side table indexed a − 1: Warrior right (`x = cx + 19, y = cy − 4`), Mage below (`x = cx − w/2, y = cy + 17`), Archer above, Rogue above, Marksman above (`x = cx − w/2, y = cy − 25`). The loop runs a = 1..`NUM_ARCHETYPES`.
+- Archetype labels (`web_draw_compass`, `:1097-1165`, zoom 1 only as today): replace the `ARCH_*` if-chain with a side table indexed a − 1: Warrior and Mage below (`x = cx − w/2, y = cy + 17`; Warrior was first planned right of its node at `x = cx + 19, y = cy − 4`, changed at the mockup checkpoint because it covered the Mage's first node), Archer above, Rogue above, Marksman above (`x = cx − w/2, y = cy − 25`). The loop runs a = 1..`NUM_ARCHETYPES`.
 - Path icon (`:1250-1252`): `rpg_path_tile(.stat)`.
 - Zoom-about-mouse (`:882-914`) already scales by the pitch ratio; unchanged.
 
