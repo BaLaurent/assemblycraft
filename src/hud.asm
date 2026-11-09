@@ -62,7 +62,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.10.2  ", 0
+s_dbg_title: db "AssemblyCraft 0.10.3  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
