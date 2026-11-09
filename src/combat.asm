@@ -19,7 +19,7 @@ global combat_reset, combat_refill, combat_max_mana, combat_max_stamina, combat_
 global combat_spend, combat_pay, combat_set_guard, combat_dodge, combat_melee, combat_heavy
 global player_take_hit, combat_speed_mult, combat_crit_roll, combat_crit_mult, combat_heal
 global combat_hit_mob, combat_calc, combat_weapon_preview, combat_kb_mult, combat_player_status
-global combat_hit_player, combat_melee_player
+global combat_hit_player, combat_melee_player, combat_fang_kill, combat_fang_slot, combat_fang_t
 
 extern rpg_stats, rpg_keystones, rpg_rank, gear_powers, surv, surv_max_health, game_mode
 extern player, player_eye, player_forward, sincos_deg, rng_next
@@ -43,6 +43,7 @@ extern net_role, net_self, net_pvp, net_out, net_send_to, net_peer_body, net_pos
 %define COMBO_WINDOW   45               ; steps a hit keeps the combo alive
 %define DOT_PERIOD     30               ; steps between two burn / poison ticks the player takes
 %define BURN_STEPS     180
+%define FANG_WINDOW    180              ; steps a guest waits for the host's KILL after a Shadow Fang backstab (3 s: a slow relay's round trip and then some)
 %define CHILL_STEPS    120
 %define POISON_STEPS   240
 %define POISON_STACKS  5
@@ -139,6 +140,7 @@ combat_poison_t:      resd 1            ; > 0: poisoned, the player takes a pois
 combat_phoenix_cd:    resd 1            ; > 0: the Phoenix ring is recovering
 combat_bullseye_t:    resd 1            ; > 0: Bullseye, firearms fly true and crit more (guns.asm reads it)
 combat_fanhammer_t:   resd 1            ; > 0: Fan the Hammer, firearms fire twice as fast, rounds free (guns.asm)
+combat_fang_t:        resd 1            ; guest: > 0: the last Shadow Fang backstab may still turn out to be a kill (combat_fang_slot)
 combat_timers_end:
 combat_combo:         resd 1            ; strikes in the running combo (0..2)
 combat_hitstop:       resd 1            ; float seconds of freeze left (the game loop drains it)
@@ -149,6 +151,7 @@ combat_burn_tick:     resd 1            ; health a burn tick takes
 combat_poison_tick:   resd 1            ; health a poison tick takes per stack
 combat_dot_t:         resd 1            ; steps to the next burn / poison tick
 combat_regen_carry:   resd 1            ; float, life regeneration not yet healed
+combat_fang_slot:     resd 1            ; guest: the slot + 1 of the mob that Shadow Fang backstab hit (0 none)
 combat_zero_end:
 combat_mana:          resd 1            ; floats
 combat_stamina:       resd 1
@@ -1593,7 +1596,14 @@ combat_melee:
     test    dword [gear_powers], 1 << LP_SHADOW_FANG
     jz      .feel
     cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .fang_reset                 ; it died under the blow (offline, or at the host)
+    cmp     byte [net_role], NET_ROLE_GUEST
     jne     .feel
+    lea     eax, [r12 + 1]              ; a guest: the host's mob is not dead here yet; its KILL decides (combat_fang_kill)
+    mov     [combat_fang_slot], eax
+    mov     dword [combat_fang_t], FANG_WINDOW
+    jmp     .feel
+.fang_reset:
     mov     dword [abilities_cd + ABIL_SHADOWSTEP*4], 0    ; a backstab kill with the Shadow Fang resets Shadowstep
 .feel:
     movss   xmm0, [k_0_05]              ; hit-stop
@@ -1626,6 +1636,23 @@ combat_melee:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; combat_fang_kill(edi mob slot + 1): the host's KILL for the mob in that slot reached this guest. When it is the mob the last
+; Shadow Fang backstab hit, less than FANG_WINDOW steps ago, that backstab was a kill: Shadowstep is ready again, as
+; combat_melee does at once offline and at a host (a guest's copy of the mob is still alive when the blow lands, so it cannot
+; see it). One kill resets once; a KILL for any other mob, or after the window, changes nothing.
+combat_fang_kill:
+    test    edi, edi
+    jz      .ret
+    cmp     edi, [combat_fang_slot]
+    jne     .ret
+    cmp     dword [combat_fang_t], 0
+    jle     .ret
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP*4], 0
+    mov     dword [combat_fang_t], 0
+    mov     dword [combat_fang_slot], 0
+.ret:
     ret
 
 ; combat_heavy(edi mob, xmm0 dirx, xmm1 dirz) -> eax 1 if the heavy attack landed. Needs a held melee

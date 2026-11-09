@@ -3,14 +3,14 @@
 ; the character. Rewards are XP and coins, sometimes an item; what does not fit in the
 ; inventory is dropped at the player's feet. Each faction's trader sells from its own table
 ; (trade_open picks it); a gear item an offer sells (jewelry, weapons, armour) is rolled when it
+; is bought: a magic-or-better piece of the tier of the player's level.
 ; In multiplayer the chain is the world's, one for everybody: the host owns the position (QUEST_SYNC tells the guests), a guest
 ; asks for accepting, counting and handing in, and a hand-in rewards every connected player (QUEST_REWARD).
-; is bought: a magic-or-better piece of the tier of the player's level.
 %include "common.inc"
 default rel
 
 global quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
-global quests_pay, quests_advance, quests_reward, quests_settle, quests_bump
+global quests_pay, quests_advance, quests_reward, quests_settle, quests_bump, quests_refund
 global quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
 global trade_offer, trade_can, trade_execute, trade_open
 global trade_cur, trade_count, trade_title
@@ -18,7 +18,7 @@ global trade_cur, trade_count, trade_title
 extern rpg_state, rpg_add_xp, rpg_give_item
 extern inv_count, inv_remove_one, inv_add_dmg, drops_spawn, player, audio_play, hud_banner
 extern item_gear, gear_roll, gear_tier_for_level
-extern net_role, net_out, net_quest_sync_out
+extern net_role, net_out, net_quest_sync_out, net_give_out
 
 section .rodata.str progbits alloc noexec nowrite align=1
 
@@ -297,6 +297,25 @@ quests_advance:
 .no:
     xor     eax, eax
     add     rsp, 8
+    ret
+
+; quests_refund(edi slot, esi quest): the host did not take guest `slot`'s hand-in of quest number `quest` (a stale one: somebody
+; else was first; or the quest was not accepted): a Q_BRING quest's items, which that guest took from his inventory before
+; asking (quests_pay), go back to him (GIVE), so a second simultaneous hand-in loses nothing. A quest that takes no items, or
+; a number beyond the chain: nothing.
+quests_refund:
+    cmp     esi, NUM_QUESTS
+    jae     .none
+    imul    eax, esi, QUESTINFO_size
+    lea     rcx, [quest_tab]
+    add     rcx, rax
+    cmp     dword [rcx + QUESTINFO.type], Q_BRING
+    jne     .none
+    mov     esi, [rcx + QUESTINFO.target]
+    mov     edx, [rcx + QUESTINFO.count]
+    xor     ecx, ecx
+    jmp     net_give_out                ; (edi = the slot is in place)
+.none:
     ret
 
 ; quests_reward(edi quest): the pay of quest number `quest`: XP, coins and the item reward (what does not fit drops at the

@@ -1,10 +1,12 @@
-; test_netmisc.asm - multiplayer: the shared quest chain and faction standing, the night everybody sleeps through, and the
-; ghosts (twins) of other peers' projectiles. The network side is the capture seam (net_capture): nothing is sent; the tests
-; read back the records net_out / net_send_to / net_relay would have sent. Every test restores what it touched.
+; test_netmisc.asm - multiplayer: the shared quest chain and faction standing, the night everybody sleeps through, the
+; ghosts (twins) of other peers' projectiles, PvP with fireballs, what the host takes from a guest (the owner of a projectile,
+; a hand-in, a flood of sounds). The network side is the capture seam (net_capture): nothing is sent; the tests read back the
+; records net_out / net_send_to / net_relay would have sent. Every test restores what it touched.
 %include "common.inc"
 default rel
 
 global test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
+global test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
 
 extern net_role, net_self, net_pvp, net_applying, net_peers, net_capture, net_captured, net_pos_out
 extern rpg_state, rpg_stats, inv, inv_clear, inv_count, world_header
@@ -15,6 +17,7 @@ extern sleep_step, sleep_active, sleep_timer, sleep_fade, game_time, banner_text
 extern arrows, arrow_net, arrows_clear, arrows_spawn, arrows_step, nx_on_proj, nx_on_proj_end
 extern mobs, mobs_clear, mob_spawn, world_clear, world_set, world_get
 extern player, game_mode, surv, survival_reset
+extern nx_on_sound, nx_on_fx, nx_on_give, nx_clock_ns, fx_clear, dmgnum_clear
 
 %define SLEEP_STEPS 120                 ; sleep.asm's: steps in bed until the morning
 %define CAP_SIZE    4096
@@ -30,9 +33,16 @@ k_14:       dd 14.0
 k_m30:      dd -30.0
 k_m20:      dd -20.0
 k_nan:      dd 0x7FC00000
+k_9_4:      dd 9.4
+k_11_9:     dd 11.9
+k_3_5:      dd 3.5
+k_12:       dd 12.0
+k_4_25:     dd 4.25
 s_waiting:  db "Waiting for the others to sleep", 0
 
 section .bss
+alignb 8
+zombie_ptr:  resq 1
 alignb 16
 cap:         resb CAP_SIZE              ; the capture buffer
 peers_keep:  resb PEER_size * NET_MAX_PEERS
@@ -42,6 +52,7 @@ player_keep: resb BODY_size
 rpg_keep:    resb RPGSAVE_size
 stand_keep:  resb 24                    ; world_header.standing (16) and .champions (1)
 msg:         resb 64                    ; a message under construction
+msg2:        resb 8                     ; a message kept from the capture
 alignb 4
 role_keep:   resb 4                     ; net_role, net_self, net_pvp, net_applying
 mode_keep:   resd 1
@@ -875,6 +886,547 @@ test_net_ghost_projectile:
     lea     rdi, [inv]
     mov     ecx, INVENTORY_size
     rep     movsb
+    call    net_end
+    mov     eax, r12d
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_pvp_spells ------------------------------------------------------------------------------------------------------------
+
+; cap_slot(edi type) -> eax the slot byte of the first captured record of that type (-1: there is none)
+cap_slot:
+    xor     ecx, ecx
+    lea     r8, [cap]
+.l:
+    mov     eax, [net_captured]
+    cmp     ecx, eax
+    jae     .none
+    movzx   eax, byte [r8 + rcx + 1]
+    movzx   edx, word [r8 + rcx + 2]
+    cmp     eax, edi
+    je      .found
+    lea     ecx, [rcx + rdx + 4]
+    jmp     .l
+.found:
+    movzx   eax, byte [r8 + rcx]
+    ret
+.none:
+    mov     eax, -1
+    ret
+
+; shot(edi kind, esi flags) -> eax how many PVP_HIT records one projectile of the host player (damage 8) captured (99: no zombie).
+; It flies along -z from (16.5, 11.9, 16.5) through the peer standing at z 10.5 and on to a zombie at z 9.4, 40 steps;
+; [zombie_ptr] is the zombie and [mob_hp] its health before.
+shot:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     r12d, edi
+    mov     r13d, esi
+    call    arrows_clear
+    call    mobs_clear
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_9_4]
+    call    mob_spawn
+    test    eax, eax
+    js      .bad
+    imul    ebx, eax, MOB_size
+    lea     rax, [mobs]
+    add     rbx, rax
+    mov     [zombie_ptr], rbx
+    mov     eax, [rbx + MOB.health]
+    mov     [mob_hp], eax
+    call    cap_on
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11_9]
+    movss   xmm2, [k_16_5]
+    xorps   xmm3, xmm3
+    xorps   xmm4, xmm4
+    movss   xmm5, [k_m30]
+    xor     edi, edi                                  ; the player's
+    mov     esi, 8
+    xor     edx, edx
+    mov     ecx, r12d
+    mov     r8d, r13d
+    call    arrows_spawn
+    mov     ebx, 40
+.run:
+    call    arrows_step
+    dec     ebx
+    jnz     .run
+    mov     edi, MT_PVP_HIT
+    call    cap_count
+    jmp     .ret
+.bad:
+    mov     eax, 99
+.ret:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; PvP: a bow arrow that meets another player (guest 1, standing in its way) sends a PVP_HIT without a status. A fireball and an
+; explosive arrow do the same, burning him (STS_BURN, victim 1, attacker this player, an amount), and still burst: the zombie
+; behind him takes the blast. With PvP off none of them hits anybody.
+test_net_pvp_spells:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    net_begin
+    mov     eax, [game_mode]
+    mov     [mode_keep], eax
+    lea     rsi, [surv]
+    lea     rdi, [surv_keep]
+    mov     ecx, SURVIVAL_size
+    rep     movsb
+    lea     rsi, [player]
+    lea     rdi, [player_keep]
+    mov     ecx, BODY_size
+    rep     movsb
+    call    fixture
+    mov     dword [player + BODY.x], __float32__(3.5) ; the host player stands away from everything
+    mov     dword [player + BODY.y], __float32__(11.0)
+    mov     dword [player + BODY.z], __float32__(3.5)
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    mov     byte [net_pvp], 1
+    lea     rbx, [net_peers + PEER_size]              ; guest 1 stands in the shots' way
+    mov     dword [rbx + PEER.state], PEER_READY
+    mov     word [rbx + PEER.ps + PSTATE.flags], 0
+    mov     word [rbx + PEER.ps + PSTATE.max_health], 20
+    mov     dword [rbx + PEER.body + BODY.x], __float32__(16.5)
+    mov     dword [rbx + PEER.body + BODY.y], __float32__(11.0)
+    mov     dword [rbx + PEER.body + BODY.z], __float32__(10.5)
+    mov     edi, PROJ_ARROW                           ; a bow arrow
+    mov     esi, AF_ATTACK
+    call    shot
+    cmp     eax, 1
+    jne     .fail
+    RECORD  MT_PVP_HIT
+    EXPECT_B [rax], 1
+    EXPECT_B [rax + 2], 255                           ; no status
+    mov     edi, PROJ_FIREBALL                        ; a fireball
+    mov     esi, AF_ATTACK
+    call    shot
+    cmp     eax, 1
+    jne     .fail
+    RECORD  MT_PVP_HIT
+    EXPECT_B [rax], 1                                 ; the victim: guest 1
+    EXPECT_B [rax + 1], 0                             ; the attacker: this player
+    EXPECT_B [rax + 2], STS_BURN
+    cmp     dword [rax + 4], 1
+    jl      .fail                                     ; an amount
+    mov     rax, [zombie_ptr]
+    mov     eax, [rax + MOB.health]
+    cmp     eax, [mob_hp]
+    jge     .fail                                     ; the burst still went off
+    mov     edi, PROJ_ARROW                           ; an explosive arrow
+    mov     esi, AF_ATTACK | AF_EXPLOSIVE
+    call    shot
+    cmp     eax, 1
+    jne     .fail
+    RECORD  MT_PVP_HIT
+    EXPECT_B [rax], 1
+    EXPECT_B [rax + 2], STS_BURN
+    mov     rax, [zombie_ptr]
+    mov     eax, [rax + MOB.health]
+    cmp     eax, [mob_hp]
+    jge     .fail
+    mov     byte [net_pvp], 0                         ; PvP off: nobody is hit
+    mov     edi, PROJ_FIREBALL
+    mov     esi, AF_ATTACK
+    call    shot
+    test    eax, eax
+    jnz     .fail
+    mov     edi, PROJ_ARROW
+    mov     esi, AF_ATTACK | AF_EXPLOSIVE
+    call    shot
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     r12d, eax
+    call    dmgnum_clear
+    call    arrows_clear
+    call    mobs_clear
+    call    world_clear
+    mov     eax, [mode_keep]
+    mov     [game_mode], eax
+    lea     rsi, [surv_keep]
+    lea     rdi, [surv]
+    mov     ecx, SURVIVAL_size
+    rep     movsb
+    lea     rsi, [player_keep]
+    lea     rdi, [player]
+    mov     ecx, BODY_size
+    rep     movsb
+    call    net_end
+    mov     eax, r12d
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_quest_refund ----------------------------------------------------------------------------------------------------------
+
+; A hand-in the host refuses gives the guest back what he took for it. Two guests hand in "Iron for the Smithy" (quest 1: 8 iron
+; ingots) at once: the first is done (the chain moves on, QUEST_REWARD, nothing given back), the second is stale: no second
+; reward, a GIVE of 8 iron ingots to guest 2 (not to guest 1) and the position (QUEST_SYNC). The same when the quest was not
+; accepted (guest 3). A stale hand-in of a quest that takes no items ("Zombie Trouble") or of a number beyond the chain gives
+; nothing back. The guest that gets the GIVE has its 8 iron ingots again.
+test_net_quest_refund:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    net_begin
+    lea     rsi, [rpg_state]
+    lea     rdi, [rpg_keep]
+    mov     ecx, RPGSAVE_size
+    rep     movsb
+    lea     rsi, [inv]
+    lea     rdi, [inv_keep]
+    mov     ecx, INVENTORY_size
+    rep     movsb
+    call    inv_clear
+    mov     byte [rpg_state + RPGSAVE.level], 10      ; a bar of 220: the reward does not level up
+    mov     dword [rpg_state + RPGSAVE.xp], 0
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    call    cap_on
+    mov     byte [rpg_state + RPGSAVE.quest], 1
+    mov     byte [rpg_state + RPGSAVE.quest_state], 1
+    mov     word [rpg_state + RPGSAVE.quest_progress], 0
+    mov     byte [msg], 1
+    lea     rdx, [msg]                                ; guest 1 is first
+    mov     edi, 1
+    mov     esi, MT_QUEST_COMPLETE
+    mov     ecx, 1
+    call    nx_on_quest_complete
+    EXPECT_B [rpg_state + RPGSAVE.quest], 2
+    COUNT   MT_QUEST_REWARD, 1
+    COUNT   MT_GIVE, 0
+    lea     rdx, [msg]                                ; guest 2 is late
+    mov     edi, 2
+    mov     esi, MT_QUEST_COMPLETE
+    mov     ecx, 1
+    call    nx_on_quest_complete
+    EXPECT_B [rpg_state + RPGSAVE.quest], 2
+    COUNT   MT_QUEST_REWARD, 1                        ; no second reward
+    RECORD  MT_GIVE
+    cmp     edx, 4
+    jne     .fail
+    EXPECT_B [rax], IRON_INGOT
+    EXPECT_B [rax + 1], 8
+    cmp     word [rax + 2], 0
+    jne     .fail
+    mov     ecx, [rax]
+    mov     [msg2], ecx                               ; (kept for the guest below)
+    mov     edi, MT_GIVE
+    call    cap_slot
+    cmp     eax, 2
+    jne     .fail                                     ; to guest 2
+    RECORD  MT_QUEST_SYNC
+    call    cap_on                                    ; not accepted (guest 3)
+    mov     byte [rpg_state + RPGSAVE.quest], 1
+    mov     byte [rpg_state + RPGSAVE.quest_state], 0
+    lea     rdx, [msg]
+    mov     edi, 3
+    mov     esi, MT_QUEST_COMPLETE
+    mov     ecx, 1
+    call    nx_on_quest_complete
+    RECORD  MT_GIVE
+    EXPECT_B [rax], IRON_INGOT
+    mov     edi, MT_GIVE
+    call    cap_slot
+    cmp     eax, 3
+    jne     .fail
+    call    cap_on                                    ; a quest that takes no items
+    mov     byte [rpg_state + RPGSAVE.quest], 2
+    mov     byte [rpg_state + RPGSAVE.quest_state], 1
+    mov     byte [msg], 0                             ; "Zombie Trouble"
+    lea     rdx, [msg]
+    mov     edi, 1
+    mov     esi, MT_QUEST_COMPLETE
+    mov     ecx, 1
+    call    nx_on_quest_complete
+    COUNT   MT_GIVE, 0
+    COUNT   MT_QUEST_SYNC, 1
+    mov     byte [msg], 9                             ; a quest beyond the chain
+    lea     rdx, [msg]
+    mov     edi, 1
+    mov     esi, MT_QUEST_COMPLETE
+    mov     ecx, 1
+    call    nx_on_quest_complete
+    COUNT   MT_GIVE, 0
+    mov     byte [net_role], NET_ROLE_GUEST           ; the guest takes it back
+    mov     byte [net_self], 2
+    call    inv_clear
+    lea     rdx, [msg2]
+    xor     edi, edi
+    mov     esi, MT_GIVE
+    mov     ecx, 4
+    call    nx_on_give
+    mov     edi, IRON_INGOT
+    call    inv_count
+    cmp     eax, 8
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    lea     rsi, [rpg_keep]
+    lea     rdi, [rpg_state]
+    mov     ecx, RPGSAVE_size
+    rep     movsb
+    lea     rsi, [inv_keep]
+    lea     rdi, [inv]
+    mov     ecx, INVENTORY_size
+    rep     movsb
+    call    net_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_proj_owner ------------------------------------------------------------------------------------------------------------
+
+; PROJ_FROM owner peer, owner slot, sender slot: a PROJ for an arrow with that owner reaches this game from that connection
+%macro PROJ_FROM 3
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, PROJ_ARROW
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11_5]
+    movss   xmm2, [k_16_5]
+    xorps   xmm3, xmm3
+    xorps   xmm4, xmm4
+    movss   xmm5, [k_m30]
+    call    proj_msg
+    lea     rdx, [msg]
+    mov     edi, %3
+    mov     esi, MT_PROJ
+    mov     ecx, 36
+    call    nx_on_proj
+%endmacro
+; END_FROM owner peer, owner slot, sender slot: a PROJ_END for that projectile reaches this game from that connection
+%macro END_FROM 3
+    mov     byte [msg], %1
+    mov     byte [msg + 1], %2
+    lea     rdx, [msg]
+    mov     edi, %3
+    mov     esi, MT_PROJ_END
+    mov     ecx, 2
+    call    nx_on_proj_end
+%endmacro
+
+; The host takes a projectile (and its end) from a guest only when that guest fired it: owner peer = the sender. Guest 1's
+; own arrow makes a ghost and is passed on; guest 1 claiming guest 2's, the world's or the host's makes nothing and passes
+; nothing on; guest 2 cannot end guest 1's arrow, and guest 1 cannot end a world's; guest 1 ends its own and that is passed
+; on. A guest hears the host's word for any owner: another guest's, the world's; its own coming back is ignored; it passes
+; nothing on.
+test_net_proj_owner:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    net_begin
+    call    arrows_clear
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    call    cap_on
+    PROJ_FROM 1, 7, 1
+    call    live_count
+    cmp     eax, 1
+    jne     .fail
+    COUNT   MT_PROJ, 1                                ; passed on
+    call    cap_on
+    PROJ_FROM 2, 8, 1                                 ; guest 1 claims guest 2's arrow...
+    PROJ_FROM 255, 9, 1                               ; ...the world's...
+    PROJ_FROM 0, 10, 1                                ; ...the host's
+    call    live_count
+    cmp     eax, 1
+    jne     .fail
+    COUNT   MT_PROJ, 0
+    END_FROM 1, 7, 2                                  ; guest 2 ends guest 1's arrow
+    call    live_count
+    cmp     eax, 1
+    jne     .fail
+    END_FROM 255, 7, 1                                ; guest 1 ends a world's
+    COUNT   MT_PROJ_END, 0
+    END_FROM 1, 7, 1                                  ; guest 1 ends its own
+    call    live_count
+    test    eax, eax
+    jnz     .fail
+    COUNT   MT_PROJ_END, 1
+    mov     byte [net_role], NET_ROLE_GUEST           ; a guest hears the host's word
+    mov     byte [net_self], 3
+    call    cap_on
+    PROJ_FROM 2, 4, 0                                 ; another guest's
+    PROJ_FROM 255, 5, 0                               ; the world's
+    PROJ_FROM 3, 6, 0                                 ; its own coming back
+    call    live_count
+    cmp     eax, 2
+    jne     .fail
+    COUNT   MT_PROJ, 0
+    END_FROM 255, 5, 0
+    call    live_count
+    cmp     eax, 1
+    jne     .fail
+    END_FROM 2, 4, 0
+    call    live_count
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    arrows_clear
+    call    net_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_relay_limit -----------------------------------------------------------------------------------------------------------
+
+; sound_msg(): msg = a SOUND message (SND_POP, volume 50) at (3.5, 12, 4.25)
+sound_msg:
+    sub     rsp, 8
+    mov     byte [msg], SND_POP
+    mov     byte [msg + 1], 50
+    mov     word [msg + 2], 0
+    movss   xmm0, [k_3_5]
+    movss   xmm1, [k_12]
+    movss   xmm2, [k_4_25]
+    lea     rdi, [msg + 4]
+    call    net_pos_out
+    add     rsp, 8
+    ret
+
+; fx_msg(): msg = an FX message: an explosion of radius 3 at (3.5, 12, 4.25)
+fx_msg:
+    sub     rsp, 8
+    mov     byte [msg], FXN_EXPLOSION
+    mov     byte [msg + 1], 0
+    mov     byte [msg + 2], 0
+    mov     byte [msg + 3], 0
+    mov     dword [msg + 4], __float32__(3.0)
+    movss   xmm0, [k_3_5]
+    movss   xmm1, [k_12]
+    movss   xmm2, [k_4_25]
+    lea     rdi, [msg + 8]
+    call    net_pos_out
+    add     rsp, 8
+    ret
+
+; flood(edi sender slot, esi type, edx length): 100 copies of msg reach the host from that guest (type MT_SOUND or MT_FX)
+flood:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     eax, 100
+    mov     [rsp], eax
+.l:
+    lea     rdx, [msg]
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     ecx, r13d
+    cmp     r12d, MT_SOUND
+    jne     .fx
+    call    nx_on_sound
+    jmp     .next
+.fx:
+    call    nx_on_fx
+.next:
+    dec     dword [rsp]
+    jnz     .l
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; A guest cannot make the host pass on more sounds and effects than an honest client sends: 100 sounds in one second from guest 2
+; reach the other guests as 60 (the limit of net_sound_out), guest 3 has its own 60, and in the next second guest 2 is heard
+; again; 100 effects from guest 2 as 30, guest 3 its own 30. (A clock the test sets stands for time.)
+test_net_relay_limit:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    net_begin
+    call    fx_clear
+    mov     rax, 5000000000000                        ; second 5000: the windows start empty
+    mov     [nx_clock_ns], rax
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    call    cap_on
+    call    sound_msg
+    mov     edi, 2
+    mov     esi, MT_SOUND
+    mov     edx, 20
+    call    flood
+    COUNT   MT_SOUND, 60
+    mov     edi, 3
+    mov     esi, MT_SOUND
+    mov     edx, 20
+    call    flood
+    COUNT   MT_SOUND, 120
+    mov     rax, 5001000000000                        ; the next second
+    mov     [nx_clock_ns], rax
+    lea     rdx, [msg]
+    mov     edi, 2
+    mov     esi, MT_SOUND
+    mov     ecx, 20
+    call    nx_on_sound
+    COUNT   MT_SOUND, 121
+    call    cap_on
+    call    fx_msg
+    mov     edi, 2
+    mov     esi, MT_FX
+    mov     edx, 24
+    call    flood
+    COUNT   MT_FX, 30
+    mov     edi, 3
+    mov     esi, MT_FX
+    mov     edx, 24
+    call    flood
+    COUNT   MT_FX, 60
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     r12d, eax
+    mov     qword [nx_clock_ns], 0
+    call    fx_clear
     call    net_end
     mov     eax, r12d
     pop     r12

@@ -1687,6 +1687,12 @@ folk_fight:
     jne     .retarget
     cmp     byte [net_role], NET_ROLE_OFF
     je      .retarget
+    cmp     dword [rbx + MOB.provoked], 0
+    jle     .peer_nearest
+    cmp     dword [rbx + MOB.target], 1
+    je      .retarget                   ; provoked and already after a player: him, whoever hit it (or the first it chose); the
+                                        ; credit and the retaliation stay with that one, not with whoever stands nearest now
+.peer_nearest:
     mov     ecx, [mob_tgt_slot]         ; the nearest player: his slot is the folk's peer from now on
     mov     [rbx + MOB.peer], ecx
 .retarget:

@@ -13,6 +13,7 @@ global nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump, nx_on_quest_compl
 global nx_on_drop_spawn, nx_on_give
 global net_proj_out, net_proj_end_out, net_sound_out, net_fx_out, net_event_out, net_standing_out
 global net_faction_add_out, net_quest_sync_out, net_explosion_players, net_drop_flush, net_give_out, net_all_asleep
+global nx_clock_ns
 
 extern net_role, net_self, net_pvp, net_applying, net_peers
 extern net_out, net_send_to, net_relay, net_pos_out, net_pos_in
@@ -21,7 +22,7 @@ extern arrows, arrow_net, arrows_spawn
 extern audio_play_at, audio_play, fx_explosion, fx_burst
 extern structures_dungeon_reward, structures_boss_reward
 extern world_header, faction_add, faction_set_from_net
-extern rpg_state, quests_current, quests_accept, quests_bump, quests_settle, quests_reward
+extern rpg_state, quests_current, quests_accept, quests_bump, quests_settle, quests_reward, quests_refund
 extern drops, drops_spawn, inv_add_dmg, player
 extern explode_pvp, explode_dmg_mult, explode_base_dmg, settings
 extern time_mono_ns
@@ -104,9 +105,12 @@ c_drop_y:      dd 0.5                   ; a stack that does not fit falls this f
 c_nan:         dd 0x7FC00000            ; "no position": net_relay sends to every guest
 
 section .bss
-alignb 4
+alignb 8
+nx_clock_ns:   resq 1                   ; test seam: the clock (ns) the rate limiters read; 0 = the real one, time_mono_ns
 snd_rate:      resd 2                   ; the second, sounds sent in it
 fx_rate:       resd 2
+snd_in:        resd 2 * NET_MAX_PEERS   ; the host's limiter, per sender slot: the second, sounds taken from him in it
+fx_in:         resd 2 * NET_MAX_PEERS
 
 section .text
 
@@ -119,7 +123,11 @@ rate_ok:
     push    r13
     mov     rbx, rdi
     mov     r12d, esi
+    mov     rax, [nx_clock_ns]          ; a test sets a clock here
+    test    rax, rax
+    jnz     .clock
     call    time_mono_ns
+.clock:
     xor     edx, edx
     mov     ecx, 1000000000
     div     rcx                         ; whole seconds
@@ -275,7 +283,8 @@ net_proj_end_out:
 
 ; nx_on_proj(edi slot, esi type, rdx payload, ecx len): another peer's projectile: a ghost of it flies here (AF_GHOST: hits
 ; nothing, is never picked up, never explodes), tagged for its PROJ_END; one with the same tag (an end that got lost) is
-; replaced. The host passes it on to the other guests within 128 blocks.
+; replaced. The host takes it only from the guest who fired it (owner peer = the sender, never the world's) and passes it,
+; as it came, to the other guests within 128 blocks.
 ; rbx = the message, r12d = the sender's slot, r13d = its length, r14d = the tag; frame: position @0, net_applying @32
 nx_on_proj:
     push    rbp
@@ -299,6 +308,12 @@ nx_on_proj:
     cmp     eax, MAX_ARROWS
     jae     .ret
     movzx   ecx, byte [rbx + PROJMSG.owner_peer]
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .heard
+    cmp     ecx, r12d                   ; the host: a guest sends only what it fired itself - not another's, not the world's
+    jne     .ret
+    jmp     .tag
+.heard:                                 ; a guest hears it from the host, who vouches for the owner
     cmp     ecx, 255
     je      .tag
     cmp     ecx, NET_MAX_PEERS
@@ -377,7 +392,8 @@ nx_on_proj:
     ret
 
 ; nx_on_proj_end(edi slot, esi type, rdx payload, ecx len): the owner's projectile ended: its ghost here is gone, and the
-; host tells the other guests.
+; host tells the other guests. The host takes it only from the guest who fired it (owner peer = the sender): nobody can end
+; another's projectile, or the world's.
 nx_on_proj_end:
     push    rbp
     mov     rbp, rsp
@@ -392,6 +408,12 @@ nx_on_proj_end:
     mov     r12d, edi
     movzx   eax, byte [rbx + 1]
     movzx   ecx, byte [rbx]
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .heard
+    cmp     ecx, r12d                   ; the host: a guest ends only what it fired itself
+    jne     .ret
+    jmp     .tag
+.heard:                                 ; a guest hears it from the host, who vouches for the owner
     cmp     ecx, 255
     je      .tag
     cmp     ecx, NET_MAX_PEERS
@@ -505,6 +527,17 @@ nx_on_sound:
     and     eax, 0x7FFFFFFF
     cmp     eax, BITS_Y                 ; not a number, or out of the world: dropped
     ja      .ret
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .unlimited                  ; (a guest hears the host's, which are limited at the host's end)
+    cmp     r12d, NET_MAX_PEERS
+    jae     .ret
+    lea     rdi, [snd_in]
+    lea     rdi, [rdi + r12*8]
+    mov     esi, SOUND_RATE
+    call    rate_ok
+    test    eax, eax
+    jz      .ret                        ; more than an honest client sends: not played, not passed on
+.unlimited:
     lea     rdi, [rbx + SNDMSG.pos]
     call    net_pos_in
     movss   [rsp], xmm0
@@ -634,6 +667,17 @@ nx_on_fx:
     and     eax, 0x7FFFFFFF
     cmp     eax, BITS_Y
     ja      .ret
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .unlimited                  ; (a guest hears the host's, which are limited at the host's end)
+    cmp     r12d, NET_MAX_PEERS
+    jae     .ret
+    lea     rdi, [fx_in]
+    lea     rdi, [rdi + r12*8]
+    mov     esi, FX_RATE
+    call    rate_ok
+    test    eax, eax
+    jz      .ret                        ; more than an honest client sends: not drawn, not passed on
+.unlimited:
     lea     rdi, [rbx + FXMSG.pos]
     call    net_pos_in
     movss   [rsp], xmm0
@@ -896,14 +940,19 @@ nx_on_quest_bump:
 
 ; nx_on_quest_complete(edi slot, esi type, rdx payload, ecx len): a guest hands in the quest. Only the one on offer, accepted,
 ; with its goal reached (a Q_BRING quest's items were taken from his inventory, which only he can show) is done: the chain
-; moves on and every player is rewarded, once (quests_settle). Anything else only gets the position back (QUEST_SYNC).
-; ebx = the quest
+; moves on and every player is rewarded, once (quests_settle). Anything else gets the position back (QUEST_SYNC) and, when
+; the quest he handed in was a Q_BRING one (a stale hand-in: somebody else was first, or it was not accepted), the items he
+; took before asking (quests_refund: GIVE), so a second simultaneous hand-in loses nothing.
+; ebx = the quest, r12d = the guest's slot
 nx_on_quest_complete:
     push    rbx
+    push    r12
+    sub     rsp, 8
     cmp     ecx, 1
     jb      .ret
     cmp     byte [net_role], NET_ROLE_HOST
     jne     .ret
+    mov     r12d, edi
     movzx   ebx, byte [rdx]
     cmp     bl, [rpg_state + RPGSAVE.quest]
     jne     .refuse
@@ -922,8 +971,13 @@ nx_on_quest_complete:
     call    quests_settle
     jmp     .ret
 .refuse:
+    mov     edi, r12d
+    mov     esi, ebx
+    call    quests_refund
     call    net_quest_sync_out
 .ret:
+    add     rsp, 8
+    pop     r12
     pop     rbx
     ret
 

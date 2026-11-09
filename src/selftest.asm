@@ -97,7 +97,9 @@ extern test_net_pos_roundtrip, test_net_player_image_roundtrip
 extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
 extern test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
 extern test_net_kill_credit, test_net_pvp_toggle
+extern test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
 extern test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
+extern test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -335,9 +337,17 @@ tests:
     TEST net_guest_hit_forward
     TEST net_kill_credit
     TEST net_pvp_toggle
+    TEST net_drop_slot63
+    TEST net_kill_authority
+    TEST net_fang_kill_reset
+    TEST net_folk_provoker_kept
     TEST net_quest_shared
     TEST net_sleep_all
     TEST net_ghost_projectile
+    TEST net_pvp_spells
+    TEST net_quest_refund
+    TEST net_proj_owner
+    TEST net_relay_limit
     dq 0
 
 section .rodata
@@ -567,9 +577,17 @@ section .rodata
     TESTNAME net_guest_hit_forward
     TESTNAME net_kill_credit
     TESTNAME net_pvp_toggle
+    TESTNAME net_drop_slot63
+    TESTNAME net_kill_authority
+    TESTNAME net_fang_kill_reset
+    TESTNAME net_folk_provoker_kept
     TESTNAME net_quest_shared
     TESTNAME net_sleep_all
     TESTNAME net_ghost_projectile
+    TESTNAME net_pvp_spells
+    TESTNAME net_quest_refund
+    TESTNAME net_proj_owner
+    TESTNAME net_relay_limit
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

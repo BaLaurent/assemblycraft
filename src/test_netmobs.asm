@@ -8,6 +8,7 @@ default rel
 
 global test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
 global test_net_kill_credit, test_net_pvp_toggle
+global test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
 
 extern net_role, net_self, net_pvp, net_applying, net_hit_peer, net_peers, net_capture, net_captured
 extern mobs, mobs_clear, mobs_step, mob_spawn, mob_replica_init, mob_set_stun, drops, drops_clear
@@ -20,11 +21,14 @@ extern nm_on_hit, nm_on_status, nm_on_mobfx, nm_on_kill, nm_on_hurt, nm_on_pvp_h
 extern net_nearest_target, net_players_raycast, net_hurt_send_direct, nm_on_interact
 extern world_origin_x, world_origin_z, structures_step, mob_spawn_level
 extern inv, inv_clear, inv_sel, rpg_keystones, gear_powers, combat_stamina
+extern net_drop_flush, net_pos_out, combat_melee, combat_fang_slot, combat_fang_t, abilities_cd, folk_on_player_hit
 
 %define CAP_SIZE 16384
 
 section .rodata
 align 4
+k_20_5:   dd 20.5
+k_neg1:   dd -1.0
 k_half_w: dd 0.3
 k_height: dd 1.8
 k_speed:  dd 4.317
@@ -597,7 +601,6 @@ test_net_mob_target_nearest:
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 8
     call    world_clear
     xor     edi, edi
     mov     esi, 31
@@ -879,7 +882,6 @@ test_net_mob_target_nearest:
 .out:
     call    nt_restore
     mov     eax, ebx
-    add     rsp, 8
     pop     r12
     pop     rbx
     pop     rbp
@@ -1134,6 +1136,8 @@ test_net_kill_credit:
     cmp     byte [rax + 4 + 1], 0       ; not elite
     jne     .fail
     cmp     dword [rax + 4 + 4], 1      ; level
+    jne     .fail
+    cmp     word [rax + 4 + 2], 3       ; the mob's slot + 1: slot 2
     jne     .fail
     mov     eax, [rpg_state + RPGSAVE.xp]
     cmp     eax, [saved_xp]
@@ -1499,6 +1503,423 @@ test_net_pvp_toggle:
     call    nt_restore
     mov     eax, ebx
     add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ==== review round 1 ================================================================================================
+
+; mk_snap63(): hurt_copy = a SNAP_DROPS payload of one record for drop slot 63: 5 stones at (5.0, 11, 5.0)
+mk_snap63:
+    sub     rsp, 8
+    lea     rdi, [hurt_copy]
+    mov     ecx, 64
+    xor     eax, eax
+    rep     stosb
+    mov     rax, 1
+    shl     rax, 63
+    mov     [hurt_copy], rax
+    mov     byte [hurt_copy + 8], 1
+    mov     byte [hurt_copy + 16 + DROPREC.slot], 63
+    mov     byte [hurt_copy + 16 + DROPREC.id], STONE
+    mov     byte [hurt_copy + 16 + DROPREC.count], 5
+    lea     rdi, [hurt_copy + 16 + DROPREC.pos]
+    movss   xmm0, [k_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_5]
+    call    net_pos_out
+    add     rsp, 8
+    ret
+
+; Drop slot 63 is a guest's staging slot (what its drops_spawn makes waits there for net_drop_flush). At a host a drop in it is an
+; ordinary drop for the host's pickup and never goes into a snapshot: with drops in slots 7 and 63 near a READY guest the
+; SNAP_DROPS lists slot 7 alone (a mask of 1 << 7, one record). At a guest a snapshot that names slot 63 (a buggy or hostile host)
+; neither fills an empty staging slot (the guest's step would send it straight back as its own DROP_SPAWN: a duplicate drop) nor
+; overwrites a toss that waits in it.
+test_net_drop_slot63:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    nt_fixture
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    mov     edi, 1
+    movss   xmm0, [k_10]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_10]
+    call    peer_ready
+    mov     byte [drops + 7 * DROP_size + DROP.id], ARROW
+    mov     byte [drops + 7 * DROP_size + DROP.count], 4
+    mov     dword [drops + 7 * DROP_size + DROP.x], __float32__(11.5)
+    mov     dword [drops + 7 * DROP_size + DROP.y], __float32__(11.0)
+    mov     dword [drops + 7 * DROP_size + DROP.z], __float32__(11.5)
+    mov     byte [drops + 63 * DROP_size + DROP.id], STONE
+    mov     byte [drops + 63 * DROP_size + DROP.count], 5
+    mov     dword [drops + 63 * DROP_size + DROP.x], __float32__(11.5)
+    mov     dword [drops + 63 * DROP_size + DROP.y], __float32__(11.0)
+    mov     dword [drops + 63 * DROP_size + DROP.z], __float32__(12.5)
+    lea     rdi, [cap_a]
+    call    capture_on
+    mov     edi, 1
+    call    nm_snap_send
+    mov     eax, [net_captured]
+    mov     [cap_a_len], eax
+    call    capture_off
+    lea     rdi, [cap_a]
+    mov     esi, [cap_a_len]
+    mov     edx, MT_SNAP_DROPS
+    xor     ecx, ecx
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax + 4 + 8], 1               ; one record ...
+    jne     .fail
+    cmp     qword [rax + 4], 1 << 7             ; ... of slot 7: the mask has no bit 63
+    jne     .fail
+    cmp     byte [rax + 4 + 16 + DROPREC.slot], 7
+    jne     .fail
+    ; the guest's game: a snapshot that names slot 63
+    call    drops_clear
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_self], 1
+    call    mk_snap63
+    xor     edi, edi
+    mov     esi, MT_SNAP_DROPS
+    lea     rdx, [hurt_copy]
+    mov     ecx, 16 + DROPREC_size
+    call    nm_on_snap_drops
+    cmp     byte [drops + 63 * DROP_size + DROP.id], 0
+    jne     .fail                               ; it cannot fill the staging slot ...
+    lea     rdi, [cap_a]
+    call    capture_on
+    call    net_drop_flush
+    mov     eax, [net_captured]
+    mov     [cap_a_len], eax
+    call    capture_off
+    cmp     dword [cap_a_len], 0
+    jne     .fail                               ; ... so nothing goes back to the host as the guest's own toss
+    mov     byte [drops + 63 * DROP_size + DROP.id], ARROW
+    mov     byte [drops + 63 * DROP_size + DROP.count], 3
+    xor     edi, edi
+    mov     esi, MT_SNAP_DROPS
+    lea     rdx, [hurt_copy]
+    mov     ecx, 16 + DROPREC_size
+    call    nm_on_snap_drops
+    cmp     byte [drops + 63 * DROP_size + DROP.id], ARROW
+    jne     .fail                               ; a toss that waits there is not overwritten ...
+    cmp     byte [drops + 63 * DROP_size + DROP.count], 3
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    nt_restore
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; mk_kill(edi mob slot + 1): pvp_pay = a KILL payload: an elite level-30 zombie, with that slot
+mk_kill:
+    mov     r8d, edi
+    lea     rdi, [pvp_pay]
+    mov     ecx, 32
+    xor     eax, eax
+    rep     stosb
+    mov     byte [pvp_pay], MOB_ZOMBIE
+    mov     byte [pvp_pay + 1], 1
+    mov     [pvp_pay + 2], r8w
+    mov     dword [pvp_pay + 4], 30
+    ret
+
+; do_kill(edi from, esi len): nm_on_kill gets pvp_pay from that sender
+do_kill:
+    sub     rsp, 8
+    mov     ecx, esi
+    lea     rdx, [pvp_pay]
+    mov     esi, MT_KILL
+    call    nm_on_kill
+    add     rsp, 8
+    ret
+
+; xp_same() -> eax 1 when nothing a KILL does has happened: the character's XP and level are what the test started with (saved_xp,
+; saved_hp) and the Shadowstep cooldown the test armed (100) is still running
+xp_same:
+    xor     eax, eax
+    mov     ecx, [rpg_state + RPGSAVE.xp]
+    cmp     ecx, [saved_xp]
+    jne     .ret
+    movzx   ecx, byte [rpg_state + RPGSAVE.level]
+    cmp     ecx, [saved_hp]
+    jne     .ret
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    jne     .ret
+    mov     eax, 1
+.ret:
+    ret
+
+; A KILL grants XP and quest progress (and a Shadow Fang backstab waiting for it gets its Shadowstep reset): only a guest takes
+; one, and only from the host. The host ignores one from guest 1, a guest ignores one that did not come from slot 0, offline there is
+; nothing to receive; from the host a type no mob has (0, 9) or a message cut short is ignored too, and the right one pays.
+test_net_kill_authority:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    nt_fixture
+    mov     eax, [rpg_state + RPGSAVE.xp]
+    mov     [saved_xp], eax
+    movzx   eax, byte [rpg_state + RPGSAVE.level]
+    mov     [saved_hp], eax
+    lea     rdi, [cap_c]
+    call    capture_on
+    mov     dword [combat_fang_slot], 6         ; a Shadow Fang backstab of the mob in slot 5 waits for its KILL ...
+    mov     dword [combat_fang_t], 30
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    mov     edi, 6                              ; ... which is the one that arrives
+    call    mk_kill
+    mov     byte [net_role], NET_ROLE_HOST      ; the host: from guest 1
+    mov     byte [net_self], 0
+    mov     edi, 1
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    mov     byte [net_role], NET_ROLE_GUEST     ; a guest: from anyone but the host
+    mov     byte [net_self], 2
+    mov     edi, 1
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    mov     byte [net_role], NET_ROLE_OFF       ; offline
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    mov     byte [net_role], NET_ROLE_GUEST     ; from the host: a type no mob has, a short message
+    mov     byte [pvp_pay], 0
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    mov     byte [pvp_pay], 9
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    mov     byte [pvp_pay], MOB_ZOMBIE
+    xor     edi, edi
+    mov     esi, 7
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jz      .fail
+    xor     edi, edi                            ; the right one
+    mov     esi, 8
+    call    do_kill
+    call    xp_same
+    test    eax, eax
+    jnz     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 0
+    call    nt_restore
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; Shadow Fang at a guest. The guest's copy of a mob it backstabs is still alive when the blow lands, so combat_melee cannot see a
+; kill: it notes the mob (slot + 1) and a window, and the KILL the host sends (it names the mob) does the Shadowstep reset
+; (combat_fang_kill). A KILL for another mob, or one after the window, resets nothing; the one that fits resets once.
+test_net_fang_kill_reset:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    nt_fixture
+    mov     dword [player + BODY.z], __float32__(12.5)
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_self], 1
+    mov     dword [gear_powers], 1 << LP_SHADOW_FANG
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    lea     rdi, [cap_c]
+    call    capture_on
+    MOBAT   5, MOB_ZOMBIE
+    mov     dword [mobs + 5 * MOB_size + MOB.health], 5
+    mov     dword [mobs + 5 * MOB_size + MOB.max_health], 20
+    mov     dword [mobs + 5 * MOB_size + MOB.level], 1
+    mov     dword [mobs + 5 * MOB_size + BODY.x], __float32__(10.5)
+    mov     dword [mobs + 5 * MOB_size + BODY.y], __float32__(11.0)
+    mov     dword [mobs + 5 * MOB_size + BODY.z], __float32__(11.5)
+    mov     dword [mobs + 5 * MOB_size + BODY.yaw], 0   ; it faces away from the player: a backstab
+    mov     edi, 5
+    xorps   xmm0, xmm0
+    movss   xmm1, [k_neg1]
+    call    combat_melee
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [combat_fang_slot], 6                 ; noted: slot 5 + 1 ...
+    jne     .fail
+    cmp     dword [combat_fang_t], 0
+    jle     .fail
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    jne     .fail                                       ; ... but not reset before the host says it died
+    mov     edi, 7                                      ; a KILL for another mob
+    call    mk_kill
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    jne     .fail
+    mov     dword [combat_fang_t], 0                    ; the window is over
+    mov     edi, 6
+    call    mk_kill
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
+    jne     .fail
+    mov     dword [combat_fang_t], 30                   ; inside the window: the mob that died is the one that was backstabbed
+    xor     edi, edi
+    mov     esi, 8
+    call    do_kill
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 0
+    jne     .fail
+    cmp     dword [combat_fang_slot], 0                 ; once
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    mov     dword [gear_powers], 0
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 0
+    call    nt_restore
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; A provoked folk goes on after the player who hit it. A bandit guard that guest 1 hit (folk_on_player_hit: peer 1, provoked, target 1)
+; stands 6 blocks from guest 1 and 2 from guest 2: it walks to guest 1 and strikes him (the first HURT goes to slot 1) and MOB.peer
+; stays 1, not the nearest player (the XP of a burning kill and the retaliation are the hitter's). A provoked ally with no player
+; target yet still picks the nearest one: guest 2.
+test_net_folk_provoker_kept:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    call    world_clear
+    xor     edi, edi
+    mov     esi, 31
+    call    nt_floor
+    call    nt_fixture
+    mov     dword [player + BODY.x], __float32__(30.5)
+    mov     dword [player + BODY.z], __float32__(30.5)
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    mov     edi, 1
+    movss   xmm0, [k_20_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_14_5]
+    call    peer_ready                          ; guest 1, the provoker: 6 blocks east of the folk
+    mov     edi, 2
+    movss   xmm0, [k_12_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_14_5]
+    call    peer_ready                          ; guest 2: 2 blocks west of it: the nearest
+    mov     edi, FAC_BANDITS
+    mov     esi, ROLE_GUARD
+    mov     edx, FCLASS_BRUTE
+    movss   xmm0, [k_14_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_14_5]
+    call    folk_spawn
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    imul    edi, ebx, MOB_size
+    lea     rax, [mobs]
+    add     rdi, rax
+    mov     dword [net_hit_peer], 1
+    call    folk_on_player_hit                  ; guest 1 hit it
+    mov     dword [net_hit_peer], 0
+    lea     rdi, [cap_a]
+    call    capture_on
+    mov     r12d, 400
+.walk:
+    call    mobs_step
+    dec     r12d
+    jnz     .walk
+    mov     eax, [net_captured]
+    mov     [cap_a_len], eax
+    call    capture_off
+    imul    ecx, ebx, MOB_size
+    lea     rax, [mobs]
+    cmp     dword [rax + rcx + MOB.peer], 1
+    jne     .fail
+    cmp     dword [rax + rcx + MOB.target], 1
+    jne     .fail
+    lea     rdi, [cap_a]
+    mov     esi, [cap_a_len]
+    mov     edx, MT_HURT
+    xor     ecx, ecx
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax], 1                       ; the first blow went to guest 1
+    jne     .fail
+    call    mobs_clear                          ; an ally: provoked, no player target yet
+    mov     edi, FAC_BANDITS
+    mov     esi, ROLE_GUARD
+    mov     edx, FCLASS_BRUTE
+    movss   xmm0, [k_9_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_11_5]
+    call    folk_spawn
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    imul    ecx, ebx, MOB_size
+    lea     rax, [mobs]
+    mov     dword [rax + rcx + MOB.provoked], 600
+    mov     r12d, 30
+.ally:
+    call    mobs_step
+    dec     r12d
+    jnz     .ally
+    imul    ecx, ebx, MOB_size
+    lea     rax, [mobs]
+    cmp     dword [rax + rcx + MOB.target], 1
+    jne     .fail
+    cmp     dword [rax + rcx + MOB.peer], 2
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    nt_restore
+    mov     eax, ebx
+    pop     r12
     pop     rbx
     pop     rbp
     ret

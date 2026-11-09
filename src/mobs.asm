@@ -38,7 +38,7 @@ extern gear_drop_from_mob
 extern folk_ai, folk_hostile, folk_class_health, folk_base_speed, folk_is_fighter
 extern folk_on_player_hit, folk_on_death, folk_drops, folk_scare, folk_travel_tick
 extern status_apply
-extern nm_ready_count, nm_centre, net_role, net_self, net_hit_peer
+extern nm_ready_count, nm_centre, net_role, net_self, net_hit_peer, net_applying
 extern net_nearest_target, net_nearest_dist2, net_mob_hit_player, net_mob_damage_out, net_kill_credit
 extern net_stream_centres, net_event_out, net_mobfx_out, stream_rdist, structures_boss_reward
 
@@ -3244,6 +3244,8 @@ mob_damage:
     je      .sound
     mov     dword [rbx + BODY.vy], __float32__(4.0)
 .sound:
+    cmp     byte [net_applying], 0
+    jne     .number                     ; a guest's blow being applied (HIT): it made this sound itself and sent it on (SOUND)
     mov     eax, [rbx + MOB.type]
     movzx   edi, byte [t_hurt + rax - 1]
     movss   xmm0, [rbx + BODY.x]
@@ -3290,7 +3292,10 @@ mob_damage:
     movzx   eax, byte [net_self]
     cmp     [rbx + MOB.peer], eax
     je      .xp_here
-    mov     edi, [rbx + MOB.peer]       ; another peer had a hand in it: the XP is his (a KILL message)
+    mov     rdi, rbx                    ; another peer had a hand in it: the XP is his (a KILL message, with this mob's slot)
+    call    mob_index
+    mov     r8d, eax
+    mov     edi, [rbx + MOB.peer]
     mov     esi, [rbx + MOB.type]
     mov     edx, [rbx + MOB.elite]
     mov     ecx, [rbx + MOB.level]

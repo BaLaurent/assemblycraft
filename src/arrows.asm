@@ -255,8 +255,9 @@ arrow_hdir:
 ; Multiplayer: a ghost (AF_GHOST, the twin of another peer's projectile) only flies and meets blocks: a plain arrow sticks
 ; for a second, anything else ends there; it never hits, explodes, sounds or is picked up. A player's own projectile also
 ; meets the other players when PvP is on (net_players_raycast; the nearest of mob, player and block wins; the blow is
-; combat_hit_player's). On the host the shots of monsters and folk meet the remote players too (net_hurt_send). A step ends
-; by telling the others which real projectiles ended (arrows_net_sweep).
+; combat_hit_player's: a fireball or an explosive arrow that meets one burns him with SRC_SPELL / SRC_RANGED_SKILL and then
+; bursts as ever, the blast sparing players). On the host the shots of monsters and folk meet the remote players too
+; (net_hurt_send). A step ends by telling the others which real projectiles ended (arrows_net_sweep).
 ; rbx = arrow, r12 = end of the table
 arrows_step:
     push    rbp
@@ -371,9 +372,9 @@ arrows_step:
     cmp     eax, PROJ_ROCKET
     je      .rocket_burst               ; a rocket goes off on the mob
     cmp     eax, PROJ_FIREBALL
-    je      .magic_burst                ; so does a fireball...
+    je      .magic_target               ; so does a fireball...
     test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
-    jnz     .magic_burst                ; ...and an explosive arrow
+    jnz     .magic_target               ; ...and an explosive arrow
     cmp     eax, PROJ_GRENADE
     je      .grenade_burst              ; ...and a grenade
     mov     r8d, [rbx + ARROWENT.flags] ; the player's weapon projectile: the damage pipeline decides
@@ -424,6 +425,25 @@ arrows_step:
 .hit_mob:
     call    combat_hit_mob
     jmp     .impact
+.magic_target:                          ; a fireball or an explosive arrow met a creature: a player (PvP) takes the hit itself,
+    mov     edi, [rsp + S_WHO]          ; as a bow arrow would (the blast that follows, like every spell's, spares players)
+    test    edi, edi
+    js      .magic_burst
+    mov     esi, SRC_SPELL              ; a fireball is a spell...
+    cmp     dword [rbx + ARROWENT.kind], PROJ_FIREBALL
+    je      .magic_hit
+    mov     esi, SRC_RANGED_SKILL       ; ...an explosive arrow a ranged skill
+.magic_hit:
+    mov     edx, ELEM_FIRE              ; both burn
+    test    dword [rbx + ARROWENT.flags], AF_CRIT
+    jz      .magic_hit_go
+    or      edx, HITF_CRIT
+.magic_hit_go:
+    cvtsi2ss xmm0, dword [rbx + ARROWENT.damage]
+    movss   xmm1, [rsp + S_H]
+    movss   xmm2, [rsp + S_H + 4]
+    call    combat_hit_player
+    jmp     .magic_burst
 .mob_shot:
     cmp     eax, OWNER_FOLK
     jb      .player_arrow               ; a monster's shot: only the player is in its way

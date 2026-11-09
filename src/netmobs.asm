@@ -23,7 +23,7 @@ extern net_role, net_self, net_pvp, net_applying, net_hit_peer, net_peers
 extern net_out, net_send_to, net_pos_out, net_pos_in
 extern player, surv, game_time
 extern combat_stealth_t, combat_attacker, combat_hit_flags
-extern player_take_hit, survival_damage, combat_player_status, combat_kb_mult
+extern player_take_hit, survival_damage, combat_player_status, combat_kb_mult, combat_fang_kill
 extern mobs, mob_hurt, mob_strike, mob_index, mob_replica_init, mob_affix_status
 extern mob_set_stun, mob_set_mark, mob_launch, mob_tgt_slot, ray_aabb
 extern status_apply_ex, rpg_on_mob_killed, dmgnum_spawn, folk_free_captive, mob_stunned_text
@@ -792,8 +792,11 @@ nm_on_pvp_hit:
 .ret0:
     ret
 
-; net_kill_credit(edi slot, esi type, edx elite, ecx level): the player in that slot killed a mob of that type, elite state
-; and level: he gets the XP (a KILL message; his own game when the slot is this game's). Host.
+; net_kill_credit(edi slot, esi type, edx elite, ecx level, r8d mob): the player in that slot killed the mob in table slot `mob`, of
+; that type, elite state and level: he gets the XP (a KILL message; his own game when the slot is this game's). Host.
+; KILL: type u8, elite u8, mob slot + 1 u16, level i32. The slot tells the killer's game which of the mobs it hit died
+; (combat_fang_kill: a Shadow Fang backstab kill resets Shadowstep, which a guest cannot see happen: its copy of the mob lives on
+; until the next snapshot).
 net_kill_credit:
     movzx   eax, byte [net_self]
     cmp     edi, eax
@@ -803,7 +806,8 @@ net_kill_credit:
     test    edx, edx
     setnz   al
     mov     [rsp + 1], al
-    mov     word [rsp + 2], 0
+    inc     r8d
+    mov     [rsp + 2], r8w
     mov     [rsp + 4], ecx
     mov     rdx, rsp
     mov     ecx, NM_KILL_LEN
@@ -819,14 +823,38 @@ net_kill_credit:
     mov     edi, eax
     jmp     rpg_on_mob_killed
 
-; nm_on_kill(edi from, esi type, rdx payload, ecx len): KILL, host -> guest: a mob this player killed died: the XP,
-; the quest count and the rest of rpg_on_mob_killed's rewards (the host's mob_damage is where the mob died)
+; nm_on_kill(edi from, esi type, rdx payload, ecx len): KILL, host -> guest: a mob this player killed died: the XP, the quest
+; count and the rest of rpg_on_mob_killed's rewards (the host's mob_damage is where the mob died). KILL: type u8, elite u8,
+; mob slot + 1 u16, level i32. A KILL grants XP and quest progress, so only a guest takes one, and only from the host (a
+; guest's one connection is slot 0): the host and a guest that hears it from elsewhere ignore it. A type no mob has is
+; ignored, the level is held to 1..1000, and the slot goes to combat_fang_kill.
 nm_on_kill:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .ret
+    test    edi, edi
+    jnz     .ret
     cmp     ecx, NM_KILL_LEN
     jb      .ret
-    movzx   edi, byte [rdx]
-    movzx   esi, byte [rdx + 1]
-    mov     edx, [rdx + 4]
+    movzx   eax, byte [rdx]
+    lea     ecx, [rax - 1]
+    cmp     ecx, NUM_MOB_TYPES - 1
+    ja      .ret
+    push    rbx
+    mov     rbx, rdx
+    movzx   edi, word [rbx + 2]
+    call    combat_fang_kill
+    movzx   edi, byte [rbx]
+    cmp     byte [rbx + 1], 0
+    setne   al
+    movzx   esi, al
+    mov     edx, [rbx + 4]
+    mov     eax, 1
+    cmp     edx, eax
+    cmovl   edx, eax
+    mov     eax, 1000
+    cmp     edx, eax
+    cmovg   edx, eax
+    pop     rbx
     jmp     rpg_on_mob_killed
 .ret:
     ret
@@ -1310,7 +1338,8 @@ snap_drops_flush:
 ; nm_snap_send(edi slot): one snapshot for the guest in that slot (host, called every SNAP_STEPS steps for each READY
 ; guest): SNAP_MOBS (time u32, mask u64 of the slots included, count u8, pad[3], MREC x count; at most 24 a message,
 ; every message repeating the whole mask; at least one message, for the time), SNAP_DROPS (mask u64, count u8,
-; pad[7], DROPREC x count; at most 45; at least one message, so that a table that emptied empties on the guest) and
+; pad[7], DROPREC x count; at most 45; at least one message, so that a table that emptied empties on the guest; slot
+; MAX_DROPS - 1 is the guest's own staging slot for its tosses and never goes into a snapshot, whatever lies in the host's) and
 ; SNAP_MISC (boat_mask u16, nboats u8, ntnt u8, BOATREC x nboats, TNTREC x ntnt). Mobs within 96 blocks of the
 ; guest's proxy are included, drops within 48, boats within 96, primed TNT within 64.
 ; ebx = slot, r12 = the guest's PEER (then a table counter), r13d = the table index, r14 = its entry, r15 = the mask;
@@ -1410,7 +1439,7 @@ nm_snap_send:
 .d_scan_next:
     add     r14, DROP_size
     inc     r13d
-    cmp     r13d, MAX_DROPS
+    cmp     r13d, MAX_DROPS - 1
     jb      .d_scan
     mov     [nm_buf], r15
     mov     qword [nm_buf + 8], 0
@@ -1447,7 +1476,7 @@ nm_snap_send:
 .drop_next:
     add     r14, DROP_size
     inc     r13d
-    cmp     r13d, MAX_DROPS
+    cmp     r13d, MAX_DROPS - 1
     jb      .drop
     cmp     dword [nm_cnt], 0
     jne     .drop_last
@@ -1818,7 +1847,8 @@ nm_on_snap_mobs:
 
 ; nm_on_snap_drops(edi from, esi type, rdx payload, ecx len): SNAP_DROPS, host -> guest: the drops of the mask are written
 ; into the drop table (a new one starts on its target; delay 9999: no pickup here: the host decides who gets an item); the
-; others are emptied, but for slot 63, where this guest's own tosses wait for their message
+; others are emptied. Slot MAX_DROPS - 1 (63) is this guest's staging slot, where its own tosses wait for their DROP_SPAWN: a
+; record that names it is ignored and it is never emptied, so what the host sends can neither fill it nor take it back.
 ; rbx = payload, r12d = records left, r13 = the record being read; frame: [rsp] its slot, [rsp+4] 1 for a new drop
 nm_on_snap_drops:
     cmp     byte [net_role], NET_ROLE_GUEST
@@ -1845,7 +1875,7 @@ nm_on_snap_drops:
     test    r12d, r12d
     jz      .clear
     movzx   eax, byte [r13 + DROPREC.slot]
-    cmp     eax, MAX_DROPS
+    cmp     eax, MAX_DROPS - 1
     jae     .next
     movzx   ecx, byte [r13 + DROPREC.id]
     test    ecx, ecx

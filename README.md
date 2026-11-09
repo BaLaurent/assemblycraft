@@ -6,15 +6,16 @@ A Minecraft-like voxel sandbox written **entirely in x86-64 NASM assembly** — 
 
 ## What's in it
 
-~98k lines of assembly across 94 source files in `src/`:
+~140k lines of assembly across 110 source files in `src/` (plus the rendezvous server in `server/`):
 
 - **World**: infinite streamed terrain, climate-based biomes (taiga, savanna, shores, birch forests…), caves, ravines, lava, ores, villages, dungeons and other generated structures
 - **Gameplay**: Creative and Survival modes, crafting, furnaces, chests, inventory, day/night and sleeping, fire and explosions
 - **Combat & RPG**: mobs, melee, bows and firearms (with attachments), abilities, a shared skill web with five archetypes (Warrior, Mage, Marksman, Rogue, Archer), gear, quests, factions
 - **Debug menu**: press `F12` three times while playing for a tabbed menu (Player, Items, Enemies, World) to change stats and levels, give items, spawn mobs, set the time, teleport and more; opening it marks the world as cheated for good (a red `CHEATER` tag in the world list, a `[C]` in the HUD and a line in the F3 overlay)
 - **Presentation**: OpenGL chunk mesher, dynamic lighting, sky, HUD, menus, procedural sound and audio
+- **Multiplayer** (0.11): up to 8 players in one world. A player hosts the world they have open (Esc, *Open to multiplayer*); friends join with a 6-letter room code (UDP hole punching through a small rendezvous server, with a relay fallback) or a direct `IP:port`. Co-op survival (shared mobs, drops, chests, boats, TNT, fire), optional PvP, chat (`T`), a player list (`Tab`), a shared quest chain and faction standing, and each guest's character is saved by the host
 - **Saves**: worlds persist to disk (`world.acw`)
-- **Tests**: a built-in selftest suite (207 tests) run by the binary itself
+- **Tests**: a built-in selftest suite run by the binary itself (`make test`)
 
 Design notes for each milestone live in `docs/superpowers/`.
 
@@ -26,8 +27,24 @@ Requirements: Linux x86-64, `nasm`, `gcc` (used only as linker), and the GLFW, O
 make          # build to build/assemblycraft
 make run      # launch the game
 make test     # run the built-in selftests
+make relay    # build the rendezvous/relay server, build/acrelay (static, no libc)
 make clean
 ```
+
+## Multiplayer
+
+The host is authoritative: it owns the world (blocks, mobs, drops, time, quests) and every guest simulates only its own player. Guests' characters are saved by the host under `<world>/players/<name>.hdr`.
+
+```sh
+# host: open the world from the pause menu, or from the command line
+build/assemblycraft --play myworld --host --name Alice [--pvp]
+# join with the room code the host sees, or a direct address (LAN / Tailscale)
+build/assemblycraft --join ABC123 --name Bob
+build/assemblycraft --join 192.168.1.20:27615 --name Bob
+build/assemblycraft --join ABC123 --name Bob --force-relay   # skip hole punching
+```
+
+`multiplayer.cfg` in the data directory keeps the name, rendezvous server (`server=ip:port`, default `93.127.163.226:27600`) and host port. Run your own server with `build/acrelay --port 27600` (`server/acrelay.service` is a systemd unit); `acrelay --probe IP:PORT` checks one and `acrelay --selftest` runs its tests. Design: `docs/superpowers/specs/2026-11-09-assemblycraft-multiplayer-design.md`.
 
 ## Status
 
