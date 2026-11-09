@@ -1531,7 +1531,7 @@ What shipped differs from the text above in these ways. The code is authoritativ
 - Containers: a guest's final CONT_PUT is retried until queued before CONT_CLOSE is sent.
 
 ### Entities, combat, progression
-- Snapshot mob records are 44 bytes (a local `MREC` with a `.mag` dword; 24 mobs per SNAP_MOBS message) because mobrender/hud read magnitudes (burn steps, windup, mark, bleed, affix, shock, captor); two extra bits carry "a folk is after a player / is provoked". `MOBREC` in common.inc is unused. SNAP_DROPS/SNAP_MISC are always sent at least once so emptied tables clear.
+- Snapshot mob records are 44 bytes (`MOBREC` in common.inc has a `.mag` dword; 24 mobs per SNAP_MOBS message) because mobrender/hud read magnitudes (burn steps, windup, mark, bleed, affix, shock, captor); two extra bits carry "a folk is after a player / is provoked". SNAP_DROPS/SNAP_MISC are always sent at least once so emptied tables clear.
 - Drop slot 63 (the guest's staging slot) is never mirrored in snapshots and ignored on apply.
 - MT_KILL is `type u8, elite u8, mob slot+1 u16, level i32`; `nm_on_kill` is guest-only and only from slot 0. `net_kill_credit` takes the mob slot in `r8d`. A guest's Shadow Fang Shadowstep reset follows that KILL.
 - A guest's own explosion reaches the host as MT_PVP_HIT (victim = peer); the host uses HURT/HM_DIRECT for its own. Powder grenades call `net_explosion_players` too.

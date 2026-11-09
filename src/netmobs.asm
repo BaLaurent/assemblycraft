@@ -29,7 +29,7 @@ extern mob_set_stun, mob_set_mark, mob_launch, mob_tgt_slot, ray_aabb
 extern status_apply_ex, rpg_on_mob_killed, dmgnum_spawn, folk_free_captive, mob_stunned_text
 extern drops, boats, boat_riding, primed, body_init, gear_rarity, boat_rider
 
-%define NM_MOBS_PER_MSG  24             ; MREC records per SNAP_MOBS (16 + 24 x 44 = 1072 <= NET_MSG_MAX)
+%define NM_MOBS_PER_MSG  24             ; MOBREC records per SNAP_MOBS (16 + 24 x 44 = 1072 <= NET_MSG_MAX)
 %define NM_DROPS_PER_MSG 45             ; DROPREC records per SNAP_DROPS
 %define NM_HIT_LEN       16
 %define NM_STATUS_LEN    12
@@ -43,27 +43,6 @@ extern drops, boats, boat_riding, primed, body_init, gear_rarity, boat_rider
 %define NM_BAR_STEPS     60             ; a guest keeps a hurt mob's health bar up this long
 %define NM_HURT_STEPS    8              ; ...and its red tint
 %define NM_BOSS_STUN     30             ; the Fallen King's stun after a parried slam (mobs.asm BOSS_STUN)
-
-; a mob on the wire (MOBREC of common.inc widened by .mag: what the tint, the plate and the damage
-; pipeline read besides the flags of .vis, packed as the MG_* below)
-struc MREC
-    .slot:       resb 1
-    .type:       resb 1
-    .faction:    resb 1
-    .role:       resb 1
-    .fclass:     resb 1
-    .fflags:     resb 1
-    .wid:        resb 1
-    .vis:        resb 1                 ; VIS_*
-    .pos:        resb NPOS_size
-    .yaw:        resd 1
-    .health:     resd 1
-    .max_health: resd 1
-    .level:      resw 1
-    .stun:       resb 1                 ; min(MOB.stun, 255)
-    .peer:       resb 1
-    .mag:        resd 1                 ; MG_*
-endstruc                                ; 44
 
 %define VIS_ELITE   1
 %define VIS_HURT    2
@@ -1181,7 +1160,7 @@ nm_on_interact:
 
 ; ==== snapshots: the host's side =====================================================================================
 
-; fill_mrec(rdi mob, rsi MREC*, edx idx): the wire record of a mob
+; fill_mrec(rdi mob, rsi MOBREC*, edx idx): the wire record of a mob
 fill_mrec:
     push    rbp
     mov     rbp, rsp
@@ -1190,19 +1169,19 @@ fill_mrec:
     sub     rsp, 16
     mov     rbx, rdi
     mov     r12, rsi
-    mov     [r12 + MREC.slot], dl
+    mov     [r12 + MOBREC.slot], dl
     mov     eax, [rbx + MOB.type]
-    mov     [r12 + MREC.type], al
+    mov     [r12 + MOBREC.type], al
     mov     al, [rbx + MOB.faction]
-    mov     [r12 + MREC.faction], al
+    mov     [r12 + MOBREC.faction], al
     mov     al, [rbx + MOB.role]
-    mov     [r12 + MREC.role], al
+    mov     [r12 + MOBREC.role], al
     mov     al, [rbx + MOB.fclass]
-    mov     [r12 + MREC.fclass], al
+    mov     [r12 + MOBREC.fclass], al
     mov     al, [rbx + MOB.fflags]
-    mov     [r12 + MREC.fflags], al
+    mov     [r12 + MOBREC.fflags], al
     mov     al, [rbx + MOB.wid]
-    mov     [r12 + MREC.wid], al
+    mov     [r12 + MOBREC.wid], al
     xor     ecx, ecx                    ; vis
     cmp     dword [rbx + MOB.elite], 0
     je      .v_hurt
@@ -1236,26 +1215,26 @@ fill_mrec:
     jle     .v_done
     or      ecx, VIS_BAR
 .v_done:
-    mov     [r12 + MREC.vis], cl
-    lea     rdi, [r12 + MREC.pos]
+    mov     [r12 + MOBREC.vis], cl
+    lea     rdi, [r12 + MOBREC.pos]
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
     movss   xmm2, [rbx + BODY.z]
     call    net_pos_out
     mov     eax, [rbx + BODY.yaw]
-    mov     [r12 + MREC.yaw], eax
+    mov     [r12 + MOBREC.yaw], eax
     mov     eax, [rbx + MOB.health]
-    mov     [r12 + MREC.health], eax
+    mov     [r12 + MOBREC.health], eax
     mov     eax, [rbx + MOB.max_health]
-    mov     [r12 + MREC.max_health], eax
+    mov     [r12 + MOBREC.max_health], eax
     mov     eax, [rbx + MOB.level]
     CLAMP   eax, 0xFFFF
-    mov     [r12 + MREC.level], ax
+    mov     [r12 + MOBREC.level], ax
     mov     eax, [rbx + MOB.stun]
     CLAMP   eax, 255
-    mov     [r12 + MREC.stun], al
+    mov     [r12 + MOBREC.stun], al
     mov     eax, [rbx + MOB.peer]
-    mov     [r12 + MREC.peer], al
+    mov     [r12 + MOBREC.peer], al
     movzx   eax, byte [rbx + MOB.affix] ; .mag
     mov     ecx, [rbx + MOB.shock]
     and     ecx, 3
@@ -1293,7 +1272,7 @@ fill_mrec:
     jle     .m_done
     or      eax, MG_PROVOKED
 .m_done:
-    mov     [r12 + MREC.mag], eax
+    mov     [r12 + MOBREC.mag], eax
     add     rsp, 16
     pop     r12
     pop     rbx
@@ -1306,7 +1285,7 @@ snap_mobs_flush:
     sub     rsp, 8
     mov     eax, [nm_cnt]
     mov     [nm_buf + 12], al
-    imul    ecx, eax, MREC_size
+    imul    ecx, eax, MOBREC_size
     add     ecx, 16
     mov     edi, ebx
     mov     esi, MT_SNAP_MOBS
@@ -1336,7 +1315,7 @@ snap_drops_flush:
     ret
 
 ; nm_snap_send(edi slot): one snapshot for the guest in that slot (host, called every SNAP_STEPS steps for each READY
-; guest): SNAP_MOBS (time u32, mask u64 of the slots included, count u8, pad[3], MREC x count; at most 24 a message,
+; guest): SNAP_MOBS (time u32, mask u64 of the slots included, count u8, pad[3], MOBREC x count; at most 24 a message,
 ; every message repeating the whole mask; at least one message, for the time), SNAP_DROPS (mask u64, count u8,
 ; pad[7], DROPREC x count; at most 45; at least one message, so that a table that emptied empties on the guest; slot
 ; MAX_DROPS - 1 is the guest's own staging slot for its tosses and never goes into a snapshot, whatever lies in the host's) and
@@ -1397,7 +1376,7 @@ nm_snap_send:
     bt      r15, r13
     jnc     .mob_next
     mov     eax, [nm_cnt]
-    imul    eax, eax, MREC_size
+    imul    eax, eax, MOBREC_size
     lea     rsi, [nm_buf + 16]
     add     rsi, rax
     mov     rdi, r14
@@ -1590,7 +1569,7 @@ nm_snap_send:
 
 ; ==== snapshots: the guest's side ====================================================================================
 
-; apply_mrec(rdi MREC*): a guest writes one mob record of a snapshot into its mob table: the slot is (re)created when it
+; apply_mrec(rdi MOBREC*): a guest writes one mob record of a snapshot into its mob table: the slot is (re)created when it
 ; holds no mob of that type, the flags of .vis and the packed .mag become the fields the renderer, the plates and the damage
 ; pipeline read, and the position and heading become the copy's target (nm_tgt: a new copy starts on it)
 ; rbx = the mob, r12 = the record, r13d = the slot; edx = .mag, eax = .vis; frame: [rsp] 1 for a new copy
@@ -1602,10 +1581,10 @@ apply_mrec:
     push    r13
     sub     rsp, 8
     mov     r12, rdi
-    movzx   r13d, byte [r12 + MREC.slot]
+    movzx   r13d, byte [r12 + MOBREC.slot]
     cmp     r13d, MAX_MOBS
     jae     .ret
-    movzx   ecx, byte [r12 + MREC.type]
+    movzx   ecx, byte [r12 + MOBREC.type]
     lea     eax, [rcx - 1]
     cmp     eax, NUM_MOB_TYPES - 1
     ja      .ret                        ; not a mob type
@@ -1621,44 +1600,44 @@ apply_mrec:
     mov     dword [rsp], 1
 .have:
     xor     ecx, ecx
-    movzx   eax, byte [r12 + MREC.faction]
+    movzx   eax, byte [r12 + MOBREC.faction]
     cmp     eax, NUM_FACTIONS
     cmovae  eax, ecx                    ; (a value no table has a row for is held to the first)
     mov     [rbx + MOB.faction], al
-    movzx   eax, byte [r12 + MREC.role]
+    movzx   eax, byte [r12 + MOBREC.role]
     cmp     eax, NUM_ROLES
     cmovae  eax, ecx
     mov     [rbx + MOB.role], al
-    movzx   eax, byte [r12 + MREC.fclass]
+    movzx   eax, byte [r12 + MOBREC.fclass]
     cmp     eax, NUM_FCLASSES
     cmovae  eax, ecx
     mov     [rbx + MOB.fclass], al
-    mov     al, [r12 + MREC.fflags]
+    mov     al, [r12 + MOBREC.fflags]
     mov     [rbx + MOB.fflags], al
-    movzx   eax, byte [r12 + MREC.wid]
+    movzx   eax, byte [r12 + MOBREC.wid]
     cmp     eax, NUM_ITEMS
     cmovae  eax, ecx
     mov     [rbx + MOB.wid], al
-    mov     ecx, [r12 + MREC.max_health]        ; a health bar divides by the maximum: at least 1, the health within it
+    mov     ecx, [r12 + MOBREC.max_health]        ; a health bar divides by the maximum: at least 1, the health within it
     mov     edx, 1
     cmp     ecx, edx
     cmovl   ecx, edx
     mov     [rbx + MOB.max_health], ecx
-    mov     edx, [r12 + MREC.health]
+    mov     edx, [r12 + MOBREC.health]
     xor     eax, eax
     test    edx, edx
     cmovs   edx, eax
     cmp     edx, ecx
     cmovg   edx, ecx
     mov     [rbx + MOB.health], edx
-    movzx   ecx, word [r12 + MREC.level]
+    movzx   ecx, word [r12 + MOBREC.level]
     mov     [rbx + MOB.level], ecx
-    movzx   ecx, byte [r12 + MREC.stun]
+    movzx   ecx, byte [r12 + MOBREC.stun]
     mov     [rbx + MOB.stun], ecx
-    movzx   ecx, byte [r12 + MREC.peer]
+    movzx   ecx, byte [r12 + MOBREC.peer]
     mov     [rbx + MOB.peer], ecx
-    movzx   eax, byte [r12 + MREC.vis]
-    mov     edx, [r12 + MREC.mag]
+    movzx   eax, byte [r12 + MOBREC.vis]
+    mov     edx, [r12 + MOBREC.mag]
     mov     ecx, eax
     and     ecx, VIS_ELITE
     mov     [rbx + MOB.elite], ecx
@@ -1748,7 +1727,7 @@ apply_mrec:
     test    edx, MG_PROVOKED
     setnz   cl
     mov     [rbx + MOB.provoked], ecx
-    lea     rdi, [r12 + MREC.pos]
+    lea     rdi, [r12 + MOBREC.pos]
     call    net_pos_in                  ; xmm0..2 = x, y, z (local)
     mov     eax, r13d
     shl     eax, 4
@@ -1757,7 +1736,7 @@ apply_mrec:
     movss   [rcx], xmm0
     movss   [rcx + 4], xmm1
     movss   [rcx + 8], xmm2
-    movss   xmm0, [r12 + MREC.yaw]
+    movss   xmm0, [r12 + MOBREC.yaw]
     movss   xmm1, [c_lim_yaw]
     call    clamp_f                     ; a wild heading is held to +-720 degrees, a NaN to 0
     movss   [rcx + 12], xmm0
@@ -1796,7 +1775,7 @@ nm_on_snap_mobs:
     movzx   eax, byte [rbx + 12]
     cmp     eax, NM_MOBS_PER_MSG
     ja      .done
-    imul    edx, eax, MREC_size
+    imul    edx, eax, MOBREC_size
     add     edx, 16
     cmp     edx, ecx
     ja      .done                       ; cut short
@@ -1818,7 +1797,7 @@ nm_on_snap_mobs:
     jz      .clear
     mov     rdi, r13
     call    apply_mrec
-    add     r13, MREC_size
+    add     r13, MOBREC_size
     dec     r12d
     jmp     .rec
 .clear:

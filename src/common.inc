@@ -1805,7 +1805,8 @@ struc MOBREC
     .level: resw 1
     .stun: resb 1                         ; min(MOB.stun, 255)
     .peer: resb 1
-endstruc                                  ; 40
+    .mag: resd 1                          ; packed magnitudes the tint/plate read (MG_* in netmobs.asm)
+endstruc                                  ; 44
 struc DROPREC
     .slot: resb 1
     .id: resb 1
