@@ -234,7 +234,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_SHAPE_BOXES 9
 %define RECIPE_SIZE    13               ; w, h, out id, out count, cells[9] (row-major in w x h)
 %define LIGHT_SKY_FULL 0xF0             ; packed light: sky<<4 | block
-%define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER (0.10.4: 7 with REVOLVER, HUNTING_RIFLE)
+%define NUM_GUNS       7                ; gun indexes 0..6: PISTOL..ROCKET_LAUNCHER, REVOLVER, HUNTING_RIFLE (gun_index)
 
 ; a firearm stack's ITEMSTACK.dmg word = rounds loaded | attachments
 %define GUN_ROUNDS_MASK 0x00FF          ; bits 0..7: rounds loaded
@@ -581,28 +581,28 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FX_FROST        7
 
 ; ---- RPG ------------------------------------------------------------------
-%define ARCH_NONE       0               ; archetypes (the four quarters of the skill web)
+%define ARCH_NONE       0               ; archetypes (the five sectors of the skill web)
 %define ARCH_WARRIOR    1
 %define ARCH_MAGE       2
 %define ARCH_ARCHER     3
 %define ARCH_ROGUE      4
 %define ARCH_MARKSMAN   5
-%define NUM_ARCHETYPES  4
+%define NUM_ARCHETYPES  5
 %define MAX_LEVEL       50
 %define NUM_ABILITY_SLOTS 4             ; slots of the ability bar
-%define RPGX_VERSION    2
+%define RPGX_VERSION    3
 %define NODE_STAT       0               ; WEBNODE.kind
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
 %define NODE_PATH       3               ; archetype path node
-%define NUM_ABILITIES   16              ; ability id = (archetype-1)*4 + slot
+%define NUM_ABILITIES   20              ; ability id = (archetype-1)*4 + slot
 %define ABIL_GRENADE    16
 %define ABIL_BULLSEYE   17
 %define ABIL_FANHAMMER  18
 %define ABIL_FLASHBANG  19
 %define ABIL_SHADOWSTEP 12
-%define NUM_KEYSTONES   12
-%define NUM_WEB_NODES   88              ; 4 paths, 4 * 18 archetype nodes, 12 bridges
+%define NUM_KEYSTONES   15
+%define NUM_WEB_NODES   110             ; 5 paths, 5 * 18 archetype nodes, 15 bridges
 %define WEB_MAX         128             ; RPGEXT.web capacity
 %define KIT_COMMON_BIT  0x80            ; RPGEXT.kits: bit a-1 = archetype a's kit was given
 
@@ -1159,11 +1159,11 @@ struc WEBNODE
     .name:  resq 1
     .desc:  resq 1                      ; zstr or 0
     .kind:  resb 1                      ; NODE_STAT / ABILITY / KEYSTONE / PATH
-    .stat:  resb 1                      ; stat id / ability id / KS id / archetype 1..4
+    .stat:  resb 1                      ; stat id / ability id / KS id / archetype 1..5
     .max:   resb 1                      ; max rank
-    .arch:  resb 1                      ; owning archetype 1..4, 0 = bridge
+    .arch:  resb 1                      ; owning archetype 1..5, 0 = bridge
     .value: resd 1                      ; per rank
-    .x:     resb 1                      ; web cell, signed, screen axes (y down)
+    .x:     resb 1                      ; web cell in 1/WEB_SUB cell, signed, screen axes (y down)
     .y:     resb 1
     .level: resb 1                      ; level required
     .pad:   resb 5
@@ -1185,11 +1185,11 @@ endstruc
 %error "ABILINFO must be 32 bytes"
 %endif
 
-; RPG extension, stored in WORLDHDR.rpgx (version 2: the shared skill web)
+; RPG extension, stored in WORLDHDR.rpgx (version 3: the five-sector skill web)
 struc RPGEXT
     .legacy:  resb 32                   ; the 0.8..0.10.1 class ranks; always 0 now
     .attr:    resw NUM_ATTRS            ; attribute points spent
-    .version: resb 1                    ; RPGX_VERSION; 0 and 1 are migrated on load
+    .version: resb 1                    ; RPGX_VERSION; 0, 1 and 2 are migrated on load
     .kits:    resb 1                    ; bit a-1: archetype a's starting kit was given; KIT_COMMON_BIT: the common one
     .bar:     resb NUM_ABILITY_SLOTS    ; ability id + 1 per bar slot, 0 = empty
     .pad1:    resb 2

@@ -3262,7 +3262,7 @@ mask64:
     call    mobs_clear                  ; ---- Ground Slam
     call    abilities_reset
     mov     byte [rpg_state + RPGSAVE.level], 15
-    mov     byte [rpg_ext + RPGEXT.web + 4 + (ARCH_WARRIOR - 1) * 18 + 15], 1   ; Ground Slam learned...
+    mov     byte [rpg_ext + RPGEXT.web + NUM_ARCHETYPES + (ARCH_WARRIOR - 1) * 18 + 15], 1   ; Ground Slam learned...
     call    rpg_recompute
     mov     edi, 3                      ; ...and bound to bar slot 3
     mov     esi, (ARCH_WARRIOR - 1) * 4 + 3

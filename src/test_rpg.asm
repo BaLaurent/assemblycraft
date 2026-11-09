@@ -7,7 +7,7 @@ global test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_fr
 global test_rpg_save_load_validates, test_quest_chain_progress_and_rewards
 global test_trade_exchanges_items
 global test_rpg_attributes_and_respec, test_rpg_keystones_and_caps
-global test_archetype_titles
+global test_archetype_titles, test_marksman_path_and_dex
 
 extern world_clear, world_header, str_eq, fx_clear
 extern inv, inv_clear, inv_add, inv_count
@@ -17,7 +17,7 @@ extern combat_reset, combat_mana, combat_stamina
 extern banner_text
 extern rpg_state, rpg_ext, rpg_stats, rpg_keystones, rpg_reset, rpg_migrated, rpg_begin
 extern rpg_level, rpg_points, rpg_xp_need, rpg_add_xp, rpg_can_spend, rpg_spend, rpg_rank
-extern rpg_stat, rpg_recompute, rpg_clamp_stats, rpg_ability_tile
+extern rpg_stat, rpg_recompute, rpg_clamp_stats, rpg_ability_tile, rpg_path_tile
 extern rpg_web_node, rpg_web_linked, web_edges, web_edge_count
 extern rpg_ability_learned, rpg_ability_info, rpg_bar_ability
 extern rpg_archetype, rpg_archetype_ranks, rpg_archetype_name, rpg_title
@@ -45,10 +45,10 @@ extern trade_offer, trade_can, trade_execute, trade_open, trade_count
 %define KS_NONE   0xFF
 %define NOLO      -2147483648           ; no lowest / highest limit
 %define NOHI      2147483647
-%define NUM_EDGES 104
+%define NUM_EDGES 130
 
-; the node id of node n (= branch * 6 + tier, 0..17) of archetype a (1..4)
-%define WEBN(a, n) (4 + ((a) - 1) * 18 + (n))
+; the node id of node n (= branch * 6 + tier, 0..17) of archetype a (1..5)
+%define WEBN(a, n) (NUM_ARCHETYPES + ((a) - 1) * 18 + (n))
 
 section .rodata.str progbits alloc noexec nowrite align=1
 ; a stat record: label, the text of the value 7, format, icon tile
@@ -63,7 +63,7 @@ section .rodata
 
 ; a row of the plan's web, checked field by field through rpg_web_node: 24 bytes, the name, the node
 ; id, the value per rank, then kind, stat (stat id / ability id / keystone id / archetype), max
-; rank, owner, cell x, cell y, level
+; rank, owner, cell x, cell y (1/8 cell), level
 %macro EXPW 10                          ; name, node, kind, stat, max, arch, value, x, y, level
 section .rodata.str
 %%n: db %1, 0
@@ -76,48 +76,63 @@ section .rodata
 section .rodata
 align 8
 exp_web:
-    EXPW "Path of the Warrior", 0,  NODE_PATH,     ARCH_WARRIOR,    1, ARCH_WARRIOR, 0,  0, -2, 1
-    EXPW "Path of the Rogue",   3,  NODE_PATH,     ARCH_ROGUE,      1, ARCH_ROGUE,   0, -2,  0, 1
-    EXPW "Weapon Mastery",      4,  NODE_STAT,     STAT_MELEE_DMG,  5, ARCH_WARRIOR, 6, -1, -3, 1
-    EXPW "Blink",               29, NODE_ABILITY,  5,               1, ARCH_MAGE,    0,  4,  0, 4
-    EXPW "Hunter's Mark",       55, NODE_ABILITY,  11,              1, ARCH_ARCHER,  0, -4,  6, 15
-    EXPW "Assassinate",         63, NODE_KEYSTONE, KS_ASSASSINATE,  1, ARCH_ROGUE,   0, -8,  6, 30
-    EXPW "Runed Steel",         76, NODE_STAT,     STAT_ADD_FIRE,   3, 0,            1,  3, -3, 4
-    EXPW "Duelist",             87, NODE_STAT,     STAT_WEAPON_DMG, 3, 0,            5, -7, -7, 30
+    EXPW "Path of the Warrior",  0,   NODE_PATH,     ARCH_WARRIOR,    1, ARCH_WARRIOR,  0,   0, -16, 1
+    EXPW "Path of the Mage",     1,   NODE_PATH,     ARCH_MAGE,       1, ARCH_MAGE,     0,  15,  -5, 1
+    EXPW "Path of the Archer",   2,   NODE_PATH,     ARCH_ARCHER,     1, ARCH_ARCHER,   0, -15,  -5, 1
+    EXPW "Path of the Rogue",    3,   NODE_PATH,     ARCH_ROGUE,      1, ARCH_ROGUE,    0,  -9,  13, 1
+    EXPW "Path of the Marksman", 4,   NODE_PATH,     ARCH_MARKSMAN,   1, ARCH_MARKSMAN, 0,   9,  13, 1
+    EXPW "Weapon Mastery",       5,   NODE_STAT,     STAT_MELEE_DMG,  5, ARCH_WARRIOR,  6,  -9, -26, 1
+    EXPW "Blink",                30,  NODE_ABILITY,  5,               1, ARCH_MAGE,     0,  34, -11, 4
+    EXPW "Steady Aim",           41,  NODE_STAT,     STAT_RANGED_DMG, 5, ARCH_ARCHER,   8, -27,   1, 1
+    EXPW "Iron Skin",            13,  NODE_STAT,     STAT_ARMOR_BONUS, 5, ARCH_WARRIOR, 2,   0, -45, 9
+    EXPW "Blade Mastery",        63,  NODE_STAT,     STAT_MELEE_DMG,  5, ARCH_ROGUE,    8, -17,  60, 22
+    EXPW "Hunter's Mark",        56,  NODE_ABILITY,  11,              1, ARCH_ARCHER,   0, -42, -33, 15
+    EXPW "Assassinate",          64,  NODE_KEYSTONE, KS_ASSASSINATE,  1, ARCH_ROGUE,    0, -20,  68, 30
+    EXPW "Fan the Hammer",       86,  NODE_ABILITY,  ABIL_FANHAMMER,  1, ARCH_MARKSMAN, 0,  32,  43, 15
+    EXPW "Powder Keg",           94,  NODE_KEYSTONE, KS_POWDER_KEG,   1, ARCH_MARKSMAN, 0,  20,  68, 30
+    EXPW "Runed Steel",          95,  NODE_STAT,     STAT_ADD_FIRE,   3, 0,             1,  21, -29, 4
+    EXPW "Gunslinger",           109, NODE_STAT,     STAT_CRIT_DMG,   3, 0,            10,   0,  71, 30
 exp_web_end:
 
 ; the level a node of tier 0..5 asks for
 tier_level: db 1, 4, 9, 15, 22, 30
 
-; the stats of a path alone at level 1 (the former class rows), NUM_STATS dwords per archetype
+; the stats of a path alone at level 1 (the former class rows, rebalanced, and the Marksman's),
+; NUM_STATS dwords per archetype
 align 4
 exp_paths:
-    dd 24, 10,  0,  0,  5, 0,   0, 0, 120, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Warrior
+    dd 28, 10,  0,  0,  5, 0,   0, 0, 120, 0, 2, 0,   0, 0, 0, 0,  0, 0   ; Warrior
     times NUM_STATS - 18 dd 0
     dd 18,  0,  0, 10,  5, 0, 100, 4,  80, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Mage
     times NUM_STATS - 18 dd 0
-    dd 20,  0, 15,  0,  8, 0,   0, 0, 100, 0, 0, 5,   0, 0, 0, 0, 10, 0   ; Archer
+    dd 20,  0, 20,  0,  8, 0,   0, 0, 100, 0, 0, 5,   0, 0, 0, 0, 10, 0   ; Archer
     times NUM_STATS - 18 dd 0
-    dd 20,  0,  0,  0, 10, 0,   0, 0, 110, 10, 0, 5, 100, 0, 0, 0,  0, 0  ; Rogue
+    dd 24,  0,  0,  0, 10, 0,   0, 0, 110, 10, 0, 5, 100, 0, 0, 0,  0, 0  ; Rogue
     times NUM_STATS - 18 dd 0
+    dd 20,  0,  0,  0,  8, 10,  0, 0, 100, 0, 0, 0,   0, 0, 0, 0, 10, 0   ; Marksman
+    times STAT_GUN_DMG - 18 dd 0
+    dd 15, 15                                                              ; gun damage, reload speed
 
-; the twelve bridges: node, stat, value per rank, level
+; the fifteen bridges: node, stat, value per rank, level
 exp_bridges:
-    dd 76, STAT_ADD_FIRE,     1,  4    ; Runed Steel      (Warrior - Mage)
-    dd 77, STAT_MAX_MANA,    10, 15    ; Warded Plate
-    dd 78, STAT_ALL_DMG,      4, 30    ; Spellblade
-    dd 79, STAT_ADD_SHOCK,    1,  4    ; Charged Tips     (Mage - Archer)
-    dd 80, STAT_AREA,         6, 15    ; Far Sight
-    dd 81, STAT_ALL_DMG,      4, 30    ; Starshot
-    dd 82, STAT_BLEED_CHANCE, 6,  4    ; Barbed Shafts    (Archer - Rogue)
-    dd 83, STAT_MOVE_SPEED,   3, 15    ; Light Step
-    dd 84, STAT_ATTACK_SPEED, 4, 30    ; Skirmisher
-    dd 85, STAT_CRIT_CHANCE,  2,  4    ; Riposte Edge     (Rogue - Warrior)
-    dd 86, STAT_THORNS,       2, 15    ; Scarred Hide
-    dd 87, STAT_WEAPON_DMG,   5, 30    ; Duelist
+    dd 95,  STAT_ADD_FIRE,     1,  4    ; Runed Steel         (Warrior - Mage)
+    dd 96,  STAT_MAX_MANA,    10, 15    ; Warded Plate
+    dd 97,  STAT_ALL_DMG,      4, 30    ; Spellblade
+    dd 98,  STAT_FIRE_DMG,     6,  4    ; Alchemist's Powder  (Mage - Marksman)
+    dd 99,  STAT_AREA,         6, 15    ; Far Sight
+    dd 100, STAT_ALL_DMG,      4, 30    ; Spellslinger
+    dd 101, STAT_CRIT_CHANCE,  2,  4    ; Riposte Edge        (Archer - Warrior)
+    dd 102, STAT_THORNS,       2, 15    ; Scarred Hide
+    dd 103, STAT_WEAPON_DMG,   5, 30    ; Warden
+    dd 104, STAT_BLEED_CHANCE, 6,  4    ; Barbed Shafts       (Rogue - Archer)
+    dd 105, STAT_MOVE_SPEED,   3, 15    ; Light Step
+    dd 106, STAT_ATTACK_SPEED, 4, 30    ; Skirmisher
+    dd 107, STAT_CRIT_CHANCE,  2,  4    ; Cold Read           (Marksman - Rogue)
+    dd 108, STAT_DODGE_COST,   8, 15    ; Light Fingers
+    dd 109, STAT_CRIT_DMG,    10, 30    ; Gunslinger
 exp_bridges_end:
 
-; the six pair titles: lower archetype, higher archetype, title
+; the ten pair titles: lower archetype, higher archetype, title
 align 8
 exp_pairs:
     dd 1, 2
@@ -132,6 +147,14 @@ exp_pairs:
     dq s_warden
     dd 2, 4
     dq s_nightblade
+    dd 1, 5
+    dq s_grenadier
+    dd 2, 5
+    dq s_spellslinger
+    dd 3, 5
+    dq s_sharpshooter
+    dd 4, 5
+    dq s_gunslinger
 exp_pairs_end:
 
 section .rodata
@@ -154,7 +177,7 @@ exp_stats:
     EXPS "Parry window", FMT_FLAT, 168, "+7 steps parry window"
     EXPS "Lifesteal", FMT_PCT, 169, "+7% of damage healed"
     EXPS "Cooldowns", FMT_NEGPCT, 170, "-7% cooldowns"
-    EXPS "Arrow save", FMT_PCT, 171, "+7% arrows saved"
+    EXPS "Arrow save", FMT_PCT, 171, "+7% ammo saved"
     EXPS "Dodge cost", FMT_NEGPCT, 172, "-7% dodge cost"
     EXPS "Attack speed", FMT_PCT, 237, "+7% attack speed"
     EXPS "Fire damage", FMT_PCT, 233, "+7% fire damage"
@@ -195,6 +218,7 @@ exp_abil:
     db RES_MANA, 25, 3,     RES_MANA, 20, 5,     RES_MANA, 70, 40,     RES_MANA, 35, 10       ; Mage
     db RES_STAMINA, 30, 6,  RES_STAMINA, 35, 10, RES_STAMINA, 60, 30, RES_STAMINA, 20, 8      ; Archer
     db RES_STAMINA, 25, 8,  RES_STAMINA, 40, 20, RES_STAMINA, 60, 35, RES_STAMINA, 35, 9      ; Rogue
+    db RES_STAMINA, 30, 8,  RES_STAMINA, 20, 15, RES_STAMINA, 50, 30, RES_STAMINA, 35, 12     ; Marksman
 
 align 4
 ; what each keystone alone does to a level 30 character of its class: two (stat, value) pairs
@@ -202,8 +226,8 @@ align 4
 align 4
 exp_ks:
     dd KS_NONE, 0, KS_NONE, 0                           ; Executioner
-    dd STAT_ARMOR_BONUS, 4, STAT_MOVE_SPEED, -15        ; Juggernaut
-    dd STAT_MAX_HEALTH, 73, KS_NONE, 0                  ; Bloodrage: (24 + 58) * 9 / 10
+    dd STAT_ARMOR_BONUS, 6, STAT_MOVE_SPEED, -15        ; Juggernaut: 2 (the path) + 4
+    dd STAT_MAX_HEALTH, 77, KS_NONE, 0                  ; Bloodrage: (28 + 58) * 9 / 10
     dd STAT_FROST_DMG, -50, KS_NONE, 0                  ; Inferno
     dd STAT_SPELL_DMG, 40, KS_NONE, 0                   ; Blood Magic: 10 + 30
     dd KS_NONE, 0, KS_NONE, 0                           ; Mana Shield
@@ -213,6 +237,9 @@ exp_ks:
     dd KS_NONE, 0, KS_NONE, 0                           ; Assassinate
     dd KS_NONE, 0, KS_NONE, 0                           ; Shadow Dance
     dd STAT_CRIT_DMG, -30, STAT_POISON_DMG, 50          ; Venom Blades
+    dd KS_NONE, 0, KS_NONE, 0                           ; Deadshot
+    dd KS_NONE, 0, KS_NONE, 0                           ; Quartermaster
+    dd KS_NONE, 0, KS_NONE, 0                           ; Powder Keg
 
 ; the plan's stat limits: stat, lowest value, highest value
 exp_caps:
@@ -253,6 +280,7 @@ s_warrior:  db "Warrior", 0
 s_mage:     db "Mage", 0
 s_archer:   db "Archer", 0
 s_rogue:    db "Rogue", 0
+s_marksman: db "Marksman", 0
 s_empty:    db 0
 s_title0:   db "Zombie Trouble", 0
 s_fallen:   db "The Fallen King", 0
@@ -278,6 +306,11 @@ s_duelist:  db "Duelist", 0
 s_warden:   db "Warden", 0
 s_nightblade: db "Nightblade", 0
 s_migrated: db "Classes became one grimoire: skill points refunded", 0
+s_grenadier: db "Grenadier", 0
+s_spellslinger: db "Spellslinger", 0
+s_sharpshooter: db "Sharpshooter", 0
+s_gunslinger: db "Gunslinger", 0
+s_migrated_mk: db "New Marksman path: skill points refunded", 0
 s_begin_a:  db "Open your grimoire (", 0
 s_begin_b:  db ") to choose a path", 0
 s_deepmind: db "Deep Mind", 0
@@ -323,7 +356,7 @@ section .text
 %macro HW 2
     mov     byte [HWEB + %1], %2
 %endmacro
-; a version 2 header of level %1, nothing else
+; a current-version header of level %1, nothing else
 %macro HDR_NEW 1
     xor     edi, edi
     mov     esi, %1
@@ -485,8 +518,8 @@ web_row_ok:
     pop     rbx
     ret
 
-; web_cells_ok() -> eax 0 when all NUM_WEB_NODES nodes exist, lie inside -8..8 on both axes and no
-; two share a cell
+; web_cells_ok() -> eax 0 when all NUM_WEB_NODES nodes exist, lie within -WEB_EXTENT..WEB_EXTENT (1/8
+; cell) on both axes and no two share a cell
 web_cells_ok:
     push    rbx
     push    r12
@@ -501,11 +534,11 @@ web_cells_ok:
     jz      .bad
     movsx   r12d, byte [rax + WEBNODE.x]
     movsx   r13d, byte [rax + WEBNODE.y]
-    lea     eax, [r12 + 8]
-    cmp     eax, 16
+    lea     eax, [r12 + WEB_EXTENT]
+    cmp     eax, 2 * WEB_EXTENT
     ja      .bad
-    lea     eax, [r13 + 8]
-    cmp     eax, 16
+    lea     eax, [r13 + WEB_EXTENT]
+    cmp     eax, 2 * WEB_EXTENT
     ja      .bad
     lea     r14d, [rbx + 1]                 ; j
 .j:
@@ -603,7 +636,7 @@ web_edges_ok:
     pop     rbx
     ret
 
-; web_connected_ok() -> eax 0 when every node is reached from the four paths along web_edges: a
+; web_connected_ok() -> eax 0 when every node is reached from the NUM_ARCHETYPES paths along web_edges: a
 ; breadth-first fill, repeated over the edge list until nothing more joins (leaf)
 web_connected_ok:
     lea     rdi, [web_seen]
@@ -613,7 +646,12 @@ web_connected_ok:
     mov     [rdi + rcx*8 - 8], rax
     dec     ecx
     jnz     .clear
-    mov     dword [web_seen], 0x01010101    ; the paths are the starting points
+    xor     ecx, ecx                        ; the paths are the starting points
+.seed:
+    mov     byte [rdi + rcx], 1
+    inc     ecx
+    cmp     ecx, NUM_ARCHETYPES
+    jb      .seed
 .pass:
     xor     r10d, r10d                      ; something joined in this pass
     lea     rsi, [web_edges]
@@ -647,7 +685,8 @@ web_connected_ok:
     ret
 
 ; web_nodes_ok() -> eax 0 when every node of the web is what its id says: the name, the owner (path
-; a - 1 and the 18 nodes after it belong to archetype a; the bridges to none), the kind (a path, then
+; a - 1 belongs to archetype a, and so do the 18 nodes from NUM_ARCHETYPES + (a - 1) * 18; the
+; bridges to none), the kind (a path, then
 ; per 18: stat nodes, abilities at 7 / 9 / 15, keystones at 5 / 11 / 17; the bridges are stat nodes),
 ; the max rank (1 for paths, abilities and keystones, 5 for the other former nodes, 3 for a
 ; bridge), the level of its tier (paths 1, bridges 4 / 15 / 30), the text (none for a stat node), and
@@ -674,9 +713,9 @@ web_nodes_ok:
     je      .bad
     cmp     ebx, NUM_ARCHETYPES
     jb      .path
-    cmp     ebx, 4 + NUM_ARCHETYPES * 18
+    cmp     ebx, NUM_ARCHETYPES + NUM_ARCHETYPES * 18
     jae     .bridge
-    lea     eax, [rbx - 4]
+    lea     eax, [rbx - NUM_ARCHETYPES]
     xor     edx, edx
     mov     ecx, 18
     div     ecx
@@ -756,7 +795,7 @@ web_nodes_ok:
     jne     .bad
     cmp     byte [r12 + WEBNODE.arch], 0
     jne     .bad
-    lea     eax, [rbx - (4 + NUM_ARCHETYPES * 18)]
+    lea     eax, [rbx - (NUM_ARCHETYPES + NUM_ARCHETYPES * 18)]
     xor     edx, edx
     mov     ecx, 3
     div     ecx                             ; edx = k
@@ -1063,7 +1102,7 @@ test_rpg_levels_and_points:
     HAVE    COOKED_PORKCHOP, 0              ; the common kit comes with rpg_begin
     HAVE    IRON_CHESTPLATE, 0              ; it is worn, not carried
     EXPECT_D inv + INVENTORY.armor + 4, IRON_CHESTPLATE | (1 << 8)
-    EXPECT_D surv_max_health, 24
+    EXPECT_D surv_max_health, 28
     EXPECT_D combat_stamina, __float32__(120.0) ; resources refilled to the Warrior's maximum
     ; 31 XP is the first level: points follow, health (2 more per level) and stamina are refilled
     mov     dword [surv + SURVIVAL.health], 3
@@ -1073,7 +1112,7 @@ test_rpg_levels_and_points:
     CALL0   rpg_level, 2
     EXPECT_D R_XP, 0
     CALL0   rpg_points, 1
-    EXPECT_D surv + SURVIVAL.health, 26
+    EXPECT_D surv + SURVIVAL.health, 30
     EXPECT_D combat_stamina, __float32__(120.0)
     ; left-over XP carries over: 44 for level 2, 53 given
     mov     edi, 53
@@ -1241,6 +1280,25 @@ test_rpg_levels_and_points:
     jne     .fail
 %endmacro
 
+; BRIDGEN(a, k): the node id of bridge k of archetype a (the bridge that joins a to the next archetype on the ring)
+%define BRIDGEN(a, k) (NUM_ARCHETYPES + NUM_ARCHETYPES * 18 + ((a) - 1) * 3 + (k))
+
+; RING_CROSSING a, n (n is the archetype after a on the ring): on a fresh level 15 character without a path,
+; the path of a, the first two nodes of the third branch of a, the first bridge of a and then the tier 1 node
+; of the first branch of n each take a point; n's middle branch stays closed
+%macro RING_CROSSING 2
+    USE_PATH 0, 15
+    CALL1   rpg_spend, (%1) - 1, 1
+    CALL1   rpg_spend, WEBN(%1, 12), 1
+    CALL1   rpg_spend, WEBN(%1, 13), 1
+    CALL1   rpg_can_spend, BRIDGEN(%1, 0), 0
+    CALL1   rpg_spend, BRIDGEN(%1, 0), 1
+    CALL1   rpg_can_spend, WEBN(%2, 1), 0
+    CALL1   rpg_can_spend, WEBN(%2, 7), 4
+    CALL1   rpg_spend, WEBN(%2, 1), 1
+    CALL1   rpg_rank, WEBN(%2, 1), 1
+%endmacro
+
 test_rpg_skill_spend_rules:
     TEST_BEGIN
     ; --- the shape of the web: the plan's rows field by field, then what every id has to be
@@ -1271,8 +1329,9 @@ test_rpg_skill_spend_rules:
     CALL2   rpg_web_linked, 0, 0, 0                         ; a node and itself
     CALL2   rpg_web_linked, 0, WEBN(1,1), 0                 ; the path and a tier 1 node
     CALL2   rpg_web_linked, WEBN(1,0), WEBN(1,6), 0         ; first nodes of two branches
-    CALL2   rpg_web_linked, 76, 87, 0                       ; two bridges that are no neighbours
-    CALL2   rpg_web_linked, 77, 76, 1                       ; neighbouring bridges
+    CALL2   rpg_web_linked, 95, 97, 0                       ; two bridges of one chain that are no neighbours
+    CALL2   rpg_web_linked, 95, 109, 0                      ; two bridges of different owners
+    CALL2   rpg_web_linked, 96, 95, 1                       ; neighbouring bridges
     CALL2   rpg_web_linked, 0, NUM_WEB_NODES, 0
     CALL2   rpg_web_linked, 1000, 0, 0
     call    web_connected_ok
@@ -1321,7 +1380,7 @@ test_rpg_skill_spend_rules:
     mov     byte [R_LEVEL], 8
     CALL1   rpg_can_spend, WEBN(1,7), 4
     CALL1   rpg_spend, WEBN(1,6), 1         ; Toughness: +4 health per rank
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 42   ; 20 + 4 (the path) + 14 (level 8) + 4
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 46   ; 20 + 8 (the path) + 14 (level 8) + 4
     CALL1   rpg_rank, WEBN(1,6), 1
     CALL0   rpg_points, 0
     mov     byte [R_LEVEL], 9
@@ -1335,11 +1394,11 @@ test_rpg_skill_spend_rules:
     CALL1   rpg_bar_ability, 0, 0           ; Charge, from the path
     CALL1   rpg_bar_ability, 1, 1
     CALL1   rpg_bar_ability, 2, -1
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 44   ; an ability adds no stat: 20 + 4 + 16 + 4
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 48   ; an ability adds no stat: 20 + 8 + 16 + 4
     ; Whirlwind (tier 3, level 15) follows Iron Skin
     mov     byte [R_LEVEL], 14
     CALL1   rpg_spend, WEBN(1,8), 1
-    CALL1   rpg_stat, STAT_ARMOR_BONUS, 1
+    CALL1   rpg_stat, STAT_ARMOR_BONUS, 4   ; 2 (the path) + 2 (Iron Skin)
     CALL1   rpg_can_spend, WEBN(1,9), 3     ; level 14, the neighbour is ranked
     mov     byte [R_LEVEL], 15
     CALL1   rpg_can_spend, WEBN(1,9), 0
@@ -1369,11 +1428,11 @@ test_rpg_skill_spend_rules:
     CALL0   rpg_points, 15
     CALL1   rpg_spend, 0, 1                 ; Path of the Warrior
     CALL1   rpg_spend, WEBN(1,12), 1        ; the first node of its third branch
-    CALL1   rpg_can_spend, 76, 4            ; Runed Steel hangs on the node after it
-    CALL1   rpg_spend, 76, 0
+    CALL1   rpg_can_spend, 95, 4            ; Runed Steel hangs on the node after it
+    CALL1   rpg_spend, 95, 0
     CALL1   rpg_spend, WEBN(1,13), 1
-    CALL1   rpg_can_spend, 76, 0
-    CALL1   rpg_spend, 76, 1
+    CALL1   rpg_can_spend, 95, 0
+    CALL1   rpg_spend, 95, 1
     CALL1   rpg_stat, STAT_ADD_FIRE, 1
     CALL1   rpg_rank, 1, 0                  ; the Mage's path was never taken ...
     CALL1   rpg_can_spend, WEBN(2,1), 0     ; ... yet its first fire node, beside the bridge, is open
@@ -1383,6 +1442,12 @@ test_rpg_skill_spend_rules:
     CALL1   rpg_can_spend, WEBN(2,0), 0     ; and back towards its path
     CALL1   rpg_can_spend, WEBN(2,7), 4     ; Blink, on another branch, is still closed
     CALL1   rpg_rank, 1, 0
+    ; every bridge of the ring leads into the archetype after its owner: Warrior, Mage, Marksman, Rogue, Archer
+    RING_CROSSING ARCH_WARRIOR, ARCH_MAGE
+    RING_CROSSING ARCH_MAGE, ARCH_MARKSMAN
+    RING_CROSSING ARCH_MARKSMAN, ARCH_ROGUE
+    RING_CROSSING ARCH_ROGUE, ARCH_ARCHER
+    RING_CROSSING ARCH_ARCHER, ARCH_WARRIOR
 
     ; --- the first rank of a path: its ability on the bar, its kit once, the Warrior's chestplate
     call    reset_all
@@ -1467,7 +1532,7 @@ abil_node_ok:
     and     ecx, 3
     lea     rdx, [abil_node_n]
     movzx   ecx, byte [rdx + rcx]
-    lea     edi, [rax + rcx + 4]
+    lea     edi, [rax + rcx + NUM_ARCHETYPES]
     call    rpg_web_node
     test    rax, rax
     jz      .bad
@@ -1535,31 +1600,35 @@ test_rpg_stats_from_paths_and_ranks:
     call    path_row_ok
     test    eax, eax
     jnz     .fail
+    mov     edi, ARCH_MARKSMAN
+    call    path_row_ok
+    test    eax, eax
+    jnz     .fail
     ; two paths add both differences from the base: Warrior and Mage at level 5
     USE_PATH ARCH_WARRIOR, 5
     CALL1   rpg_spend, 1, 1
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 30   ; 20 + 4 - 2 + 8
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 34   ; 20 + 8 - 2 + 8
     CALL1   rpg_stat, STAT_MELEE_DMG, 10
     CALL1   rpg_stat, STAT_SPELL_DMG, 10
     CALL1   rpg_stat, STAT_CRIT_CHANCE, 10  ; 5 + 5
     CALL1   rpg_stat, STAT_MAX_MANA, 100
     CALL1   rpg_stat, STAT_MANA_REGEN, 4
     CALL1   rpg_stat, STAT_MAX_STAMINA, 100 ; 100 + 20 - 20
-    EXPECT_D surv_max_health, 30
+    EXPECT_D surv_max_health, 34
     ; Rogue of level 5: Backstab 100, +20 per rank of its first node, 2 health per level above the first
     USE_PATH ARCH_ROGUE, 5
     CALL1   rpg_stat, STAT_BACKSTAB, 100
     CALL1   rpg_stat, STAT_CRIT_CHANCE, 10
     CALL1   rpg_stat, STAT_MAX_STAMINA, 110
     CALL1   rpg_stat, STAT_STAMINA_REGEN, 10
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 28
-    EXPECT_D surv_max_health, 28
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 32   ; 20 + 4 + 8
+    EXPECT_D surv_max_health, 32
     mov     byte [R_WEB + WEBN(4,0)], 2
     call    rpg_recompute
     CALL1   rpg_stat, STAT_BACKSTAB, 140
     CALL1   rpg_stat, STAT_MOVE_SPEED, 5
     CALL1   rpg_stat, STAT_CRIT_CHANCE, 10
-    EXPECT_D surv_max_health, 28
+    EXPECT_D surv_max_health, 32
     ; the caps, reached with absurd ranks: crit chance 75, bleed chance 100, move speed 50 and
     ; dodge cost 75
     mov     byte [R_WEB + WEBN(4,1)], 100   ; Precision, +3 crit chance
@@ -1625,18 +1694,18 @@ test_rpg_stats_from_paths_and_ranks:
     mov     dword [combat_mana], __float32__(50.0)
     call    rpg_recompute
     EXPECT_D combat_mana, __float32__(50.0)
-    ; Warrior of level 5: 24 + 8 health (published), clamped when it is higher; Toughness +4 per rank
+    ; Warrior of level 5: 28 + 8 health (published), clamped when it is higher; Toughness +4 per rank
     USE_PATH ARCH_WARRIOR, 5
     CALL1   rpg_stat, STAT_MELEE_DMG, 10
     CALL1   rpg_stat, STAT_MAX_STAMINA, 120
-    EXPECT_D surv_max_health, 32
+    EXPECT_D surv_max_health, 36
     mov     dword [surv + SURVIVAL.health], 40
     call    rpg_recompute
-    EXPECT_D surv + SURVIVAL.health, 32
+    EXPECT_D surv + SURVIVAL.health, 36
     mov     byte [R_WEB + WEBN(1,6)], 2
     call    rpg_recompute
-    EXPECT_D surv_max_health, 40
-    EXPECT_D surv + SURVIVAL.health, 32
+    EXPECT_D surv_max_health, 44
+    EXPECT_D surv + SURVIVAL.health, 36
     mov     byte [R_WEB + WEBN(1,10)], 3    ; Shield Wall: block cost, capped at 75
     call    rpg_recompute
     CALL1   rpg_stat, STAT_BLOCK_COST, 30
@@ -1651,7 +1720,7 @@ test_rpg_stats_from_paths_and_ranks:
     CALL1   rpg_stat, STAT_MELEE_DMG, 28    ; 10 + 3 * 6
     ; Archer: Quiver (n = 8) saves arrows, capped at 75
     USE_PATH ARCH_ARCHER, 5
-    CALL1   rpg_stat, STAT_RANGED_DMG, 15
+    CALL1   rpg_stat, STAT_RANGED_DMG, 20
     CALL1   rpg_stat, STAT_ARROW_SAVE, 10
     mov     byte [R_WEB + WEBN(3,8)], 3
     call    rpg_recompute
@@ -1906,8 +1975,8 @@ test_rpg_attributes_and_respec:
     CALL1   rpg_attr, ATTR_STR, 3
     CALL1   rpg_stat, STAT_MELEE_DMG, 13
     CALL1   rpg_stat, STAT_MAX_STAMINA, 123
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 26   ; 24 + 2 for the level, Strength adds none
-    EXPECT_D surv_max_health, 26
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 30   ; 28 + 2 for the level, Strength adds none
+    EXPECT_D surv_max_health, 30
     ; level 10 has paid 27 points, 3 are spent: 12 Dexterity, 10 Intelligence and 2 Vitality use
     ; the other 24
     mov     byte [R_LEVEL], 10
@@ -1935,7 +2004,7 @@ test_rpg_attributes_and_respec:
     CALL1   rpg_stat, STAT_SPELL_DMG, 10
     CALL1   rpg_stat, STAT_MAX_MANA, 20
     CALL1   rpg_stat, STAT_MANA_REGEN, 1            ; 10 / 10
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 44           ; 24 + 18 + 2
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 48           ; 28 + 18 + 2
     CALL1   rpg_stat, STAT_STAMINA_REGEN, 2
     CALL1   rpg_stat, STAT_MELEE_DMG, 13
     ; the divisions round down
@@ -2034,7 +2103,7 @@ test_rpg_attributes_and_respec:
     CALL1   rpg_attr, ATTR_DEX, 0
     CALL0   rpg_attr_points, 17
     CALL1   rpg_stat, STAT_MELEE_DMG, 14            ; 10 + 4
-    CALL1   rpg_stat, STAT_MAX_HEALTH, 48           ; 24 + 18 + 6
+    CALL1   rpg_stat, STAT_MAX_HEALTH, 52           ; 28 + 18 + 6
     ; ... and a header that spent more than the 27 the level paid loses them all
     mov     word [HDRX + RPGEXT.attr + ATTR_DEX*2], 18
     call    hdr_load
@@ -2070,7 +2139,7 @@ test_rpg_keystones_and_caps:
     CALL1   rpg_spend, WEBN(1,5), 1
     CALL1   rpg_keystone, KS_EXECUTIONER, 1
     CALL1   rpg_keystone, KS_JUGGERNAUT, 0
-    CALL1   rpg_keystone, NUM_KEYSTONES, 0          ; there are 12 keystones
+    CALL1   rpg_keystone, NUM_KEYSTONES, 0          ; there are 15 keystones
     CALL1   rpg_can_spend, WEBN(1,5), 2             ; one rank only
     EXPECT_D rpg_keystones, 1 << KS_EXECUTIONER
     ; the Juggernaut branch (n = 6..10, then 11): the keystone asks for level 30
@@ -2090,7 +2159,7 @@ test_rpg_keystones_and_caps:
     CALL1   rpg_spend, WEBN(1,11), 1
     CALL1   rpg_keystone, KS_JUGGERNAUT, 1
     EXPECT_D rpg_keystones, (1 << KS_EXECUTIONER) | (1 << KS_JUGGERNAUT)
-    CALL1   rpg_stat, STAT_ARMOR_BONUS, 5           ; Iron Skin 1 + 4
+    CALL1   rpg_stat, STAT_ARMOR_BONUS, 8           ; 2 (the path) + Iron Skin 2 + 4
     CALL1   rpg_stat, STAT_MOVE_SPEED, -15
     ; 400 Dexterity: crit chance and attack speed are capped
     mov     word [R_ATTR + ATTR_DEX*2], 400
@@ -2111,7 +2180,7 @@ test_rpg_keystones_and_caps:
     add     eax, eax
     lea     ecx, [r12 - 1]
     imul    ecx, ecx, 18
-    lea     eax, [rax + rcx + 4 + 5]                ; the keystone is its sixth node
+    lea     eax, [rax + rcx + NUM_ARCHETYPES + 5]   ; the keystone is its sixth node
     lea     rdx, [R_WEB]
     mov     byte [rdx + rax], 1
     call    rpg_recompute
@@ -2187,6 +2256,15 @@ clear_web:
     rep     stosb
     ret
 
+; taint_stack(): leaves 0x7FFFFFFF in the 256 bytes below the caller's stack pointer, where the frame of the
+; caller's next call lands: a function that forgets to clear an array of its frame shows it (leaf)
+taint_stack:
+    lea     rdi, [rsp - 256]
+    mov     eax, 0x7FFFFFFF
+    mov     ecx, 64
+    rep     stosd
+    ret
+
 ; pair_title_ok(rdi row of exp_pairs) -> eax 0 when the pair (lo, hi) with equal sums 2 / 2 is titled
 ; by the row's title and led by lo (a tie goes to the lower id), and with hi ahead 3 / 2 is led by
 ; hi and keeps the title
@@ -2199,12 +2277,12 @@ pair_title_ok:
     mov     byte [rcx + rax - 1], 1         ; its path
     lea     edx, [rax - 1]
     imul    edx, edx, 18
-    mov     byte [rcx + rdx + 4], 1         ; and its first node: a sum of 2
+    mov     byte [rcx + rdx + NUM_ARCHETYPES], 1    ; and its first node: a sum of 2
     mov     eax, [rbx + 4]                  ; hi
     mov     byte [rcx + rax - 1], 1
     lea     edx, [rax - 1]
     imul    edx, edx, 18
-    mov     byte [rcx + rdx + 4], 1
+    mov     byte [rcx + rdx + NUM_ARCHETYPES], 1
     call    rpg_title
     mov     rdi, rax
     mov     rsi, [rbx + 8]
@@ -2218,7 +2296,7 @@ pair_title_ok:
     lea     rcx, [R_WEB]
     lea     edx, [rax - 1]
     imul    edx, edx, 18
-    mov     byte [rcx + rdx + 4], 2         ; hi: 3 against lo's 2
+    mov     byte [rcx + rdx + NUM_ARCHETYPES], 2    ; hi: 3 against lo's 2
     call    rpg_title
     mov     rdi, rax
     mov     rsi, [rbx + 8]
@@ -2243,6 +2321,21 @@ test_archetype_titles:
     TITLE   s_wanderer, 0
     CALL1   rpg_archetype_ranks, 1, 0
     CALL1   rpg_archetype_ranks, 4, 0
+    CALL1   rpg_archetype_ranks, ARCH_MARKSMAN, 0
+    ; the archetype sums live in the callee's frame: junk left on the stack must not leak into any of them,
+    ; the sixth (the Marksman's) included
+    call    taint_stack
+    call    rpg_title
+    STR_IS  s_wanderer
+    call    taint_stack
+    call    rpg_archetype
+    test    eax, eax
+    jnz     .fail
+    call    taint_stack
+    mov     edi, ARCH_MARKSMAN
+    call    rpg_archetype_ranks
+    test    eax, eax
+    jnz     .fail
     ; the names of the archetypes
     xor     edi, edi
     call    rpg_archetype_name
@@ -2259,6 +2352,9 @@ test_archetype_titles:
     mov     edi, ARCH_ROGUE
     call    rpg_archetype_name
     STR_IS  s_rogue
+    mov     edi, ARCH_MARKSMAN
+    call    rpg_archetype_name
+    STR_IS  s_marksman
     mov     edi, NUM_ARCHETYPES + 1
     call    rpg_archetype_name
     STR_IS  s_empty
@@ -2276,6 +2372,11 @@ test_archetype_titles:
     call    clear_web
     WEB     3, 1
     TITLE   s_rogue, ARCH_ROGUE
+    call    clear_web
+    WEB     4, 1
+    TITLE   s_marksman, ARCH_MARKSMAN
+    CALL1   rpg_archetype_ranks, ARCH_MARKSMAN, 1
+    CALL1   rpg_archetype_ranks, ARCH_ROGUE, 0
     ; Warrior 4 (the path and three ranks of Weapon Mastery), Mage 2: a Spellblade
     call    clear_web
     WEB     0, 1
@@ -2291,8 +2392,8 @@ test_archetype_titles:
     TITLE   s_warrior, ARCH_WARRIOR
     CALL1   rpg_archetype_ranks, 1, 5
     ; the bridges belong to neither: a lot of them changes nothing
-    WEB     76, 3
-    WEB     87, 3
+    WEB     95, 3
+    WEB     109, 3
     TITLE   s_warrior, ARCH_WARRIOR
     CALL1   rpg_archetype_ranks, 1, 5
     CALL1   rpg_archetype_ranks, 2, 2
@@ -2329,7 +2430,7 @@ test_archetype_titles:
     TITLE   s_archer, ARCH_ARCHER
     WEB     WEBN(3,0), 5
     TITLE   s_skirmisher, ARCH_ARCHER
-    ; the six pairs, each reachable and in the right place
+    ; the ten pairs, each reachable and in the right place
     xor     r12d, r12d
 .pairs:
     imul    eax, r12d, 16
@@ -2418,7 +2519,7 @@ test_rpg_save_load_validates:
     EXPECT_B R_QSTATE, 1
     cmp     word [R_QPROG], 2
     jne     .fail
-    CALL1   rpg_stat, STAT_RANGED_DMG, 27   ; stats are recomputed: 15 + 2 * 6
+    CALL1   rpg_stat, STAT_RANGED_DMG, 36   ; stats are recomputed: 20 + 2 * 8
     CALL1   rpg_stat, STAT_MOVE_SPEED, 8    ; Fleet Foot rank 1: 5 + 3
     CALL1   rpg_stat, STAT_CRIT_CHANCE, 11  ; 8 + 3
     ; a legacy class byte of a current header means nothing and is written back as 0
@@ -2464,7 +2565,7 @@ test_rpg_save_load_validates:
     ; bridge) zeroes every rank and the bar
     HDR_NEW 10
     HW      0, 1
-    HW      4, 6
+    HW      WEBN(1,0), 6
     mov     byte [HDRX + RPGEXT.bar], 1
     LOAD_REFUNDS
     CALL0   rpg_level, 10
@@ -2489,18 +2590,18 @@ test_rpg_save_load_validates:
     HW      0, 1
     HW      WEBN(1,13), 1
     HW      WEBN(1,12), 1
-    HW      76, 4                           ; a bridge goes to 3
+    HW      95, 4                           ; a bridge goes to 3
     LOAD_REFUNDS
     HDR_NEW 30
     HW      0, 1
     HW      WEBN(1,13), 1
     HW      WEBN(1,12), 1
-    HW      76, 3                           ; and 3 is fine
-    LOAD_KEEPS 76, 3
+    HW      95, 3                           ; and 3 is fine
+    LOAD_KEEPS 95, 3
     ; a slot past the last node holds nothing
     HDR_NEW 5
     HW      0, 1
-    HW      100, 1
+    HW      NUM_WEB_NODES, 1
     LOAD_REFUNDS
     ; the ranks adding up to the level are fine, one more is not
     HDR_NEW 6
@@ -2546,14 +2647,14 @@ test_rpg_save_load_validates:
     HW      0, 1
     HW      WEBN(1,12), 1
     HW      WEBN(1,13), 1
-    HW      76, 1
+    HW      95, 1
     HW      WEBN(2,1), 1
     LOAD_KEEPS WEBN(2,1), 1
-    EXPECT_B R_WEB + 76, 1
+    EXPECT_B R_WEB + 95, 1
     HDR_NEW 15
     HW      0, 1
     HW      WEBN(1,12), 1
-    HW      76, 1                           ; the bridge hangs on a node that is not ranked ...
+    HW      95, 1                           ; the bridge hangs on a node that is not ranked ...
     HW      WEBN(2,1), 1
     LOAD_REFUNDS
     HDR_NEW 15
@@ -2692,6 +2793,49 @@ test_rpg_save_load_validates:
     call    hdr_load
     EXPECT_B R_KITS, KIT_COMMON_BIT | 1
 
+    ; --- a header of version 2 (0.10.2 and 0.10.3, four paths): every node id has moved, so the ranks and
+    ; the bar are refunded, with a banner of their own; the kits already given and the attribute points stay
+    HDR_NEW 2                               ; level 2: the two ranks below fit it
+    mov     byte [HDRX + RPGEXT.version], 2
+    mov     byte [HDRX + RPGEXT.kits], KIT_COMMON_BIT | 1   ; the common kit and the Warrior's
+    mov     word [HDRX + RPGEXT.attr + ATTR_STR*2], 3
+    HW      0, 1                            ; the old path of the Warrior ...
+    HW      4, 1                            ; ... and its first node
+    mov     byte [HDRX + RPGEXT.bar], 1     ; Charge on the bar
+    mov     byte [rpg_migrated], 0
+    mov     byte [banner_text], 0
+    call    hdr_load
+    EXPECT_B rpg_ext + RPGEXT.version, RPGX_VERSION
+    EXPECT_B R_KITS, KIT_COMMON_BIT | 1
+    CALL1   rpg_attr, ATTR_STR, 3
+    EXPECT_ZERO_WEB
+    EXPECT_D R_BAR, 0
+    CALL0   rpg_points, 2
+    cmp     byte [rpg_migrated], 0
+    je      .fail
+    BANNER_IS s_migrated_mk
+    ; rpg_begin keeps that banner and gives no kit the header counts as given
+    call    rpg_begin
+    BANNER_IS s_migrated_mk
+    EXPECT_B rpg_migrated, 0
+    HAVE    COOKED_PORKCHOP, 0
+    HAVE    IRON_SWORD, 0
+    ; the Marksman's kit was not given yet: it comes with its path, once
+    CALL1   rpg_spend, ARCH_MARKSMAN - 1, 1
+    HAVE    PISTOL, 1
+    HAVE    PISTOL_ROUND, 32
+    EXPECT_B R_KITS, KIT_COMMON_BIT | 1 | (1 << (ARCH_MARKSMAN - 1))
+    ; saved as the current version, a second load keeps it without a word
+    lea     rdi, [world_header]
+    call    rpg_save
+    EXPECT_B HDRX + RPGEXT.version, RPGX_VERSION
+    mov     byte [banner_text], 0
+    call    hdr_load
+    CALL1   rpg_rank, ARCH_MARKSMAN - 1, 1
+    CALL1   rpg_attr, ATTR_STR, 3
+    EXPECT_B banner_text, 0
+    EXPECT_B rpg_migrated, 0
+
     ; --- rpg_begin: the common kit once, the grimoire hint while no point is spent
     call    reset_all
     mov     byte [rpg_migrated], 0
@@ -2713,6 +2857,58 @@ test_rpg_save_load_validates:
     call    rpg_begin
     EXPECT_B banner_text, 0
     HAVE    COOKED_PORKCHOP, 4
+    TEST_END
+
+; ---- the Marksman -----------------------------------------------------------------------
+
+; test_marksman_path_and_dex: the first rank of the Path of the Marksman puts the Powder Grenade on the bar
+; and gives a pistol with 32 rounds once, and its row is gun damage 15, reload speed 15, crit damage 10 (and
+; crit 8, ammo saved 10, health 20); Dexterity then adds +1 gun damage per point, but only to a character who
+; took that path (an Archer of the same level and Dexterity has none), and +1 ranged damage to everybody; the
+; path alone is the title Marksman; rpg_path_tile and rpg_ability_tile know its emblem and four icons
+test_marksman_path_and_dex:
+    TEST_BEGIN
+    call    reset_all
+    CALL1   rpg_spend, ARCH_MARKSMAN - 1, 1
+    CALL1   rpg_bar_ability, 0, ABIL_GRENADE
+    CALL1   rpg_ability_learned, ABIL_GRENADE, 1
+    CALL1   rpg_ability_learned, ABIL_BULLSEYE, 0
+    HAVE    PISTOL, 1
+    HAVE    PISTOL_ROUND, 32
+    EXPECT_B R_KITS, 1 << (ARCH_MARKSMAN - 1)
+    CALL1   rpg_stat, STAT_GUN_DMG, 15
+    CALL1   rpg_stat, STAT_RELOAD_SPEED, 15
+    CALL1   rpg_stat, STAT_CRIT_DMG, 10
+    CALL1   rpg_stat, STAT_CRIT_CHANCE, 8
+    CALL1   rpg_stat, STAT_ARROW_SAVE, 10
+    EXPECT_D surv_max_health, 20
+    ; Dexterity: 10 points at level 5 add 10 gun damage with the path, and 10 ranged damage anyway
+    mov     byte [R_LEVEL], 5
+    mov     word [R_ATTR + ATTR_DEX*2], 10
+    call    rpg_recompute
+    CALL1   rpg_stat, STAT_GUN_DMG, 25
+    CALL1   rpg_stat, STAT_RANGED_DMG, 10
+    ; an Archer of the same level and Dexterity: ranged damage, no gun damage and no reload speed
+    USE_PATH ARCH_ARCHER, 5
+    mov     word [R_ATTR + ATTR_DEX*2], 10
+    call    rpg_recompute
+    CALL1   rpg_stat, STAT_GUN_DMG, 0
+    CALL1   rpg_stat, STAT_RELOAD_SPEED, 0
+    CALL1   rpg_stat, STAT_RANGED_DMG, 30           ; 20 + 10
+    ; the title of the path alone, its emblem and its icons
+    call    clear_web
+    WEB     ARCH_MARKSMAN - 1, 1
+    TITLE   s_marksman, ARCH_MARKSMAN
+    CALL1   rpg_path_tile, ARCH_WARRIOR, TILE_CLASS0
+    CALL1   rpg_path_tile, ARCH_ROGUE, TILE_CLASS0 + 3
+    CALL1   rpg_path_tile, ARCH_MARKSMAN, TILE_CLASS_MARKSMAN
+    CALL1   rpg_path_tile, 0, 0
+    CALL1   rpg_path_tile, NUM_ARCHETYPES + 1, 0
+    CALL1   rpg_ability_tile, ABIL_GRENADE, TILE_MK_ABIL0
+    CALL1   rpg_ability_tile, ABIL_BULLSEYE, TILE_MK_ABIL0 + 1
+    CALL1   rpg_ability_tile, ABIL_FANHAMMER, TILE_MK_ABIL0 + 2
+    CALL1   rpg_ability_tile, ABIL_FLASHBANG, TILE_MK_ABIL0 + 3
+    CALL1   rpg_ability_tile, NUM_ABILITIES, 0
     TEST_END
 
 ; ---- quests ----------------------------------------------------------------------------

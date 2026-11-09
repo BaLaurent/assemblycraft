@@ -1,7 +1,7 @@
 ; rpg.asm - the character: level, XP, the skill web, the ability bar, attribute points and the
 ; stats derived from them. rpg_state is the live progression stored in WORLDHDR.rpg; rpg_ext is the
-; extension stored in WORLDHDR.rpgx: the rank of every node of the shared skill web (88 nodes: a
-; path node per archetype, 72 archetype nodes, 12 bridges between neighbouring archetypes), the
+; extension stored in WORLDHDR.rpgx: the rank of every node of the shared skill web (110 nodes: a
+; path node per archetype, 90 archetype nodes, 15 bridges between neighbouring archetypes), the
 ; attribute points, the four-slot ability bar and the starting kits already given. rpg_stats is
 ; rebuilt from both by rpg_recompute (base row, level, path ranks, node ranks, attributes,
 ; keystones, equipped gear, then caps). Skill and attribute points are never stored: skill points
@@ -10,10 +10,11 @@
 ; owns the static web / ability / stat / attribute description tables the screens read (record
 ; layouts in common.inc).
 ;
-; The web: nodes are WEBNODE records generated below by macros from the layout of the design
-; (cell of a node in the frame of its archetype, level of its tier, edges between neighbours), so a
-; new archetype or passive is a table row. A node can be ranked when it is reachable: a path node
-; always is, any other node when a node linked to it has a rank (edges in web_edges).
+; The web: nodes are WEBNODE records generated below by macros from the layout of the design (the
+; owner and level of a node follow from where its row stands, its cell is part of the row, the edges
+; between neighbours come from a generator), so a new archetype or passive is a table row. A node
+; can be ranked when it is reachable: a path node always is, any other node when a node linked to it
+; has a rank (edges in web_edges).
 %include "common.inc"
 default rel
 
@@ -23,7 +24,7 @@ global rpg_rank, rpg_can_spend, rpg_spend, rpg_stat, rpg_recompute, rpg_clamp_st
 global rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
 global rpg_respec_cost, rpg_respec, rpg_keystone
 global rpg_web_node, rpg_web_linked, rpg_reachable, web_edges, web_edge_count
-global rpg_ability_learned, rpg_ability_info, rpg_ability_tile, rpg_bar_ability, rpg_bar_set
+global rpg_ability_learned, rpg_ability_info, rpg_ability_tile, rpg_path_tile, rpg_bar_ability, rpg_bar_set
 global rpg_archetype_ranks, rpg_archetype, rpg_archetype_name, rpg_title
 global rpg_stat_info, rpg_format_stat
 global rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save, rpg_give_item
@@ -49,24 +50,29 @@ s_level:     db "Level ", 0
 s_empty:     db 0
 s_respec:    db "Skills and attributes reset", 0
 s_migrated:  db "Classes became one grimoire: skill points refunded", 0
+s_migrated_mk: db "New Marksman path: skill points refunded", 0
 s_begin_a:   db "Open your grimoire (", 0
 s_begin_b:   db ") to choose a path", 0
 
-; base stats (row 0: the classless character; rows 1..4: what the path node of that archetype
+; base stats (row 0: the classless character; rows 1..5: what the path node of that archetype
 ; stands for, rpg_recompute adds row a minus row 0 for a ranked path), in stat-id order:
 ; HEALTH MELEE RANGED SPELL CRIT CRITDMG MANA MANAREGEN STAMINA STAMREGEN ARMOR SPEED
-; BACKSTAB PARRY LIFESTEAL COOLDOWN ARROWSAVE DODGECOST, then stats 18..43 (all 0)
+; BACKSTAB PARRY LIFESTEAL COOLDOWN ARROWSAVE DODGECOST, then stats 18..43 (all 0), then GUNDMG
+; RELOADSPEED (the Marksman's only)
 base_stats:
     dd 20,  0,  0,  0,  0, 0,   0, 0, 100, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; none
     times NUM_STATS - 18 dd 0
-    dd 24, 10,  0,  0,  5, 0,   0, 0, 120, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Warrior
+    dd 28, 10,  0,  0,  5, 0,   0, 0, 120, 0, 2, 0,   0, 0, 0, 0,  0, 0   ; Warrior
     times NUM_STATS - 18 dd 0
     dd 18,  0,  0, 10,  5, 0, 100, 4,  80, 0, 0, 0,   0, 0, 0, 0,  0, 0   ; Mage
     times NUM_STATS - 18 dd 0
-    dd 20,  0, 15,  0,  8, 0,   0, 0, 100, 0, 0, 5,   0, 0, 0, 0, 10, 0   ; Archer
+    dd 20,  0, 20,  0,  8, 0,   0, 0, 100, 0, 0, 5,   0, 0, 0, 0, 10, 0   ; Archer
     times NUM_STATS - 18 dd 0
-    dd 20,  0,  0,  0, 10, 0,   0, 0, 110, 10, 0, 5, 100, 0, 0, 0,  0, 0  ; Rogue
+    dd 24,  0,  0,  0, 10, 0,   0, 0, 110, 10, 0, 5, 100, 0, 0, 0,  0, 0  ; Rogue
     times NUM_STATS - 18 dd 0
+    dd 20,  0,  0,  0,  8, 10,  0, 0, 100, 0, 0, 0,   0, 0, 0, 0, 10, 0   ; Marksman
+    times STAT_GUN_DMG - 18 dd 0
+    dd 15, 15                           ; gun damage, reload speed
 %if $ - base_stats != (NUM_ARCHETYPES + 1) * NUM_STATS * 4
 %error "base_stats needs NUM_STATS dwords per archetype row"
 %endif
@@ -111,9 +117,10 @@ kit_warrior: db IRON_SWORD, 1, 0
 kit_mage:    db STAFF, 1, MANA_POTION, 2, 0
 kit_archer:  db BOW, 1, ARROW, 32, 0
 kit_rogue:   db IRON_DAGGER, 1, HEALTH_POTION, 2, 0
+kit_marksman: db PISTOL, 1, PISTOL_ROUND, 32, 0     ; the pistol arrives unloaded: R reloads it
 kit_common:  db COOKED_PORKCHOP, 4, 0
 align 8
-kit_tab:     dq kit_warrior, kit_mage, kit_archer, kit_rogue
+kit_tab:     dq kit_warrior, kit_mage, kit_archer, kit_rogue, kit_marksman
 
 ; ---- description tables ----------------------------------------------------
 
@@ -165,7 +172,7 @@ stat_tab:                               ; by stat id
     STATI "Parry window",     " steps parry window",        FMT_FLAT,   TILE_STAT0 + STAT_PARRY_WINDOW
     STATI "Lifesteal",        "% of damage healed",         FMT_PCT,    TILE_STAT0 + STAT_LIFESTEAL
     STATI "Cooldowns",        "% cooldowns",                FMT_NEGPCT, TILE_STAT0 + STAT_COOLDOWN_RED
-    STATI "Arrow save",       "% arrows saved",             FMT_PCT,    TILE_STAT0 + STAT_ARROW_SAVE
+    STATI "Arrow save",       "% ammo saved",               FMT_PCT,    TILE_STAT0 + STAT_ARROW_SAVE
     STATI "Dodge cost",       "% dodge cost",               FMT_NEGPCT, TILE_STAT0 + STAT_DODGE_COST
     STATI "Attack speed",     "% attack speed",             FMT_PCT,    TILE_STAT_ASPD
     STATI "Fire damage",      "% fire damage",              FMT_PCT,    TILE_ELEM_FIRE
@@ -229,22 +236,28 @@ abil_tab:                               ; by ability id = (archetype - 1) * 4 + 
     ABIL smoke,     "Smoke Bomb",      "Vanish, enemies lose track",        RES_STAMINA, 40, 20
     ABIL bladedance, "Blade Dance",    "Faster strikes that always crit",   RES_STAMINA, 60, 35
     ABIL knives,    "Fan of Knives",   "Throw bleeding knives all around",  RES_STAMINA, 35, 9
+    ABIL grenade,   "Powder Grenade",  "Lob a grenade that bursts into flame", RES_STAMINA, 30, 8
+    ABIL bullseye,  "Bullseye",        "Shots fly true and crit more",      RES_STAMINA, 20, 15
+    ABIL fanhammer, "Fan the Hammer",  "Fire twice as fast, rounds are free", RES_STAMINA, 50, 30
+    ABIL flashbang, "Flashbang",       "Throw a flash that stuns foes",     RES_STAMINA, 35, 12
 %if $ - abil_tab != NUM_ABILITIES * ABILINFO_size
 %error "abil_tab needs one record per ability"
 %endif
 
 ; ---- the skill web -------------------------------------------------------------------------
-; Node ids: the path of archetype a is a - 1 (0..3); node n (= branch * 6 + tier, 0..17) of
-; archetype a is 4 + (a - 1) * 18 + n (4..75); bridge k (0..2) between archetype a and the next one
-; clockwise is 76 + (a - 1) * 3 + k (76..87). The archetypes run clockwise (Warrior north, Mage
-; east, Archer south, Rogue west) and each has its own frame, u outward and v towards the next
-; archetype; the cell (x, y) of a node on screen (y down) is
-;   Warrior: x = v, y = -u    Mage: x = u, y = v    Archer: x = -v, y = u    Rogue: x = -u, y = -v
-; Path node: (u, v) = (2, 0). Node n: (3 + tier, (branch - 1) * (1 + tier)), so branch 0 fans to -v,
-; branch 1 runs straight and branch 2 fans to +v. Bridge k: (2 + t, 2 + t) with t = 2k + 1. The
-; rows below only say what a node is; the macros work out its cell, owner and level from where it
-; stands in the table (wb_arch, wb_n, wb_k count as the assembler goes).
-%assign wb_arch 0                       ; archetype whose rows are being emitted (1..4)
+; Node ids: the path of archetype a is a - 1 (0..4); node n (= branch * 6 + tier, 0..17) of
+; archetype a is 5 + (a - 1) * 18 + n (5..94); bridge k (0..2) owned by archetype a, which joins it
+; to the next archetype clockwise, is 95 + (a - 1) * 3 + k (95..109). The ids are not places: the
+; archetypes sit on a ring, clockwise Warrior, Mage, Marksman, Rogue, Archer (the sector of ring
+; position p = 0..4 is centred 72 * p degrees clockwise of north). Each row of the table carries
+; the cell of its node: x, y in 1/8 cell (WEB_SUB), screen axes (y down), all within +-WEB_EXTENT.
+; They follow the layout of the design: the path at radius 2 cells on its sector axis, tier t of a
+; branch at radius 3.4 + 1.1 t, branch b at (b - 1) * 20 degrees off the axis (branch 0 leans
+; towards the previous archetype of the ring, branch 2 towards the next), bridge k at the radius of
+; tier 2k + 1 on the boundary 36 degrees clockwise of the axis; x = round(8 r sin(theta)),
+; y = round(-8 r cos(theta)). The rows say what a node is and where it lies; the macros work out its
+; owner and level from where it stands in the table (wb_arch, wb_n, wb_k count as the assembler goes).
+%assign wb_arch 0                       ; archetype whose rows are being emitted (1..5)
 %assign wb_n    0                       ; index of the next archetype node (branch * 6 + tier)
 %assign wb_k    0                       ; index of the next bridge after wb_arch
 
@@ -265,75 +278,56 @@ abil_tab:                               ; by ability id = (archetype - 1) * 4 + 
   %endif
 %endmacro
 
-; WCELL u, v: wc_x, wc_y = the screen cell of (u, v) in the frame of wb_arch
-%macro WCELL 2
-  %if wb_arch == 1
-    %assign wc_x (%2)
-    %assign wc_y -(%1)
-  %elif wb_arch == 2
-    %assign wc_x (%1)
-    %assign wc_y (%2)
-  %elif wb_arch == 3
-    %assign wc_x -(%2)
-    %assign wc_y (%1)
-  %else
-    %assign wc_x -(%1)
-    %assign wc_y -(%2)
-  %endif
-%endmacro
-
-; WREC name, desc, kind, stat, max, owner, value, level: one WEBNODE at the cell wc_x, wc_y
-%macro WREC 8
+; WREC name, desc, kind, stat, max, owner, value, x, y, level: one WEBNODE; the cell x, y is in 1/8 cell
+%macro WREC 10
     dq %1, %2
     db %3, %4, %5, %6
     dd %7
-    db wc_x, wc_y, %8
+    db %8, %9, %10
     times 5 db 0
 %endmacro
 
-; FORMER name, desc, kind, stat, max, value: the next archetype node of wb_arch (a node of the
+; FORMER name, desc, kind, stat, max, value, x, y: the next archetype node of wb_arch (a node of the
 ; 0.10.1 class trees)
-%macro FORMER 6
+%macro FORMER 8
     %assign wf_b wb_n / 6
     %assign wf_t wb_n - wf_b * 6
-    WCELL 3 + wf_t, (wf_b - 1) * (1 + wf_t)
     TLEVEL wf_t
-    WREC %1, %2, %3, %4, %5, wb_arch, %6, wt_level
+    WREC %1, %2, %3, %4, %5, wb_arch, %6, %7, %8, wt_level
     %assign wb_n wb_n + 1
 %endmacro
 
 ; a passive stat node (max rank 5) without a text of its own, since the text is always the stat's
 ; formatted value (rpg_format_stat) ...
-%macro SNODE 3                          ; name, stat, value per rank
+%macro SNODE 5                          ; name, stat, value per rank, x, y
 section .rodata.str
 %%n: db %1, 0
 section .rodata
-    FORMER %%n, 0, NODE_STAT, %2, 5, %3
+    FORMER %%n, 0, NODE_STAT, %2, 5, %3, %4, %5
 %endmacro
 ; ... an ability node (max rank 1): name and text come from the ability record; its stat is the
 ; ability id ...
-%macro ANODE 2                          ; ability label, ability slot
-    FORMER an_%1, ad_%1, NODE_ABILITY, (wb_arch - 1) * 4 + %2, 1, 0
+%macro ANODE 4                          ; ability label, ability slot, x, y
+    FORMER an_%1, ad_%1, NODE_ABILITY, (wb_arch - 1) * 4 + %2, 1, 0, %3, %4
 %endmacro
 ; ... and a keystone (max rank 1) whose effect is coded where it applies
-%macro KNODE 3                          ; name, keystone id, description
+%macro KNODE 5                          ; name, keystone id, description, x, y
 section .rodata.str
 %%n: db %1, 0
 %%d: db %3, 0
 section .rodata
-    FORMER %%n, %%d, NODE_KEYSTONE, %2, 1, 0
+    FORMER %%n, %%d, NODE_KEYSTONE, %2, 1, 0, %4, %5
 %endmacro
 
 ; the path node of the next archetype: its text is the three lines of the former class card plus
 ; the ability it teaches; its stat is the archetype
-%macro PATHNODE 5                       ; name, line1, line2, line3, ability label (slot 0)
+%macro PATHNODE 7                       ; name, line1, line2, line3, ability label (slot 0), x, y
 section .rodata.str
 %%n: db %1, 0
 %%d: db %2, ". ", %3, ". ", %4, ". Learns ", aname_%5, ".", 0
 section .rodata
     %assign wb_arch wb_arch + 1
-    WCELL 2, 0
-    WREC %%n, %%d, NODE_PATH, wb_arch, 1, wb_arch, 0, 1
+    WREC %%n, %%d, NODE_PATH, wb_arch, 1, wb_arch, 0, %6, %7, 1
 %endmacro
 
 ; the rows of archetype %1 follow
@@ -347,116 +341,139 @@ section .rodata
     %assign wb_arch %1
     %assign wb_k 0
 %endmacro
-; a bridge (max rank 3, owned by nobody): name, stat, value per rank
-%macro BRIDGE 3
+; a bridge (max rank 3, owned by nobody): name, stat, value per rank, x, y
+%macro BRIDGE 5
 section .rodata.str
 %%n: db %1, 0
 section .rodata
     %assign wb_t 2 * wb_k + 1
-    WCELL 2 + wb_t, 2 + wb_t
     TLEVEL wb_t
-    WREC %%n, 0, NODE_STAT, %2, 3, 0, %3, wt_level
+    WREC %%n, 0, NODE_STAT, %2, 3, 0, %3, %4, %5, wt_level
     %assign wb_k wb_k + 1
 %endmacro
 
 align 8
 web_tab:                                ; by node id
-    PATHNODE "Path of the Warrior", "Heavy armor", "Charge and cleave", "Parry master", charge
-    PATHNODE "Path of the Mage", "Fire and arcane", "Staff bolts", "Fragile, deadly", fireball
-    PATHNODE "Path of the Archer", "Bows and volleys", "Deadly at range", "Swift hunter", volley
-    PATHNODE "Path of the Rogue", "Daggers, stealth", "Backstab x2", "Shadowstep", shadowstp
+    PATHNODE "Path of the Warrior", "Heavy armor", "Charge and cleave", "Parry master", charge, 0, -16
+    PATHNODE "Path of the Mage", "Fire and arcane", "Staff bolts", "Fragile, deadly", fireball, 15, -5
+    PATHNODE "Path of the Archer", "Bows and volleys", "Deadly at range", "Swift hunter", volley, -15, -5
+    PATHNODE "Path of the Rogue", "Daggers, stealth", "Backstab x2", "Shadowstep", shadowstp, -9, 13
+    PATHNODE "Path of the Marksman", "Guns and powder", "Dexterity raises gun damage", "Crit-hungry, fragile", grenade, 9, 13
     ARCHETYPE 1                         ; Warrior: Blademaster, Bulwark, Endurance
-    SNODE "Weapon Mastery", STAT_MELEE_DMG,     6
-    SNODE "Precision",      STAT_CRIT_CHANCE,   3
-    SNODE "Brutality",      STAT_CRIT_DMG,     15
-    SNODE "Bloodthirst",    STAT_LIFESTEAL,     2
-    SNODE "Swift Blade",    STAT_ATTACK_SPEED,  5
-    KNODE "Executioner",    KS_EXECUTIONER, "Melee hits on foes under 30% health deal +60% damage"
-    SNODE "Toughness",      STAT_MAX_HEALTH,    4
-    ANODE warcry, 1
-    SNODE "Iron Skin",      STAT_ARMOR_BONUS,   1
-    ANODE whirl, 2
-    SNODE "Shield Wall",    STAT_BLOCK_COST,   10
-    KNODE "Juggernaut",     KS_JUGGERNAUT, "No knockback, +4 armor, -15% move speed"
-    SNODE "Stamina",        STAT_MAX_STAMINA,  12
-    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10
-    SNODE "Riposte",        STAT_PARRY_WINDOW,  1
-    ANODE slam, 3
-    SNODE "Spiked Mail",    STAT_THORNS,        3
-    KNODE "Bloodrage",      KS_BLOODRAGE, "+1% damage per 2% missing health, -10% max health"
+    SNODE "Weapon Mastery", STAT_MELEE_DMG,     6, -9, -26
+    SNODE "Precision",      STAT_CRIT_CHANCE,   3, -12, -34
+    SNODE "Brutality",      STAT_CRIT_DMG,     15, -15, -42
+    SNODE "Bloodthirst",    STAT_LIFESTEAL,     2, -18, -50
+    SNODE "Swift Blade",    STAT_ATTACK_SPEED,  5, -21, -59
+    KNODE "Executioner",    KS_EXECUTIONER, "Melee hits on foes under 30% health deal +60% damage", -24, -67
+    SNODE "Toughness",      STAT_MAX_HEALTH,    4, 0, -27
+    ANODE warcry, 1, 0, -36
+    SNODE "Iron Skin",      STAT_ARMOR_BONUS,   2, 0, -45
+    ANODE whirl, 2, 0, -54
+    SNODE "Shield Wall",    STAT_BLOCK_COST,   10, 0, -62
+    KNODE "Juggernaut",     KS_JUGGERNAUT, "No knockback, +4 armor, -15% move speed", 0, -71
+    SNODE "Stamina",        STAT_MAX_STAMINA,  12, 9, -26
+    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10, 12, -34
+    SNODE "Riposte",        STAT_PARRY_WINDOW,  1, 15, -42
+    ANODE slam, 3, 18, -50
+    SNODE "Spiked Mail",    STAT_THORNS,        3, 21, -59
+    KNODE "Bloodrage",      KS_BLOODRAGE, "+1% damage per 2% missing health, -10% max health", 24, -67
     ARCHETYPE 2                         ; Mage: Fire, Arcane, Warding
-    SNODE "Pyromancy",      STAT_SPELL_DMG,     6
-    SNODE "Kindling",       STAT_FIRE_DMG,      8
-    SNODE "Combustion",     STAT_CRIT_DMG,     15
-    SNODE "Fire Touch",     STAT_ADD_FIRE,      1
-    SNODE "Static",         STAT_SHOCK_DMG,     8
-    KNODE "Inferno",        KS_INFERNO, "Spell hits ignite; burning foes take +25% spell damage; -50% frost damage"
-    SNODE "Deep Mind",      STAT_MAX_MANA,     15
-    ANODE blink, 1
-    SNODE "Flow",           STAT_MANA_REGEN,    1
-    ANODE meteor, 2
-    SNODE "Haste",          STAT_COOLDOWN_RED,  4
-    KNODE "Blood Magic",    KS_BLOOD_MAGIC, "Mana costs are paid with health (1 per 5 mana); +30% spell damage"
-    SNODE "Vitality",       STAT_MAX_HEALTH,    3
-    SNODE "Frost Weaving",  STAT_FROST_DMG,     8
-    SNODE "Arcane Reach",   STAT_AREA,          8
-    ANODE nova, 3
-    SNODE "Renewal",        STAT_LIFE_REGEN,    5
-    KNODE "Mana Shield",    KS_MANA_SHIELD, "35% of damage taken drains mana instead (2 mana per point)"
-    ARCHETYPE 3                         ; Archer: Marksman, Hunter, Survival
-    SNODE "Steady Aim",     STAT_RANGED_DMG,    6
-    SNODE "Eagle Eye",      STAT_CRIT_CHANCE,   3
-    SNODE "Deadly Shot",    STAT_CRIT_DMG,     15
-    SNODE "Quick Draw",     STAT_ATTACK_SPEED,  5
-    SNODE "Big Game",       STAT_ELITE_DMG,     6
-    KNODE "Deadeye",        KS_DEADEYE, "Fully drawn shots always crit; attack speed no longer speeds your draw"
-    SNODE "Fleet Foot",     STAT_MOVE_SPEED,    3
-    ANODE explarrow, 1
-    SNODE "Quiver",         STAT_ARROW_SAVE,   10
-    ANODE arrowrain, 2
-    SNODE "Toxic Tips",     STAT_ADD_POISON,    1
-    KNODE "Barrage",        KS_BARRAGE, "Bow shots fire 2 extra arrows (60% damage); Volley fires 7"
-    SNODE "Vitality",       STAT_MAX_HEALTH,    3
-    SNODE "Evasion",        STAT_DODGE_COST,   10
-    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10
-    ANODE mark, 3
-    SNODE "Readiness",      STAT_COOLDOWN_RED,  4
-    KNODE "Wind Runner",    KS_WIND_RUNNER, "+20% move speed; dodges cost no stamina but recover twice as slowly"
+    SNODE "Pyromancy",      STAT_SPELL_DMG,     6, 21, -17
+    SNODE "Kindling",       STAT_FIRE_DMG,      8, 28, -22
+    SNODE "Combustion",     STAT_CRIT_DMG,     15, 35, -28
+    SNODE "Fire Touch",     STAT_ADD_FIRE,      1, 42, -33
+    SNODE "Static",         STAT_SHOCK_DMG,     8, 49, -38
+    KNODE "Inferno",        KS_INFERNO, "Spell hits ignite; burning foes take +25% spell damage; -50% frost damage", 56, -44
+    SNODE "Deep Mind",      STAT_MAX_MANA,     15, 26, -8
+    ANODE blink, 1, 34, -11
+    SNODE "Flow",           STAT_MANA_REGEN,    1, 43, -14
+    ANODE meteor, 2, 51, -17
+    SNODE "Haste",          STAT_COOLDOWN_RED,  4, 59, -19
+    KNODE "Blood Magic",    KS_BLOOD_MAGIC, "Mana costs are paid with health (1 per 5 mana); +30% spell damage", 68, -22
+    SNODE "Vitality",       STAT_MAX_HEALTH,    3, 27, 1
+    SNODE "Frost Weaving",  STAT_FROST_DMG,     8, 36, 1
+    SNODE "Arcane Reach",   STAT_AREA,          8, 45, 2
+    ANODE nova, 3, 54, 2
+    SNODE "Renewal",        STAT_LIFE_REGEN,    5, 62, 2
+    KNODE "Mana Shield",    KS_MANA_SHIELD, "35% of damage taken drains mana instead (2 mana per point)", 71, 2
+    ARCHETYPE 3                         ; Archer: Aim, Hunter, Survival
+    SNODE "Steady Aim",     STAT_RANGED_DMG,    8, -27, 1
+    SNODE "Eagle Eye",      STAT_CRIT_CHANCE,   3, -36, 1
+    SNODE "Deadly Shot",    STAT_CRIT_DMG,     15, -45, 2
+    SNODE "Quick Draw",     STAT_ATTACK_SPEED,  5, -54, 2
+    SNODE "Big Game",       STAT_ELITE_DMG,     6, -62, 2
+    KNODE "Deadeye",        KS_DEADEYE, "Fully drawn shots always crit; attack speed no longer speeds your draw", -71, 2
+    SNODE "Fleet Foot",     STAT_MOVE_SPEED,    3, -26, -8
+    ANODE explarrow, 1, -34, -11
+    SNODE "Quiver",         STAT_ARROW_SAVE,   10, -43, -14
+    ANODE arrowrain, 2, -51, -17
+    SNODE "Toxic Tips",     STAT_ADD_POISON,    1, -59, -19
+    KNODE "Barrage",        KS_BARRAGE, "Bow shots fire 2 extra arrows (60% damage); Volley fires 7", -68, -22
+    SNODE "Vitality",       STAT_MAX_HEALTH,    3, -21, -17
+    SNODE "Evasion",        STAT_DODGE_COST,   10, -28, -22
+    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10, -35, -28
+    ANODE mark, 3, -42, -33
+    SNODE "Readiness",      STAT_COOLDOWN_RED,  4, -49, -38
+    KNODE "Wind Runner",    KS_WIND_RUNNER, "+20% move speed; dodges cost no stamina but recover twice as slowly", -56, -44
     ARCHETYPE 4                         ; Rogue: Assassin, Shadow, Agility
-    SNODE "Backstab",       STAT_BACKSTAB,     20
-    SNODE "Precision",      STAT_CRIT_CHANCE,   3
-    SNODE "Cruelty",        STAT_CRIT_DMG,     15
-    SNODE "Serrated",       STAT_BLEED_CHANCE,  8
-    SNODE "Blade Mastery",  STAT_MELEE_DMG,     6
-    KNODE "Assassinate",    KS_ASSASSINATE, "Backstabs kill non-boss foes under 25% health; +50% backstab vs bosses"
-    SNODE "Fleet Foot",     STAT_MOVE_SPEED,    3
-    ANODE smoke, 1
-    SNODE "Evasion",        STAT_DODGE_COST,   10
-    ANODE bladedance, 2
-    SNODE "Venom",          STAT_POISON_DMG,   10
-    KNODE "Shadow Dance",   KS_SHADOW_DANCE, "Smoke Bomb stealth lasts 30 s; the first hit from stealth deals double"
-    SNODE "Endurance",      STAT_MAX_STAMINA,  12
-    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10
-    SNODE "Leech",          STAT_LIFESTEAL,     2
-    ANODE knives, 3
-    SNODE "Lethality",      STAT_DOT_DMG,      10
-    KNODE "Venom Blades",   KS_VENOM_BLADES, "Melee hits add 2 poison stacks; +50% poison damage; -30% crit damage"
+    SNODE "Backstab",       STAT_BACKSTAB,     20, -7, 26
+    SNODE "Precision",      STAT_CRIT_CHANCE,   3, -10, 35
+    SNODE "Cruelty",        STAT_CRIT_DMG,     15, -12, 43
+    SNODE "Serrated",       STAT_BLEED_CHANCE,  8, -15, 52
+    SNODE "Blade Mastery",  STAT_MELEE_DMG,     8, -17, 60
+    KNODE "Assassinate",    KS_ASSASSINATE, "Backstabs kill non-boss foes under 25% health; +50% backstab vs bosses", -20, 68
+    SNODE "Fleet Foot",     STAT_MOVE_SPEED,    3, -16, 22
+    ANODE smoke, 1, -21, 29
+    SNODE "Evasion",        STAT_DODGE_COST,   10, -26, 36
+    ANODE bladedance, 2, -32, 43
+    SNODE "Venom",          STAT_POISON_DMG,   10, -37, 50
+    KNODE "Shadow Dance",   KS_SHADOW_DANCE, "Smoke Bomb stealth lasts 30 s; the first hit from stealth deals double", -42, 58
+    SNODE "Endurance",      STAT_MAX_STAMINA,  12, -23, 15
+    SNODE "Second Wind",    STAT_STAMINA_REGEN, 10, -30, 20
+    SNODE "Leech",          STAT_LIFESTEAL,     2, -37, 25
+    ANODE knives, 3, -44, 30
+    SNODE "Lethality",      STAT_DOT_DMG,      10, -52, 35
+    KNODE "Venom Blades",   KS_VENOM_BLADES, "Melee hits add 2 poison stacks; +50% poison damage; -30% crit damage", -59, 40
+    ARCHETYPE 5                         ; Marksman: Gunslinger, Quartermaster, Demolitions
+    SNODE "Steady Hands",   STAT_GUN_DMG,       6, 23, 15
+    SNODE "Trigger Discipline", STAT_CRIT_CHANCE, 3, 30, 20
+    SNODE "Hollow Points",  STAT_CRIT_DMG,     15, 37, 25
+    SNODE "Bounty Hunter",  STAT_ELITE_DMG,     6, 44, 30
+    SNODE "Fast Hands",     STAT_RELOAD_SPEED,  8, 52, 35
+    KNODE "Deadshot",       KS_DEADSHOT, "Aimed shots always crit. Shots from the hip never crit.", 59, 40
+    SNODE "Bandolier",      STAT_ARROW_SAVE,    8, 16, 22
+    ANODE bullseye, 1, 21, 29
+    SNODE "Speed Loader",   STAT_RELOAD_SPEED,  8, 26, 36
+    ANODE fanhammer, 2, 32, 43
+    SNODE "Tinkerer",       STAT_COOLDOWN_RED,  4, 37, 50
+    KNODE "Quartermaster",  KS_QUARTERMASTER, "Your magazines hold 50% more rounds.", 42, 58
+    SNODE "Vitality",       STAT_MAX_HEALTH,    3, 7, 26
+    SNODE "Powder Burns",   STAT_FIRE_DMG,      8, 10, 35
+    SNODE "Blast Radius",   STAT_AREA,          8, 12, 43
+    ANODE flashbang, 3, 15, 52
+    SNODE "Leather Coat",   STAT_ARMOR_BONUS,   1, 17, 60
+    KNODE "Powder Keg",     KS_POWDER_KEG, "Grenade, flashbang and rocket blasts are 50% wider.", 20, 68
     BRIDGES 1                           ; Warrior - Mage
-    BRIDGE "Runed Steel",   STAT_ADD_FIRE,       1
-    BRIDGE "Warded Plate",  STAT_MAX_MANA,       10
-    BRIDGE "Spellblade",    STAT_ALL_DMG,        4
-    BRIDGES 2                           ; Mage - Archer
-    BRIDGE "Charged Tips",  STAT_ADD_SHOCK,      1
-    BRIDGE "Far Sight",     STAT_AREA,           6
-    BRIDGE "Starshot",      STAT_ALL_DMG,        4
-    BRIDGES 3                           ; Archer - Rogue
-    BRIDGE "Barbed Shafts", STAT_BLEED_CHANCE,   6
-    BRIDGE "Light Step",    STAT_MOVE_SPEED,     3
-    BRIDGE "Skirmisher",    STAT_ATTACK_SPEED,   4
-    BRIDGES 4                           ; Rogue - Warrior
-    BRIDGE "Riposte Edge",  STAT_CRIT_CHANCE,    2
-    BRIDGE "Scarred Hide",  STAT_THORNS,         2
-    BRIDGE "Duelist",       STAT_WEAPON_DMG,     5
+    BRIDGE "Runed Steel",   STAT_ADD_FIRE,       1, 21, -29
+    BRIDGE "Warded Plate",  STAT_MAX_MANA,       10, 32, -43
+    BRIDGE "Spellblade",    STAT_ALL_DMG,        4, 42, -58
+    BRIDGES 2                           ; Mage - Marksman
+    BRIDGE "Alchemist's Powder", STAT_FIRE_DMG,  6, 34, 11
+    BRIDGE "Far Sight",     STAT_AREA,           6, 51, 17
+    BRIDGE "Spellslinger",  STAT_ALL_DMG,        4, 68, 22
+    BRIDGES 3                           ; Archer - Warrior
+    BRIDGE "Riposte Edge",  STAT_CRIT_CHANCE,    2, -21, -29
+    BRIDGE "Scarred Hide",  STAT_THORNS,         2, -32, -43
+    BRIDGE "Warden",        STAT_WEAPON_DMG,     5, -42, -58
+    BRIDGES 4                           ; Rogue - Archer
+    BRIDGE "Barbed Shafts", STAT_BLEED_CHANCE,   6, -34, 11
+    BRIDGE "Light Step",    STAT_MOVE_SPEED,     3, -51, 17
+    BRIDGE "Skirmisher",    STAT_ATTACK_SPEED,   4, -68, 22
+    BRIDGES 5                           ; Marksman - Rogue
+    BRIDGE "Cold Read",     STAT_CRIT_CHANCE,    2, 0, 36
+    BRIDGE "Light Fingers", STAT_DODGE_COST,     8, 0, 54
+    BRIDGE "Gunslinger",    STAT_CRIT_DMG,       10, 0, 71
 %if $ - web_tab != NUM_WEB_NODES * WEBNODE_size
 %error "web_tab needs NUM_WEB_NODES records"
 %endif
@@ -464,14 +481,26 @@ web_tab:                                ; by node id
 ; the edges of the web, pairs of node ids (each joins its two nodes both ways):
 ;   path(a) - (a, b, 0) for each branch b;  (a, b, t) - (a, b, t + 1);
 ;   bridge(a, k) - (a, 2, 2k + 1) and (next(a), 0, 2k + 1);  bridge(a, k) - bridge(a, k + 1)
+; where next(a) is the archetype after a on the ring: Warrior, Mage, Marksman, Rogue, Archer, Warrior
 align 2
 web_edges:
 %assign wx_a 1
 %rep NUM_ARCHETYPES
   %assign wx_path wx_a - 1
-  %assign wx_base 4 + (wx_a - 1) * 18
-  %assign wx_nbase 4 + (wx_a - (wx_a / 4) * 4) * 18     ; the node base of next(a) = a mod 4 + 1
-  %assign wx_bridge 76 + (wx_a - 1) * 3
+  %assign wx_base NUM_ARCHETYPES + (wx_a - 1) * 18
+  %if wx_a == ARCH_WARRIOR
+    %assign wx_next ARCH_MAGE
+  %elif wx_a == ARCH_MAGE
+    %assign wx_next ARCH_MARKSMAN
+  %elif wx_a == ARCH_MARKSMAN
+    %assign wx_next ARCH_ROGUE
+  %elif wx_a == ARCH_ROGUE
+    %assign wx_next ARCH_ARCHER
+  %else
+    %assign wx_next ARCH_WARRIOR
+  %endif
+  %assign wx_nbase NUM_ARCHETYPES + (wx_next - 1) * 18  ; the node base of next(a)
+  %assign wx_bridge NUM_ARCHETYPES + NUM_ARCHETYPES * 18 + (wx_a - 1) * 3
   %assign wx_b 0
   %rep 3
     dw wx_path, wx_base + wx_b * 6
@@ -494,14 +523,14 @@ web_edges:
   %assign wx_a wx_a + 1
 %endrep
 web_edges_end:
-%if (web_edges_end - web_edges) != 104 * 4
-%error "the web has 104 edges"
+%if (web_edges_end - web_edges) != 130 * 4
+%error "the web has 130 edges"
 %endif
 align 4
 web_edge_count: dd (web_edges_end - web_edges) / 4
 
-; the archetype names and the titles of the neighbouring pairs (rpg_title); a pair is looked up
-; by (lower - 1) * 4 + (higher - 1)
+; the archetype names and the titles of the pairs of archetypes (rpg_title); a pair is looked up
+; by (lower - 1) * 5 + (higher - 1)
 %macro PSTR 1                           ; a string in .rodata.str and its pointer in .rodata
 section .rodata.str
 %%s: db %1, 0
@@ -509,25 +538,31 @@ section .rodata
     dq %%s
 %endmacro
 align 8
-arch_names:                             ; by archetype 0..4
+arch_names:                             ; by archetype 0..5
     PSTR "Wanderer"
     PSTR "Warrior"
     PSTR "Mage"
     PSTR "Archer"
     PSTR "Rogue"
+    PSTR "Marksman"
 pair_titles:
     dq 0                                ; (1, 1)
     PSTR "Spellblade"                   ; (1, 2)
     PSTR "Warden"                       ; (1, 3)
     PSTR "Duelist"                      ; (1, 4)
+    PSTR "Grenadier"                    ; (1, 5)
     times 2 dq 0                        ; (2, 1) (2, 2)
     PSTR "Arcane Archer"                ; (2, 3)
     PSTR "Nightblade"                   ; (2, 4)
+    PSTR "Spellslinger"                 ; (2, 5)
     times 3 dq 0                        ; (3, 1) (3, 2) (3, 3)
     PSTR "Skirmisher"                   ; (3, 4)
-    times 4 dq 0                        ; (4, *)
-%if $ - pair_titles != 16 * 8
-%error "pair_titles has 16 entries"
+    PSTR "Sharpshooter"                 ; (3, 5)
+    times 4 dq 0                        ; (4, 1) .. (4, 4)
+    PSTR "Gunslinger"                   ; (4, 5)
+    times 5 dq 0                        ; (5, 1) .. (5, 5)
+%if $ - pair_titles != 25 * 8
+%error "pair_titles has 25 entries"
 %endif
 
 ; what the info getters return for an index out of range
@@ -556,7 +591,7 @@ rpg_level:
     movzx   eax, byte [rpg_state + RPGSAVE.level]
     ret
 
-; web_ranks_total() -> eax the sum of the ranks of the 88 web nodes (leaf; clobbers ecx, edx, rsi)
+; web_ranks_total() -> eax the sum of the ranks of the NUM_WEB_NODES (110) web nodes (leaf; clobbers ecx, edx, rsi)
 web_ranks_total:
     lea     rsi, [rpg_ext + RPGEXT.web]
     xor     eax, eax
@@ -616,7 +651,7 @@ rpg_xp_need:
     xor     eax, eax
     ret
 
-; rpg_rank(edi node) -> eax rank of web node 0..87 (0 for anything else)
+; rpg_rank(edi node) -> eax rank of web node 0..109 (0 for anything else)
 rpg_rank:
     xor     eax, eax
     cmp     edi, NUM_WEB_NODES
@@ -627,7 +662,7 @@ rpg_rank:
 .ret:
     ret
 
-; rpg_web_node(edi node) -> rax WEBNODE* of node 0..87, 0 for anything else (leaf)
+; rpg_web_node(edi node) -> rax WEBNODE* of node 0..109, 0 for anything else (leaf)
 rpg_web_node:
     xor     eax, eax
     cmp     edi, NUM_WEB_NODES
@@ -728,7 +763,7 @@ rpg_stat:
 .ret:
     ret
 
-; rpg_keystone(edi ks) -> eax 1 when keystone 0..11 is taken (its node has a rank), else 0
+; rpg_keystone(edi ks) -> eax 1 when keystone 0..14 is taken (its node has a rank), else 0
 rpg_keystone:
     xor     eax, eax
     cmp     edi, NUM_KEYSTONES
@@ -742,7 +777,7 @@ rpg_keystone:
 
 ; ---- ability bar ------------------------------------------------------------
 
-; rpg_ability_learned(edi ability) -> eax 1 when the ability 0..15 is taught by a ranked node: the
+; rpg_ability_learned(edi ability) -> eax 1 when the ability 0..19 is taught by a ranked node: the
 ; path node of its archetype (slot 0) or the ability node whose stat is its id (slots 1..3); else 0
 ; (leaf)
 rpg_ability_learned:
@@ -858,13 +893,13 @@ bar_put_first_empty:
 
 ; ---- archetype and title ----------------------------------------------------
 
-; arch_sums(rdi out dword[5]): the sum of the ranks of the nodes of owner 0 (the bridges), 1..4
+; arch_sums(rdi out dword[6]): the sum of the ranks of the nodes of owner 0 (the bridges), 1..5
 ; (leaf; clobbers eax, ecx, edx, rsi, r8)
 arch_sums:
     xor     eax, eax
     mov     [rdi], rax
     mov     [rdi + 8], rax
-    mov     [rdi + 16], eax
+    mov     [rdi + 16], rax
     lea     rsi, [web_tab]
     lea     r8, [rpg_ext + RPGEXT.web]
     xor     ecx, ecx
@@ -878,7 +913,7 @@ arch_sums:
     jb      .l
     ret
 
-; rpg_archetype_ranks(edi arch) -> eax the sum of the ranks of the nodes owned by archetype 1..4
+; rpg_archetype_ranks(edi arch) -> eax the sum of the ranks of the nodes owned by archetype 1..5
 ; (0 would be the bridges); 0 for another value. Keeps its argument in r9d across arch_sums, which
 ; leaves r9 alone.
 rpg_archetype_ranks:
@@ -894,7 +929,7 @@ rpg_archetype_ranks:
     add     rsp, 24
     ret
 
-; rpg_archetype() -> eax the archetype 1..4 with the most ranks spent in its own nodes (ties go to
+; rpg_archetype() -> eax the archetype 1..5 with the most ranks spent in its own nodes (ties go to
 ; the lower number), 0 while nothing is spent
 rpg_archetype:
     sub     rsp, 24
@@ -916,8 +951,8 @@ rpg_archetype:
     add     rsp, 24
     ret
 
-; rpg_archetype_name(edi a) -> rax zstr "Wanderer" (0), "Warrior", "Mage", "Archer", "Rogue"; ""
-; for another value (leaf)
+; rpg_archetype_name(edi a) -> rax zstr "Wanderer" (0), "Warrior", "Mage", "Archer", "Rogue",
+; "Marksman"; "" for another value (leaf)
 rpg_archetype_name:
     lea     rax, [s_empty]
     cmp     edi, NUM_ARCHETYPES
@@ -930,9 +965,9 @@ rpg_archetype_name:
 
 ; rpg_title() -> rax zstr the title the ranks earn. s1 >= s2 are the two largest archetype sums
 ; (a1, a2; ties to the lower number): nothing spent is "Wanderer"; s2 > 0 and 2 * s2 >= s1 is the
-; title of the pair (Spellblade, Arcane Archer, Skirmisher, Duelist, Warden, Nightblade); else the
-; name of a1.
-; ebx = a1, r12d = a2; frame: the five sums
+; title of the pair (Spellblade, Warden, Duelist, Grenadier, Arcane Archer, Nightblade, Spellslinger,
+; Skirmisher, Sharpshooter, Gunslinger); else the name of a1.
+; ebx = a1, r12d = a2; frame: the six sums
 rpg_title:
     push    rbp
     mov     rbp, rsp
@@ -987,8 +1022,8 @@ rpg_title:
     xchg    eax, ecx
 .ordered:
     dec     eax
-    shl     eax, 2
-    lea     eax, [rax + rcx - 1]        ; (lower - 1) * 4 + (higher - 1)
+    lea     eax, [rax + rax*4]
+    lea     eax, [rax + rcx - 1]        ; (lower - 1) * 5 + (higher - 1)
     lea     rdx, [pair_titles]
     mov     rax, [rdx + rax*8]
 .ret:
@@ -1000,7 +1035,7 @@ rpg_title:
 
 ; ---- description getters ---------------------------------------------------
 
-; rpg_ability_info(edi ability) -> rax ABILINFO* of ability 0..15; anything else -> an empty record
+; rpg_ability_info(edi ability) -> rax ABILINFO* of ability 0..19; anything else -> an empty record
 ; (leaf)
 rpg_ability_info:
     cmp     edi, NUM_ABILITIES
@@ -1018,8 +1053,9 @@ rpg_ability_info:
 %endif
 
 ; rpg_ability_tile(edi ability) -> eax atlas tile of the ability's icon: with s = ability mod 4 and
-; c = ability / 4, TILE_ABILITY0 + 3c + s for slots 0..2, TILE_ABILITY3_0 + c for slot 3; 0 for
-; another ability. Leaf, clobbers ecx.
+; c = ability / 4, TILE_ABILITY0 + 3c + s for slots 0..2 and TILE_ABILITY3_0 + c for slot 3 of the
+; archetypes 1..4 (c = 0..3), TILE_MK_ABIL0 + s for the Marksman's four (c = 4); 0 for another
+; ability. Leaf, clobbers ecx.
 rpg_ability_tile:
     xor     eax, eax
     cmp     edi, NUM_ABILITIES
@@ -1028,6 +1064,8 @@ rpg_ability_tile:
     shr     ecx, 2                      ; c
     mov     eax, edi
     and     eax, 3                      ; s
+    cmp     ecx, ARCH_MARKSMAN - 1
+    je      .marksman
     cmp     eax, 3
     je      .slot3
     lea     ecx, [rcx + rcx*2]
@@ -1035,10 +1073,27 @@ rpg_ability_tile:
     ret
 .slot3:
     lea     eax, [rcx + TILE_ABILITY3_0]
+    ret
+.marksman:
+    add     eax, TILE_MK_ABIL0          ; its four icons are one run of tiles
 .ret:
     ret
 
-; rpg_stat_info(edi stat) -> rax STATINFO* of stat 0..43; anything else -> an empty record
+; rpg_path_tile(edi archetype) -> eax atlas tile of the emblem on the path node of archetype 1..5:
+; TILE_CLASS0 + a - 1 for 1..4, TILE_CLASS_MARKSMAN for 5; 0 for another value. Leaf, clobbers ecx.
+rpg_path_tile:
+    lea     ecx, [rdi - 1]
+    xor     eax, eax
+    cmp     ecx, NUM_ARCHETYPES
+    jae     .ret                        ; 0 (0 - 1 wraps) and everything above 5
+    lea     eax, [rdi + TILE_CLASS0 - 1]
+    mov     ecx, TILE_CLASS_MARKSMAN
+    cmp     edi, ARCH_MARKSMAN
+    cmove   eax, ecx
+.ret:
+    ret
+
+; rpg_stat_info(edi stat) -> rax STATINFO* of stat 0..45; anything else -> an empty record
 rpg_stat_info:
     cmp     edi, NUM_STATS
     jae     .blank
@@ -1182,9 +1237,9 @@ rpg_clamp_stats:
 ; rpg_recompute(): rebuilds rpg_stats in this order: the classless base row, +2 health per level
 ; above the first, the difference between the row of each ranked path node and the classless row,
 ; the stat nodes (rank * value; the ranked keystone nodes set their rpg_keystones bit), the
-; attributes, the keystones' stat changes, the equipped gear (gear_add_stats), the caps and floors,
-; Bloodrage's -10% health. Then publishes surv_max_health and keeps health, mana and stamina at or
-; below their maxima.
+; attributes (with the Marksman's path ranked, each Dexterity point is also +1 gun damage), the
+; keystones' stat changes, the equipped gear (gear_add_stats), the caps and floors, Bloodrage's -10%
+; health. Then publishes surv_max_health and keeps health, mana and stamina at or below their maxima.
 rpg_recompute:
     push    rbp
     mov     rbp, rsp
@@ -1206,7 +1261,7 @@ rpg_recompute:
     lea     r10, [rpg_stats]
     xor     ebx, ebx                    ; archetype - 1
 .path:
-    movzx   eax, byte [r8 + rbx]        ; the path nodes are web nodes 0..3
+    movzx   eax, byte [r8 + rbx]        ; the path nodes are web nodes 0..NUM_ARCHETYPES-1
     test    eax, eax
     jz      .path_next
     lea     eax, [rbx + 1]
@@ -1253,6 +1308,10 @@ rpg_recompute:
     add     [rpg_stats + STAT_MAX_STAMINA*4], eax
     movzx   r8d, word [rpg_ext + RPGEXT.attr + ATTR_DEX*2]
     add     [rpg_stats + STAT_RANGED_DMG*4], r8d
+    cmp     byte [rpg_ext + RPGEXT.web + ARCH_MARKSMAN - 1], 0  ; only the Marksman path turns Dexterity into gun damage
+    je      .no_gun_dex
+    add     [rpg_stats + STAT_GUN_DMG*4], r8d
+.no_gun_dex:
     ADD_DIV 3, STAT_ATTACK_SPEED
     ADD_DIV 5, STAT_CRIT_CHANCE
     movzx   r8d, word [rpg_ext + RPGEXT.attr + ATTR_INT*2]
@@ -1499,7 +1558,7 @@ rpg_add_xp:
 
 ; ---- skill and attribute points ---------------------------------------------------
 
-; rpg_can_spend(edi node) -> eax 0 when a point can go into web node 0..87, else why not (checked in
+; rpg_can_spend(edi node) -> eax 0 when a point can go into web node 0..109, else why not (checked in
 ; this order): 2 no such node or already at its maximum rank, 3 the character's level is below the
 ; node's, 4 the node is not reachable (rpg_reachable), 1 no skill points left
 ; ebx = node, r12 = WEBNODE*
@@ -1793,7 +1852,7 @@ rpg_save:
     ret
 
 ; web_valid() -> eax 1 when the ranks of RPGEXT.web are a state the rules can reach, else 0: no rank
-; above the maximum of its node (nothing in the slots past the 88 nodes), the ranks add up to at most
+; above the maximum of its node (nothing in the slots past the last node), the ranks add up to at most
 ; the level, no ranked node asks for a level above the character's, and every ranked node is joined
 ; to a ranked path node through ranked nodes (web_scratch grows from the ranked paths along the
 ; edges). Leaf: clobbers every caller-saved register.
@@ -1878,12 +1937,13 @@ web_valid:
     xor     eax, eax
     ret
 
-; refund_banner(): the web was handed back by rpg_load: say so, and keep rpg_begin from replacing
-; the banner
+%define LEGACY_CLASSES 4                ; the classes of a 0.10.1 save (RPGSAVE.legacy_class 1..4); not the paths of the web
+
+; refund_banner(rdi text): the web was handed back by rpg_load: say so with the zstr, and keep
+; rpg_begin from replacing the banner
 refund_banner:
     sub     rsp, 8
     mov     byte [rpg_migrated], 1
-    lea     rdi, [s_migrated]
     mov     esi, RGBA(255, 215, 60, 255)
     call    hud_banner
     add     rsp, 8
@@ -1893,10 +1953,12 @@ refund_banner:
 ; then the stats. A level outside 1..50 rebuilds the character from scratch. A record of version 0
 ; or 1 (a save from before the grimoire, with classes) is migrated: its web and bar are zeroed (so
 ; every skill point is refunded; version 0 also loses its attribute points), the kits it counts as
-; given are the common one and the one of its old class (RPGSAVE.legacy_class, 1..4), so no kit is
-; given twice, and a banner says the points were refunded. A version 2 record whose web the rules
-; cannot reach (web_valid) is refunded the same way. A bar slot holding an ability that is not
-; learned is emptied. Attribute points adding up to more than 3 per level above the first are
+; given are the common one and the one of its old class (RPGSAVE.legacy_class, 1..LEGACY_CLASSES),
+; so no kit is given twice, and a banner says the points were refunded. A version 2 record (0.10.2
+; and 0.10.3: four paths, every node id has moved since) keeps its kits and attribute points but its
+; web and bar are zeroed too, with a banner of their own. A version 3 record whose web the rules
+; cannot reach (web_valid) is refunded like a version 1 one. A bar slot holding an ability that is
+; not learned is emptied. Attribute points adding up to more than 3 per level above the first are
 ; dropped; xp is kept below the bar; quest and quest_state are masked to their ranges. The old
 ; cleared and flags bytes of the record are not read any more (0.9: the dungeons and the crypt keep
 ; their state in WORLDHDR.sites).
@@ -1923,10 +1985,12 @@ rpg_load:
     jae     .reset
     cmp     byte [rpg_ext + RPGEXT.version], RPGX_VERSION
     jae     .current
+    cmp     byte [rpg_ext + RPGEXT.version], 2
+    je      .fifth_path
     movzx   ecx, byte [rpg_state + RPGSAVE.legacy_class]
     dec     ecx
     mov     edx, KIT_COMMON_BIT
-    cmp     ecx, NUM_ARCHETYPES
+    cmp     ecx, LEGACY_CLASSES
     jae     .kits                       ; no class: only the common kit counts as given
     bts     edx, ecx
 .kits:
@@ -1941,6 +2005,13 @@ rpg_load:
     rep     stosb
     mov     byte [rpg_state + RPGSAVE.legacy_class], 0
     call    web_clear
+    lea     rdi, [s_migrated]
+    call    refund_banner
+    jmp     .bars
+.fifth_path:                            ; version 2: the node ids moved; kits and attribute points stay
+    mov     byte [rpg_state + RPGSAVE.legacy_class], 0
+    call    web_clear
+    lea     rdi, [s_migrated_mk]
     call    refund_banner
     jmp     .bars
 .current:
@@ -1949,6 +2020,7 @@ rpg_load:
     test    eax, eax
     jnz     .bars
     call    web_clear
+    lea     rdi, [s_migrated]
     call    refund_banner
 .bars:
     lea     r12, [rpg_ext + RPGEXT.bar]

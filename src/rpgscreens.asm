@@ -33,7 +33,7 @@ extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_level, rpg_points, rpg_rank
 extern rpg_spend, rpg_stat_info, rpg_format_stat, rpg_recompute
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
-extern rpg_respec_cost, rpg_respec, rpg_ability_tile
+extern rpg_respec_cost, rpg_respec, rpg_ability_tile, rpg_path_tile
 extern rpg_web_node, rpg_reachable, web_edges, web_edge_count, rpg_title, rpg_archetype_name
 extern rpg_ability_learned, rpg_ability_info, rpg_bar_ability, rpg_bar_set
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
@@ -54,7 +54,7 @@ extern tier_names, champion_names
 %define WEB_VR      20                  ; right edge = ui_w - WEB_VR
 %define WEB_VB      42                  ; bottom edge = ui_h - WEB_VB
 %define WEB_CELL1   28                  ; units per web cell at zoom 1 ...
-%define WEB_CELL0   9                   ; ... and at zoom 0 (the whole 17 x 17 web fits the viewport)
+%define WEB_CELL0   8                   ; ... and at zoom 0 (the whole web, +-WEB_EXTENT / 8 cells, fits the viewport)
 %define WEB_DRAG    3                   ; units of travel that turn a press on a node into a drag
 %define DRAG_NONE   0                   ; web_drag: nothing pressed, panning, a press waiting on a node,
 %define DRAG_PAN    1                   ; a press on a node that moved too far to be a click
@@ -92,6 +92,8 @@ attr_tiles:     db TILE_ATTR_STR, TILE_ATTR_DEX, TILE_ATTR_INT, TILE_ATTR_VIT
 f_click:        dd 0.6                  ; click volume, as ui.asm's buttons
 sheet_tab_geom: db 4, 56, 60, 56, 116, 46     ; the section tabs: x in the page, width (the labels are 49, 49, 40 wide)
 web_dims_tab:   db 3, 7, 5, 10, 11, 22, 14, 28  ; web_dims: pick half, frame size by zoom * 2 + path
+web_label_dy:   db 17, 17, -25, -25, -25       ; web_draw_compass, by archetype - 1: the name's y from its path node centre
+                                                ; (centred on the node; below it for the Warrior and the Mage, above for the others)
 ability_binds:  db BIND_ABILITY1, BIND_ABILITY2, BIND_ABILITY3, BIND_ABILITY4   ; bind of bar slot 0..3
 align 4
 web_edge_cols:  dd C_EDGE_LOCKED, C_INK, C_GOLD_DEEP      ; edges: no end ranked, one end, both ends
@@ -222,7 +224,7 @@ tip_row:        resb 128                ; one wrapped tooltip row
 row_buf:        resb 128                ; one wrapped row of "Rivals: ..." / "Champion: ..."
 web_ox:         resd 1                  ; screen position of web cell (0, 0)
 web_oy:         resd 1
-web_zoom:       resd 1                  ; 1 = cells of 28 units, 0 = cells of 13
+web_zoom:       resd 1                  ; 1 = cells of 28 units, 0 = cells of 8
 web_init:       resd 1                  ; the origin was set (first open of the session)
 web_hover:      resd 1                  ; the node under the mouse that is drawn, or -1
 web_drag:       resd 1                  ; DRAG_*
@@ -687,14 +689,14 @@ screen_header:
     LEAVE_FRAME 24
 
 ; ---- the grimoire: the skill web ---------------------------------------------------------------
-; One web of 88 nodes (rpg.asm) on a 17 x 17 cell grid around the compass. web_ox / web_oy is the
-; screen position of cell (0, 0), a cell is 28 GUI units wide at zoom 1 and 9 at zoom 0, where the whole
-; web fits the viewport. The web is drawn over the open book and clipped to the viewport (ui_clip); only
-; a mouse inside the viewport hovers or presses a node.
+; One web of 110 nodes (rpg.asm), each at a cell in 1/8 cell (WEB_SUB) around the compass, none further
+; than WEB_EXTENT from it. web_ox / web_oy is the screen position of cell (0, 0), a cell is 28 GUI units
+; wide at zoom 1 and 8 at zoom 0, where the whole web fits the viewport. The web is drawn over the open
+; book and clipped to the viewport (ui_clip); only a mouse inside the viewport hovers or presses a node.
 
-; web_node_xy(edi node, esi zoom) -> eax dx, edx dy: the node's cell (the signed bytes of its WEBNODE)
-; times the cell size, 28 at zoom 1 and 9 at zoom 0 = the node centre minus the web origin; 0, 0 for
-; a node that does not exist
+; web_node_xy(edi node, esi zoom) -> eax dx, edx dy: the node's cell (the signed bytes of its WEBNODE, in
+; 1/8 cell) times the cell size, 28 at zoom 1 and 8 at zoom 0, shifted right by 3 (arithmetic: rounds
+; towards minus infinity) = the node centre minus the web origin; 0, 0 for a node that does not exist
 web_node_xy:
     sub     rsp, 8
     mov     [rsp], esi
@@ -713,13 +715,15 @@ web_node_xy:
     cmovnz  r8d, r9d
     imul    ecx, r8d
     imul    edx, r8d
+    sar     ecx, 3                      ; WEB_SUB
+    sar     edx, 3
 .none:
     mov     eax, ecx
     ret
 
 ; web_dims(edi node, esi zoom) -> eax half (the pick half-size), edx frame size: 11 / 22 for an
 ; ordinary node and 14 / 28 for a path node at zoom 1, 3 / 7 and 5 / 10 at zoom 0 (the pick box covers
-; the frame and no two pick boxes of different cells touch; leaf but for rpg_web_node)
+; the frame and no two pick boxes of the web overlap; leaf but for rpg_web_node)
 web_dims:
     sub     rsp, 8
     mov     [rsp], esi
@@ -826,14 +830,16 @@ web_node_ability:
     mov     eax, edx
     ret
 
-; web_clamp(): keep the origin where at least one cell of the 17 x 17 web (cells -8..8) is inside the
-; viewport: ox in [VX - 7 cells, right edge + 7 cells], oy likewise (leaf)
+; web_clamp(): keep the origin where at least one cell of the web (nodes up to WEB_EXTENT / 8 cells away)
+; is inside the viewport: ox in [VX - m, right edge + m], oy likewise, m = (WEB_EXTENT - WEB_SUB) / 8
+; cells = 220 units at zoom 1, 63 at zoom 0 (leaf)
 web_clamp:
     mov     ecx, WEB_CELL0
     mov     eax, WEB_CELL1
     cmp     dword [web_zoom], 0
     cmovne  ecx, eax
-    imul    ecx, ecx, 7
+    imul    ecx, ecx, WEB_EXTENT - WEB_SUB
+    sar     ecx, 3                      ; WEB_SUB
     mov     eax, [web_ox]
     mov     edx, WEB_VX
     sub     edx, ecx
@@ -1095,9 +1101,9 @@ web_draw_edges:
     LEAVE_FRAME 24
 
 ; web_draw_compass(): TILE_COMPASS on the origin (one 16 x 16 tile drawn 32 x 32 units, 16 x 16 at zoom 0) and,
-; at zoom 1, the four archetype names in rubric ink round their path nodes like a pinwheel: Warrior right of its
-; node, Mage below it, Archer left of it, Rogue above it.
-; Locals: [rsp] name, [rsp+8] its ink width
+; at zoom 1, the archetype names in rubric ink centred on their path nodes, below the Warrior's and the Mage's
+; and above the others (web_label_dy).
+; Locals: [rsp] name
 ; ebx = archetype, r12d = compass size, r13d / r14d = path node centre
 web_draw_compass:
     ENTER_FRAME 24
@@ -1130,30 +1136,12 @@ web_draw_compass:
     mov     esi, 1
     call    ui_text_width
     dec     eax                         ; the ink: drop the trailing 1-unit gap
-    mov     [rsp + 8], eax
-    cmp     ebx, ARCH_WARRIOR
-    jne     .not_warrior
-    lea     esi, [r13 + 19]             ; right of the node
-    lea     edx, [r14 - 4]
-    jmp     .placed
-.not_warrior:
-    cmp     ebx, ARCH_ARCHER
-    jne     .centred
-    mov     esi, r13d                   ; left of the node
-    sub     esi, 19
-    sub     esi, [rsp + 8]
-    lea     edx, [r14 - 4]
-    jmp     .placed
-.centred:
-    mov     esi, [rsp + 8]
-    shr     esi, 1
-    neg     esi
-    add     esi, r13d                   ; centred on the node
-    lea     edx, [r14 + 17]             ; Mage: below it
-    cmp     ebx, ARCH_MAGE
-    je      .placed
-    lea     edx, [r14 - 25]             ; Rogue: above it
-.placed:
+    shr     eax, 1
+    mov     esi, r13d
+    sub     esi, eax                    ; centred on the node ...
+    lea     rcx, [web_label_dy]
+    movsx   edx, byte [rcx + rbx - 1]
+    add     edx, r14d                   ; ... below it or above it
     mov     rdi, [rsp]
     mov     ecx, C_RUBRIC
     mov     r8d, 1
@@ -1249,7 +1237,8 @@ web_draw_node:
     jmp     .draw_icon
 .t_path:
     movzx   edi, byte [r12 + WEBNODE.stat]
-    add     edi, TILE_CLASS0 - 1
+    call    rpg_path_tile
+    mov     edi, eax
 .draw_icon:
     mov     [rsp + 32], edi
     mov     edi, [rsp + 20]             ; umber backing: light icons (bolts, flames) vanish on parchment
