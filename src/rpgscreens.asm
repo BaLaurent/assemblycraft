@@ -1179,6 +1179,11 @@ web_draw_node:
     mov     eax, [rsp]
     or      eax, [rsp + 28]
     jz      .frame                      ; unranked and unreachable: no ring
+    cmp     dword [rsp], 0
+    jne     .ring
+    cmp     dword [web_zoom], 0
+    je      .frame                      ; zoom 0: no empty rings, they crowd the 8-unit cells
+.ring:
     mov     edi, [rsp + 12]
     mov     esi, [rsp + 16]
     mov     edx, [rsp + 8]
@@ -1265,6 +1270,10 @@ web_ring:
     mov     edx, r13d
     mov     ecx, r13d
     mov     r8d, C_LOCKED
+    cmp     dword [rsp + 12], 0
+    jne     .track
+    mov     r8d, RGBA(150, 100, 20, 190)    ; nothing yet: the "a point can go here" ring, gold
+.track:
     call    ui_frame
     lea     eax, [r13 - 1]
     shl     eax, 2                      ; perimeter units
