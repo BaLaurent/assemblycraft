@@ -82,6 +82,9 @@ extern test_ui_nine_layout
 extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
 extern test_sheet_sections
 extern test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter
+extern test_marksman_path_and_dex, test_marksman_abilities, test_bullet_damage_pipeline
+extern test_gun_attachment_effects, test_new_guns_fire, test_attach_craft
+extern test_skill_arrows_ignore_hurt_window, test_grenade_and_rocket_blasts
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -280,6 +283,14 @@ tests:
     TEST sfx_clean_edges
     TEST audio_pan
     TEST audio_caps_jitter_limiter
+    TEST marksman_path_and_dex
+    TEST marksman_abilities
+    TEST bullet_damage_pipeline
+    TEST gun_attachment_effects
+    TEST new_guns_fire
+    TEST attach_craft
+    TEST skill_arrows_ignore_hurt_window
+    TEST grenade_and_rocket_blasts
     dq 0
 
 section .rodata
@@ -470,6 +481,14 @@ section .rodata
     TESTNAME sfx_clean_edges
     TESTNAME audio_pan
     TESTNAME audio_caps_jitter_limiter
+    TESTNAME marksman_path_and_dex
+    TESTNAME marksman_abilities
+    TESTNAME bullet_damage_pipeline
+    TESTNAME gun_attachment_effects
+    TESTNAME new_guns_fire
+    TESTNAME attach_craft
+    TESTNAME skill_arrows_ignore_hurt_window
+    TESTNAME grenade_and_rocket_blasts
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

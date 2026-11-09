@@ -17,7 +17,7 @@ global recipe_uses, recipe_have, recipe_sets, recipe_fits, recipe_fill, inv_take
 extern item_max_stack, item_tool, item_tier, item_durability, item_attack, item_gear, game_mode
 extern item_burn, item_smelt, item_armor_slot, item_armor_points
 extern block_hardness, block_tool, block_harvest_level, block_drop
-extern audio_play, drops_toss
+extern audio_play, drops_toss, gun_index
 
 %define CURSOR_COUNT (INVENTORY.cursor + 1)
 %define RESULT_COUNT (INVENTORY.result + 1)
@@ -132,6 +132,15 @@ recipes:
     db 3, 3, DIAMOND_SPEAR, 1, 0, 0, DIAMOND, 0, STICK, 0, STICK, 0, 0
     db 3, 2, BED, 1, WOOL, WOOL, WOOL, PLANKS, PLANKS, PLANKS, 0, 0, 0
     db 3, 2, BOAT, 1, PLANKS, 0, PLANKS, PLANKS, PLANKS, PLANKS, 0, 0, 0
+    ; 0.10.4: two more guns and the four attachments (fitting one onto a gun is craft_fit's job)
+%define I IRON_INGOT
+    db 3, 2, REVOLVER, 1, I, I, GOLD_INGOT, 0, PLANKS, 0, 0, 0, 0
+    db 3, 2, HUNTING_RIFLE, 1, I, I, I, PLANKS, PLANKS, GLASS_PANE, 0, 0, 0
+    db 3, 1, SCOPE, 1, I, GLASS_PANE, I, 0, 0, 0, 0, 0, 0
+    db 1, 3, EXTENDED_MAG, 1, I, GOLD_INGOT, I, 0, 0, 0, 0, 0, 0
+    db 3, 1, RIFLED_BARREL, 1, I, I, DIAMOND, 0, 0, 0, 0, 0, 0
+    db 3, 1, COMPENSATOR, 1, FLINT, I, FLINT, 0, 0, 0, 0, 0, 0
+%undef I
 recipes_end:
 
 section .data
@@ -427,7 +436,8 @@ armor_points:
     jb      .l
     ret
 
-; craft_update() - recomputes inv.result from the active craft_size x craft_size grid
+; craft_update() - recomputes inv.result from the active craft_size x craft_size grid: the first
+; recipe that matches, else craft_fit's attachment fitting, else nothing
 craft_update:
     push    rbp
     mov     rbp, rsp
@@ -478,7 +488,7 @@ craft_update:
     lea     r9, [recipes_end]
 .rec:
     cmp     rbx, r9
-    jae     .empty
+    jae     .attach
     movzx   eax, byte [rbx]
     cmp     eax, edi
     jne     .next
@@ -515,6 +525,12 @@ craft_update:
 .next:
     add     rbx, RECIPE_SIZE
     jmp     .rec
+.attach:                                ; no recipe: maybe an attachment onto a firearm
+    sub     rsp, 8                      ; five pushes leave rsp 8 off
+    call    craft_fit
+    add     rsp, 8
+    mov     [inv + INVENTORY.result], eax
+    jmp     .ret
 .empty:
     mov     dword [r8 + INVENTORY.result], 0
 .ret:
@@ -523,6 +539,86 @@ craft_update:
     pop     r13
     pop     r12
     pop     rbx
+    pop     rbp
+    ret
+
+; craft_fit() -> eax the result stack (id | count << 8 | dmg << 16) of fitting an attachment onto a
+; firearm, 0 when nothing fits. The active craft_size x craft_size grid must hold exactly two stacks:
+; a firearm (gun_index >= 0) and an attachment (SCOPE..COMPENSATOR) the firearm does not carry yet.
+; The result is that firearm, count 1, with its dmg word | the attachment's bit (ATT_SCOPE << (id -
+; SCOPE)): the rounds loaded stay. Taking it consumes both stacks like any recipe (craft_consume).
+; r12, r13 = the two stacks (the attachment last), r14d = stacks seen, then the attachment's index
+craft_fit:
+    push    rbp
+    mov     rbp, rsp
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8                      ; four pushes leave rsp 8 off
+    lea     rsi, [inv + INVENTORY.grid]
+    mov     r8d, [craft_size]
+    xor     r12d, r12d
+    xor     r13d, r13d
+    xor     r14d, r14d
+    xor     eax, eax                    ; row
+.row:
+    xor     ecx, ecx                    ; column
+.col:
+    lea     edx, [rax + rax*2]
+    add     edx, ecx
+    lea     rdx, [rsi + rdx*4]          ; this cell of the 3-wide grid
+    cmp     byte [rdx + 1], 0
+    je      .next
+    inc     r14d
+    cmp     r14d, 1
+    jne     .second
+    mov     r12, rdx
+    jmp     .next
+.second:
+    mov     r13, rdx
+.next:
+    inc     ecx
+    cmp     ecx, r8d
+    jb      .col
+    inc     eax
+    cmp     eax, r8d
+    jb      .row
+    cmp     r14d, 2
+    jne     .none                       ; a lone stack, none, or three or more
+    movzx   eax, byte [r13]             ; the second stack is the attachment, else the first must be
+    sub     eax, SCOPE
+    cmp     eax, COMPENSATOR - SCOPE
+    jbe     .have_att
+    xchg    r12, r13
+    movzx   eax, byte [r13]
+    sub     eax, SCOPE
+    cmp     eax, COMPENSATOR - SCOPE
+    ja      .none
+.have_att:
+    mov     r14d, eax                   ; the attachment: 0 .. COMPENSATOR - SCOPE
+    movzx   edi, byte [r12]
+    call    gun_index
+    test    eax, eax
+    js      .none                       ; the other stack is no firearm
+    mov     ecx, r14d
+    mov     edx, ATT_SCOPE
+    shl     edx, cl                     ; the attachment's bit
+    movzx   eax, word [r12 + 2]
+    test    eax, edx
+    jnz     .none                       ; this one is fitted already
+    or      eax, edx
+    shl     eax, 16                     ; dmg
+    movzx   ecx, byte [r12]
+    or      eax, ecx                    ; id
+    or      eax, 0x100                  ; count 1
+    jmp     .out
+.none:
+    xor     eax, eax
+.out:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
     pop     rbp
     ret
 
@@ -1185,11 +1281,11 @@ inv_click:
     movzx   ecx, byte [r12 + RESULT_COUNT]
     cmp     eax, ecx
     jb      .rs_done
-    mov     rdi, r12                    ; add_cells(inv, 36, result id, count, 0)
+    mov     rdi, r12                    ; add_cells(inv, 36, result id, count, result dmg)
     mov     esi, INV_SLOTS
     movzx   edx, byte [r12 + INVENTORY.result]
     movzx   ecx, byte [r12 + RESULT_COUNT]
-    xor     r8d, r8d
+    movzx   r8d, word [r12 + INVENTORY.result + 2]
     call    add_cells
     call    craft_consume
     mov     r14d, 1

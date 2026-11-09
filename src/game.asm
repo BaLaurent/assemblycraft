@@ -74,7 +74,10 @@ bow_speed:    dd 45.0
 bow_min:      dd 0.1                   ; weakest shot that leaves the bow
 f_two:        dd 2.0
 f_three:      dd 3.0
-f_eight:      dd 8.0
+f_bow_scale:  dd 10.0                  ; BOW_FULL - 1: a bow shot's damage is 1 + round(10 power)
+%if BOW_FULL - 1 != 10
+%error "f_bow_scale must be BOW_FULL - 1"
+%endif
 vol_bow:      dd 0.8
 aim_rate:     dd 12.0                  ; aiming eases in/out at min(1, 12 dt) per frame
 aim_spread:   dd 0.75                  ; fully aimed: a quarter of the hip spread
@@ -1253,8 +1256,9 @@ heavy_track:
 %define F_SIZE   128
 
 ; bow_barrage(rdi game_frame's frame): Barrage. Two more arrows fly 6 degrees to either side of a
-; shot just fired from that frame (same eye, direction, power and flags): 60 % of its damage, at
-; least 1; they use no ammo and cannot be picked up.
+; shot just fired from that frame (same eye, direction, power and flags, plus AF_NOWIN: they land even
+; inside the hurt window the main arrow opens): 60 % of its damage, at least 1; they use no ammo and
+; cannot be picked up.
 ; r12d = their damage. Frame: [rsp] side (+1 / -1), [rsp+4] arrows left
 bow_barrage:
     push    rbp
@@ -1308,6 +1312,7 @@ bow_barrage:
     xor     edx, edx                    ; nothing to pick up
     mov     ecx, PROJ_ARROW
     mov     r8d, [rbx + F_SCR + 8]
+    or      r8d, AF_NOWIN               ; the extras ignore the mob hurt window
     call    arrows_spawn
     movss   xmm0, [rsp]
     xorps   xmm1, xmm1
@@ -2034,9 +2039,9 @@ game_frame:
     setae   al
 .force_set:
     mov     [rsp + F_FORCE], eax
-    ; damage = 1 + round(8 power), x3/2 (integer) for the Celestial Bow; the damage pipeline applies
-    ; RANGED_DMG and the crit when the arrow lands
-    mulss   xmm1, [f_eight]
+    ; damage = 1 + round(10 power) (BOW_FULL at a full draw), x3/2 (integer) for the Celestial Bow; the
+    ; damage pipeline applies RANGED_DMG and the crit when the arrow lands
+    mulss   xmm1, [f_bow_scale]
     cvtss2si eax, xmm1
     inc     eax
     cmp     dword [rsp + F_SCR + 12], CELESTIAL_BOW

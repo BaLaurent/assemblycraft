@@ -6,7 +6,7 @@
 %include "gl.inc"
 default rel
 
-global explode_at, explode_magic, explode_dmg_mult, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
+global explode_at, explode_magic, explode_dmg_mult, explode_mob_mult, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
 global tnt_shift, tnt_remove_box
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
@@ -70,6 +70,8 @@ section .data
 align 4
 explode_dmg_mult: dd 0.0                ; > 0: factor on the damage a blast does to the player (a creeper
                                         ; of a level sets it); 0: max health / 20
+explode_mob_mult: dd 1.0                ; factor on the damage explode_at does to mobs (a rocket sets it to
+                                        ; its gun-family multiplier for the blast, then puts it back to 1.0)
 
 section .bss
 alignb 16
@@ -290,7 +292,7 @@ tnt_render:
 ;    their item, containers spill);
 ; 2. the player within 2r takes ceil(f * base * r / 3), f = 1 - d / 2r, d measured to his chest
 ;    (survival_damage decides whether it applies), and is thrown away from the blast;
-; 3. every mob within 2r takes ceil(f * 24 * r / 3) and is knocked away;
+; 3. every mob within 2r takes ceil(f * 24 * r / 3 * explode_mob_mult) and is knocked away;
 ; 4. every primed TNT within 2r is thrown away (14 f, plus 5 f upwards).
 ; Effects: fx_explosion at the centre, fx_debris for every second destroyed block.
 ; r12d, r13d, r14d = x, y, z offsets of the cell from floor(centre) while sweeping blocks;
@@ -564,6 +566,7 @@ explode_at:
     subss   xmm1, xmm0                  ; f
     mulss   xmm1, [c_mob_base]
     mulss   xmm1, [rsp + X_K]
+    mulss   xmm1, [explode_mob_mult]
     roundss xmm1, xmm1, 10
     cvttss2si r13d, xmm1                ; damage
     movss   xmm0, [rsp + X_DX]

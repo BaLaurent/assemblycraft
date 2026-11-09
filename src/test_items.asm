@@ -8,7 +8,7 @@ global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 global test_new_blocks_tables, test_shrine_block_tables, test_terrain_blocks_tables
-global test_grimoire_tiles
+global test_grimoire_tiles, test_attach_craft
 
 extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
@@ -309,6 +309,13 @@ craft_cases:
     CASE SHOTGUN_SHELL, 4,    IRON_INGOT, 0, 0,  GUNPOWDER, 0, 0,  FEATHER, 0, 0
     CASE RIFLE_ROUND, 16,     0, IRON_INGOT, 0,  0, GUNPOWDER, 0,  0, GUNPOWDER, 0
     CASE ROCKET, 1,           0, IRON_INGOT, 0,  0, TNT, 0,  0, GUNPOWDER, 0
+    ; 0.10.4: the revolver, the hunting rifle and the four attachments
+    CASE REVOLVER, 1,         IRON_INGOT, IRON_INGOT, GOLD_INGOT,  0, PLANKS, 0,  0, 0, 0
+    CASE HUNTING_RIFLE, 1,    IRON_INGOT, IRON_INGOT, IRON_INGOT,  PLANKS, PLANKS, GLASS_PANE,  0, 0, 0
+    CASE SCOPE, 1,            IRON_INGOT, GLASS_PANE, IRON_INGOT,  0, 0, 0,  0, 0, 0
+    CASE EXTENDED_MAG, 1,     0, IRON_INGOT, 0,  0, GOLD_INGOT, 0,  0, IRON_INGOT, 0
+    CASE RIFLED_BARREL, 1,    0, 0, 0,  IRON_INGOT, IRON_INGOT, DIAMOND,  0, 0, 0
+    CASE COMPENSATOR, 1,      0, 0, 0,  0, 0, 0,  FLINT, IRON_INGOT, FLINT
     ; 0.7: building blocks, storage blocks both ways, slabs, stairs (both mirrors), doors,
     ; trapdoor, ladder, torch, fence, glass pane
     CASE SANDSTONE, 1,        SAND, SAND, 0,  SAND, SAND, 0,  0, 0, 0
@@ -1609,6 +1616,126 @@ test_grimoire_tiles:
 .fail:
     mov     eax, 1
 .out:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- fitting an attachment onto a firearm ------------------------------------------------------
+
+; FITS gun id, gun dmg, attachment id, grid cell of the gun, grid cell of the attachment, expected
+; result dmg (-1: no result): the two stacks alone in the grid, craft_update
+%macro FITS 6
+    CLEAR_GRID
+    SET     CELL(%4), %1, 1, %2
+    SET     CELL(%5), %3, 1, 0
+    call    craft_update
+%if (%6) < 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+%else
+    EXPECT  SLOTREF_RESULT, %1, 1, %6
+%endif
+%endmacro
+
+; An attachment fits onto a firearm when the grid holds exactly those two stacks (any cells of the
+; active grid, either order) and the firearm does not carry it yet: the result is the firearm with
+; its dmg word | the attachment's bit (the rounds loaded stay), taking it (click or shift-click)
+; consumes both. Nothing fits otherwise; a stack outside the active 2x2 grid is not seen.
+test_attach_craft:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    TEST_INIT
+    ; the 2x2 grid: the pistol with 5 rounds and a scope, either way round
+    FITS    PISTOL, 5, SCOPE, 0, 1, ATT_SCOPE | 5
+    FITS    PISTOL, 5, SCOPE, 4, 3, ATT_SCOPE | 5
+    FITS    PISTOL, 5, EXTENDED_MAG, 0, 3, ATT_EXTMAG | 5
+    FITS    PISTOL, 5, RIFLED_BARREL, 1, 4, ATT_RIFLED | 5
+    FITS    PISTOL, 5, COMPENSATOR, 3, 0, ATT_COMP | 5
+    ; any other firearm: the bits are kept apart
+    FITS    KALASHNIKOV, ATT_COMP | 30, SCOPE, 0, 1, ATT_COMP | ATT_SCOPE | 30
+    FITS    HUNTING_RIFLE, ATT_EXTMAG | ATT_SCOPE | ATT_RIFLED, COMPENSATOR, 0, 1, ATT_EXTMAG | ATT_SCOPE | ATT_RIFLED | ATT_COMP
+    ; the 3x3 grid, cells far apart
+    mov     dword [craft_size], 3
+    FITS    ROCKET_LAUNCHER, 1, SCOPE, 0, 8, ATT_SCOPE | 1
+    FITS    REVOLVER, 0, COMPENSATOR, 8, 2, ATT_COMP
+    ; nothing fits: the attachment is on the firearm already, a third stack, two attachments, two
+    ; firearms, a firearm or an attachment alone, something else beside a firearm
+    FITS    PISTOL, ATT_SCOPE | 5, SCOPE, 0, 1, -1
+    FITS    PISTOL, ATT_COMP | ATT_SCOPE | 5, COMPENSATOR, 0, 1, -1
+    FITS    SCOPE, 0, COMPENSATOR, 0, 1, -1
+    FITS    PISTOL, 5, MUSKET, 0, 1, -1
+    FITS    PISTOL, 5, STICK, 0, 1, -1
+    FITS    STICK, 0, SCOPE, 0, 1, -1
+    FITS    PISTOL, 5, PISTOL_ROUND, 0, 1, -1
+    CLEAR_GRID
+    SET     CELL(0), PISTOL, 1, 5
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    SET     CELL(1), SCOPE, 1, 0
+    SET     CELL(4), STICK, 1, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, 0, 0, 0         ; a third stack spoils it, wherever it is
+    CLEAR_GRID
+    SET     CELL(0), PISTOL, 1, 5
+    SET     CELL(1), STICK, 1, 0
+    SET     CELL(4), SCOPE, 1, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    CLEAR_GRID
+    SET     CELL(0), STICK, 1, 0
+    SET     CELL(1), PISTOL, 1, 5
+    SET     CELL(4), SCOPE, 1, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    CLEAR_GRID
+    SET     CELL(0), SCOPE, 1, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    ; a stack outside the active 2x2 grid is not seen: the scope is alone in it
+    mov     dword [craft_size], 2
+    FITS    PISTOL, 5, SCOPE, 2, 0, -1
+    FITS    PISTOL, 5, SCOPE, 6, 0, -1
+    ; taking the result with a click: the cursor holds the fitted pistol, both stacks are used up
+    FITS    PISTOL, 5, SCOPE, 0, 1, ATT_SCOPE | 5
+    CLICK   SLOTREF_RESULT, 0, 0
+    EXPECT  CURSOR, PISTOL, 1, ATT_SCOPE | 5
+    EXPECT  CELL(0), 0, 0, 0
+    EXPECT  CELL(1), 0, 0, 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    ; shift-click: it goes straight into the inventory with its word, and a stack of three scopes
+    ; keeps two
+    mov     dword [inv + INVENTORY.cursor], 0
+    CLEAR_GRID
+    SET     CELL(0), PISTOL, 1, 7
+    SET     CELL(1), SCOPE, 3, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, PISTOL, 1, ATT_SCOPE | 7
+    CLICK   SLOTREF_RESULT, 0, 1
+    EXPECT  0, PISTOL, 1, ATT_SCOPE | 7
+    EXPECT  CELL(0), 0, 0, 0
+    EXPECT  CELL(1), SCOPE, 2, 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    ; with one stack of each the shift-click leaves the grid empty (the next free slot takes the gun)
+    CLEAR_GRID
+    SET     CELL(3), PISTOL, 1, 9
+    SET     CELL(4), COMPENSATOR, 1, 0
+    call    craft_update
+    EXPECT  SLOTREF_RESULT, PISTOL, 1, ATT_COMP | 9
+    CLICK   SLOTREF_RESULT, 0, 1
+    EXPECT  1, PISTOL, 1, ATT_COMP | 9
+    EXPECT  CELL(3), 0, 0, 0
+    EXPECT  CELL(4), 0, 0, 0
+    EXPECT  SLOTREF_RESULT, 0, 0, 0
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    inv_clear
+    mov     dword [craft_size], 2
+    mov     eax, ebx
     add     rsp, 8
     pop     rbx
     pop     rbp

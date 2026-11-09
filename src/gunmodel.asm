@@ -6,7 +6,7 @@ default rel
 
 global gun_model_draw
 
-extern render_box
+extern render_box, gun_index
 
 %define C_METAL  0                      ; part colours (index into colours)
 %define C_DARK   1
@@ -80,10 +80,27 @@ launcher:
     PART -0.03, -0.16, -0.3,   0.03, -0.02, -0.24,  C_DARK  ; front grip
     PART -0.05, 0.0, -0.66,    0.05, 0.09, -0.55,   C_RED
     dd END
+revolver:
+    PART -0.03, 0.01, -0.3,    0.03, 0.06, -0.12,   C_METAL ; barrel
+    PART -0.045, -0.01, -0.12, 0.045, 0.07, 0.0,    C_DARK  ; cylinder
+    PART -0.03, 0.0, 0.0,      0.03, 0.06, 0.04,    C_METAL ; frame
+    PART -0.03, -0.17, 0.0,    0.03, 0.0, 0.06,     C_WOOD  ; grip
+    PART -0.012, -0.05, -0.09, 0.012, 0.0, -0.03,   C_DARK  ; trigger guard
+    dd END
+hrifle:
+    PART -0.016, 0.03, -1.0,   0.016, 0.065, -0.3,  C_METAL ; barrel
+    PART -0.04, -0.02, -0.7,   0.04, 0.04, -0.2,    C_WOOD  ; fore-stock
+    PART -0.04, -0.02, -0.2,   0.04, 0.07, 0.1,     C_DARK  ; receiver
+    PART -0.022, 0.075, -0.32, 0.022, 0.115, -0.02, C_DARK  ; scope tube
+    PART -0.045, -0.15, 0.08,  0.045, 0.04, 0.42,   C_WOOD  ; butt
+    dd END
 align 8
-models:      dq pistol, musket, shotgun, rifle, launcher
-muzzle_z:    dd -0.29, -1.06, -0.81, -0.71, -0.56
-muzzle_y:    dd 0.035, 0.04, 0.042, 0.045, 0.06
+models:      dq pistol, musket, shotgun, rifle, launcher, revolver, hrifle
+muzzle_z:    dd -0.29, -1.06, -0.81, -0.71, -0.56, -0.31, -1.01
+muzzle_y:    dd 0.035, 0.04, 0.042, 0.045, 0.06, 0.035, 0.047
+%if (muzzle_z - models) != NUM_GUNS * 8 || (muzzle_y - muzzle_z) != NUM_GUNS * 4
+%error "models, muzzle_z and muzzle_y need one entry per firearm (NUM_GUNS)"
+%endif
 
 section .bss
 alignb 4
@@ -92,7 +109,7 @@ flash_box:   resd 6
 
 section .text
 
-; gun_model_draw(edi id, esi loaded, xmm0 light, xmm1 kick): the firearm id (PISTOL..) at the
+; gun_model_draw(edi id, esi loaded, xmm0 light, xmm1 kick): the firearm id (gun_index >= 0) at the
 ; origin, muzzle towards -Z; a C_RED part only while loaded; a fullbright muzzle flash while
 ; kick > 0.6. The caller binds the atlas.
 ; rbx = part, r12d = loaded, r13d = g; [rsp] light, [rsp+4] kick
@@ -103,9 +120,10 @@ gun_model_draw:
     push    r12
     push    r13
     sub     rsp, 24
-    lea     r13d, [rdi - PISTOL]
-    cmp     r13d, NUM_GUNS
-    jae     .ret
+    call    gun_index                   ; clobbers eax only: esi, xmm0 and xmm1 are still the arguments
+    test    eax, eax
+    js      .ret
+    mov     r13d, eax
     mov     r12d, esi
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1

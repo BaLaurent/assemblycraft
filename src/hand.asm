@@ -9,7 +9,7 @@ global hand_render, hand_swing
 
 extern player, inv_held, player_eye, light_brightness_at, sincos_deg, game_bow_charge, gun_kick
 extern render_box, item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim
-extern gun_reload, gun_reload_total, item_tool, combat_guard_t, combat_dodge_t, game_heavy_s
+extern gun_reload, gun_reload_total, gun_index, item_tool, combat_guard_t, combat_dodge_t, game_heavy_s
 
 section .rodata
 align 8
@@ -224,11 +224,13 @@ hand_render:
     je      .held
     movzx   ebx, byte [rax + ITEMSTACK.id]
     movzx   eax, word [rax + ITEMSTACK.dmg]
+    and     eax, GUN_ROUNDS_MASK        ; the attachments in the high byte are no rounds
     mov     [loaded], eax               ; a firearm's rounds in the magazine
 .held:
-    lea     eax, [rbx - PISTOL]
-    cmp     eax, NUM_GUNS
-    jb      .gun_view
+    mov     edi, ebx
+    call    gun_index
+    test    eax, eax
+    jns     .gun_view                   ; a firearm: hip or aimed
 
     ; ---- position: screen corner + walk bob + swing ------------------------------
     movss   xmm0, [bob_s]

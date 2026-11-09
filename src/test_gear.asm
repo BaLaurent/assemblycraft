@@ -69,6 +69,11 @@ l_common_chest: db "Common Chestplate", 0
 l_attack7:    db "Attack 7", 0
 l_attack11:   db "Attack 11", 0
 l_attack9:    db "Attack 9", 0
+; the base attack of a full bow draw and of the Celestial Bow (x3/2, integer), from BOW_FULL
+%assign BOW_ATTACK BOW_FULL
+%assign CELESTIAL_ATTACK BOW_FULL * 3 / 2
+l_attack_bow: db "Attack ", %str(BOW_ATTACK), 0
+l_attack_cel: db "Attack ", %str(CELESTIAL_ATTACK), 0
 l_armor6:     db "Armor 6", 0
 l_hammer:     db "Hammer: stuns on hit", 0
 l_king1:      db "+50% damage to elites and bosses;", 0
@@ -80,7 +85,15 @@ n_chestplate: db "Iron Chestplate", 0
 n_ring:       db "Ring", 0
 n_celestial:  db "Celestial Bow", 0
 n_archmage:   db "Archmage Staff", 0
-l_attack13:   db "Attack 13", 0
+n_pistol:     db "Pistol", 0
+n_kalash:     db "Kalashnikov", 0
+n_scope:      db "Scope", 0
+n_compensator: db "Compensator", 0
+l_att_scope:  db "Scope: no spread aimed, +15% crit aimed", 0
+l_att_extmag: db "Extended magazine: +50% rounds", 0
+l_att_rifled: db "Rifled barrel: +25% damage, faster bullets", 0
+l_att_comp:   db "Compensator: fires 25% faster, less spread", 0
+l_att_fit:    db "Craft it with a gun to fit it", 0
 l_attack4:    db "Attack 4", 0
 l_celes1:     db "No arrows needed, x1.5 damage;", 0
 l_celes2:     db "crits shock the target", 0
@@ -88,7 +101,7 @@ l_arch1:      db "Every 4th staff bolt is a fireball", 0
 l_legend_staff: db "Legendary Staff", 0
 l_common_ring: db "Common Ring", 0
 
-t_legendary_by_class: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG
+t_legendary_by_class: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG, SHADOW_FANG
 
 section .bss
 alignb 16
@@ -579,7 +592,7 @@ test_gear_decode_deterministic:
     TIP
     cmp     eax, 3
     jne     .fail
-    LINE    2, l_attack9, COL_WHITE
+    LINE    2, l_attack_bow, COL_WHITE
     ASTACK  STAFF, 0
     TIP
     cmp     eax, 3
@@ -590,7 +603,7 @@ test_gear_decode_deterministic:
     cmp     eax, 9                      ; name, kind, attack, 4 affixes, 2 power lines
     jne     .fail
     LINE    0, n_celestial, COL_LEGEND
-    LINE    2, l_attack13, COL_WHITE
+    LINE    2, l_attack_cel, COL_WHITE
     LINE    7, l_celes1, COL_POWER
     LINE    8, l_celes2, COL_POWER
     ASTACK  ARCHMAGE_STAFF, 0
@@ -613,6 +626,44 @@ test_gear_decode_deterministic:
     jne     .fail
     LINE    0, n_pickaxe, COL_WHITE
     LINE    1, l_durability, COL_GREY
+
+    ; firearms: the name, then one line per attachment fitted, in bit order (the rounds loaded in
+    ; the low byte of the word are no attachments); an attachment item: its effect, then how to fit it
+    ASTACK  PISTOL, 8
+    TIP
+    cmp     eax, 1
+    jne     .fail
+    LINE    0, n_pistol, COL_WHITE
+    ASTACK  PISTOL, ATT_COMP | ATT_SCOPE | 5
+    TIP
+    cmp     eax, 3
+    jne     .fail
+    LINE    0, n_pistol, COL_WHITE
+    LINE    1, l_att_scope, COL_AFFIX
+    LINE    2, l_att_comp, COL_AFFIX
+    ASTACK  KALASHNIKOV, ATT_COMP | ATT_RIFLED | ATT_EXTMAG | ATT_SCOPE | 30
+    TIP
+    cmp     eax, 5
+    jne     .fail
+    LINE    0, n_kalash, COL_WHITE
+    LINE    1, l_att_scope, COL_AFFIX
+    LINE    2, l_att_extmag, COL_AFFIX
+    LINE    3, l_att_rifled, COL_AFFIX
+    LINE    4, l_att_comp, COL_AFFIX
+    ASTACK  SCOPE, 0
+    TIP
+    cmp     eax, 3
+    jne     .fail
+    LINE    0, n_scope, COL_WHITE
+    LINE    1, l_att_scope, COL_AFFIX
+    LINE    2, l_att_fit, COL_HINT
+    ASTACK  COMPENSATOR, 0
+    TIP
+    cmp     eax, 3
+    jne     .fail
+    LINE    0, n_compensator, COL_WHITE
+    LINE    1, l_att_comp, COL_AFFIX
+    LINE    2, l_att_fit, COL_HINT
     mov     dword [t_stack], 0
     TIP
     test    eax, eax
@@ -1016,7 +1067,7 @@ material_ok:
     ret
 
 ; pick_many(edi tier, esi class, edx n) -> eax 1 when every pick is a gear item the tier allows;
-; t_cnt[0] = how many picks were bows
+; t_cnt[0] = how many picks were bows, t_cnt[1] = how many were daggers
 pick_many:
     push    rbp
     mov     rbp, rsp
@@ -1031,6 +1082,7 @@ pick_many:
     mov     r13d, edx
     mov     r15d, 1
     mov     dword [t_cnt], 0
+    mov     dword [t_cnt + 4], 0
 .pick:
     test    r13d, r13d
     jz      .out
@@ -1044,8 +1096,13 @@ pick_many:
     cmp     byte [rcx + rax], 0
     je      .bad
     cmp     r14d, BOW
-    jne     .material
+    jne     .dagger
     inc     dword [t_cnt]
+.dagger:
+    lea     eax, [r14 - IRON_DAGGER]    ; the iron and the diamond dagger have consecutive ids
+    cmp     eax, 1
+    ja      .material
+    inc     dword [t_cnt + 4]
 .material:
     mov     edi, r14d
     mov     esi, ebx
@@ -1247,6 +1304,16 @@ test_gear_drops_and_chests:
     test    eax, eax
     jz      .fail
     cmp     dword [t_cnt], 1
+    jb      .fail
+    ; a marksman finds daggers, not guns (35 % of the picks are weapons, 60 % of those of the own
+    ; family: about 47 of 200 are daggers; the archer's 200 hold only the odd one)
+    mov     edi, 5
+    mov     esi, ARCH_MARKSMAN
+    mov     edx, 200
+    call    pick_many
+    test    eax, eax
+    jz      .fail
+    cmp     dword [t_cnt + 4], 25
     jb      .fail
 %assign tier_n 0
 %rep 16

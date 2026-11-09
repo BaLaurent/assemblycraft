@@ -17,7 +17,7 @@ global gear_make, gear_roll, gear_tier_for_level, gear_pick_base
 global gear_drop_from_mob, gear_fill_chest, item_tooltip, gear_equipped_for, gear_stack_worn
 
 extern item_gear, item_legendary, item_names, item_attack, item_armor_points
-extern item_durability, item_tool
+extern item_durability, item_tool, gun_index
 extern inv, inv_sel
 extern rng_next, rpg_stats, rpg_archetype, rpg_format_stat
 extern drops_spawn, audio_play_at
@@ -36,8 +36,8 @@ extern str_append, i32_to_str
 
 ; base attack shown for the weapons whose damage does not come from item_attack: a fully drawn
 ; bow shot (x3/2 with the Celestial Bow) and a staff bolt
-%define ATK_BOW       9
-%define ATK_CELESTIAL 13
+%define ATK_BOW       BOW_FULL
+%define ATK_CELESTIAL (BOW_FULL * 3 / 2)
 %define ATK_STAFF     4
 %define ATK_ARCHMAGE  7
 
@@ -160,10 +160,14 @@ loot_weights:
     dw 300, 450, 220,  30               ; LOOT_CHEST
     dw   0, 700, 270,  30               ; LOOT_SHOP
 
-; the Fallen King's legendary by archetype (none, warrior, mage, archer, rogue)
-t_legendary: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG
-; the family of an archetype's own weapons (the warrior picks among sword, hammer and spear)
-arch_family: db FAM_SWORD, FAM_SWORD, FAM_STAFF, FAM_BOW, FAM_DAGGER
+; the Fallen King's legendary by archetype (none, warrior, mage, archer, rogue, marksman)
+t_legendary: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG, SHADOW_FANG
+; the family of an archetype's own weapons (the warrior picks among sword, hammer and spear; guns are
+; no gear, the marksman carries daggers)
+arch_family: db FAM_SWORD, FAM_SWORD, FAM_STAFF, FAM_BOW, FAM_DAGGER, FAM_DAGGER
+%if $ - arch_family != ARCH_MARKSMAN + 1 || arch_family - t_legendary != ARCH_MARKSMAN + 1
+%error "t_legendary and arch_family need one entry per archetype, none included"
+%endif
 ; the iron item of a hammer / spear / dagger family (the diamond one follows it)
 melee_pair: db 0, IRON_HAMMER, IRON_SPEAR, IRON_DAGGER
 
@@ -189,6 +193,11 @@ s_hammer:     db "Hammer: stuns on hit", 0
 s_spear:      db "Spear: long reach", 0
 s_compare:    db "Shift: compare", 0
 s_durability: db "Durability ", 0
+s_att_scope:  db "Scope: no spread aimed, +15% crit aimed", 0
+s_att_extmag: db "Extended magazine: +50% rounds", 0
+s_att_rifled: db "Rifled barrel: +25% damage, faster bullets", 0
+s_att_comp:   db "Compensator: fires 25% faster, less spread", 0
+s_att_fit:    db "Craft it with a gun to fit it", 0
 
 p_king1:      db "+50% damage to elites and bosses;", 0
 p_king2:      db "parries heal 10% health", 0
@@ -205,6 +214,9 @@ p_ember1:     db "Burning foes take +30% damage;", 0
 p_ember2:     db "+20% fire damage", 0
 p_viper1:     db "Poison stacks up to 20;", 0
 p_viper2:     db "+25% poison damage", 0
+
+align 8
+att_lines:    dq s_att_scope, s_att_extmag, s_att_rifled, s_att_comp ; by attachment bit: ATT_SCOPE << n
 
 align 8
 rarity_words: dq w_common, w_magic, w_rare, w_epic, w_legendary
@@ -800,10 +812,10 @@ gear_tier_for_level:
     cmova   eax, ecx
     ret
 
-; gear_pick_base(edi tier, esi archetype 0..4) -> eax item id
+; gear_pick_base(edi tier, esi archetype 0..5) -> eax item id
 ; The base item of a roll. c = r % 100: below 35 a weapon, below 75 a piece of armor, below 88 a
 ; ring, else an amulet. A weapon is of the archetype's own family 60 % of the time (warrior: sword,
-; hammer or spear equally; mage staff; archer bow; rogue dagger; none sword), else any of sword,
+; hammer or spear equally; mage staff; archer bow; rogue and marksman dagger; none sword), else any of sword,
 ; hammer, spear, dagger, bow, staff. Swords are wood at tier 0, stone at 1, iron 2..5, diamond from
 ; 6, golden 10 % of the time; hammers, spears and daggers iron below tier 6, else diamond. Armor
 ; is a random slot, iron below tier 6, else diamond, golden 15 % of the time.
@@ -837,7 +849,7 @@ gear_pick_base:
     cmp     r12d, ARCH_WARRIOR
     je      .warrior
     xor     eax, eax
-    cmp     r12d, NUM_ARCHETYPES
+    cmp     r12d, ARCH_MARKSMAN         ; the last archetype with a row in arch_family
     ja      .family
     lea     rcx, [arch_family]
     movzx   eax, byte [rcx + r12]
@@ -1102,7 +1114,7 @@ gear_drop_from_mob:
     jmp     .sound
 .boss:
     mov     eax, r13d
-    cmp     eax, NUM_ARCHETYPES
+    cmp     eax, ARCH_MARKSMAN          ; the last archetype with a row in t_legendary
     jbe     .arch
     xor     eax, eax                    ; a garbage archetype: the warrior's blade
 .arch:
@@ -1242,12 +1254,13 @@ gear_fill_chest:
 ; (no tier for a common stack); "Attack N" or "Armor N" (a weapon's base attack, an armor piece's
 ; points) plus a note for hammers and spears; one line per affix; the legendary power; and
 ; "Shift: compare" when something else of its kind is equipped (not for a stack that is itself worn).
-; Any other item: its name and its
-; durability left. 0 lines for an empty stack or an unknown id. The texts live in two static
+; Any other item: its name and its durability left. A firearm adds one line per attachment fitted to it
+; (the ATT_* bits of its dmg word, in bit order) and an attachment item its own effect line and "Craft
+; it with a gun to fit it". 0 lines for an empty stack or an unknown id. The texts live in two static
 ; buffers used alternately, so the lines of the last two calls stay valid (the inventory draws the
 ; hovered stack and the equipped one together).
 ; Frame: [rsp] GEARAFFIX[5] + rows[5] (48 bytes), +48 id, +52 dmg, +56 rarity, +60 kind,
-; +64 scratch (a value, the affix count or a table row pointer), +68 affix index.
+; +64 scratch (a value, the affix count or a table row pointer), +68 affix or attachment index.
 ; rbx = the stack, r12 / r13 = line and colour arrays, r14d = lines so far, r15 = this call's buffer.
 item_tooltip:
     push    rbp
@@ -1290,6 +1303,38 @@ item_tooltip:
     mov     esi, [rsp + 52]
     call    gear_name
     PUSHLINE COL_WHITE
+
+    ; a firearm: one line for every attachment fitted; an attachment: what it does and how to fit it
+    mov     edi, [rsp + 48]
+    call    gun_index
+    test    eax, eax
+    js      .attachment
+    mov     dword [rsp + 68], 0         ; attachment bit
+.fitted:
+    mov     ecx, [rsp + 68]
+    mov     eax, ATT_SCOPE
+    shl     eax, cl
+    test    [rsp + 52], eax
+    jz      .fitted_next
+    lea     rax, [att_lines]
+    mov     rsi, [rax + rcx*8]
+    EMIT_STR COL_AFFIX
+.fitted_next:
+    inc     dword [rsp + 68]
+    cmp     dword [rsp + 68], 4
+    jb      .fitted
+    jmp     .durability
+.attachment:
+    mov     eax, [rsp + 48]
+    sub     eax, SCOPE
+    cmp     eax, COMPENSATOR - SCOPE
+    ja      .durability
+    lea     rcx, [att_lines]
+    mov     rsi, [rcx + rax*8]
+    EMIT_STR COL_AFFIX
+    lea     rsi, [s_att_fit]
+    EMIT_STR COL_HINT
+.durability:
     mov     ecx, [rsp + 48]
     lea     rax, [item_durability]
     movzx   edx, word [rax + rcx*2]     ; the full durability

@@ -1,6 +1,6 @@
-; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts and fireballs. Spawn, flight, hits
-; on mobs and the player, arrows sticking in blocks and the player picking his own back up,
-; rockets and fireballs exploding on impact, drawing. Projectiles are not saved with the world; they
+; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts, fireballs, knives and grenades. Spawn,
+; flight, hits on mobs and the player, arrows sticking in blocks and the player picking his own back up,
+; rockets, grenades and fireballs exploding on impact, drawing. Projectiles are not saved with the world; they
 ; live in local coordinates (arrows_shift follows the origin) and expire on their own, so nothing
 ; removes them when a column unloads.
 %include "common.inc"
@@ -9,12 +9,12 @@ default rel
 
 global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift
 
-extern player, raycast, ray_aabb, mobs_raycast, mob_strike, explode_at, explode_magic
-extern mobs, folk_hit_by, faction_enemies
+extern player, raycast, ray_aabb, mobs_raycast, explode_at, explode_magic, explode_mob_mult
+extern mobs, folk_hit_by, faction_enemies, rpg_keystones, ab_flash_at
 extern surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg, fx_burst
-extern player_take_hit, combat_hit_flags, combat_hit_mob, combat_player_status, combat_kb_mult
+extern player_take_hit, combat_hit_mob, combat_calc, combat_player_status, combat_kb_mult
 extern glIsEnabled
 
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
@@ -55,13 +55,15 @@ c_height:    dd 1.8
 f_one:       dd 1.0
 c_bullet_vol: dd 0.4
 c_rocket_r:  dd 3.0                     ; rocket blast radius
+c_grenade_r: dd 3.0                     ; powder grenade blast radius
+c_keg:       dd 1.5                     ; Powder Keg: rocket and grenade blasts 50 % wider
 c_magic_r:   dd 2.5                     ; fireball and explosive arrow blast radius
 c_magic_big: dd 3.0                     ; AF_BIG fireballs (meteors)
 c_src_t:     dd 0.1                     ; a mob's arrow "comes from" 0.1 s back along its path
 c_trail_v:   dd 0.3                     ; speed of a trail particle
 c_burst_v:   dd 1.0                     ; speed of the sparks where a bolt ends
-; flying steps before a projectile is gone (a rocket or fireball explodes then), by kind
-max_age:     dd 600, 120, 300, 90, 120, 20  ; ARROW, BULLET, ROCKET, BOLT, FIREBALL, KNIFE
+; flying steps before a projectile is gone (a rocket, grenade or fireball explodes then), by kind
+max_age:     dd 600, 120, 300, 90, 120, 20, 120 ; ARROW, BULLET, ROCKET, BOLT, FIREBALL, KNIFE, GRENADE
 
 ; arrow model: shaft, tip, fletching (box lo xyz, hi xyz); the tip points to -Z
 arrow_shaft: dd -0.03, -0.03, -0.25,  0.03, 0.03, 0.25
@@ -95,6 +97,8 @@ c_fire_col:  dd 1.0, 0.55, 0.15
 ; throwing knife: a 0.12 cube of steel, drawn in the world pass like an arrow
 knife_box:   dd -0.06, -0.06, -0.06,  0.06, 0.06, 0.06
 c_knife_col: dd 0.75, 0.75, 0.8
+; powder grenade: a 0.2 cube of TNT
+grenade_box: dd -0.1, -0.1, -0.1,  0.1, 0.1, 0.1
 
 section .bss
 alignb 16
@@ -114,8 +118,10 @@ arrows_clear:
 ; arrows_spawn(xmm0 x, xmm1 y, xmm2 z, xmm3 vx, xmm4 vy, xmm5 vz, edi owner, esi damage,
 ;              edx pickup, ecx kind, r8d flags) -> eax slot index, or -1 when every slot is in use
 ; owner: OWNER_PLAYER, OWNER_MONSTER or OWNER_FOLK + the faction of the folk that shot. kind:
-; PROJ_ARROW .. PROJ_KNIFE. flags: AF_* (a player's weapon projectile carries its element in bits
-; AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED). Velocities are blocks per second.
+; PROJ_ARROW .. PROJ_GRENADE. flags: AF_* (a player's weapon projectile carries its element in bits
+; AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED; AF_NOWIN: a bow arrow that ignores the mob hurt
+; window; AF_FLASH: a grenade that flashes instead of burning). damage is the base the damage pipeline
+; scales when it lands (a bullet's, a bolt's, a grenade's blast). Velocities are blocks per second.
 arrows_spawn:
     lea     r9, [arrows]
     xor     eax, eax
@@ -199,11 +205,16 @@ arrow_hdir:
 %endmacro
 
 ; arrows_step(): one fixed 1/60 s step for every arrow.
-; Flying arrows fall under gravity along the segment they travel this step; the nearest of
+; Flying arrows and grenades fall under gravity along the segment they travel this step; the nearest of
 ; the first block, the first mob (the player's projectiles) or the player (a mob's arrows) on that
 ; segment ends the flight: a creature is hurt and the arrow vanishes, a block holds it (a knife,
 ; bullet or bolt just vanishes). Everything a player's projectile does to a mob goes through
-; combat_hit_mob; an elemental mob arrow also afflicts the player. A folk's shot (owner >= OWNER_FOLK)
+; combat_hit_mob: a bullet as SRC_GUN, every bullet counts; a bow shot (AF_ATTACK) waits out the mob's
+; hurt window unless it is AF_NOWIN (the Barrage's extra arrows), and a skill's arrows (Volley, Arrow
+; Rain) never wait. A rocket goes off on a mob, on a block or when its time is up: explode_at, hurting
+; mobs by the gun family (explode_mob_mult) in a radius Powder Keg widens by half. A grenade does so
+; too: a fire blast (explode_magic, SRC_GUN_SKILL, the same widening), or with AF_FLASH ab_flash_at.
+; An elemental mob arrow also afflicts the player. A folk's shot (owner >= OWNER_FOLK)
 ; also meets the folk of a rival faction nearer than the block (folk_hit_by); friends and monsters let
 ; it pass, and the player takes the rest with a death cause of its faction (CAUSE_FOLK + faction).
 ; Stuck arrows time out; the player walks over its own to pick it up again.
@@ -222,7 +233,7 @@ arrows_step:
     cmp     dword [rbx + ARROWENT.stuck], 0
     jne     .stuck
 
-    ; ---- flying: lifetime, gravity (arrows only), then the segment v / 60 ----------
+    ; ---- flying: lifetime, gravity (arrows and grenades), then the segment v / 60 ----------
     inc     dword [rbx + ARROWENT.age]
     mov     eax, [rbx + ARROWENT.age]
     mov     ecx, [rbx + ARROWENT.kind]
@@ -230,7 +241,10 @@ arrows_step:
     cmp     eax, [rdx + rcx*4]
     ja      .expired
     cmp     ecx, PROJ_ARROW
+    je      .gravity
+    cmp     ecx, PROJ_GRENADE
     jne     .no_gravity
+.gravity:
     movss   xmm0, [rbx + ARROWENT.vy]
     subss   xmm0, [c_gravity]
     movss   [rbx + ARROWENT.vy], xmm0
@@ -295,8 +309,8 @@ arrows_step:
     je      .magic_burst                ; so does a fireball...
     test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
     jnz     .magic_burst                ; ...and an explosive arrow
-    cmp     eax, PROJ_BULLET
-    je      .bullet_hit
+    cmp     eax, PROJ_GRENADE
+    je      .grenade_burst              ; ...and a grenade
     mov     r8d, [rbx + ARROWENT.flags] ; the player's weapon projectile: the damage pipeline decides
     mov     edx, r8d
     shr     edx, AF_ELEM_SHIFT
@@ -312,6 +326,9 @@ arrows_step:
     mov     esi, SRC_MELEE_SKILL        ; a knife
     cmp     eax, PROJ_KNIFE
     je      .hit
+    mov     esi, SRC_GUN                ; a bullet: never inside the hurt window, every bullet counts
+    cmp     eax, PROJ_BULLET
+    je      .hit
     cmp     eax, PROJ_ARROW
     je      .arrow
     mov     esi, SRC_SPELL              ; a bolt: a staff's (an attack) or a skill's
@@ -320,30 +337,19 @@ arrows_step:
     mov     esi, SRC_BOLT
     jmp     .hit
 .arrow:
-    or      edx, HITF_HURTWIN           ; an arrow cannot hit again inside the hurt window
-    mov     esi, SRC_RANGED_SKILL
+    mov     esi, SRC_RANGED_SKILL       ; a skill's arrow (Volley, Arrow Rain) always lands
     test    r8d, AF_ATTACK
     jz      .hit
-    mov     esi, SRC_BOW
+    mov     esi, SRC_BOW                ; a bow shot cannot hit again inside the hurt window, but
+    test    r8d, AF_NOWIN               ; the Barrage's extra arrows (AF_NOWIN) land anyway
+    jnz     .hit
+    or      edx, HITF_HURTWIN
 .hit:
     mov     edi, [rsp + S_IDX]
     cvtsi2ss xmm0, dword [rbx + ARROWENT.damage]
     movss   xmm1, [rsp + S_H]
     movss   xmm2, [rsp + S_H + 4]
     call    combat_hit_mob
-    jmp     .impact
-.bullet_hit:                            ; guns take no stats: the mob learns whose hit it is, and a crit
-    mov     ecx, HF_PLAYER
-    mov     edx, HF_PLAYER | HF_CRIT
-    test    dword [rbx + ARROWENT.flags], AF_CRIT
-    cmovnz  ecx, edx
-    mov     [combat_hit_flags], cl
-    mov     edi, [rsp + S_IDX]
-    mov     esi, [rbx + ARROWENT.damage]
-    movss   xmm0, [rsp + S_H]
-    movss   xmm1, [rsp + S_H + 4]
-    call    mob_strike                  ; every bullet counts, even in the hurt window
-    mov     byte [combat_hit_flags], 0
     jmp     .impact
 .mob_shot:
     cmp     eax, OWNER_FOLK
@@ -484,6 +490,8 @@ arrows_step:
     je      .bullet_block               ; a knife is spent on the surface, too
     cmp     eax, PROJ_ROCKET
     je      .rocket_block
+    cmp     eax, PROJ_GRENADE
+    je      .grenade_block
     cmp     eax, PROJ_FIREBALL
     je      .magic_block
     cmp     eax, PROJ_BOLT
@@ -522,11 +530,54 @@ arrows_step:
     HIT_POINT
 .rocket_burst:                          ; S_HP = where it goes off; freed before the blast
     mov     dword [rbx + ARROWENT.live], 0
+    mov     edi, -1                     ; the blast hurts mobs by what a bullet's base 1 would do:
+    mov     esi, SRC_GUN                ; GUN_DMG and ALL_DMG scale it (explode_mob_mult)
+    xor     edx, edx
+    movss   xmm0, [f_one]
+    call    combat_calc
+    movss   [explode_mob_mult], xmm0
+    movss   xmm3, [c_rocket_r]
+    test    dword [rpg_keystones], 1 << KS_POWDER_KEG
+    jz      .rocket_go
+    mulss   xmm3, [c_keg]               ; Powder Keg: 50 % wider
+.rocket_go:
     movss   xmm0, [rsp + S_HP]
     movss   xmm1, [rsp + S_HP + 4]
     movss   xmm2, [rsp + S_HP + 8]
-    movss   xmm3, [c_rocket_r]
     call    explode_at
+    mov     dword [explode_mob_mult], __float32__(1.0)
+    jmp     .next
+.grenade_block:                         ; just short of the surface it hit, like a rocket
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+.grenade_burst:                         ; S_HP = where it goes off; freed before the burst
+    mov     dword [rbx + ARROWENT.live], 0
+    test    dword [rbx + ARROWENT.flags], AF_FLASH
+    jz      .grenade_fire
+    movss   xmm0, [rsp + S_HP]          ; a flashbang: no damage, the foes around the point are stunned
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    call    ab_flash_at
+    jmp     .next
+.grenade_fire:                          ; a powder grenade: a fire blast with the damage it was thrown with
+    mov     edi, [rbx + ARROWENT.damage]
+    movss   xmm3, [c_grenade_r]
+    test    dword [rpg_keystones], 1 << KS_POWDER_KEG
+    jz      .grenade_go
+    mulss   xmm3, [c_keg]               ; Powder Keg: 50 % wider
+.grenade_go:
+    mov     esi, SRC_GUN_SKILL
+    mov     edx, ELEM_FIRE
+    test    dword [rbx + ARROWENT.flags], AF_CRIT
+    jz      .grenade_fx
+    or      edx, HITF_CRIT
+.grenade_fx:
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    call    explode_magic
     jmp     .next
 .magic_block:                           ; a fireball or explosive arrow: just short of the surface
     movss   xmm0, [rsp + S_TMAX]
@@ -573,9 +624,11 @@ arrows_step:
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_ROCKET
     je      .go_off
+    cmp     eax, PROJ_GRENADE
+    je      .go_off
     cmp     eax, PROJ_FIREBALL
     jne     .remove
-.go_off:                                ; a rocket or fireball goes off where it is
+.go_off:                                ; a rocket, grenade or fireball goes off where it is
     mov     eax, [rbx + ARROWENT.x]
     mov     [rsp + S_HP], eax
     mov     eax, [rbx + ARROWENT.y]
@@ -584,6 +637,8 @@ arrows_step:
     mov     [rsp + S_HP + 8], eax
     cmp     dword [rbx + ARROWENT.kind], PROJ_ROCKET
     je      .rocket_burst
+    cmp     dword [rbx + ARROWENT.kind], PROJ_GRENADE
+    je      .grenade_burst
     jmp     .magic_burst
 .fly:
     movss   xmm0, [rbx + ARROWENT.x]
@@ -671,7 +726,7 @@ arrows_step:
     ret
 
 ; arrows_render(): every projectile, aimed along its velocity, with its kind's model. Arrows,
-; bullets and rockets are textured; bolts and fireballs are untextured cubes drawn in a second
+; bullets, rockets, knives and grenades are textured; bolts and fireballs are untextured cubes drawn in a second
 ; pass with texturing off on unit 0 and on unit 1, so they glow regardless of the hour (the
 ; texture state is restored). Called inside the world pass (atlas bound, alpha test on, night
 ; darkening active).
@@ -692,6 +747,8 @@ arrows_render:
     je      .next
     cmp     dword [rbx + ARROWENT.kind], PROJ_KNIFE
     je      .model                      ; a knife is drawn with the arrows
+    cmp     dword [rbx + ARROWENT.kind], PROJ_GRENADE
+    je      .model                      ; and so is a grenade
     cmp     dword [rbx + ARROWENT.kind], PROJ_BOLT
     jb      .model
     inc     r13d                        ; magic: the second pass
@@ -732,6 +789,8 @@ arrows_render:
     je      .rocket
     cmp     eax, PROJ_KNIFE
     je      .knife
+    cmp     eax, PROJ_GRENADE
+    je      .grenade
     lea     rdi, [arrow_shaft]
     lea     rsi, [tiles_shaft]
     call    draw_box
@@ -766,6 +825,11 @@ arrows_render:
     movss   xmm1, [c_knife_col + 4]
     movss   xmm2, [c_knife_col + 8]
     call    render_box
+    jmp     .drawn
+.grenade:                               ; a cube of powder
+    lea     rdi, [grenade_box]
+    lea     rsi, [tiles_head]
+    call    draw_box
 .drawn:
     call    glPopMatrix
 .next:

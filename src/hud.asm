@@ -62,7 +62,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.10.3  ", 0
+s_dbg_title: db "AssemblyCraft 0.10.4  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -866,8 +866,9 @@ hud_held_name:
     pop     rbp
     ret
 
-; hud_gun(edi x0, esi y0): with a firearm held, "loaded/magazine  [rounds in the inventory]"
-; right of the hotbar (Creative: "[inf]"), and the reload progress under the crosshair
+; hud_gun(edi x0, esi y0): with a firearm held, "loaded/magazine  [rounds in the inventory]" (the
+; magazine counts the stack's attachments and Quartermaster) right of the hotbar (Creative: "[inf]"),
+; and the reload progress under the crosshair
 hud_gun:
     push    rbp
     mov     rbp, rsp
@@ -882,11 +883,13 @@ hud_gun:
     cmp     byte [rbx + ITEMSTACK.count], 0
     je      .ret
     movzx   edi, byte [rbx + ITEMSTACK.id]
+    movzx   esi, word [rbx + ITEMSTACK.dmg]
     call    gun_magazine
     test    eax, eax
     jz      .ret
     mov     [rsp + 32], eax             ; magazine
     movzx   edi, word [rbx + ITEMSTACK.dmg]
+    and     edi, GUN_ROUNDS_MASK        ; the high byte holds the attachments
     mov     rsi, rsp
     call    i32_to_str
     mov     rdi, rax

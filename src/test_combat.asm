@@ -4,7 +4,7 @@ default rel
 
 global test_arrow_hits_mob, test_explosion_breaks_blocks, test_creeper_explodes
 global test_skeleton_shoots_player, test_mob_drops_by_type
-global test_tnt_thrown_by_blast, test_tnt_falls
+global test_tnt_thrown_by_blast, test_tnt_falls, test_skill_arrows_ignore_hurt_window
 
 extern arrows, arrows_clear, arrows_spawn, arrows_step
 extern primed, tnt_clear, tnt_prime, tnt_step, explode_at
@@ -12,7 +12,7 @@ extern mobs, mobs_clear, mobs_step, mob_spawn, mob_hurt
 extern mob_count_type
 extern drops, drops_clear
 extern player, body_init, rng_seed, world_clear, world_set, world_get
-extern game_mode, game_time, settings, surv, survival_reset, inv_clear
+extern game_mode, game_time, settings, surv, survival_reset, inv_clear, rpg_stats
 
 section .rodata
 align 4
@@ -35,6 +35,12 @@ k_four:   dd 4.0
 k_16:     dd 16.0                      ; 4 blocks, squared
 k_11_01:  dd 11.01
 k_10_99:  dd 10.99
+
+section .bss
+alignb 4
+stats_keep: resd NUM_STATS              ; rpg_stats of the test that runs, kept while it works on a plain character
+alignb 8
+zombie_ptr: resq 1                      ; the target of two_arrows
 
 section .text
 
@@ -548,6 +554,107 @@ test_tnt_falls:
     call    cleanup
     mov     eax, r12d
     pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; two_arrows(esi AF_* flags) -> eax the health of the zombie (zombie_ptr: 20 health, no hurt window)
+; after two 5-damage arrows with those flags, shot one step apart from 6 blocks away at 30 blocks/s,
+; have flown 30 steps
+two_arrows:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     ebx, esi
+    mov     rax, [zombie_ptr]
+    mov     dword [rax + MOB.health], 20
+    mov     dword [rax + MOB.hurt], 0
+    call    arrows_clear
+    mov     r12d, 2
+.spawn:
+    movss   xmm0, [k_16_5]              ; from (16.5, 11.5, 16.5) along -z
+    movss   xmm1, [k_11_5]
+    movss   xmm2, [k_16_5]
+    xorps   xmm3, xmm3
+    xorps   xmm4, xmm4
+    movss   xmm5, [k_m30]
+    xor     edi, edi                    ; the player's
+    mov     esi, 5
+    xor     edx, edx
+    mov     ecx, PROJ_ARROW
+    mov     r8d, ebx
+    call    arrows_spawn
+    call    arrows_step                 ; the next arrow flies one step behind
+    dec     r12d
+    jnz     .spawn
+    mov     r12d, 30
+.fly:
+    call    arrows_step
+    dec     r12d
+    jnz     .fly
+    mov     rax, [zombie_ptr]
+    mov     eax, [rax + MOB.health]
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Skill arrows (Volley, Arrow Rain: no AF_ATTACK) never wait for the mob's hurt window: both of two
+; arrows a step apart hurt the zombie (20 - 5 - 5). A bow shot (AF_ATTACK) does wait, so the second
+; is refused (20 - 5). The Barrage's extra arrows (AF_ATTACK | AF_NOWIN) land too (20 - 5 - 5).
+test_skill_arrows_ignore_hurt_window:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    mov     dword [game_time], 40000    ; night: no sunburn
+    lea     rsi, [rpg_stats]
+    lea     rdi, [stats_keep]
+    mov     ecx, NUM_STATS
+    rep     movsd
+    lea     rdi, [rpg_stats]            ; a plain character: the arrows deal their 5
+    mov     ecx, NUM_STATS
+    xor     eax, eax
+    rep     stosd
+    mov     edi, MOB_ZOMBIE             ; zombie at (16.5, 11, 10.5)
+    movss   xmm0, [k_16_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_10_5]
+    call    mob_spawn
+    test    eax, eax
+    js      .fail
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    add     rax, rcx
+    mov     [zombie_ptr], rax
+    xor     esi, esi                    ; a skill's arrows
+    call    two_arrows
+    cmp     eax, 20 - 5 - 5
+    jne     .fail
+    mov     esi, AF_ATTACK              ; a bow shot
+    call    two_arrows
+    cmp     eax, 20 - 5
+    jne     .fail
+    mov     esi, AF_ATTACK | AF_NOWIN   ; a Barrage extra
+    call    two_arrows
+    cmp     eax, 20 - 5 - 5
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    lea     rsi, [stats_keep]
+    lea     rdi, [rpg_stats]
+    mov     ecx, NUM_STATS
+    rep     movsd
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
