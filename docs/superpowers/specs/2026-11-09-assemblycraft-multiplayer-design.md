@@ -1519,6 +1519,7 @@ What shipped differs from the text above in these ways. The code is authoritativ
 - `PS_SWING` uses the contingency counter `net_swing_t` (set by `swing_hand` in game.asm and by the cast swing in abilities.asm).
 - Extra stderr lines: `net: chat <line>`, `net: lost connection to the host`, `net: room CODE` on each change. `--name/--server/--port` overrides are kept out of `multiplayer.cfg`. `world_path` and `show_loading` are exported as `app_world_path` / `app_show_loading`. `WINFO` (84 bytes) is duplicated in game.asm and netsync.asm with size assertions.
 - Deleting a world also removes `<world>/players/`.
+- Join robustness (live-found): `netsync_dispatch` handles the transport's waiting events before a message while a join is active, a guest accepted for more than 10 s without receiving its character fails with "The host did not answer", and a guest more than 60 s into a loading wait whose host has been silent for 10 s reports `SYS_TIMEOUT`. A `--join` run exits with code 3 when it fails after the accept too, and fills the target field on the join screen.
 
 ### World (`networld.asm`, `world.asm`, `stream.asm`)
 - Free column records come from a bump pointer plus a free stack, so an all-zero table is valid at init. `world_column_claim` resets an existing record for the same key; a full table gives `world_install_err = 3`.
@@ -1542,3 +1543,5 @@ What shipped differs from the text above in these ways. The code is authoritativ
 - Cross-NAT hole punching between two real networks, and relay through the VPS from another network, are not verifiable from one machine (loopback/LAN and the VPS relay path were verified).
 - A modified client can still flood PROJ relays, farm the quest refund, and place any block id anywhere in a loaded column; there is no authentication beyond the room code. Containers are last-writer-wins.
 - Positions beyond ~200k blocks from the host lose float precision on the host's simulation around that guest.
+- Tracked in GitHub issues #10 (real-network punching/relay test), #11 (trust limits), #12 (small leftovers).
+- Verification status at the end of 0.11: 262 selftests and 9 acrelay selftests pass; the two-instance checks a-l, containers, TNT, boats, relay (local and the VPS at 93.127.163.226:27600), sleep, far-apart streaming and host close were run in an omabox desktop.
