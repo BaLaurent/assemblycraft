@@ -71,7 +71,8 @@ armor_effective:
 ; and explosions; environmental damage (a fall, fire, hunger, suffocation, drowning) is given for
 ; a 20-health character and scales with the maximum health (env_scale). A hit that lands starts
 ; 30 steps of invulnerability and wakes a sleeper (sleep_cancel). A blow that would kill may be
-; undone by the Phoenix ring (lower_health).
+; undone by the Phoenix ring (lower_health). Nothing lands in creative or while SURVIVAL.god is set (the
+; debug menu's god mode): eax 0.
 survival_damage:
     push    rbp
     mov     rbp, rsp
@@ -81,6 +82,8 @@ survival_damage:
     mov     r12d, esi
     cmp     dword [game_mode], MODE_CREATIVE
     je      .no
+    cmp     dword [surv + SURVIVAL.god], 0
+    jne     .no                         ; the debug menu's god mode: nothing hurts
     cmp     dword [surv + SURVIVAL.dead], 0
     jne     .no
     cmp     dword [surv + SURVIVAL.invuln], 0
@@ -145,10 +148,13 @@ survival_damage:
 
 ; survival_dot(edi amount, esi cause) -> eax 1 if applied. Damage over time (burn, poison): no armor,
 ; no sound, and invulnerability neither stops it nor is started by it; it flashes the screen. Nothing
-; in creative, for the dead, or for an amount below 1. A lethal tick is handled as in survival_damage.
+; in creative, in god mode (SURVIVAL.god), for the dead, or for an amount below 1. A lethal tick is
+; handled as in survival_damage.
 survival_dot:
     cmp     dword [game_mode], MODE_CREATIVE
     je      .no
+    cmp     dword [surv + SURVIVAL.god], 0
+    jne     .no
     cmp     dword [surv + SURVIVAL.dead], 0
     jne     .no
     test    edi, edi

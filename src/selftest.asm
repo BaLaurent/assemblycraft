@@ -85,6 +85,10 @@ extern test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter
 extern test_marksman_path_and_dex, test_marksman_abilities, test_bullet_damage_pipeline
 extern test_gun_attachment_effects, test_new_guns_fire, test_attach_craft
 extern test_skill_arrows_ignore_hurt_window, test_grenade_and_rocket_blasts
+extern test_debug_f12_detector, test_debug_cheater_mark_roundtrip, test_debug_world_list_flag
+extern test_debug_give_items, test_debug_item_filter, test_debug_levels_and_points
+extern test_debug_spawn_and_kill, test_debug_time_and_teleport, test_debug_stat_bonus
+extern test_debug_vitals_and_toggles, test_debug_step_clock, test_debug_to_spawn_and_bed
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -291,6 +295,18 @@ tests:
     TEST attach_craft
     TEST skill_arrows_ignore_hurt_window
     TEST grenade_and_rocket_blasts
+    TEST debug_f12_detector
+    TEST debug_cheater_mark_roundtrip
+    TEST debug_world_list_flag
+    TEST debug_give_items
+    TEST debug_item_filter
+    TEST debug_levels_and_points
+    TEST debug_spawn_and_kill
+    TEST debug_time_and_teleport
+    TEST debug_stat_bonus
+    TEST debug_vitals_and_toggles
+    TEST debug_step_clock
+    TEST debug_to_spawn_and_bed
     dq 0
 
 section .rodata
@@ -489,6 +505,18 @@ section .rodata
     TESTNAME attach_craft
     TESTNAME skill_arrows_ignore_hurt_window
     TESTNAME grenade_and_rocket_blasts
+    TESTNAME debug_f12_detector
+    TESTNAME debug_cheater_mark_roundtrip
+    TESTNAME debug_world_list_flag
+    TESTNAME debug_give_items
+    TESTNAME debug_item_filter
+    TESTNAME debug_levels_and_points
+    TESTNAME debug_spawn_and_kill
+    TESTNAME debug_time_and_teleport
+    TESTNAME debug_stat_bonus
+    TESTNAME debug_vitals_and_toggles
+    TESTNAME debug_step_clock
+    TESTNAME debug_to_spawn_and_bed
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

@@ -11,6 +11,8 @@
 %include "gl.inc"
 default rel
 
+%define C_CHEAT         RGBA(255, 85, 85, 255)  ; the cheater mark: bright red on the dark world
+
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
 global hud_bubble_tiles, banner_text, hud_biome_name
 
@@ -32,6 +34,7 @@ extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_att
 extern mob_affix_name
 extern folk_name, faction_tier_color, faction_standing, faction_names, faction_short
 extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
+extern debug_is_cheater
 
 
 section .rodata
@@ -62,7 +65,9 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.10.4  ", 0
+s_dbg_title: db "AssemblyCraft 0.10.5  ", 0
+s_cheater:  db "CHEATER", 0
+s_cheat_mark: db "[C]", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -222,7 +227,11 @@ hud_draw:
 .tracker_y:
     cmp     dword [app_show_debug], 0
     je      .tracker
-    mov     edi, 142                    ; or under the F3 lines
+    mov     edi, 142                    ; or under the F3 lines (one more when the CHEATER line is up)
+    call    debug_is_cheater            ; (leaf: only eax changes)
+    lea     ecx, [rdi + 10]
+    test    eax, eax
+    cmovnz  edi, ecx
 .tracker:
     call    hud_quest
     call    hud_banner_draw
@@ -1094,6 +1103,17 @@ hud_xp:
     mov     byte [r14], 0
 .draw:
     lea     r13d, [rbx + 186]           ; the level is spent: r13d = x right of the hotbar
+    call    debug_is_cheater            ; a world the debug menu was opened in: a red [C] first, the level follows
+    test    eax, eax
+    jz      .no_mark
+    lea     rdi, [s_cheat_mark]
+    mov     esi, r13d
+    lea     edx, [r12 + 2]
+    mov     ecx, C_CHEAT
+    mov     r8d, 1
+    call    ui_text
+    lea     r13d, [r13 + rax + 3]
+.no_mark:
     mov     rdi, rsp
     mov     esi, 1
     call    ui_text_width
@@ -1897,7 +1917,7 @@ put2:
     lea     rax, [rsi + 2]
     ret
 
-; debug_emit(rdi end of the text in dbg_buf, esi line): draw dbg_buf as line number esi
+; debug_emit(rdi end of the text in dbg_buf, esi line, edx rgba): draw dbg_buf as line number esi
 debug_emit:
     push    rbp
     mov     rbp, rsp
@@ -1905,6 +1925,7 @@ debug_emit:
     push    r12
     push    r13
     sub     rsp, 8
+    mov     [rsp], edx
     mov     byte [rdi], 0
     mov     r12d, esi
     lea     rbx, [dbg_buf]
@@ -1925,7 +1946,7 @@ debug_emit:
     lea     edx, [r12 + r12*4]
     add     edx, edx
     add     edx, 2                      ; text y = 2 + 10 * line
-    mov     ecx, WHITE
+    mov     ecx, [rsp]
     mov     r8d, 1
     call    ui_text
     add     rsp, 8
@@ -1971,12 +1992,16 @@ debug_emit:
     call    f32_to_str
     mov     rbx, rax
 %endmacro
-%macro EMIT 0                           ; draw the finished line, start the next one
+%macro EMIT_RGBA 1                      ; draw the finished line in the colour %1, start the next one
     mov     rdi, rbx
     mov     esi, r12d
+    mov     edx, %1
     call    debug_emit
     inc     r12d
     lea     rbx, [dbg_buf]
+%endmacro
+%macro EMIT 0                           ; ... in white
+    EMIT_RGBA WHITE
 %endmacro
 
 ; hud_biome_name(edi biome) -> rax the name of that BIOME_* as a C string; "unknown" for any other value
@@ -2007,6 +2032,12 @@ hud_debug:
     APPEND_INT [app_fps]
     APPEND_STR s_dbg_fps
     EMIT
+    call    debug_is_cheater            ; the CHEATER line right under the title
+    test    eax, eax
+    jz      .not_cheater
+    APPEND_STR s_cheater
+    EMIT_RGBA C_CHEAT
+.not_cheater:
 
     APPEND_STR s_xyz
     APPEND_ABS [player + BODY.x], [world_origin_x]

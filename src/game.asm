@@ -6,11 +6,11 @@ default rel
 
 global game_mode, game_time, game_target, game_has_target, game_break_progress
 global game_open_screen, game_open_cont, game_bow_charge, game_aim, game_open_npc, game_heavy_s
-global game_new, game_load, game_save, game_frame, game_respawn
+global game_new, game_load, game_save, game_frame, game_respawn, game_teleport
 global game_rebase, game_shift_origin, game_unload_box, game_on_area_ready
 global brk_x, brk_y, brk_z              ; the dig cell (the rebase test reads and sets it)
 
-extern world_header, world_get, world_set, world_top_y
+extern world_header, world_get, world_set, world_top_y, world_is_solid
 extern world_origin_x, world_origin_z, world_rebase, world_save_dirty
 extern stream_begin, gen_find_spawn, floor_i
 extern file_read, file_write_atomic, str_append
@@ -49,6 +49,7 @@ extern app_state, app_goto
 extern surv_max_health
 extern place_block, block_use, block_removed, block_is_usable, block_base
 extern faction_reset, faction_validate, screen_faction
+extern debug_reset, debug_step
 
 section .rodata
 align 4
@@ -60,6 +61,7 @@ mob_reach:    dd 3.5
 mob_reach_spear: dd 4.5
 f_one:        dd 1.0
 f_half:       dd 0.5
+f_feet_eps:   dd 0.001                 ; the feet cell: a body resting on a floor may sit a hair under it
 f_quarter:    dd 0.25
 f_hundred:    dd 100.0
 f_step_len:   dd 1.6
@@ -157,6 +159,7 @@ reset_session:
     call    combat_reset
     call    abilities_reset
     call    dmgnum_clear
+    call    debug_reset                 ; the debug menu is closed, its F12 count starts over
     pop     rbp
     jmp     gun_reset                   ; and the firearm's cooldown, reload and recoil
 
@@ -680,6 +683,52 @@ game_respawn:
     pop     rbp
     ret
 
+; game_teleport(edi x, esi y, edx z, ecx pending) -> eax 1: the player to the middle of that absolute
+; cell, feet on its floor. When the cell is in another 512-block square the origin moves there first
+; (game_shift_origin: every position follows); the body is made new (no speed, no fall) and a boat or a
+; bed is left. pending is what game_on_area_ready settles once the area around has loaded: 0 nothing (the
+; exact cell), 1 stand on the surface of the column, 3 stand beside the bed, 4 stay in that cell unless
+; it is blocked (the feet or the head in a solid block), then stand on the surface of the column.
+game_teleport:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    cmp     dword [boat_riding], 0
+    je      .afoot
+    call    boats_dismount
+.afoot:
+    call    sleep_cancel
+    mov     edi, ebx
+    and     edi, -REBASE_STEP
+    sub     edi, [world_origin_x]
+    mov     esi, r13d
+    and     esi, -REBASE_STEP
+    sub     esi, [world_origin_z]
+    mov     eax, edi
+    or      eax, esi
+    jz      .in_cell
+    call    game_shift_origin
+.in_cell:
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    call    player_place
+    mov     [pending_respawn], r14d
+    mov     eax, 1
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; game_rebase(): when the player is REBASE_AT blocks or more from the local origin on an axis, the
 ; origin moves by a multiple of REBASE_STEP (the player's cell floored to it), so coordinates stay
 ; small; every position follows (game_shift_origin). An axis still within bounds stays as it is.
@@ -841,7 +890,8 @@ game_unload_box:
 ; The columns around the player are lit and meshed: settle what the entry into the world was waiting
 ; for. A respawn at a bed asks sleep_place_at_bed (a bed that is gone sends the player to the world
 ; spawn, which is another area: eax = 1); a new world or a respawn at the spawn stands the player on
-; the surface; a new world is populated. The site cache is rebuilt.
+; the surface; a teleport to an exact cell (pending 4) leaves him in it unless its feet or head cell is
+; solid; a new world is populated. The site cache is rebuilt.
 game_on_area_ready:
     push    rbp
     mov     rbp, rsp
@@ -866,7 +916,28 @@ game_on_area_ready:
     mov     ebx, eax
     movss   xmm0, [player + BODY.z]
     call    floor_i
+    mov     [rsp], eax                  ; the z cell
+    test    dword [pending_respawn], 4
+    jz      .surface
+    movss   xmm0, [player + BODY.y]     ; a teleport to an exact cell: he stays in it while it is free
+    addss   xmm0, [f_feet_eps]
+    call    floor_i
+    mov     [rsp + 4], eax              ; the feet cell's y
+    mov     edi, ebx
     mov     esi, eax
+    mov     edx, [rsp]
+    call    world_is_solid
+    test    eax, eax
+    jnz     .surface
+    mov     edi, ebx
+    mov     esi, [rsp + 4]
+    inc     esi
+    mov     edx, [rsp]
+    call    world_is_solid
+    test    eax, eax
+    jz      .done
+.surface:
+    mov     esi, [rsp]
     mov     edi, ebx
     call    world_top_y
     inc     eax                         ; the cell above the surface
@@ -2347,6 +2418,7 @@ sim_step:
     call    fire_step
     call    fx_step
     call    conts_step
+    call    debug_step                  ; the F12 detector's clock
     inc     dword [game_time]
     call    sleep_step
     add     rsp, 56

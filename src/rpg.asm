@@ -22,7 +22,8 @@ global rpg_state, rpg_ext, rpg_stats, rpg_keystones, rpg_migrated
 global rpg_reset, rpg_level, rpg_points, rpg_xp_need, rpg_add_xp, rpg_begin
 global rpg_rank, rpg_can_spend, rpg_spend, rpg_stat, rpg_recompute, rpg_clamp_stats
 global rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
-global rpg_respec_cost, rpg_respec, rpg_keystone
+global rpg_respec_cost, rpg_respec, rpg_respec_free, rpg_keystone
+global rpg_set_level, rpg_add_bonus_points, debug_stat_bonus
 global rpg_web_node, rpg_web_linked, rpg_reachable, web_edges, web_edge_count
 global rpg_ability_learned, rpg_ability_info, rpg_ability_tile, rpg_path_tile, rpg_bar_ability, rpg_bar_set
 global rpg_archetype_ranks, rpg_archetype, rpg_archetype_name, rpg_title
@@ -581,6 +582,8 @@ rpg_keystones: resd 1                   ; bit ks (KS_*) set while that keystone 
 banner:     resb 16                     ; "Level 50!"
 web_scratch: resb WEB_MAX               ; web_valid: 1 per ranked node joined to a ranked path
 rpg_migrated: resb 1                    ; rpg_load refunded the web this session (rpg_begin keeps the banner)
+alignb 2
+debug_stat_bonus: resw NUM_STATS        ; the debug menu's flat bonus per stat (int16), added after the caps; saved in WORLDHDR.debug_stats
 
 section .text
 
@@ -604,11 +607,14 @@ web_ranks_total:
     jb      .l
     ret
 
-; rpg_points() -> eax unspent skill points = level - sum of the web ranks (never negative)
+; rpg_points() -> eax unspent skill points = level + the debug menu's bonus points - sum of the web ranks
+; (never negative)
 rpg_points:
     sub     rsp, 8
     call    web_ranks_total
     movzx   ecx, byte [rpg_state + RPGSAVE.level]
+    movzx   edx, word [rpg_ext + RPGEXT.bonus_sp]
+    add     ecx, edx
     sub     ecx, eax
     xor     eax, eax
     test    ecx, ecx
@@ -616,12 +622,14 @@ rpg_points:
     add     rsp, 8
     ret
 
-; rpg_attr_points() -> eax unspent attribute points = 3 * (level - 1) - sum of the attributes
-; (never negative)
+; rpg_attr_points() -> eax unspent attribute points = 3 * (level - 1) + the debug menu's bonus points - sum
+; of the attributes (never negative)
 rpg_attr_points:
     movzx   eax, byte [rpg_state + RPGSAVE.level]
     dec     eax
     imul    eax, eax, ATTR_PER_LEVEL
+    movzx   ecx, word [rpg_ext + RPGEXT.bonus_ap]
+    add     eax, ecx
     lea     rsi, [rpg_ext + RPGEXT.attr]
     xor     ecx, ecx
 .l:
@@ -1239,7 +1247,9 @@ rpg_clamp_stats:
 ; the stat nodes (rank * value; the ranked keystone nodes set their rpg_keystones bit), the
 ; attributes (with the Marksman's path ranked, each Dexterity point is also +1 gun damage), the
 ; keystones' stat changes, the equipped gear (gear_add_stats), the caps and floors, Bloodrage's -10%
-; health. Then publishes surv_max_health and keeps health, mana and stamina at or below their maxima.
+; health, and last the debug menu's flat bonus per stat (debug_stat_bonus: beyond the caps; max health
+; stays at least 2). Then publishes surv_max_health and keeps health, mana and stamina at or below their
+; maxima.
 rpg_recompute:
     push    rbp
     mov     rbp, rsp
@@ -1344,7 +1354,20 @@ rpg_recompute:
     cmovl   eax, ecx
     mov     [rpg_stats + STAT_MAX_HEALTH*4], eax
 .publish:
+    lea     rsi, [debug_stat_bonus]
+    lea     rdi, [rpg_stats]
+    xor     ecx, ecx
+.bonus:
+    movsx   eax, word [rsi + rcx*2]
+    add     [rdi + rcx*4], eax
+    inc     ecx
+    cmp     ecx, NUM_STATS
+    jb      .bonus
     mov     eax, [rpg_stats + STAT_MAX_HEALTH*4]
+    mov     ecx, 2
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     [rpg_stats + STAT_MAX_HEALTH*4], eax
     mov     [surv_max_health], eax
     cmp     [surv + SURVIVAL.health], eax
     jle     .hp_ok
@@ -1374,12 +1397,16 @@ ext_reset:
     mov     byte [rpg_ext + RPGEXT.version], RPGX_VERSION
     ret
 
-; rpg_reset(): a new character: level 1, nothing else, stats recomputed
+; rpg_reset(): a new character: level 1, nothing else (no debug bonus either), stats recomputed
 rpg_reset:
     push    rbp
     mov     rbp, rsp
     lea     rdi, [rpg_state]
     mov     ecx, RPGSAVE_size
+    xor     eax, eax
+    rep     stosb
+    lea     rdi, [debug_stat_bonus]
+    mov     ecx, NUM_STATS * 2
     xor     eax, eax
     rep     stosb
     mov     byte [rpg_state + RPGSAVE.level], 1
@@ -1524,7 +1551,20 @@ rpg_add_xp:
     mov     [rpg_state + RPGSAVE.xp], ebx
     test    r12d, r12d
     jz      .ret
-    call    rpg_recompute               ; publishes surv_max_health
+    call    level_up_fx
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; level_up_fx(): the character has just gained one or more levels: the stats are recomputed (that
+; publishes surv_max_health), health, mana and stamina are full, the level-up sound plays, and one
+; "Level N!" banner and one burst at the chest announce the final level
+level_up_fx:
+    push    rbp
+    mov     rbp, rsp
+    call    rpg_recompute
     mov     eax, [surv_max_health]
     mov     [surv + SURVIVAL.health], eax
     call    combat_refill
@@ -1549,12 +1589,8 @@ rpg_add_xp:
     movss   xmm3, [f_burst]
     mov     edi, FX_GOLD
     mov     esi, 30
-    call    fx_burst
-.ret:
-    pop     r12
-    pop     rbx
     pop     rbp
-    ret
+    jmp     fx_burst
 
 ; ---- skill and attribute points ---------------------------------------------------
 
@@ -1727,6 +1763,20 @@ web_clear:
     mov     dword [rpg_ext + RPGEXT.bar], 0
     ret
 
+; rpg_respec_free(): every web rank, attribute point and bar slot is handed back, for no coins (the
+; starting kits stay given; the debug menu's bonus points stay too); stats recomputed, banner
+rpg_respec_free:
+    push    rbp
+    mov     rbp, rsp
+    call    web_clear
+    mov     qword [rpg_ext + RPGEXT.attr], 0
+    call    rpg_recompute
+    lea     rdi, [s_respec]
+    mov     esi, RGBA(255, 215, 60, 255)
+    call    hud_banner
+    pop     rbp
+    ret
+
 ; rpg_respec() -> eax 1 when the character paid rpg_respec_cost() coins out of the inventory and
 ; every web rank, attribute point and bar slot was handed back (the starting kits stay given;
 ; stats recomputed, coin sound, banner); 0, with nothing changed, without enough coins
@@ -1747,15 +1797,10 @@ rpg_respec:
     call    inv_remove_one
     dec     r12d
     jnz     .take
-    call    web_clear
-    mov     qword [rpg_ext + RPGEXT.attr], 0
-    call    rpg_recompute
     mov     edi, SND_COIN
     movss   xmm0, [f_vol_coin]
     call    audio_play
-    lea     rdi, [s_respec]
-    mov     esi, RGBA(255, 215, 60, 255)
-    call    hud_banner
+    call    rpg_respec_free
     mov     eax, 1
     jmp     .ret
 .poor:
@@ -1763,6 +1808,97 @@ rpg_respec:
 .ret:
     pop     r12
     pop     rbx
+    pop     rbp
+    ret
+
+; fix_points(): after the level or the bonus points changed: a web that web_valid refuses is handed back
+; with the bar, and attribute points above 3 per level above the first (plus the bonus points) are all
+; handed back (leaf: clobbers the caller-saved registers)
+fix_points:
+    sub     rsp, 8
+    call    web_valid
+    test    eax, eax
+    jnz     .web_ok
+    call    web_clear
+.web_ok:
+    movzx   eax, byte [rpg_state + RPGSAVE.level]
+    dec     eax
+    imul    eax, eax, ATTR_PER_LEVEL
+    movzx   ecx, word [rpg_ext + RPGEXT.bonus_ap]
+    add     eax, ecx
+    movzx   edx, word [rpg_ext + RPGEXT.attr + 0]
+    movzx   ecx, word [rpg_ext + RPGEXT.attr + 2]
+    add     edx, ecx
+    movzx   ecx, word [rpg_ext + RPGEXT.attr + 4]
+    add     edx, ecx
+    movzx   ecx, word [rpg_ext + RPGEXT.attr + 6]
+    add     edx, ecx
+    cmp     edx, eax
+    jbe     .attr_ok
+    mov     qword [rpg_ext + RPGEXT.attr], 0
+.attr_ok:
+    add     rsp, 8
+    ret
+
+; rpg_set_level(edi level) -> eax the new level: the debug menu's setter. The level is clamped to
+; 1..MAX_LEVEL and the XP bar empties. A higher level pays out like a level-up (level_up_fx: health,
+; mana and stamina full, sound, banner, burst); a lower one hands back what it cannot hold (fix_points).
+; The stats are recomputed either way.
+; ebx = the new level; frame: [rsp] the old level
+rpg_set_level:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     eax, 1
+    cmp     ebx, eax
+    cmovl   ebx, eax
+    mov     eax, MAX_LEVEL
+    cmp     ebx, eax
+    cmovg   ebx, eax
+    movzx   eax, byte [rpg_state + RPGSAVE.level]
+    mov     [rsp], eax
+    mov     [rpg_state + RPGSAVE.level], bl
+    mov     dword [rpg_state + RPGSAVE.xp], 0
+    call    fix_points
+    cmp     ebx, [rsp]
+    jbe     .plain
+    call    level_up_fx
+    jmp     .done
+.plain:
+    call    rpg_recompute
+.done:
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; rpg_add_bonus_points(edi skill, esi attr): the debug menu's points on top of the level's: the signed
+; amounts are added to the skill and attribute bonus (each kept within 0..9999); a bonus that shrinks
+; under what is already spent hands the spent points back (fix_points). Stats recomputed.
+rpg_add_bonus_points:
+    push    rbp
+    mov     rbp, rsp
+    movzx   eax, word [rpg_ext + RPGEXT.bonus_sp]
+    add     eax, edi
+    xor     edx, edx
+    test    eax, eax
+    cmovs   eax, edx
+    mov     ecx, 9999
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [rpg_ext + RPGEXT.bonus_sp], ax
+    movzx   eax, word [rpg_ext + RPGEXT.bonus_ap]
+    add     eax, esi
+    test    eax, eax
+    cmovs   eax, edx
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [rpg_ext + RPGEXT.bonus_ap], ax
+    call    fix_points
+    call    rpg_recompute
     pop     rbp
     ret
 
@@ -1838,7 +1974,8 @@ rpg_on_death:
 
 ; ---- save file -------------------------------------------------------------------------
 
-; rpg_save(rdi header): rpg_state -> WORLDHDR.rpg, rpg_ext -> WORLDHDR.rpgx
+; rpg_save(rdi header): rpg_state -> WORLDHDR.rpg, rpg_ext -> WORLDHDR.rpgx, debug_stat_bonus ->
+; WORLDHDR.debug_stats
 rpg_save:
     mov     rdx, rdi
     lea     rsi, [rpg_state]
@@ -1849,11 +1986,16 @@ rpg_save:
     lea     rdi, [rdx + WORLDHDR.rpgx]
     mov     ecx, RPGEXT_size
     rep     movsb
+    lea     rsi, [debug_stat_bonus]
+    lea     rdi, [rdx + WORLDHDR.debug_stats]
+    mov     ecx, NUM_STATS * 2
+    rep     movsb
     ret
 
 ; web_valid() -> eax 1 when the ranks of RPGEXT.web are a state the rules can reach, else 0: no rank
 ; above the maximum of its node (nothing in the slots past the last node), the ranks add up to at most
-; the level, no ranked node asks for a level above the character's, and every ranked node is joined
+; the level plus the debug menu's skill points (RPGEXT.bonus_sp), no ranked node asks for a level above
+; the character's, and every ranked node is joined
 ; to a ranked path node through ranked nodes (web_scratch grows from the ranked paths along the
 ; edges). Leaf: clobbers every caller-saved register.
 web_valid:
@@ -1882,8 +2024,10 @@ web_valid:
     inc     ecx
     cmp     ecx, WEB_MAX
     jb      .beyond
-    cmp     edx, r9d
-    ja      .bad                        ; more ranks than levels
+    movzx   eax, word [rpg_ext + RPGEXT.bonus_sp]
+    add     eax, r9d
+    cmp     edx, eax
+    ja      .bad                        ; more ranks than levels (and debug menu points)
     lea     rdi, [web_scratch]
     xor     eax, eax
     mov     ecx, WEB_MAX / 8
@@ -1958,8 +2102,10 @@ refund_banner:
 ; and 0.10.3: four paths, every node id has moved since) keeps its kits and attribute points but its
 ; web and bar are zeroed too, with a banner of their own. A version 3 record whose web the rules
 ; cannot reach (web_valid) is refunded like a version 1 one. A bar slot holding an ability that is
-; not learned is emptied. Attribute points adding up to more than 3 per level above the first are
-; dropped; xp is kept below the bar; quest and quest_state are masked to their ranges. The old
+; not learned is emptied. Attribute points adding up to more than 3 per level above the first (plus the
+; debug menu's RPGEXT.bonus_ap) are dropped; the debug menu's stat bonuses (WORLDHDR.debug_stats) go to
+; debug_stat_bonus, each cut to +-DEBUG_BONUS_MAX; xp is kept below the bar; quest and quest_state are
+; masked to their ranges. The old
 ; cleared and flags bytes of the record are not read any more (0.9: the dungeons and the crypt keep
 ; their state in WORLDHDR.sites).
 ; ebx = level, r12 = the bar, r13d = the slot being checked
@@ -1979,6 +2125,20 @@ rpg_load:
     lea     rdi, [rpg_ext]
     mov     ecx, RPGEXT_size
     rep     movsb
+    xor     ecx, ecx                    ; the debug menu's stat bonuses, each kept within +-DEBUG_BONUS_MAX
+    lea     rsi, [debug_stat_bonus]
+.dbonus:
+    movsx   eax, word [rdx + WORLDHDR.debug_stats + rcx*2]
+    mov     edi, DEBUG_BONUS_MAX
+    cmp     eax, edi
+    cmovg   eax, edi
+    neg     edi
+    cmp     eax, edi
+    cmovl   eax, edi
+    mov     [rsi + rcx*2], ax
+    inc     ecx
+    cmp     ecx, NUM_STATS
+    jb      .dbonus
     movzx   ebx, byte [rpg_state + RPGSAVE.level]
     lea     eax, [rbx - 1]
     cmp     eax, MAX_LEVEL
@@ -2040,6 +2200,8 @@ rpg_load:
     jb      .bar
     lea     eax, [rbx - 1]
     imul    eax, eax, ATTR_PER_LEVEL    ; attribute points the level has paid
+    movzx   ecx, word [rpg_ext + RPGEXT.bonus_ap]
+    add     eax, ecx
     movzx   edx, word [rpg_ext + RPGEXT.attr + 0]
     movzx   ecx, word [rpg_ext + RPGEXT.attr + 2]
     add     edx, ecx

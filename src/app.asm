@@ -27,6 +27,7 @@ extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim, game_heavy_s
 extern screen_trade, screen_dialog, screen_skills, screen_character
 extern screen_shrine, screen_leader
+extern debug_poll, debug_frame
 extern rpg_begin, rpg_reset, combat_reset, dmgnum_clear, light_update
 extern boats_clear
 extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
@@ -73,7 +74,7 @@ screens:
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
     dq screen_trade, screen_dialog, screen_skills, screen_character
-    dq screen_shrine, screen_leader
+    dq screen_shrine, screen_leader, debug_frame
 
 section .data
 align 4
@@ -723,6 +724,14 @@ update_state:
     jmp     .ret                        ; paused, death, settings: nothing simulates
 
 .playing:
+    call    debug_poll                  ; the F12 detector: three presses open the debug menu
+    test    eax, eax
+    jz      .no_debug_menu
+    mov     edi, ST_DEBUG
+    call    app_goto                    ; paused like the pause menu, the cursor released
+    call    save_world                  ; the cheater mark is on disk at once
+    jmp     .ret
+.no_debug_menu:
     mov     rdi, [app_window]           ; pause when focus is lost (not before it arrives)
     mov     esi, GLFW_FOCUSED
     call    glfwGetWindowAttrib
@@ -860,6 +869,8 @@ draw_frame:
     cmp     eax, ST_SHRINE
     je      .in_view
     cmp     eax, ST_LEADER
+    je      .in_view
+    cmp     eax, ST_DEBUG
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -876,7 +887,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_LEADER
+    cmp     eax, ST_DEBUG
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax

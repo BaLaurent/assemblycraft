@@ -59,6 +59,7 @@ extern glScissor, glVertex2f
 %define KEY_BACKSPACE     259
 %define KEY_F3            292
 %define KEY_F11           300
+%define KEY_F12           301
 %define KEY_KP_ENTER      335
 %define KEY_LEFT_SHIFT    340
 %define KEY_LEFT_CONTROL  341

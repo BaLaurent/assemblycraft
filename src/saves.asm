@@ -44,7 +44,7 @@ alignb 8
 dents:         resb DENTS_SIZE
 path_buf:      resb 4200
 tmp_entry:     resb WORLDENTRY_size
-hdr_buf:       resb 1024               ; the header fields a listing reads (name, mode, seed)
+hdr_buf:       resb 1024               ; the header fields a listing reads (name, mode, seed, cheater mark)
 name_buf:      resb 40
 
 section .text
@@ -174,9 +174,9 @@ stat_info:
 
 ; add_entry(rdi dirent name, esi count, edx d_type) -> eax 1 if a world entry was inserted into
 ; world_list (kept sorted newest first), else 0. A directory whose world.hdr starts with a good 0.9
-; header is a world (valid 1); a regular <stem>.acw file is a world of 0.8 or earlier (valid 2: listed,
-; never opened); nothing else is listed. A type the dirent does not settle (DT_UNKNOWN, a link) is
-; looked up with stat.
+; header is a world (valid 1, and WORLDENTRY.cheater 1 when the header carries the cheater mark); a
+; regular <stem>.acw file is a world of 0.8 or earlier (valid 2: listed, never opened); nothing else is
+; listed. A type the dirent does not settle (DT_UNKNOWN, a link) is looked up with stat.
 add_entry:
     push    rbp
     mov     rbp, rsp
@@ -279,6 +279,10 @@ add_entry:
     mov     eax, [hdr_buf + WORLDHDR.seed]
     mov     [tmp_entry + WORLDENTRY.seed], eax
     mov     dword [tmp_entry + WORLDENTRY.valid], 1
+    xor     eax, eax                    ; the cheater mark: the debug menu was opened in this world
+    cmp     byte [hdr_buf + WORLDHDR.cheater], 0
+    setne   al
+    mov     [tmp_entry + WORLDENTRY.cheater], eax
     lea     rdi, [tmp_entry + WORLDENTRY.name]  ; the header's name, else the directory's
     lea     rsi, [hdr_buf + WORLDHDR.name]
     cmp     byte [rsi], 0

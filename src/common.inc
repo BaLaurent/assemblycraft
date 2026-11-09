@@ -605,6 +605,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NUM_WEB_NODES   110             ; 5 paths, 5 * 18 archetype nodes, 15 bridges
 %define WEB_MAX         128             ; RPGEXT.web capacity
 %define KIT_COMMON_BIT  0x80            ; RPGEXT.kits: bit a-1 = archetype a's kit was given
+%define DEBUG_BONUS_MAX 5000            ; the debug menu's stat bonus is kept within +-this (rpg_load clamps a save to it)
 
 %define ATTR_STR        0
 %define ATTR_DEX        1
@@ -828,6 +829,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_CHARACTER    18
 %define ST_SHRINE       19
 %define ST_LEADER       20
+%define ST_DEBUG        21              ; the debug menu (debugmenu.asm)
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -1061,6 +1063,7 @@ struc SURVIVAL
     .death_cause:     resd 1
     .breath:          resd 1            ; steps of air, 0..MAX_BREATH
     .drown_timer:     resd 1            ; steps at 0 breath
+    .god:             resd 1            ; debug menu: 1 = nothing hurts (survival_damage, survival_dot)
 endstruc
 
 struc MOB
@@ -1194,7 +1197,9 @@ struc RPGEXT
     .bar:     resb NUM_ABILITY_SLOTS    ; ability id + 1 per bar slot, 0 = empty
     .pad1:    resb 2
     .web:     resb WEB_MAX              ; rank of web node i (0..NUM_WEB_NODES-1)
-    .pad2:    resb 80
+    .bonus_sp: resw 1                   ; debug menu: skill points granted on top of the level
+    .bonus_ap: resw 1                   ; ... and attribute points
+    .pad2:    resb 76
 endstruc
 %if RPGEXT_size != 256
 %error "RPGEXT must be 256 bytes"
@@ -1397,7 +1402,8 @@ struc WORLDHDR
     .boats:      resb MAX_BOATS * BOATSAVE_size ; @332
     .standing:   resw 8                 ; @588: int16 per faction (FAC_*), 5 used
     .champions:  resb 1                 ; @604: bit f = faction f's champion is defeated
-    .pad_a:      resb 944 - 605
+    .cheater:    resb 1                 ; @605: 1 once the debug menu was opened in this world, never cleared
+    .pad_a:      resb 944 - 606
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
     .mob_count:  resd 1                 ; @1024
@@ -1407,13 +1413,17 @@ struc WORLDHDR
     .pad1:       resb 16384 - 14600
     .jewelry:    resb 16                ; @16384: 3 ITEMSTACKs + 4 spare
     .rpgx:       resb RPGEXT_size       ; @16400
-    .pad2:       resb WORLD_HDR_SIZE - 16656
+    .debug_stats: resw 46               ; @16656: the debug menu's flat bonus per stat (int16; NUM_STATS used)
+    .pad2:       resb WORLD_HDR_SIZE - 16656 - 92
 endstruc                                ; 32768 bytes
 %if WORLDHDR_size != WORLD_HDR_SIZE
 %error "WORLDHDR must be WORLD_HDR_SIZE bytes"
 %endif
 %if WORLDHDR.boats + MAX_BOATS * BOATSAVE_size != 588 || WORLDHDR.mobs + MAX_MOBS * MOBSAVE_size != 2308 || WORLDHDR.sites + MAX_SITESTATES * SITESTATE_size != 14600 || WORLDHDR.rpgx + RPGEXT_size != 16656
 %error "WORLDHDR v6 layout drifted"
+%endif
+%if WORLDHDR.cheater != 605 || WORLDHDR.debug_stats != 16656 || NUM_STATS > 46
+%error "WORLDHDR debug fields drifted (cheater @605, debug_stats @16656, at most 46 stats)"
 %endif
 
 struc SETTINGS
@@ -1452,7 +1462,7 @@ struc WORLDENTRY
     .mode:  resd 1                      ; MODE_*
     .seed:  resd 1
     .valid: resd 1                      ; 0 unreadable, 1 ok, 2 old version (pre-0.9)
-    .pad2:  resd 1
+    .cheater: resd 1                    ; 1 when world.hdr carries the cheater mark
 endstruc                                ; 128 bytes
 
 ; one layer of a procedural sound (sfx.asm); field order is load-bearing for sfx.asm's LEND macro

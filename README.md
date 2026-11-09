@@ -11,9 +11,10 @@ A Minecraft-like voxel sandbox written **entirely in x86-64 NASM assembly** — 
 - **World**: infinite streamed terrain, climate-based biomes (taiga, savanna, shores, birch forests…), caves, ravines, lava, ores, villages, dungeons and other generated structures
 - **Gameplay**: Creative and Survival modes, crafting, furnaces, chests, inventory, day/night and sleeping, fire and explosions
 - **Combat & RPG**: mobs, melee, bows and firearms (with attachments), abilities, a shared skill web with five archetypes (Warrior, Mage, Marksman, Rogue, Archer), gear, quests, factions
+- **Debug menu**: press `F12` three times while playing for a tabbed menu (Player, Items, Enemies, World) to change stats and levels, give items, spawn mobs, set the time, teleport and more; opening it marks the world as cheated for good (a red `CHEATER` tag in the world list, a `[C]` in the HUD and a line in the F3 overlay)
 - **Presentation**: OpenGL chunk mesher, dynamic lighting, sky, HUD, menus, procedural sound and audio
 - **Saves**: worlds persist to disk (`world.acw`)
-- **Tests**: a built-in selftest suite (195 tests) run by the binary itself
+- **Tests**: a built-in selftest suite (207 tests) run by the binary itself
 
 Design notes for each milestone live in `docs/superpowers/`.
 

@@ -108,7 +108,7 @@ f_zero:         dd 0.0
 
 t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
-t_version:      db "AssemblyCraft 0.10.4", 0
+t_version:      db "AssemblyCraft 0.10.5", 0
 t_singleplayer: db "Singleplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
@@ -124,6 +124,7 @@ t_cancel:       db "Cancel", 0
 s_survival:     db "Survival", 0
 s_creative:     db "Creative", 0
 t_old_world:    db "(0.8 world - can't open)", 0
+t_cheater:      db "CHEATER", 0
 s_seed:         db " - seed ", 0
 s_dash:         db " - ", 0
 
@@ -586,6 +587,17 @@ screen_worlds:
     mov     ecx, C_INK
     mov     r8d, 1
     call    ui_text_ink
+    mov     rdx, [rsp]                  ; a world the debug menu was opened in: a red tag after its name
+    cmp     dword [rdx + WORLDENTRY.cheater], 0
+    je      .not_cheated
+    lea     esi, [r12 + rax - 141]
+    lea     rdi, [t_cheater]
+    mov     edx, [rsp + 8]
+    add     edx, 4
+    mov     ecx, C_RUBRIC
+    mov     r8d, 1
+    call    ui_text_ink
+.not_cheated:
     mov     rdi, [rsp]
     mov     eax, [rdi + WORLDENTRY.valid]
     cmp     eax, 1
