@@ -3,16 +3,19 @@
 ; level, ten hearts with the health number / armor / food, mana and stamina bars, player status pips,
 ; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, banner and
 ; the F3 debug lines. GUI units; hud_draw runs after ui_begin. The hotbar sits at x0 = ui_w/2 - 91,
-; y0 = ui_h - 22.
+; y0 = ui_h - 22. The grimoire look (theme.inc): a leather hotbar with parchment cells and a gold
+; selection, framed bars, carved ability runes with paper key tabs, a ribbon for the boss name and the
+; banner, a pinned paper note for the quest.
 %include "common.inc"
+%include "theme.inc"
 %include "gl.inc"
 default rel
 
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
-global hud_bubble_tiles, banner_text, hud_biome_name
+global hud_bubble_tiles, banner_text, hud_biome_name, armor_effective
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
-extern ui_item_icon, ui_icon9, ui_tile_icon
+extern ui_item_icon, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
 extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
 extern surv, surv_max_health, inv, inv_sel, player, mobs, mob_count_kind, mob_is_hostile
@@ -29,8 +32,6 @@ extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_att
 extern mob_affix_name
 extern folk_name, faction_tier_color, faction_standing, faction_names, faction_short
 extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
-
-%define WHITE   0xFFFFFFFF
 
 
 section .rodata
@@ -61,7 +62,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.10.1  ", 0
+s_dbg_title: db "AssemblyCraft 0.10.2  ", 0
 s_dbg_fps:  db " fps", 0
 s_xyz:      db "XYZ: ", 0
 s_sep:      db " / ", 0
@@ -179,8 +180,8 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_hotbar
-    lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar
-    lea     r14d, [r12 - 5]             ; without hearts the XP bar is the top of the stack
+    lea     r13d, [r12 - 15]            ; the held name sits over the hotbar; clear of the XP bar's frame
+    lea     r14d, [r12 - 6]             ; without hearts the XP bar's frame is the top of the stack
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .progress
     mov     edi, ebx
@@ -405,7 +406,7 @@ hud_durability:
     pop     rbp
     ret
 
-; hud_hotbar(edi x0, esi y0): background, the nine slots, selection frame
+; hud_hotbar(edi x0, esi y0): the leather backing, the nine slot cells with their items, the selection
 ; r12d = x0, r13d = y0, ebx = slot, r14 = stack, r15d = icon x; [rsp] count text
 hud_hotbar:
     push    rbp
@@ -418,19 +419,25 @@ hud_hotbar:
     sub     rsp, 24
     mov     r12d, edi
     mov     r13d, esi
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, 182
-    mov     ecx, 22
-    mov     r8d, RGBA(0, 0, 0, 115)
-    call    ui_rect
+    mov     edi, NINE_LEATHER
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, 182
+    mov     r8d, 22
+    call    ui_nine
     xor     ebx, ebx
 .slot:
+    imul    r15d, ebx, 20
+    lea     r15d, [r15 + r12 + 3]       ; icon x = x0 + 3 + 20 * slot
+    mov     edi, NINE_SLOT              ; the cell is 18 x 18, one left of and one over the icon
+    lea     esi, [r15 - 1]
+    lea     edx, [r13 + 2]
+    mov     ecx, 18
+    mov     r8d, 18
+    call    ui_nine
     lea     r14, [inv + rbx*4]
     cmp     byte [r14 + ITEMSTACK.count], 0
     je      .next
-    imul    r15d, ebx, 20
-    lea     r15d, [r15 + r12 + 3]       ; icon x = x0 + 3 + 20 * slot
     movzx   edi, byte [r14 + ITEMSTACK.id]
     mov     esi, r15d
     lea     edx, [r13 + 3]
@@ -462,13 +469,13 @@ hud_hotbar:
     inc     ebx
     cmp     ebx, HOTBAR_SLOTS
     jb      .slot
-    imul    edi, [inv_sel], 20
-    add     edi, r12d
-    mov     esi, r13d
-    mov     edx, 22
+    imul    esi, [inv_sel], 20
+    add     esi, r12d
+    mov     edi, NINE_SELECT
+    mov     edx, r13d
     mov     ecx, 22
-    mov     r8d, WHITE
-    call    ui_frame
+    mov     r8d, 22
+    call    ui_nine
     add     rsp, 24
     pop     r15
     pop     r14
@@ -564,7 +571,7 @@ hud_bars:
     sub     esi, eax                    ; right-aligned, ending 3 left of the first heart
     lea     rdi, [rsp + 8]
     lea     edx, [r13 - 15]
-    mov     ecx, RGBA(255, 120, 120, 255)
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
     xor     ebx, ebx
@@ -598,7 +605,7 @@ hud_bars:
     lea     esi, [r15 - 6]
     mov     edx, 80
     mov     ecx, 4
-    mov     r9d, RGBA(70, 110, 255, 255)
+    mov     r9d, C_MANA
     call    bar_draw
     sub     r15d, 6
 .armor:
@@ -628,8 +635,8 @@ hud_bars:
     mov     edi, 80
     call    bar_px
     mov     r8d, eax
-    mov     r9d, RGBA(240, 200, 60, 255)
-    mov     ecx, RGBA(220, 60, 40, 255)
+    mov     r9d, C_STAMINA
+    mov     ecx, C_STAMINA_LOW
     movss   xmm0, [combat_stamina]
     comiss  xmm0, [f_25]
     cmovb   r9d, ecx                    ; red once it runs low
@@ -844,7 +851,7 @@ hud_held_name:
     lea     rax, [item_names]
     mov     rdi, [rax + rbx*8]
     mov     ecx, r13d
-    or      ecx, 0x00FFFFFF
+    or      ecx, C_CREAM & 0x00FFFFFF
 .draw:
     mov     edx, r12d
     mov     esi, [ui_w]
@@ -912,7 +919,7 @@ hud_gun:
     mov     rdi, rsp
     lea     esi, [r12 + 186]
     lea     edx, [r13 + 13]             ; under the level text
-    mov     ecx, WHITE
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
     mov     ecx, [gun_reload_total]
@@ -978,8 +985,9 @@ bar_px:
     xor     eax, eax
     ret
 
-; bar_draw(edi x, esi y, edx w, ecx h, r8d fill_w, r9d fill_rgba): a translucent black backing,
-; then the fill from the left edge
+; bar_draw(edi x, esi y, edx w, ecx h, r8d fill_w, r9d fill_rgba): a translucent black backing, the fill
+; from the left edge, then the NINE_BAR frame around them, (w + 2) x (h + 2) at (x - 1, y - 1)
+; ebx = x, r12d = y, r13d = h, r14d = fill width, r15d = fill colour; [rsp] w
 bar_draw:
     push    rbp
     mov     rbp, rsp
@@ -991,20 +999,28 @@ bar_draw:
     sub     rsp, 8
     mov     ebx, edi
     mov     r12d, esi
+    mov     [rsp], edx
     mov     r13d, ecx
     mov     r14d, r8d
     mov     r15d, r9d
     mov     r8d, RGBA(0, 0, 0, 160)
     call    ui_rect                     ; edi, esi, edx, ecx are still x, y, w, h
     test    r14d, r14d
-    jle     .ret
+    jle     .frame
     mov     edi, ebx
     mov     esi, r12d
     mov     edx, r14d
     mov     ecx, r13d
     mov     r8d, r15d
     call    ui_rect
-.ret:
+.frame:
+    mov     edi, NINE_BAR
+    lea     esi, [rbx - 1]
+    lea     edx, [r12 - 1]
+    mov     ecx, [rsp]
+    add     ecx, 2
+    lea     r8d, [r13 + 2]
+    call    ui_nine
     add     rsp, 8
     pop     r15
     pop     r14
@@ -1062,7 +1078,7 @@ hud_xp:
     lea     esi, [r12 - 5]
     mov     edx, 180
     mov     ecx, 3
-    mov     r9d, RGBA(120, 220, 60, 255)
+    mov     r9d, C_XP
     call    bar_draw
     mov     rdi, rsp
     lea     rsi, [s_level_l]
@@ -1102,19 +1118,19 @@ hud_xp:
     mov     rdi, rsp
     mov     esi, r13d
     lea     edx, [r12 + 2]
-    mov     ecx, RGBA(140, 255, 90, 255)
+    mov     ecx, C_GOLD_TEXT
     call    hud_text_clamped
     lea     rdi, [r14 + 1]
     mov     esi, r13d
     lea     edx, [r12 + 12]
-    mov     ecx, RGBA(140, 255, 90, 255)
+    mov     ecx, C_GOLD_TEXT
     call    hud_text_clamped
     jmp     .done
 .whole:
     mov     rdi, rsp
     mov     esi, r13d
     lea     edx, [r12 + 2]
-    mov     ecx, RGBA(140, 255, 90, 255)
+    mov     ecx, C_GOLD_TEXT
     call    hud_text_clamped
 .done:
     add     rsp, 64
@@ -1175,12 +1191,13 @@ hud_ability_pos:
     mov     ecx, 1
     ret
 
-; hud_abilities(edi x0, esi y0, edx top) -> eax y of the top of the key labels when the bar is above the
-; left stack (see hud_ability_pos), else 0x7FFFFFFF: the four ability bar slots: the icon of the bound
-; ability (red while the resource is short: stamina or mana, or with Blood Magic the health it would
-; take), the cooldown of that ability sweeping down from the top, and the key; an empty slot shows its
-; backing and its key only
-; ebx = x of slot 0, r12d = slot 0 y - 1, r13d = slot, r14d = its ability id (-1: empty), r15d = slot x
+; hud_abilities(edi x0, esi y0, edx top) -> eax y of the top of the key tabs when the bar is above the
+; left stack (see hud_ability_pos), else 0x7FFFFFFF: the four ability bar slots, carved runes 20 x 20:
+; the icon of the bound ability (red while the resource is short: stamina or mana, or with Blood Magic
+; the health it would take), the cooldown of that ability sweeping down from the top, and the key on a
+; paper tab 9 above; an empty slot shows its rune and its key only
+; ebx = x of slot 0, r12d = slot 0 y - 1, r13d = slot, r14d = its ability id (-1: empty), then the width
+; of the key tab, r15d = slot x
 ; [rsp] icon tint, [rsp+4] sweep height, [rsp+8] above the stack, [rsp+16] key label
 hud_abilities:
     push    rbp
@@ -1199,12 +1216,12 @@ hud_abilities:
 .slot:
     imul    r15d, r13d, 23
     add     r15d, ebx                   ; slot x = x of slot 0 + 23 * slot
-    mov     edi, r15d
-    lea     esi, [r12 + 1]              ; slot y = y0 + 1
-    mov     edx, 20
+    mov     edi, NINE_RUNE
+    mov     esi, r15d
+    lea     edx, [r12 + 1]              ; slot y = y0 + 1
     mov     ecx, 20
-    mov     r8d, RGBA(0, 0, 0, 115)
-    call    ui_rect
+    mov     r8d, 20
+    call    ui_nine
     mov     dword [rsp], WHITE
     mov     dword [rsp + 4], 0
     mov     edi, r13d
@@ -1281,11 +1298,26 @@ hud_abilities:
     call    key_name
     mov     byte [rsp + 19], 0          ; at most three characters fit over a slot
     lea     rdi, [rsp + 16]
-    lea     esi, [r15 + 1]
+    mov     esi, 1
+    call    ui_text_width
+    add     eax, 3                      ; the tab: ink width + 4 (the advance counts a trailing gap)
+    mov     r14d, eax
+    shr     eax, 1
+    neg     eax
+    lea     esi, [r15 + rax + 10]       ; centred over the slot
+    mov     edi, NINE_NOTE
     lea     edx, [r12 - 8]              ; 9 above the slot
-    mov     ecx, WHITE
+    mov     ecx, r14d
+    mov     r8d, 9
+    call    ui_nine
+    shr     r14d, 1
+    neg     r14d
+    lea     esi, [r15 + r14 + 12]       ; the key sits 2 inside the tab
+    lea     rdi, [rsp + 16]
+    lea     edx, [r12 - 7]
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     inc     r13d
     cmp     r13d, NUM_ABILITY_SLOTS
     jb      .slot
@@ -1565,8 +1597,8 @@ hud_mobs:
     pop     rbp
     ret
 
-; hud_boss() -> eax 1 when the boss bar is up: a living boss within 48 blocks, its name over a
-; red bar across the top of the screen
+; hud_boss() -> eax 1 when the boss bar is up: a living boss within 48 blocks, its name on a ribbon over
+; a framed red bar across the top of the screen
 hud_boss:
     push    rbp
     mov     rbp, rsp
@@ -1602,10 +1634,8 @@ hud_boss:
     lea     rdi, [s_boss]
     mov     esi, [ui_w]
     shr     esi, 1
-    mov     edx, 4
-    mov     ecx, WHITE
-    mov     r8d, 1
-    call    ui_text_centered
+    xor     edx, edx                    ; the ribbon hangs from the top edge
+    call    ui_ribbon
     cvtsi2ss xmm0, dword [rbx + MOB.health]
     cvtsi2ss xmm1, dword [rbx + MOB.max_health]
     maxss   xmm1, xmm0
@@ -1615,10 +1645,10 @@ hud_boss:
     mov     edi, [ui_w]
     shr     edi, 1
     sub     edi, 91
-    mov     esi, 14
+    mov     esi, 15                     ; the frame starts under the 14-high ribbon
     mov     edx, 182
     mov     ecx, 5
-    mov     r9d, RGBA(200, 30, 30, 255)
+    mov     r9d, C_BLOOD
     call    bar_draw
     mov     eax, 1
 .ret:
@@ -1627,9 +1657,11 @@ hud_boss:
     pop     rbp
     ret
 
-; hud_quest(edi y): the accepted quest as "Quest: <title>  p/c" at (4, y); for the dungeon and boss
-; quests also the compass heading and distance to the nearest site left to clear, "  NE 120m"
-; rbx = QUESTINFO*, r12 = write cursor into quest_buf, r13d = y, r14 = heading name; [rsp] dx, dz
+; hud_quest(edi y): the accepted quest on a pinned paper note at (4, y): "Quest: <title>" and under it
+; "p/c"; for the dungeon and boss quests also the compass heading and distance to the nearest site left
+; to clear, "p/c  NE 120m"
+; rbx = QUESTINFO*, r12 = write cursor into quest_buf, r13d = y, r14 = heading name, then the width of
+; line one; [rsp] dx, dz, [rsp+8] line two (the second string in quest_buf)
 hud_quest:
     push    rbp
     mov     rbp, rsp
@@ -1651,10 +1683,9 @@ hud_quest:
     mov     rdi, rax
     mov     rsi, [rbx + QUESTINFO.title]
     call    str_append
-    mov     rdi, rax
-    lea     rsi, [s_gap]
-    call    str_append
-    mov     r12, rax
+    mov     byte [rax], 0               ; line one is done: "Quest: <title>"
+    lea     r12, [rax + 1]              ; line two goes after its NUL
+    mov     [rsp + 8], r12
     call    quests_progress
     mov     ecx, [rbx + QUESTINFO.count]
     cmp     eax, ecx
@@ -1728,11 +1759,32 @@ hud_quest:
 .draw:
     mov     byte [r12], 0
     lea     rdi, [quest_buf]
+    mov     esi, 1
+    call    ui_text_width
+    mov     r14d, eax
+    mov     rdi, [rsp + 8]
+    mov     esi, 1
+    call    ui_text_width
+    cmp     eax, r14d
+    cmovl   eax, r14d                   ; the wider of the two lines
+    lea     ecx, [rax + 7]              ; the note is the ink width + 8 (the advance counts a trailing gap)
+    mov     edi, NINE_NOTE
     mov     esi, 4
     mov     edx, r13d
-    mov     ecx, RGBA(255, 215, 60, 255)
+    mov     r8d, 26                     ; two lines of 10, and 6 for the margins
+    call    ui_nine
+    lea     rdi, [quest_buf]
+    mov     esi, 8
+    lea     edx, [r13 + 3]
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
+    mov     rdi, [rsp + 8]
+    mov     esi, 8
+    lea     edx, [r13 + 13]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
 .ret:
     add     rsp, 16
     pop     r14
@@ -1743,7 +1795,8 @@ hud_quest:
     ret
 
 ; hud_banner(rdi zstr, esi rgba): show a message in the middle of the screen for 2.5 s, fading over
-; the last half second; the text is copied, at most 63 characters
+; the last half second; the text is copied, at most 63 characters. Only the alpha of rgba counts: the
+; banner is a crimson ribbon with cream text whatever the message
 hud_banner:
     sub     rsp, 8
     mov     [banner_rgba], esi
@@ -1774,14 +1827,17 @@ hud_banner_draw:
 .ret:
     ret
 
-; hud_banner_paint(edi y): the banner, while one is up, centred on ui_w/2 at height y, at scale 2
-; or the largest smaller scale whose text fits in ui_w - 16 (never below 1). It does not count
-; down: a screen that hides the banner's usual place paints it again where it shows.
-; ebx = alpha and colour, r12d = scale, r13d = y
+; hud_banner_paint(edi y): the banner, while one is up: a crimson ribbon (ink width + 20) x (8 scale + 8)
+; centred on ui_w/2, top y - 4, with the text in cream centred on it at height y; scale 2, or the
+; largest smaller scale whose ribbon fits in ui_w - 16 (never below 1). Both fade with the timer. It
+; does not count down: a screen that hides the banner's usual place paints it again where it shows.
+; ebx = alpha << 24, r12d = scale, r13d = y, r14d = ink width
 hud_banner_paint:
     push    rbx
     push    r12
     push    r13
+    push    r14
+    sub     rsp, 8
     mov     r13d, edi
     movss   xmm0, [banner_timer]
     xorps   xmm1, xmm1
@@ -1792,19 +1848,19 @@ hud_banner_paint:
     movzx   eax, byte [banner_rgba + 3]
     cvtsi2ss xmm1, eax
     mulss   xmm0, xmm1
-    cvttss2si ecx, xmm0                 ; alpha = min(1, timer / 0.5) * the banner's own alpha
-    shl     ecx, 24
-    mov     eax, [banner_rgba]
-    and     eax, 0x00FFFFFF
-    or      ecx, eax
-    mov     ebx, ecx
+    cvttss2si ebx, xmm0                 ; alpha = min(1, timer / 0.5) * the banner's own alpha
+    shl     ebx, 24
     mov     r12d, 2
 .fit:
     lea     rdi, [banner_text]
     mov     esi, r12d
     call    ui_text_width
+    test    eax, eax
+    jz      .ret                        ; no text, no ribbon
+    sub     eax, r12d                   ; the ink: the advance less its trailing 1-unit gap
+    mov     r14d, eax
     mov     ecx, [ui_w]
-    sub     ecx, 16
+    sub     ecx, 36                     ; the ribbon is 20 wider and keeps 8 clear on each side
     cmp     eax, ecx
     jbe     .fits
     cmp     r12d, 1
@@ -1812,14 +1868,29 @@ hud_banner_paint:
     dec     r12d
     jmp     .fit
 .fits:
+    lea     ecx, [r14 + 20]             ; ribbon width
+    mov     esi, [ui_w]
+    shr     esi, 1
+    mov     eax, ecx
+    shr     eax, 1
+    sub     esi, eax                    ; x = ui_w / 2 - width / 2
+    lea     edx, [r13 - 4]
+    lea     r8d, [r12*8 + 8]
+    mov     r9d, ebx
+    or      r9d, 0x00FFFFFF             ; white at the banner's alpha
+    mov     edi, NINE_RIBBON
+    call    ui_nine_tint
     lea     rdi, [banner_text]
     mov     esi, [ui_w]
     shr     esi, 1
     mov     edx, r13d
     mov     ecx, ebx
+    or      ecx, C_CREAM & 0x00FFFFFF
     mov     r8d, r12d
     call    ui_text_centered
 .ret:
+    add     rsp, 8
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx

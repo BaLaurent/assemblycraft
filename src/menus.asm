@@ -1,18 +1,22 @@
-; menus.asm - the non-gameplay screens built on the ui.asm toolkit: title, world list,
-; create / rename / delete world, pause, death and the loading screen.
+; menus.asm - the non-gameplay screens built on the ui.asm toolkit, in the grimoire look: title
+; (a leather cover), world list, create / rename / delete world, pause, death and the loading
+; screen. Pages are parchment (ui_panel) with their title on a ribbon (ui_ribbon) hanging over
+; the top edge; text on parchment is ink (no shadow), text on a dark surface is cream or gold.
 ; Every screen_*() runs once per frame after ui_begin and acts on ui_input. Coordinates are
 ; GUI units (ui_w x ui_h). A screen that changes state returns at once, so one click never
 ; reaches two widgets. screen_create and screen_rename reset their fields when app_entered
 ; is set (and clear it); the other screens just clear it.
 %include "common.inc"
+%include "theme.inc"
 default rel
 
 global screen_title, screen_worlds, screen_create, screen_rename
 global screen_delete, screen_pause, screen_death, screen_loading
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_focus
-extern ui_rect, ui_frame, ui_panel
-extern ui_text, ui_text_width, ui_text_centered, ui_button, ui_textfield
+extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon, ui_clip, ui_unclip
+extern ui_text, ui_text_ink, ui_text_width, ui_text_centered, ui_text_ink_centered
+extern ui_button, ui_textfield
 extern ui_input, surv, world_list, world_count
 extern app_entered, app_settings_parent, app_selected
 extern app_message, app_message_timer
@@ -21,9 +25,9 @@ extern app_respawn, app_request_quit
 extern saves_scan, saves_delete, saves_rename, fmt_ago
 extern str_append, str_copy, str_eq, parse_u32, fnv1a
 
-%define WHITE   0xFFFFFFFF
-%define GREY    RGBA(160, 160, 160, 255)
-%define RED     RGBA(255, 85, 85, 255)
+%define C_DEATH         RGBA(80, 0, 0, 120)     ; the red veil over the world behind the death page
+%define C_LOADING       (C_UMBER | 0xFF000000)  ; C_UMBER made opaque: the frame cleared behind must not tint it
+%define LEATHER_SLAB    32                      ; rows per scissored slab of the title's leather cover
 
 ; ---- drawing macros (xbase / ybase are 64-bit registers holding a GUI coordinate) ------
 %macro TXTC 7                           ; str, xbase, xoff, ybase, yoff, rgba, scale (centred)
@@ -34,21 +38,29 @@ extern str_append, str_copy, str_eq, parse_u32, fnv1a
     mov     r8d, %7
     call    ui_text_centered
 %endmacro
-%macro TXTCA 6                          ; str, xbase, xoff, y, rgba, scale (centred, absolute y)
+%macro INKC 7                           ; str, xbase, xoff, ybase, yoff, rgba, scale (centred, no shadow)
     lea     rdi, [%1]
     lea     esi, [%2 + %3]
-    mov     edx, %4
-    mov     ecx, %5
-    mov     r8d, %6
-    call    ui_text_centered
+    lea     edx, [%4 + %5]
+    mov     ecx, %6
+    mov     r8d, %7
+    call    ui_text_ink_centered
 %endmacro
-%macro TXTL 6                           ; str, xbase, xoff, y, rgba, scale (left aligned)
+%macro INKCA 6                          ; str, xbase, xoff, y, rgba, scale (centred, no shadow, absolute y)
     lea     rdi, [%1]
     lea     esi, [%2 + %3]
     mov     edx, %4
     mov     ecx, %5
     mov     r8d, %6
-    call    ui_text
+    call    ui_text_ink_centered
+%endmacro
+%macro INKL 6                           ; str, xbase, xoff, y, rgba, scale (left aligned, no shadow)
+    lea     rdi, [%1]
+    lea     esi, [%2 + %3]
+    mov     edx, %4
+    mov     ecx, %5
+    mov     r8d, %6
+    call    ui_text_ink
 %endmacro
 %macro BTN 7                            ; label, xbase, xoff, ybase, yoff, w, enabled -> eax clicked
     lea     rdi, [%1]
@@ -56,14 +68,6 @@ extern str_append, str_copy, str_eq, parse_u32, fnv1a
     lea     edx, [%4 + %5]
     mov     ecx, %6
     mov     r8d, %7
-    call    ui_button
-%endmacro
-%macro BTNA 6                           ; label, xbase, xoff, y, w, enabled (absolute y)
-    lea     rdi, [%1]
-    lea     esi, [%2 + %3]
-    mov     edx, %4
-    mov     ecx, %5
-    mov     r8d, %6
     call    ui_button
 %endmacro
 %macro FIELD 5                          ; textfield, xbase, xoff, y, w -> eax 1 on Enter
@@ -105,7 +109,7 @@ f_zero:         dd 0.0
 
 t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
-t_version:      db "AssemblyCraft 0.10.1", 0
+t_version:      db "AssemblyCraft 0.10.2", 0
 t_singleplayer: db "Singleplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
@@ -136,9 +140,10 @@ s_new_world:    db "New World", 0
 
 t_rename_title: db "Rename World", 0
 
+t_delete_title: db "Delete World", 0
 t_delete_ask:   db "Are you sure you want to delete this world?", 0
 s_quote:        db "'", 0
-s_lost:         db "' will be lost forever! (A long time!)", 0
+t_lost:         db "will be lost forever! (A long time!)", 0
 
 t_game_menu:    db "Game Menu", 0
 t_back:         db "Back to Game", 0
@@ -326,6 +331,94 @@ sel_valid:
     xor     eax, eax
     ret
 
+; dim_screen(): the C_DIM veil over the whole screen, behind a page
+dim_screen:
+    sub     rsp, 8
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    mov     r8d, C_DIM
+    call    ui_rect
+    add     rsp, 8
+    ret
+
+; form_page(rdi title): the page behind the create / rename / delete screens, 330 wide (the
+; Settings page's width; at most ui_w) and centred, from y 30 to ui_h - 36, with the title on a
+; ribbon hanging over its top edge
+form_page:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    call    dim_screen
+    mov     r12d, [ui_w]
+    mov     edx, 330
+    cmp     edx, r12d
+    cmovg   edx, r12d                   ; w = min(330, ui_w)
+    mov     eax, r12d
+    sub     eax, edx
+    shr     eax, 1
+    mov     edi, eax                    ; x = (ui_w - w) / 2
+    mov     esi, 30
+    mov     ecx, [ui_h]
+    sub     ecx, 66
+    call    ui_panel
+    mov     rdi, rbx
+    shr     r12d, 1
+    mov     esi, r12d                   ; the ribbon is centred on the screen
+    mov     edx, 23
+    call    ui_ribbon
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; draw_leather(): the NINE_LEATHER cover over the whole screen. One nine-slice of that size would
+; pass ui.asm's NINE_MAX_QUADS on a big window and lose its bottom rows, so the cover is drawn in
+; slabs of LEATHER_SLAB rows, each a nine-slice clipped to its own rows. A slab's nine-slice starts
+; 8 rows above it and ends 8 rows below it: its top row is then a multiple of 8, so its 8-row middle
+; strip repeats in phase with the slabs around it, and its 4-row rims fall outside the clip. The
+; first slab starts at the top edge and the one that reaches the bottom ends at it, so the real rim
+; is drawn exactly once.
+draw_leather:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    xor     ebx, ebx                    ; top row of the slab
+.slab:
+    cmp     ebx, [ui_h]
+    jge     .done
+    xor     edi, edi
+    mov     esi, ebx
+    mov     edx, [ui_w]
+    mov     ecx, LEATHER_SLAB
+    call    ui_clip
+    lea     r12d, [rbx - 8]             ; nine-slice top: 8 rows above the slab, at least row 0
+    xor     eax, eax
+    test    r12d, r12d
+    cmovs   r12d, eax
+    lea     r8d, [rbx + LEATHER_SLAB + 8]
+    mov     eax, [ui_h]
+    cmp     r8d, eax
+    cmovg   r8d, eax                    ; nine-slice bottom: 8 rows below the slab, at most ui_h
+    sub     r8d, r12d                   ; its height
+    mov     edi, NINE_LEATHER
+    xor     esi, esi
+    mov     edx, r12d
+    mov     ecx, [ui_w]
+    call    ui_nine
+    add     ebx, LEATHER_SLAB
+    jmp     .slab
+.done:
+    call    ui_unclip
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; ---- title -------------------------------------------------------------------------------
 
 screen_title:
@@ -341,6 +434,7 @@ screen_title:
     mov     eax, r13d
     shr     eax, 1
     mov     r15d, eax                   ; ui_h / 2
+    call    draw_leather
     lea     rdi, [t_title]              ; scale 4, or 3 when it would not fit
     mov     esi, 4
     call    ui_text_width
@@ -351,12 +445,15 @@ screen_title:
     jle     .scale_ok
     mov     ebx, 3
 .scale_ok:
-    TXTC    t_title, r12, 0, r14, -16, WHITE, ebx
-    TXTC    t_subtitle, r12, 0, r14, 20, GREY, 1
+    TXTC    t_title, r12, 0, r14, -16, C_GOLD_TEXT, ebx
+    lea     rdi, [t_subtitle]           ; the subtitle on a ribbon right under the title
+    mov     esi, r12d
+    lea     edx, [r14 + 17]
+    call    ui_ribbon
     lea     rdi, [t_version]
     mov     esi, 2
     lea     edx, [r13 - 10]
-    mov     ecx, GREY
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
     BTN     t_singleplayer, r12, -100, r15, 0, 200, 1
@@ -389,6 +486,7 @@ screen_worlds:
     shr     eax, 1
     mov     r12d, eax                   ; cx
     mov     r13d, [ui_h]
+    call    dim_screen
     cmp     dword [app_entered], 0
     je      .entered
     mov     dword [app_entered], 0
@@ -418,23 +516,39 @@ screen_worlds:
     test    ecx, ecx
     cmovs   ecx, edx
     mov     [list_scroll], ecx
-    TXTCA   t_select, r12, 0, 12, WHITE, 1
+    lea     edi, [r12 - 155]            ; the page holds the rows (they start at y 32), the ribbon
+    mov     esi, 24                     ; hangs over its top edge; it is as wide as the buttons below
+    mov     edx, 310
+    lea     ecx, [r13 - 84]
+    call    ui_panel
+    lea     rdi, [t_select]
+    mov     esi, r12d
+    mov     edx, 17
+    call    ui_ribbon
     movss   xmm0, [app_message_timer]
     ucomiss xmm0, [f_zero]
     jbe     .no_message
-    TXTCA   app_message, r12, 0, 22, RED, 1
+    lea     rdi, [app_message]          ; the message on a pinned note above the ribbon
+    mov     esi, 1
+    call    ui_text_width
+    lea     ecx, [rax + 7]              ; note width: the ink (advance - 1) plus 4 each side
+    mov     [rsp + 16], ecx
+    shr     ecx, 1
+    mov     esi, r12d
+    sub     esi, ecx                    ; x = cx - w / 2
+    mov     edi, NINE_NOTE
+    mov     edx, 2
+    mov     ecx, [rsp + 16]
+    mov     r8d, 14
+    call    ui_nine
+    INKCA   app_message, r12, 0, 5, C_RUBRIC, 1
 .no_message:
-    lea     edi, [r12 - 150]
-    mov     esi, 32
-    mov     edx, 300
-    lea     ecx, [r13 - 96]
-    call    ui_panel
     cmp     dword [world_count], 0
     jne     .have_rows
     lea     eax, [r13 - 32]
     shr     eax, 1
     sub     eax, 4
-    TXTCA   t_no_worlds, r12, 0, eax, GREY, 1
+    INKCA   t_no_worlds, r12, 0, eax, C_INK_SOFT, 1
 .have_rows:
     mov     ebx, [list_scroll]
     lea     eax, [rbx + r14]
@@ -455,10 +569,10 @@ screen_worlds:
     mov     [rsp + 8], eax              ; row y
     cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
     je      .no_click
-    mov     ecx, [ui_mx]                ; inside x in [cx-150, cx+150), y in [ry, ry+36)?
-    lea     edx, [r12 - 150]
+    mov     ecx, [ui_mx]                ; inside x in [cx-151, cx+151), y in [ry, ry+36)?
+    lea     edx, [r12 - 151]
     sub     ecx, edx
-    cmp     ecx, 300
+    cmp     ecx, 302
     jae     .no_click
     mov     ecx, [ui_my]
     sub     ecx, eax
@@ -474,29 +588,40 @@ screen_worlds:
     call    app_play_world
     jmp     .ret
 .no_click:
+    lea     eax, [r15 - 1]              ; a hairline under every row but the last visible one
+    cmp     ebx, eax
+    je      .no_rule
+    lea     edi, [r12 - 147]
+    mov     esi, [rsp + 8]
+    add     esi, 35
+    mov     edx, 294
+    mov     ecx, 1
+    mov     r8d, C_LOCKED
+    call    ui_rect
+.no_rule:
     cmp     ebx, [app_selected]
     jne     .unselected
-    lea     edi, [r12 - 150]
+    lea     edi, [r12 - 151]
     mov     esi, [rsp + 8]
-    mov     edx, 300
+    mov     edx, 302
     mov     ecx, 36
-    mov     r8d, RGBA(255, 255, 255, 38)
+    mov     r8d, C_HOVER
     call    ui_rect
-    lea     edi, [r12 - 150]
+    lea     edi, [r12 - 151]
     mov     esi, [rsp + 8]
-    mov     edx, 300
+    mov     edx, 302
     mov     ecx, 36
-    mov     r8d, WHITE
+    mov     r8d, C_GOLD
     call    ui_frame
 .unselected:
     mov     rdi, [rsp]
     add     rdi, WORLDENTRY.name
-    lea     esi, [r12 - 146]
+    lea     esi, [r12 - 147]
     mov     edx, [rsp + 8]
     add     edx, 4
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     mov     rdi, [rsp]
     mov     eax, [rdi + WORLDENTRY.valid]
     cmp     eax, 1
@@ -505,18 +630,18 @@ screen_worlds:
     lea     rdx, [t_old_world]
     cmp     eax, 2
     cmove   rdi, rdx                    ; a pre-0.9 world file
-    mov     ecx, RED
+    mov     ecx, C_RUBRIC
     jmp     .info
 .valid:
     call    build_info
     lea     rdi, [line_buf]
-    mov     ecx, GREY
+    mov     ecx, C_INK_SOFT
 .info:
-    lea     esi, [r12 - 146]
+    lea     esi, [r12 - 147]
     mov     edx, [rsp + 8]
     add     edx, 16
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     inc     ebx
     jmp     .row
 .rows_done:
@@ -595,13 +720,14 @@ screen_create:
     lea     rax, [tf_name]
     mov     [ui_focus], rax
 .fields_ready:
-    TXTCA   t_create_title, r12, 0, 12, WHITE, 1
-    TXTL    t_world_name, r12, -100, 44, GREY, 1
+    lea     rdi, [t_create_title]
+    call    form_page
+    INKL    t_world_name, r12, -100, 44, C_INK, 1
     FIELD   tf_name, r12, -100, 56, 200
     mov     r15d, eax                   ; Enter pressed in the name field
-    TXTL    t_seed_label, r12, -100, 88, GREY, 1
+    INKL    t_seed_label, r12, -100, 88, C_INK, 1
     FIELD   tf_seed, r12, -100, 100, 200
-    TXTL    t_seed_hint, r12, -100, 124, GREY, 1
+    INKL    t_seed_hint, r12, -100, 124, C_INK_SOFT, 1
     lea     rdi, [name_buf]             ; create needs a non-blank name
     lea     rsi, [tf_name]
     call    trim_copy
@@ -627,9 +753,9 @@ screen_create:
     cmovne  rdi, rax
     mov     esi, r12d
     mov     edx, 166
-    mov     ecx, GREY
+    mov     ecx, C_INK_SOFT
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
     BTN     t_create_btn, r12, -155, r13, -28, 150, ebx
     test    eax, eax
     jnz     .do_create
@@ -710,8 +836,9 @@ screen_rename:
     lea     rax, [tf_rename]
     mov     [ui_focus], rax
 .field_ready:
-    TXTCA   t_rename_title, r12, 0, 12, WHITE, 1
-    TXTL    t_world_name, r12, -100, 44, GREY, 1
+    lea     rdi, [t_rename_title]
+    call    form_page
+    INKL    t_world_name, r12, -100, 44, C_INK, 1
     FIELD   tf_rename, r12, -100, 56, 200
     mov     r15d, eax                   ; Enter pressed in the field
     lea     rdi, [name_buf]
@@ -792,7 +919,9 @@ screen_delete:
     GOTO    ST_WORLDS
     jmp     .ret
 .selected:
-    TXTC    t_delete_ask, r12, 0, r14, -40, WHITE, 1
+    lea     rdi, [t_delete_title]
+    call    form_page
+    INKC    t_delete_ask, r12, 0, r14, -40, C_INK, 1
     mov     edi, [app_selected]
     call    entry_ptr
     mov     rbx, rax
@@ -803,15 +932,16 @@ screen_delete:
     lea     rsi, [rbx + WORLDENTRY.name]
     call    str_append
     mov     rdi, rax
-    lea     rsi, [s_lost]
+    lea     rsi, [s_quote]
     call    str_append
     mov     byte [rax], 0
     lea     rdi, [line_buf]
     mov     esi, r12d
-    lea     edx, [r14 - 24]
-    mov     ecx, GREY
+    lea     edx, [r14 - 26]
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
+    INKC    t_lost, r12, 0, r14, -12, C_INK_SOFT, 1
     BTN     t_delete_btn, r12, -155, r14, 10, 150, 1
     test    eax, eax
     jnz     .do_delete
@@ -849,13 +979,16 @@ screen_pause:
     mov     eax, [ui_h]
     shr     eax, 2
     mov     r14d, eax                   ; ui_h / 4
-    xor     edi, edi
-    xor     esi, esi
-    mov     edx, [ui_w]
-    mov     ecx, [ui_h]
-    mov     r8d, RGBA(0, 0, 0, 128)
-    call    ui_rect
-    TXTC    t_game_menu, r12, 0, r14, 0, WHITE, 1
+    call    dim_screen
+    lea     edi, [r12 - 110]            ; the page; the ribbon hangs over its top edge
+    lea     esi, [r14 - 20]
+    mov     edx, 220
+    mov     ecx, 116
+    call    ui_panel
+    lea     rdi, [t_game_menu]
+    mov     esi, r12d
+    lea     edx, [r14 - 27]
+    call    ui_ribbon
     BTN     t_back, r12, -100, r14, 24, 200, 1
     test    eax, eax
     jnz     .resume
@@ -894,9 +1027,14 @@ screen_death:
     xor     esi, esi
     mov     edx, [ui_w]
     mov     ecx, [ui_h]
-    mov     r8d, RGBA(150, 0, 0, 115)
+    mov     r8d, C_DEATH
     call    ui_rect
-    TXTC    t_died, r12, 0, r14, 0, WHITE, 2
+    lea     edi, [r12 - 110]
+    lea     esi, [r14 - 20]
+    mov     edx, 220
+    mov     ecx, 118
+    call    ui_panel
+    INKC    t_died, r12, 0, r14, 0, C_RUBRIC, 2
     mov     eax, [surv + SURVIVAL.death_cause]
     xor ecx, ecx
     cmp     eax, CAUSE_LAST             ; unknown causes show no line
@@ -905,9 +1043,9 @@ screen_death:
     mov     rdi, [rdx + rax*8]
     mov     esi, r12d
     lea     edx, [r14 + 24]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
     BTN     t_respawn, r12, -100, r14, 48, 200, 1
     test    eax, eax
     jz      .not_respawn
@@ -925,7 +1063,7 @@ screen_death:
 
 ; ---- loading -------------------------------------------------------------------------------
 
-; screen_loading(rdi text): opaque dark screen with the text in the middle
+; screen_loading(rdi text): opaque umber screen with the text in the middle
 screen_loading:
     push    rbp
     mov     rbp, rsp
@@ -936,14 +1074,14 @@ screen_loading:
     xor     esi, esi
     mov     edx, [ui_w]
     mov     ecx, [ui_h]
-    mov     r8d, RGBA(16, 16, 16, 255)
+    mov     r8d, C_LOADING
     call    ui_rect
     mov     rdi, rbx
     mov     esi, [ui_w]
     shr     esi, 1
     mov     edx, [ui_h]
     shr     edx, 1
-    mov     ecx, WHITE
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text_centered
     add     rsp, 8

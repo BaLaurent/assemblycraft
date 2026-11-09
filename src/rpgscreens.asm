@@ -11,58 +11,41 @@
 ; All progression data (node texts, stats, attributes, quests, trades) comes from rpg.asm /
 ; quests.asm and all faction data (names, standings, rivals, champions, tribute) from factions.asm
 ; (Module API); the only text owned here is the UI wording.
+; The look is the grimoire's (theme.inc): every page (panel_begin) is a parchment NINE_PAGE under a ribbon
+; with its title, its text in ink; a tooltip and a faction's standing are dark plates with light text. The
+; grimoire itself is an open book (ui_book) with the web clipped to its viewport (ui_clip) and the footer
+; drawn over the book.
 %include "common.inc"
 %include "gl.inc"
+%include "theme.inc"
 default rel
 
 global screen_skills, screen_character, screen_trade, screen_dialog
 global screen_shrine, screen_leader, web_node_xy, web_pick
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
-extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_centered
+extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
+extern ui_nine, ui_nine_tint, ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
 extern app_goto, key_name, hud_banner_paint
 extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_points
 extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_level, rpg_points, rpg_rank
-extern rpg_can_spend, rpg_spend, rpg_stat_info, rpg_format_stat, rpg_recompute
+extern rpg_spend, rpg_stat_info, rpg_format_stat, rpg_recompute
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
 extern rpg_respec_cost, rpg_respec, rpg_ability_tile
 extern rpg_web_node, rpg_reachable, web_edges, web_edge_count, rpg_title, rpg_archetype_name
-extern rpg_ability_learned, rpg_bar_ability, rpg_bar_set
+extern rpg_ability_learned, rpg_ability_info, rpg_bar_ability, rpg_bar_set
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 extern trade_offer, trade_can, trade_execute, trade_count, trade_title
 extern screen_faction, faction_names, faction_standing, faction_tier, faction_tier_color
 extern faction_rivals, faction_champion_defeated, faction_tribute, faction_wanted
 extern tier_names, champion_names
 
-; ---- colours ------------------------------------------------------------------------------
-%define WHITE       0xFFFFFFFF
-%define GOLD        RGBA(255, 215, 60, 255)
-%define LABEL_COL   RGBA(220, 220, 220, 255)
-%define GREY        RGBA(128, 128, 128, 255)
-%define GREEN       RGBA(140, 255, 90, 255)
-%define RED         RGBA(255, 85, 85, 255)
-%define PANEL_COL   RGBA(62, 62, 68, 235)
-%define EDGE_COL    RGBA(255, 255, 255, 70)
-%define DIM_COL     RGBA(0, 0, 0, 100)
-%define COL_MAXED   RGBA(255, 200, 60, 255)
-%define COL_RANKED  RGBA(120, 220, 90, 255)
-%define COL_SPEND   RGBA(255, 255, 255, 200)
-%define COL_LOCKED  RGBA(90, 90, 90, 255)
-%define COL_KEYSTONE RGBA(255, 200, 60, 255)
-%define COL_COVER   RGBA(44, 30, 20, 245)       ; the grimoire: cover, spine, the web's backing ...
-%define COL_SPINE   RGBA(24, 16, 12, 255)
-%define COL_VIEW    RGBA(0, 0, 0, 70)
-%define COL_ARCH    RGBA(235, 195, 100, 255)    ; ... archetype names, node grounds, rings, washes
-%define COL_NODE_BG RGBA(18, 18, 24, 235)
-%define COL_PATH_BG RGBA(48, 38, 22, 240)
-%define COL_RING    GOLD
-%define COL_WASH    RGBA(255, 255, 255, 50)
-%define COL_DIMICON RGBA(255, 255, 255, 90)
-%define COL_EDGE_OFF  RGBA(100, 100, 112, 255)  ; edges: no end ranked, one end, both ends
-%define COL_EDGE_HALF RGBA(190, 190, 205, 230)
-%define COL_EDGE_LIT  GOLD
+; ---- colours: the palette is theme.inc's; these are what this file adds ----------------------
+%define TINT_FAINT  RGBA(255, 255, 255, 110)    ; a web node nothing links to: its frame and icon
+%define TIP_RANK    RGBA(170, 255, 170, 255)    ; tooltip: "Rank r/m" of a node that has a rank
+%define TIP_HINT    RGBA(255, 210, 120, 255)    ; tooltip: what is missing, or how to bind it
 
 ; ---- geometry (GUI units) -----------------------------------------------------------------
 %define WEB_VX      20                  ; the grimoire's web viewport: x, y, and the margins that
@@ -70,7 +53,7 @@ extern tier_names, champion_names
 %define WEB_VR      20                  ; right edge = ui_w - WEB_VR
 %define WEB_VB      42                  ; bottom edge = ui_h - WEB_VB
 %define WEB_CELL1   28                  ; units per web cell at zoom 1 ...
-%define WEB_CELL0   13                  ; ... and at zoom 0
+%define WEB_CELL0   9                   ; ... and at zoom 0 (the whole 17 x 17 web fits the viewport)
 %define WEB_DRAG    3                   ; units of travel that turn a press on a node into a drag
 %define DRAG_NONE   0                   ; web_drag: nothing pressed, panning, a press waiting on a node,
 %define DRAG_PAN    1                   ; a press on a node that moved too far to be a click
@@ -90,8 +73,9 @@ extern tier_names, champion_names
 %define SH_UTILITY  0xF2
 %define SH_END      0xFF
 
-%define TR_W        220                 ; trade panel: TR_BASE + TR_ROW per offer high (236 for 10)
-%define TR_BASE     26
+%define TR_W        220                 ; trade panel: TR_BASE + TR_ROW per offer high (225 for 10)
+%define TR_TOP      11                  ; ... its first row this far under the page top (the ribbon hangs above)
+%define TR_BASE     15
 %define TR_ROW      21
 %define DL_W        260                 ; elder and faction leader panel
 %define DL_H        144
@@ -100,16 +84,15 @@ extern tier_names, champion_names
 %define TB_BTN_W    116                 ; its tribute buttons, in two columns
 %define TB_ROW_SIZE 24                  ; one tribute_rows entry
 
-%define TIP_MAXW    320                 ; skill tooltip wraps here
-%define HINT_COL    RGBA(255, 150, 110, 255)
+%define TIP_MAXW    172                 ; tooltips wrap here
 
 section .rodata
 align 4
 attr_tiles:     db TILE_ATTR_STR, TILE_ATTR_DEX, TILE_ATTR_INT, TILE_ATTR_VIT
-web_dims_tab:   db 5, 9, 6, 12, 11, 22, 14, 28  ; web_dims: pick half, frame size by zoom * 2 + path
+web_dims_tab:   db 3, 7, 5, 10, 11, 22, 14, 28  ; web_dims: pick half, frame size by zoom * 2 + path
 ability_binds:  db BIND_ABILITY1, BIND_ABILITY2, BIND_ABILITY3, BIND_ABILITY4   ; bind of bar slot 0..3
 align 4
-web_edge_cols:  dd COL_EDGE_OFF, COL_EDGE_HALF, COL_EDGE_LIT
+web_edge_cols:  dd C_LOCKED, C_INK, C_GOLD      ; edges: no end ranked, one end, both ends
 
 ; the stat list in display order: group header markers and stat ids
 sheet_order:
@@ -137,18 +120,20 @@ s_level_sep:    db " - Level ", 0
 s_points:       db "Points: ", 0
 s_attr_points:  db "Attribute points: ", 0
 s_slash:        db "/", 0
-s_space:        db " ", 0
 s_colon_sp:     db ": ", 0
 s_per_rank:     db " per rank", 0
 s_keystone:     db " (Keystone)", 0
-s_needs_level:  db "- needs level ", 0
-s_not_linked:   db "- not linked to a skill you have", 0
-s_press:        db "Press ", 0
-s_place:        db " to place it on your bar", 0
-s_grimoire:     db "Grimoire", 0
-s_wheel_hint:   db "Wheel: zoom  Drag: move", 0
-s_tab_char:     db "Tab: Character", 0
-s_tab_skills:   db "Tab: Skills", 0
+s_needs_level: db "Needs level ", 0
+s_not_linked:  db "Learn a linked skill first", 0
+s_press:       db "Press ", 0
+s_place:       db " to place ", 0
+s_on_bar:      db " on your bar", 0
+s_rank:        db "Rank ", 0
+s_grimoire:    db "Grimoire", 0
+s_wheel_hint:  db "Wheel: zoom  Drag: move", 0
+s_tab_char:    db "Tab: Character", 0
+s_tab_grimoire: db "Tab: Grimoire", 0
+s_character:   db "Character", 0
 
 s_offense:      db "Offense", 0
 s_defense:      db "Defense", 0
@@ -177,7 +162,7 @@ s_progress:     db "Progress: ", 0
 s_accept:       db "Accept", 0
 s_leave:        db "Leave", 0
 s_complete:     db "Complete", 0
-s_unlearn:      db "Unlearn all: ", 0
+s_respec:       db "Respec: ", 0
 s_coins_sfx:    db " coins", 0
 s_leader_sfx:   db " Leader", 0
 s_shrine_sfx:   db " Shrine", 0
@@ -239,6 +224,11 @@ web_py:         resd 1
 web_lx:         resd 1                  ; the mouse of the last panning frame
 web_ly:         resd 1
 web_pressnode:  resd 1                  ; the node the press landed on
+alignb 8
+tip_paras:      resq 4                  ; tooltip_wrapped's paragraphs: name, what it does, rank, hint ...
+tip_cols:       resd 4                  ; ... and their colours
+tip_desc:       resb 128                ; "<stat value> per rank"
+tip_rank:       resb 24                 ; "Rank r/m"
 
 ; ---- macros ----------------------------------------------------------------------------------
 %macro ENTER_FRAME 1                    ; frame with %1 bytes of locals (%1 = 8 mod 16)
@@ -261,21 +251,21 @@ web_pressnode:  resd 1                  ; the node the press landed on
     pop     rbp
     ret
 %endmacro
-%macro TXTL 6                           ; label, xreg, xoff, yreg, yoff, rgba (1x, left aligned)
+%macro TXTL 6                           ; label, xreg, xoff, yreg, yoff, rgba (1x ink, left aligned)
     lea     rdi, [%1]
     lea     esi, [%2 + %3]
     lea     edx, [%4 + %5]
     mov     ecx, %6
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
 %endmacro
-%macro TXTC 6                           ; label, xreg, xoff, yreg, yoff, rgba (1x, centred on x)
+%macro TXTC 6                           ; label, xreg, xoff, yreg, yoff, rgba (1x ink, centred on x)
     lea     rdi, [%1]
     lea     esi, [%2 + %3]
     lea     edx, [%4 + %5]
     mov     ecx, %6
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
 %endmacro
 %macro BTN 6                            ; label, xreg, xoff, yreg, yoff, w -> eax clicked
     lea     rdi, [%1]
@@ -325,15 +315,14 @@ hit:
     xor     eax, eax
     ret
 
-; panel_begin(edi w, esi h): dimmer over the screen, then a w x h panel centred on it
-; (origin kept in s_px / s_py, y never above the screen)
+; panel_begin(edi w, esi h, rdx title): a dimmer over the screen, then a w x h parchment page centred on it with
+; the ribbon `title` hanging 7 units over its top (origin kept in s_px / s_py; y at least 7 so that the ribbon
+; stays on the screen)
 panel_begin:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
+    ENTER_FRAME 8
     mov     ebx, edi
     mov     r12d, esi
+    mov     r13, rdx
     mov     eax, [ui_w]
     sub     eax, ebx
     sar     eax, 1
@@ -341,32 +330,29 @@ panel_begin:
     mov     eax, [ui_h]
     sub     eax, r12d
     sar     eax, 1
-    xor     ecx, ecx
-    test    eax, eax
-    cmovs   eax, ecx
+    mov     ecx, 7
+    cmp     eax, ecx
+    cmovl   eax, ecx
     mov     [s_py], eax
     xor     edi, edi
     xor     esi, esi
     mov     edx, [ui_w]
     mov     ecx, [ui_h]
-    mov     r8d, DIM_COL
+    mov     r8d, C_DIM
     call    ui_rect
     mov     edi, [s_px]
     mov     esi, [s_py]
     mov     edx, ebx
     mov     ecx, r12d
-    mov     r8d, PANEL_COL
-    call    ui_rect
-    mov     edi, [s_px]
-    mov     esi, [s_py]
-    mov     edx, ebx
-    mov     ecx, r12d
-    mov     r8d, EDGE_COL
-    call    ui_frame
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
+    call    ui_panel
+    mov     rdi, r13
+    mov     esi, ebx
+    shr     esi, 1
+    add     esi, [s_px]
+    mov     edx, [s_py]
+    sub     edx, 7
+    call    ui_ribbon
+    LEAVE_FRAME 8
 
 ; close_check() -> eax 1 if the screen closed (back to ST_PLAYING) on Escape, the inventory
 ; key or the skills key. The first frame after a state change only clears app_entered.
@@ -516,7 +502,7 @@ text_extent:
     LEAVE_FRAME 8
 
 ; text_rows(rdi zstr, esi maxw, edx x, ecx y, r8d rgba) -> eax y below the last row
-; 1x paragraph word wrapped to maxw, left aligned at x, rows 10 units apart
+; 1x shadowed paragraph word wrapped to maxw, left aligned at x, rows 11 units apart (the tooltip's pitch)
 text_rows:
     ENTER_FRAME 8
     mov     rbx, rdi
@@ -538,53 +524,66 @@ text_rows:
     mov     ecx, r15d
     mov     r8d, 1
     call    ui_text
-    add     r14d, 10
+    add     r14d, 11
     jmp     .row
 .done:
     mov     eax, r14d
     LEAVE_FRAME 8
 
-; tooltip_wrapped(rdi zstr, rsi hint): a tooltip panel at the mouse like ui_tooltip, but the
-; text wraps at TIP_MAXW (and at the screen width) instead of running off the screen. The hint
-; (may be empty) is a second paragraph in HINT_COL.
+; tooltip_wrapped(rdi paras qword[n], rsi cols dword[n], edx n): a NINE_TOOLTIP panel at the mouse, right of it or
+; left of it when that would run off the screen, holding n paragraphs, each word wrapped at TIP_MAXW (and at the
+; screen width) in its own colour, rows 11 units apart, a 4-unit pad; an empty paragraph takes no row.
+; Locals: [rsp] panel x, [rsp+4] y, [rsp+8] w, [rsp+12] h, [rsp+16] rows in all, [rsp+20] widest row,
+; [rsp+24] y of the next row
+; ebx = paragraph, r12 = paras, r13 = cols, r14d = n, r15d = wrap width
 tooltip_wrapped:
-    ENTER_FRAME 24                      ; [rsp] panel x, [rsp+4] y, [rsp+8] w, [rsp+12] h
-    mov     rbx, rdi
-    mov     r12, rsi
-    mov     r13d, TIP_MAXW
+    ENTER_FRAME 40
+    mov     r12, rdi
+    mov     r13, rsi
+    mov     r14d, edx
+    mov     r15d, TIP_MAXW
     mov     eax, [ui_w]
     sub     eax, 12
-    cmp     eax, r13d
-    cmovl   r13d, eax                   ; maxw
-    mov     rdi, rbx
-    mov     esi, r13d
+    cmp     eax, r15d
+    cmovl   r15d, eax
+    mov     dword [rsp + 16], 0
+    mov     dword [rsp + 20], 0
+    xor     ebx, ebx
+.measure:
+    mov     rdi, [r12 + rbx*8]
+    mov     esi, r15d
     call    text_extent
-    mov     r14d, eax                   ; rows
-    mov     r15d, edx                   ; widest row
-    test    r14d, r14d
+    add     [rsp + 16], eax
+    cmp     edx, [rsp + 20]
+    jbe     .measured
+    mov     [rsp + 20], edx
+.measured:
+    inc     ebx
+    cmp     ebx, r14d
+    jb      .measure
+    mov     eax, [rsp + 16]
+    test    eax, eax
     jz      .ret
-    mov     rdi, r12
-    mov     esi, r13d
-    call    text_extent
-    add     r14d, eax
-    cmp     edx, r15d
-    cmova   r15d, edx
-    lea     eax, [r15 + 6]              ; panel: text + 3 padding each side
-    mov     [rsp + 8], eax
-    imul    eax, r14d, 10
-    add     eax, 4
+    imul    eax, eax, 11
+    add     eax, 5
     mov     [rsp + 12], eax
-    mov     ecx, [ui_mx]                ; x = mx + 12, kept on the screen
+    mov     eax, [rsp + 20]
+    add     eax, 8
+    mov     [rsp + 8], eax
+    mov     ecx, [ui_mx]                ; x = mx + 12, or left of the mouse when that runs off the screen
     add     ecx, 12
-    mov     eax, [ui_w]
-    sub     eax, [rsp + 8]
-    cmp     ecx, eax
-    cmovg   ecx, eax
+    lea     edx, [rcx + rax]
+    cmp     edx, [ui_w]
+    jle     .x_set
+    mov     ecx, [ui_mx]
+    sub     ecx, 12
+    sub     ecx, eax
+.x_set:
     xor     eax, eax
     test    ecx, ecx
     cmovs   ecx, eax
     mov     [rsp], ecx
-    mov     ecx, [ui_my]                ; y = my - 12
+    mov     ecx, [ui_my]                ; y = my - 12, kept on the screen
     sub     ecx, 12
     mov     eax, [ui_h]
     sub     eax, [rsp + 12]
@@ -594,28 +593,30 @@ tooltip_wrapped:
     test    ecx, ecx
     cmovs   ecx, eax
     mov     [rsp + 4], ecx
-    mov     edi, [rsp]
-    mov     esi, [rsp + 4]
-    mov     edx, [rsp + 8]
-    mov     ecx, [rsp + 12]
-    call    ui_panel
-    mov     rdi, rbx
-    mov     esi, r13d
+    mov     edi, NINE_TOOLTIP
+    mov     esi, [rsp]
+    mov     edx, [rsp + 4]
+    mov     ecx, [rsp + 8]
+    mov     r8d, [rsp + 12]
+    call    ui_nine
+    mov     eax, [rsp + 4]
+    add     eax, 4
+    mov     [rsp + 24], eax
+    xor     ebx, ebx
+.draw:
+    mov     rdi, [r12 + rbx*8]
+    mov     esi, r15d
     mov     edx, [rsp]
-    add     edx, 3
-    mov     ecx, [rsp + 4]
-    add     ecx, 3
-    mov     r8d, WHITE
+    add     edx, 4
+    mov     ecx, [rsp + 24]
+    mov     r8d, [r13 + rbx*4]
     call    text_rows
-    mov     ecx, eax                    ; the hint continues below the text
-    mov     rdi, r12
-    mov     esi, r13d
-    mov     edx, [rsp]
-    add     edx, 3
-    mov     r8d, HINT_COL
-    call    text_rows
+    mov     [rsp + 24], eax
+    inc     ebx
+    cmp     ebx, r14d
+    jb      .draw
 .ret:
-    LEAVE_FRAME 24
+    LEAVE_FRAME 40
 
 ; rank_text(edi rank, esi max, rdx buf) -> rax end (NUL written): "rank/max"
 rank_text:
@@ -634,9 +635,10 @@ rank_text:
 
 ; ---- the grimoire: header and shared helpers ---------------------------------------------------
 
-; screen_header(rsi points label, edx points, ecx panel width): "<rpg_title> - Level N" at the top
-; left of the panel being drawn (s_px / s_py), "<label><points>" right aligned at its top right
-; (green while there are points). Locals: [rsp] points, [rsp+4] panel width
+; screen_header(rsi points label, edx points, ecx panel width): the header line of the page whose origin is
+; s_px / s_py: "<rpg_title> - Level N" in rubric ink at (px + 8, py + 9) and "<label><points>" right aligned
+; to end at px + width - 8, in ink (soft while there are no points).
+; Locals: [rsp] points, [rsp+4] panel width
 screen_header:
     ENTER_FRAME 24
     mov     [rsp], edx
@@ -651,7 +653,12 @@ screen_header:
     mov     byte [r15], 0
     mov     r12d, [s_px]
     mov     r13d, [s_py]
-    TXTL    hdr_buf, r12, 8, r13, 5, WHITE
+    lea     rdi, [hdr_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 9]
+    mov     ecx, C_RUBRIC
+    mov     r8d, 1
+    call    ui_text_ink
     lea     r15, [pts_buf]
     APPP    r14
     APPN    dword [rsp]
@@ -660,26 +667,26 @@ screen_header:
     mov     esi, 1
     call    ui_text_width
     mov     esi, [rsp + 4]
-    lea     esi, [r12 + rsi - 8 + 1]    ; right aligned at px + width - 8
+    lea     esi, [r12 + rsi - 8 + 1]    ; right aligned: the ink ends at px + width - 8
     sub     esi, eax
-    mov     ecx, GREY
-    mov     eax, GREEN
+    mov     ecx, C_INK_SOFT
+    mov     eax, C_INK
     cmp     dword [rsp], 0
     cmovg   ecx, eax
     lea     rdi, [pts_buf]
-    lea     edx, [r13 + 5]
+    lea     edx, [r13 + 9]
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     LEAVE_FRAME 24
 
 ; ---- the grimoire: the skill web ---------------------------------------------------------------
 ; One web of 88 nodes (rpg.asm) on a 17 x 17 cell grid around the compass. web_ox / web_oy is the
-; screen position of cell (0, 0), a cell is 28 GUI units wide at zoom 1 and 13 at zoom 0. Nothing is
-; clipped: a node, an edge or a label is drawn only when it lies whole inside the viewport
-; (web_cull, the one place to swap for a clip rectangle) and input ignores what is not drawn.
+; screen position of cell (0, 0), a cell is 28 GUI units wide at zoom 1 and 9 at zoom 0, where the whole
+; web fits the viewport. The web is drawn over the open book and clipped to the viewport (ui_clip); only
+; a mouse inside the viewport hovers or presses a node.
 
 ; web_node_xy(edi node, esi zoom) -> eax dx, edx dy: the node's cell (the signed bytes of its WEBNODE)
-; times the cell size, 28 at zoom 1 and 13 at zoom 0 = the node centre minus the web origin; 0, 0 for
+; times the cell size, 28 at zoom 1 and 9 at zoom 0 = the node centre minus the web origin; 0, 0 for
 ; a node that does not exist
 web_node_xy:
     sub     rsp, 8
@@ -704,8 +711,8 @@ web_node_xy:
     ret
 
 ; web_dims(edi node, esi zoom) -> eax half (the pick half-size), edx frame size: 11 / 22 for an
-; ordinary node and 14 / 28 for a path node at zoom 1, 5 / 9 and 6 / 12 at zoom 0 (leaf but for
-; rpg_web_node)
+; ordinary node and 14 / 28 for a path node at zoom 1, 3 / 7 and 5 / 10 at zoom 0 (the pick box covers
+; the frame and no two pick boxes of different cells touch; leaf but for rpg_web_node)
 web_dims:
     sub     rsp, 8
     mov     [rsp], esi
@@ -779,32 +786,6 @@ web_pick:
 .ret:
     LEAVE_FRAME 24
 
-; web_cull(edi cx, esi cy, edx half) -> eax 1 when the square cx +- half, cy +- half lies whole inside
-; the web viewport (leaf)
-web_cull:
-    xor     eax, eax
-    lea     ecx, [rdi + rdx]
-    mov     r8d, [ui_w]
-    sub     r8d, WEB_VR
-    cmp     ecx, r8d
-    jg      .ret
-    mov     ecx, edi
-    sub     ecx, edx
-    cmp     ecx, WEB_VX
-    jl      .ret
-    lea     ecx, [rsi + rdx]
-    mov     r8d, [ui_h]
-    sub     r8d, WEB_VB
-    cmp     ecx, r8d
-    jg      .ret
-    mov     ecx, esi
-    sub     ecx, edx
-    cmp     ecx, WEB_VY
-    jl      .ret
-    mov     eax, 1
-.ret:
-    ret
-
 ; web_centre(edi node) -> eax x, edx y: where the node's centre is on the screen now
 web_centre:
     sub     rsp, 8
@@ -813,32 +794,6 @@ web_centre:
     add     eax, [web_ox]
     add     edx, [web_oy]
     add     rsp, 8
-    ret
-
-; web_vis(edi node) -> eax 1 when the node is drawn (and can be hovered or clicked): its frame, the
-; 1-unit ring around it and, at zoom 1, the rank tag hanging 6 units below it all lie in the viewport
-web_vis:
-    push    rbx
-    push    r12
-    sub     rsp, 8
-    mov     ebx, edi
-    call    web_centre
-    mov     r12d, eax
-    mov     [rsp], edx
-    mov     edi, ebx
-    mov     esi, [web_zoom]
-    call    web_dims
-    mov     edx, 1                      ; margin: the ring ...
-    mov     ecx, 6                      ; ... or the rank tag
-    cmp     dword [web_zoom], 0
-    cmovne  edx, ecx
-    add     edx, eax
-    mov     edi, r12d
-    mov     esi, [rsp]
-    call    web_cull
-    add     rsp, 8
-    pop     r12
-    pop     rbx
     ret
 
 ; web_node_ability(edi node) -> eax the ability the node teaches: an ability node's id, a path node's
@@ -953,15 +908,27 @@ web_zoom_input:
 .ret:
     ret
 
-; web_input(): hover, pan, click and the ability keys. web_hover = the node under the mouse that is
-; drawn, or -1. A press outside any node inside the viewport starts a pan (the origin follows the
-; mouse until the button is up); a press on a node waits for the release: under WEB_DRAG units of
-; travel spends a point there (rpg_spend), more cancels (neither pans nor spends). While a node
-; that teaches a learned ability is hovered, an ability key binds it to that bar slot.
-; ebx = hovered node, r12d = ability, r13d = key, r14d = slot
+; web_input(): hover, pan, click and the ability keys. web_hover = the node under the mouse, or -1; only a mouse
+; inside the viewport hovers or presses anything. A press on the viewport outside any node starts a pan (the
+; origin follows the mouse until the button is up); a press on a node waits for the release: under WEB_DRAG units
+; of travel spends a point there (rpg_spend), more cancels (neither pans nor spends). While a node that teaches a
+; learned ability is hovered, an ability key binds it to that bar slot.
+; ebx = hovered node, r15d = 1 when the mouse is inside the viewport, r12d = ability, r13d = key, r14d = slot
 web_input:
     ENTER_FRAME 24
     mov     dword [web_hover], -1
+    mov     ebx, -1
+    xor     r15d, r15d
+    mov     edi, WEB_VX
+    mov     esi, WEB_VY
+    mov     edx, [ui_w]
+    sub     edx, WEB_VX + WEB_VR
+    mov     ecx, [ui_h]
+    sub     ecx, WEB_VY + WEB_VB
+    call    hit
+    test    eax, eax
+    jz      .picked
+    mov     r15d, 1
     mov     edi, [ui_mx]
     mov     esi, [ui_my]
     mov     edx, [web_ox]
@@ -969,13 +936,6 @@ web_input:
     mov     r8d, [web_zoom]
     call    web_pick
     mov     ebx, eax
-    test    ebx, ebx
-    js      .picked
-    mov     edi, ebx
-    call    web_vis
-    test    eax, eax
-    jnz     .picked
-    mov     ebx, -1                     ; under the mouse but not drawn: ignored
 .picked:
     mov     [web_hover], ebx
     cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
@@ -991,20 +951,8 @@ web_input:
     test    ebx, ebx
     jns     .state
     mov     dword [web_drag], DRAG_NONE
-    mov     eax, [ui_mx]                ; a press on the empty web pans, inside the viewport only
-    cmp     eax, WEB_VX
-    jl      .state
-    mov     ecx, [ui_w]
-    sub     ecx, WEB_VR
-    cmp     eax, ecx
-    jge     .state
-    mov     eax, [ui_my]
-    cmp     eax, WEB_VY
-    jl      .state
-    mov     ecx, [ui_h]
-    sub     ecx, WEB_VB
-    cmp     eax, ecx
-    jge     .state
+    test    r15d, r15d
+    jz      .state                      ; a press outside the viewport pans nothing
     mov     dword [web_drag], DRAG_PAN
 .state:
     mov     eax, [web_drag]
@@ -1091,103 +1039,9 @@ web_input:
 .done:
     LEAVE_FRAME 24
 
-; web_line(edi x0, esi y0, edx x1, ecx y1, r8d rgba, r9d width): a line of width x width squares
-; (ui_rect) from (x0, y0) to (x1, y1), DDA along the longer axis max(|dx|, |dy|) = n: a straight
-; line is one rectangle, any other takes a square every `width` units of n (and one at the end), so
-; neighbouring squares touch. Locals: [rsp] rgba, [rsp+4] width, [rsp+8] step i, [rsp+12] width / 2,
-; [rsp+16] x of the square, [rsp+20] rectangle height
-; ebx = x0, r12d = y0, r13d = dx, r14d = dy, r15d = n
-web_line:
-    ENTER_FRAME 24
-    mov     [rsp], r8d
-    mov     [rsp + 4], r9d
-    shr     r9d, 1
-    mov     [rsp + 12], r9d
-    mov     ebx, edi
-    mov     r12d, esi
-    mov     r13d, edx
-    sub     r13d, edi
-    mov     r14d, ecx
-    sub     r14d, esi
-    mov     eax, r13d
-    cdq
-    xor     eax, edx
-    sub     eax, edx
-    mov     r15d, eax
-    mov     eax, r14d
-    cdq
-    xor     eax, edx
-    sub     eax, edx                    ; |dy|
-    cmp     eax, r15d
-    cmova   r15d, eax                   ; n
-    test    r13d, r13d
-    jz      .rect
-    test    r14d, r14d
-    jz      .rect
-    mov     dword [rsp + 8], 0
-.step:
-    mov     eax, r13d
-    imul    eax, [rsp + 8]
-    cdq
-    idiv    r15d
-    add     eax, ebx
-    sub     eax, [rsp + 12]
-    mov     [rsp + 16], eax
-    mov     eax, r14d
-    imul    eax, [rsp + 8]
-    cdq
-    idiv    r15d
-    add     eax, r12d
-    sub     eax, [rsp + 12]
-    mov     esi, eax
-    mov     edi, [rsp + 16]
-    mov     edx, [rsp + 4]
-    mov     ecx, edx
-    mov     r8d, [rsp]
-    call    ui_rect
-    mov     eax, [rsp + 8]
-    cmp     eax, r15d
-    jae     .ret
-    add     eax, [rsp + 4]
-    cmp     eax, r15d
-    cmova   eax, r15d
-    mov     [rsp + 8], eax
-    jmp     .step
-.rect:                                  ; straight (or a point): min(x0, x1) .. + |dx| + width
-    mov     eax, r14d
-    cdq
-    xor     eax, edx
-    sub     eax, edx
-    add     eax, [rsp + 4]
-    mov     [rsp + 20], eax             ; height
-    mov     eax, r13d
-    sar     eax, 31
-    and     eax, r13d
-    add     eax, ebx
-    sub     eax, [rsp + 12]
-    mov     [rsp + 16], eax             ; x
-    mov     eax, r14d
-    sar     eax, 31
-    and     eax, r14d
-    add     eax, r12d
-    sub     eax, [rsp + 12]
-    mov     esi, eax                    ; y
-    mov     eax, r13d
-    cdq
-    xor     eax, edx
-    sub     eax, edx
-    add     eax, [rsp + 4]
-    mov     edx, eax                    ; width
-    mov     edi, [rsp + 16]
-    mov     ecx, [rsp + 20]
-    mov     r8d, [rsp]
-    call    ui_rect
-.ret:
-    LEAVE_FRAME 24
-
-; web_draw_edges(): every pair of web_edges as a line between the two node centres, gold when both
-; ends have a rank, light when one has, dim when none; width 2 at zoom 1, 1 at zoom 0. Drawn only when
-; both centres are inside the viewport. Locals: [rsp] x0, [rsp+4] y0, [rsp+8] x1, [rsp+12] y1
+; web_draw_edges(): every pair of web_edges as a line (ui_line) between the two node centres: gold when both
+; ends have a rank, ink when one has, faint when none; 2 units wide at zoom 1, 1 at zoom 0. The viewport clip
+; cuts what runs out. Locals: [rsp] x0, [rsp+4] y0, [rsp+8] x1, [rsp+12] y1
 ; ebx = edge, r13d / r14d = its end nodes, r12d = how many ends are ranked
 web_draw_edges:
     ENTER_FRAME 24
@@ -1206,18 +1060,6 @@ web_draw_edges:
     call    web_centre
     mov     [rsp + 8], eax
     mov     [rsp + 12], edx
-    mov     edi, [rsp]
-    mov     esi, [rsp + 4]
-    xor     edx, edx
-    call    web_cull
-    test    eax, eax
-    jz      .next
-    mov     edi, [rsp + 8]
-    mov     esi, [rsp + 12]
-    xor     edx, edx
-    call    web_cull
-    test    eax, eax
-    jz      .next
     xor     r12d, r12d
     mov     edi, r13d
     call    rpg_rank
@@ -1239,123 +1081,93 @@ web_draw_edges:
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     mov     ecx, [rsp + 12]
-    call    web_line
-.next:
+    call    ui_line
     inc     ebx
     jmp     .edge
 .ret:
     LEAVE_FRAME 24
 
-; web_draw_compass(): TILE_COMPASS (32 x 32, 16 at zoom 0) on the origin and the four archetype names
-; beside their path nodes: Warrior right of its node, Archer left, Mage and Rogue above (the first
-; tier of every branch starts 3 units past the path node, so "outward" has no room, and below a
-; node hangs its rank tag); a name is drawn when it lies whole inside the viewport.
-; Locals: [rsp] name, [rsp+8] its width, [rsp+12] x, [rsp+16] y
-; ebx = archetype, r12d = compass half size, r13d / r14d = path node centre, r15d = its half size
+; web_draw_compass(): TILE_COMPASS on the origin (one 16 x 16 tile drawn 32 x 32 units, 16 x 16 at zoom 0) and,
+; at zoom 1, the four archetype names in rubric ink round their path nodes like a pinwheel: Warrior right of its
+; node, Mage below it, Archer left of it, Rogue above it.
+; Locals: [rsp] name, [rsp+8] its ink width
+; ebx = archetype, r12d = compass size, r13d / r14d = path node centre
 web_draw_compass:
     ENTER_FRAME 24
-    mov     r12d, 8
-    mov     eax, 16
+    mov     r12d, 16
+    mov     eax, 32
     cmp     dword [web_zoom], 0
     cmovne  r12d, eax
-    mov     edi, [web_ox]
-    mov     esi, [web_oy]
-    mov     edx, r12d
-    call    web_cull
-    test    eax, eax
-    jz      .names
-    mov     edi, TILE_COMPASS
+    mov     eax, r12d
+    shr     eax, 1
     mov     esi, [web_ox]
-    sub     esi, r12d
+    sub     esi, eax
     mov     edx, [web_oy]
-    sub     edx, r12d
-    lea     ecx, [r12 + r12]
+    sub     edx, eax
+    mov     edi, TILE_COMPASS
+    mov     ecx, r12d
     mov     r8d, WHITE
     call    ui_tile_icon
-.names:
+    cmp     dword [web_zoom], 0
+    je      .ret
     mov     ebx, 1
 .arch:
     lea     edi, [rbx - 1]
     call    web_centre
     mov     r13d, eax
     mov     r14d, edx
-    lea     edi, [rbx - 1]
-    mov     esi, [web_zoom]
-    call    web_dims
-    mov     r15d, eax
     mov     edi, ebx
     call    rpg_archetype_name
     mov     [rsp], rax
     mov     rdi, rax
     mov     esi, 1
     call    ui_text_width
+    dec     eax                         ; the ink: drop the trailing 1-unit gap
     mov     [rsp + 8], eax
     cmp     ebx, ARCH_WARRIOR
     jne     .not_warrior
-    lea     eax, [r13 + r15 + 3]        ; right of the node
+    lea     esi, [r13 + 19]             ; right of the node
     lea     edx, [r14 - 4]
     jmp     .placed
 .not_warrior:
     cmp     ebx, ARCH_ARCHER
-    jne     .not_archer
-    lea     eax, [r13 - 3]              ; left of the node
-    sub     eax, r15d
-    sub     eax, [rsp + 8]
+    jne     .centred
+    mov     esi, r13d                   ; left of the node
+    sub     esi, 19
+    sub     esi, [rsp + 8]
     lea     edx, [r14 - 4]
     jmp     .placed
-.not_archer:
-    mov     eax, [rsp + 8]
-    shr     eax, 1
-    neg     eax
-    add     eax, r13d                   ; centred on the node
-    lea     edx, [r14 - 10]             ; Mage and Rogue: above the node
-    sub     edx, r15d
+.centred:
+    mov     esi, [rsp + 8]
+    shr     esi, 1
+    neg     esi
+    add     esi, r13d                   ; centred on the node
+    lea     edx, [r14 + 17]             ; Mage: below it
+    cmp     ebx, ARCH_MAGE
+    je      .placed
+    lea     edx, [r14 - 25]             ; Rogue: above it
 .placed:
-    mov     [rsp + 12], eax
-    mov     [rsp + 16], edx
-    mov     edi, eax
-    lea     esi, [rdx + 4]
-    mov     edx, 4
-    call    web_cull
-    test    eax, eax
-    jz      .next
-    mov     edi, [rsp + 12]
-    add     edi, [rsp + 8]
-    mov     esi, [rsp + 16]
-    add     esi, 4
-    mov     edx, 4
-    call    web_cull
-    test    eax, eax
-    jz      .next
     mov     rdi, [rsp]
-    mov     esi, [rsp + 12]
-    mov     edx, [rsp + 16]
-    mov     ecx, COL_ARCH
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    call    ui_text
-.next:
+    call    ui_text_ink
     inc     ebx
     cmp     ebx, NUM_ARCHETYPES
     jbe     .arch
+.ret:
     LEAVE_FRAME 24
 
-; web_draw_node(edi node): the node when it is inside the viewport: a frame by kind (stat: one
-; line; ability: two; keystone and path: a thick one, the path on a warmer ground), 22 x 22 (path
-; 28 x 28) with a 16 x 16 icon at zoom 1, 9 x 9 (path 12 x 12) without one at zoom 0, where a ranked
-; node is a solid block. Border: maxed gold, ranked green, reachable white, locked grey (a keystone is
-; always gold); a node that is reachable and still unranked has a gold ring 1 unit outside; an
-; unreachable node's icon is dimmed; the hovered node gets a white wash; zoom 1 shows "r/m" at
-; (right - 3 - width, bottom - 2).
-; Locals: [rsp] rank, [rsp+4] reachable, [rsp+8] half, [rsp+12] size, [rsp+16] border colour,
-; [rsp+20] frame x, [rsp+24] frame y, [rsp+28] centre x, [rsp+32] centre y
+; web_draw_node(edi node): the node's frame by kind (NINE_NODE_STAT + kind: stat, ability, keystone, path), 22 x 22
+; (path 28 x 28) with its 16 x 16 icon at zoom 1, 7 x 7 (path 10 x 10) without one at zoom 0, centred on its cell. A
+; node that no ranked node links to is drawn faint (frame and icon tinted TINT_FAINT); a node a point could go into
+; that has none yet gets a 1-unit gold ring just outside its frame; at zoom 1 a ranked node of more than one rank
+; hangs "r/m" in ink off its bottom right corner (right edge - 4, bottom - 2). The viewport clip cuts what runs out.
+; Locals: [rsp] rank, [rsp+4] tint, [rsp+8] size, [rsp+12] frame x, [rsp+16] frame y, [rsp+20] centre x,
+; [rsp+24] centre y, [rsp+28] reachable
 ; ebx = node, r12 = WEBNODE*
 web_draw_node:
     ENTER_FRAME 40
     mov     ebx, edi
-    call    web_vis
-    test    eax, eax
-    jz      .ret
-    mov     edi, ebx
     call    rpg_web_node
     mov     r12, rax
     mov     edi, ebx
@@ -1363,115 +1175,50 @@ web_draw_node:
     mov     [rsp], eax
     mov     edi, ebx
     call    rpg_reachable
-    mov     [rsp + 4], eax
+    mov     [rsp + 28], eax
+    mov     ecx, WHITE
+    mov     edx, TINT_FAINT
+    mov     esi, [rsp]
+    or      esi, eax                    ; zero when the node has no rank and nothing links to it
+    cmovz   ecx, edx
+    mov     [rsp + 4], ecx
     mov     edi, ebx
     call    web_centre
-    mov     [rsp + 28], eax
-    mov     [rsp + 32], edx
+    mov     [rsp + 20], eax
+    mov     [rsp + 24], edx
     mov     edi, ebx
     mov     esi, [web_zoom]
     call    web_dims
-    mov     [rsp + 8], eax
-    mov     [rsp + 12], edx
+    mov     [rsp + 8], edx
     shr     edx, 1
-    mov     eax, [rsp + 28]
+    mov     eax, [rsp + 20]
     sub     eax, edx
-    mov     [rsp + 20], eax
-    mov     eax, [rsp + 32]
+    mov     [rsp + 12], eax
+    mov     eax, [rsp + 24]
     sub     eax, edx
-    mov     [rsp + 24], eax
-    ; border: maxed, ranked, reachable, locked (in that priority); a keystone is always gold
-    mov     eax, COL_LOCKED
-    mov     edx, COL_SPEND
-    cmp     dword [rsp + 4], 0
-    cmovne  eax, edx
-    mov     edx, [rsp]
-    test    edx, edx
-    jz      .border_set
-    mov     eax, COL_RANKED
-    mov     ecx, COL_MAXED
-    movzx   esi, byte [r12 + WEBNODE.max]
-    cmp     edx, esi
-    cmovae  eax, ecx
-.border_set:
-    mov     ecx, COL_KEYSTONE
-    cmp     byte [r12 + WEBNODE.kind], NODE_KEYSTONE
-    cmove   eax, ecx
     mov     [rsp + 16], eax
-    ; ground
-    mov     r8d, COL_NODE_BG
-    mov     eax, COL_PATH_BG
-    cmp     byte [r12 + WEBNODE.kind], NODE_PATH
-    cmove   r8d, eax
-    cmp     dword [web_zoom], 0
-    jne     .ground
+    cmp     dword [rsp + 28], 0
+    je      .frame
     cmp     dword [rsp], 0
-    je      .ground
-    mov     r8d, [rsp + 16]             ; zoom 0: a ranked node is a solid block of its border colour
-.ground:
-    mov     edi, [rsp + 20]
-    mov     esi, [rsp + 24]
-    mov     edx, [rsp + 12]
-    mov     ecx, edx
-    call    ui_rect
-    cmp     ebx, [web_hover]
     jne     .frame
-    mov     edi, [rsp + 20]
-    mov     esi, [rsp + 24]
-    mov     edx, [rsp + 12]
-    mov     ecx, edx
-    mov     r8d, COL_WASH
-    call    ui_rect
-.frame:
-    mov     edi, [rsp + 20]
-    mov     esi, [rsp + 24]
-    mov     edx, [rsp + 12]
-    mov     ecx, edx
-    mov     r8d, [rsp + 16]
-    call    ui_frame
-    cmp     dword [web_zoom], 0
-    je      .ring
-    xor     ecx, ecx                    ; inset of a second frame: ability 2, keystone and path 1
-    movzx   eax, byte [r12 + WEBNODE.kind]
-    cmp     eax, NODE_ABILITY
-    jne     .not_ability
-    mov     ecx, 2
-    jmp     .inset
-.not_ability:
-    cmp     eax, NODE_KEYSTONE
-    je      .thick
-    cmp     eax, NODE_PATH
-    jne     .inset
-.thick:
-    mov     ecx, 1
-.inset:
-    test    ecx, ecx
-    jz      .ring
-    mov     edi, [rsp + 20]
-    add     edi, ecx
-    mov     esi, [rsp + 24]
-    add     esi, ecx
-    lea     eax, [rcx + rcx]
-    mov     edx, [rsp + 12]
-    sub     edx, eax
-    mov     ecx, edx
-    mov     r8d, [rsp + 16]
-    call    ui_frame
-.ring:
-    cmp     dword [rsp + 4], 0
-    je      .icon
-    cmp     dword [rsp], 0
-    jne     .icon
-    mov     edi, [rsp + 20]
+    mov     edi, [rsp + 12]             ; the ring of a node a point could go into
     dec     edi
-    mov     esi, [rsp + 24]
+    mov     esi, [rsp + 16]
     dec     esi
-    mov     edx, [rsp + 12]
+    mov     edx, [rsp + 8]
     add     edx, 2
     mov     ecx, edx
-    mov     r8d, COL_RING
+    mov     r8d, C_GOLD
     call    ui_frame
-.icon:
+.frame:
+    movzx   edi, byte [r12 + WEBNODE.kind]
+    add     edi, NINE_NODE_STAT
+    mov     esi, [rsp + 12]
+    mov     edx, [rsp + 16]
+    mov     ecx, [rsp + 8]
+    mov     r8d, ecx
+    mov     r9d, [rsp + 4]
+    call    ui_nine_tint
     cmp     dword [web_zoom], 0
     je      .ret
     movzx   eax, byte [r12 + WEBNODE.kind]
@@ -1497,45 +1244,40 @@ web_draw_node:
     movzx   edi, byte [r12 + WEBNODE.stat]
     add     edi, TILE_CLASS0 - 1
 .draw_icon:
-    mov     esi, [rsp + 28]
+    mov     esi, [rsp + 20]
     sub     esi, 8
-    mov     edx, [rsp + 32]
+    mov     edx, [rsp + 24]
     sub     edx, 8
     mov     ecx, 16
-    mov     r8d, WHITE
-    mov     eax, COL_DIMICON
-    cmp     dword [rsp + 4], 0
-    cmove   r8d, eax                    ; not reachable: dimmed
+    mov     r8d, [rsp + 4]
     call    ui_tile_icon
-    mov     edi, [rsp]
+    cmp     dword [rsp], 0
+    je      .ret
     movzx   esi, byte [r12 + WEBNODE.max]
+    cmp     esi, 1
+    jbe     .ret                        ; a one-rank node has nothing to count
+    mov     edi, [rsp]
     lea     rdx, [rank_buf]
     call    rank_text
     lea     rdi, [rank_buf]
-    mov     esi, 1
-    call    ui_text_width
-    mov     esi, [rsp + 20]
-    add     esi, [rsp + 12]
-    sub     esi, 3                      ; the ink ends 4 units inside the right edge (the pen adds 1)
-    sub     esi, eax
-    mov     edx, [rsp + 24]
-    add     edx, [rsp + 12]
+    mov     esi, [rsp + 12]
+    add     esi, [rsp + 8]
+    sub     esi, 4
+    mov     edx, [rsp + 16]
+    add     edx, [rsp + 8]
     sub     edx, 2
-    mov     ecx, RGBA(200, 200, 200, 255)
-    mov     eax, [rsp + 16]
-    cmp     dword [rsp], 0
-    cmovne  ecx, eax
-    lea     rdi, [rank_buf]
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
 .ret:
     LEAVE_FRAME 40
 
-; web_tooltip(edi node): "<name>[ (Keystone)] r/m: <text>" at the mouse (tooltip_wrapped), the text
-; being the stat's value per rank (rpg_format_stat) or the node's description; its hint paragraph is
-; "- needs level N" while the character is below the node's level, else "- not linked to a skill you
-; have" when the node is not reachable, else for a learned ability "Press Q/G/V/X to place it on your
-; bar" (the four ability keys). Locals: [rsp] the node's level
+; web_tooltip(edi node): the hovered node's tooltip at the mouse (tooltip_wrapped): its name in gold (" (Keystone)"
+; after a keystone's), what it does (the stat's value per rank, or the node's description), "Rank r/m" (green once
+; the node has a rank) and a hint in orange: "Needs level N" while the character is below the node's level, else
+; "Learn a linked skill first" when no node linked to it has a rank, else for a learned ability "Press
+; Q/G/V/X to place <ability> on your bar" (the four ability keys).
+; Locals: [rsp] the rank, then the node's level, then its ability
 ; ebx = node, r12d = key index, r14 = WEBNODE*, r15 = write cursor
 web_tooltip:
     ENTER_FRAME 24
@@ -1544,38 +1286,55 @@ web_tooltip:
     test    rax, rax
     jz      .ret
     mov     r14, rax
-    lea     r15, [tip_buf]
+    lea     r15, [tip_buf]              ; the name
     APPP    [r14 + WEBNODE.name]
     cmp     byte [r14 + WEBNODE.kind], NODE_KEYSTONE
-    jne     .rank
+    jne     .name_done
     APPZ    s_keystone
-.rank:
-    APPZ    s_space
-    mov     edi, ebx
-    call    rpg_rank
-    APPN    eax
-    APPZ    s_slash
-    movzx   eax, byte [r14 + WEBNODE.max]
-    APPN    eax
-    APPZ    s_colon_sp
+.name_done:
+    mov     byte [r15], 0
+    lea     rax, [tip_buf]
+    mov     [tip_paras], rax
+    mov     dword [tip_cols], C_GOLD_TEXT
+    lea     rax, [s_empty]              ; what it does
     cmp     byte [r14 + WEBNODE.kind], NODE_STAT
     jne     .desc
     movzx   edi, byte [r14 + WEBNODE.stat]      ; a stat node has no text of its own
     mov     esi, [r14 + WEBNODE.value]
     lea     rdx, [fmt_buf]
     call    rpg_format_stat
+    lea     r15, [tip_desc]
     APPP    rax
     APPZ    s_per_rank
-    jmp     .text_done
-.desc:
-    mov     rax, [r14 + WEBNODE.desc]
-    test    rax, rax
-    jz      .text_done
-    APPP    rax
-.text_done:
     mov     byte [r15], 0
-    lea     r15, [tip_hint]
-    mov     byte [r15], 0               ; empty unless something is missing or to be told
+    lea     rax, [tip_desc]
+    jmp     .desc_set
+.desc:
+    mov     rcx, [r14 + WEBNODE.desc]
+    test    rcx, rcx
+    cmovnz  rax, rcx
+.desc_set:
+    mov     [tip_paras + 8], rax
+    mov     dword [tip_cols + 4], C_CREAM
+    lea     r15, [tip_rank]             ; "Rank r/m"
+    APPZ    s_rank
+    mov     edi, ebx
+    call    rpg_rank
+    mov     [rsp], eax
+    APPN    eax
+    APPZ    s_slash
+    movzx   eax, byte [r14 + WEBNODE.max]
+    APPN    eax
+    mov     byte [r15], 0
+    lea     rax, [tip_rank]
+    mov     [tip_paras + 16], rax
+    mov     ecx, C_CREAM
+    mov     eax, TIP_RANK
+    cmp     dword [rsp], 0
+    cmovg   ecx, eax
+    mov     [tip_cols + 8], ecx
+    lea     r15, [tip_hint]             ; empty unless something is missing or to be told
+    mov     byte [r15], 0
     movzx   eax, byte [r14 + WEBNODE.level]
     mov     [rsp], eax
     call    rpg_level
@@ -1596,6 +1355,7 @@ web_tooltip:
     call    web_node_ability
     test    eax, eax
     js      .hint_done
+    mov     [rsp], eax
     mov     edi, eax
     call    rpg_ability_learned
     test    eax, eax
@@ -1619,120 +1379,86 @@ web_tooltip:
     cmp     r12d, NUM_ABILITY_SLOTS
     jb      .key
     APPZ    s_place
+    mov     edi, [rsp]
+    call    rpg_ability_info
+    APPP    [rax + ABILINFO.name]
+    APPZ    s_on_bar
 .hint_done:
     mov     byte [r15], 0
-    lea     rdi, [tip_buf]
-    lea     rsi, [tip_hint]
+    lea     rax, [tip_hint]
+    mov     [tip_paras + 24], rax
+    mov     dword [tip_cols + 12], TIP_HINT
+    lea     rdi, [tip_paras]
+    lea     rsi, [tip_cols]
+    mov     edx, 4
     call    tooltip_wrapped
 .ret:
     LEAVE_FRAME 24
 
-; web_spread(): the flat stand-in of the open book: a dimmer, the cover, two pages 4 units apart
-; with the spine between them, "Grimoire" centred on the cover, "<title> - Level N" and "Points: N"
-; (screen_header, s_px / s_py = 16 / 17 so its text lands at x 24, y 22 and ends at ui_w - 24) and
-; the dark backing of the viewport. Locals: [rsp] page width, [rsp+4] page height
-web_spread:
-    ENTER_FRAME 24
-    mov     eax, [ui_w]
-    sub     eax, 32
-    shr     eax, 1
-    mov     [rsp], eax
-    mov     eax, [ui_h]
-    sub     eax, 28
-    mov     [rsp + 4], eax
+; web_book(): the open book of the grimoire: a dimmer over the world, the book (ui_book: two pages 4 units apart
+; round the spine, 14 units in from the screen edge), the ribbon "Grimoire" hanging over its top and the header line
+; (screen_header, s_px / s_py = 16 / 13 so that its text lands at x 24, y 22 and ends at ui_w - 24).
+web_book:
+    ENTER_FRAME 8
     xor     edi, edi
     xor     esi, esi
     mov     edx, [ui_w]
     mov     ecx, [ui_h]
-    mov     r8d, DIM_COL
+    mov     r8d, C_DIM
     call    ui_rect
-    mov     edi, 8                      ; the cover: 6 units beyond both pages
-    mov     esi, 8
-    mov     edx, [rsp]
-    lea     edx, [rdx*2 + 16]
-    mov     ecx, [rsp + 4]
-    add     ecx, 12
-    mov     r8d, COL_COVER
-    call    ui_rect
-    mov     edi, 14                     ; left page
-    mov     esi, 14
-    mov     edx, [rsp]
-    mov     ecx, [rsp + 4]
-    mov     r8d, PANEL_COL
-    call    ui_rect
+    mov     ecx, [ui_w]
+    sub     ecx, 32
+    shr     ecx, 1                      ; page width: two pages and the spine fill ui_w - 28
+    mov     edx, ecx
+    mov     r8d, [ui_h]
+    sub     r8d, 28
     mov     edi, 14
     mov     esi, 14
-    mov     edx, [rsp]
-    mov     ecx, [rsp + 4]
-    mov     r8d, EDGE_COL
-    call    ui_frame
-    mov     edi, [rsp]                  ; spine
-    add     edi, 14
-    mov     esi, 14
-    mov     edx, 4
-    mov     ecx, [rsp + 4]
-    mov     r8d, COL_SPINE
-    call    ui_rect
-    mov     edi, [rsp]                  ; right page
-    add     edi, 18
-    mov     esi, 14
-    mov     edx, [rsp]
-    mov     ecx, [rsp + 4]
-    mov     r8d, PANEL_COL
-    call    ui_rect
-    mov     edi, [rsp]
-    add     edi, 18
-    mov     esi, 14
-    mov     edx, [rsp]
-    mov     ecx, [rsp + 4]
-    mov     r8d, EDGE_COL
-    call    ui_frame
+    call    ui_book
     lea     rdi, [s_grimoire]
     mov     esi, [ui_w]
     shr     esi, 1
-    mov     edx, 6
-    mov     ecx, GOLD
-    mov     r8d, 1
-    call    ui_text_centered
-    lea     rdi, [s_tab_char]           ; between the title and the points
-    mov     esi, [ui_w]
-    shr     esi, 1
-    mov     edx, 22
-    mov     ecx, GREY
-    mov     r8d, 1
-    call    ui_text_centered
-    mov     edi, WEB_VX                 ; the viewport
-    mov     esi, WEB_VY
-    mov     edx, [ui_w]
-    sub     edx, WEB_VX + WEB_VR
-    mov     ecx, [ui_h]
-    sub     ecx, WEB_VY + WEB_VB
-    mov     r8d, COL_VIEW
-    call    ui_rect
-    mov     edi, WEB_VX
-    mov     esi, WEB_VY
-    mov     edx, [ui_w]
-    sub     edx, WEB_VX + WEB_VR
-    mov     ecx, [ui_h]
-    sub     ecx, WEB_VY + WEB_VB
-    mov     r8d, EDGE_COL
-    call    ui_frame
+    mov     edx, 7
+    call    ui_ribbon
     mov     dword [s_px], 16
-    mov     dword [s_py], 17
+    mov     dword [s_py], 13
     call    rpg_points
     mov     edx, eax
     lea     rsi, [s_points]
     mov     ecx, [ui_w]
     sub     ecx, 32
     call    screen_header
-    LEAVE_FRAME 24
+    LEAVE_FRAME 8
 
-; web_footer(): at y = ui_h - 38 the "Unlearn all: N coins" button (120 wide at x 24; enabled with N
-; coins in the pack and a rank somewhere; a click calls rpg_respec), the four bar slots (20 x 20,
-; step 23, centred on ui_w / 2) with the bound ability's icon and its key above; a right click on a
-; slot empties it; and "Wheel: zoom  Drag: move" ending at ui_w - 24.
-; Locals: [rsp] respec cost, [rsp+4] y, [rsp+8] x of slot 0, [rsp+16..39] key name
-; ebx = slot, r12d = enabled / slot hovered, r13d / r14d = slot x / y
+; web_hint(rdi s, esi y, edx left limit): the hint s in soft ink, right aligned to end at ui_w - 20 unless it
+; would start left of the limit. ebx = s, r12d = y, r13d = limit
+web_hint:
+    ENTER_FRAME 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, [ui_w]
+    sub     esi, 19                     ; the ink ends at ui_w - 20 (the pen adds 1)
+    sub     esi, eax
+    cmp     esi, r13d
+    jl      .ret
+    mov     rdi, rbx
+    mov     edx, r12d
+    mov     ecx, C_INK_SOFT
+    mov     r8d, 1
+    call    ui_text_ink
+.ret:
+    LEAVE_FRAME 8
+
+; web_footer(): at y = ui_h - 38 the "Respec: N coins" button (124 wide at x 24; enabled with N coins in the pack
+; and a rank somewhere; a click calls rpg_respec), the four ability slots (NINE_RUNE 20 x 20, step 23, centred on
+; ui_w / 2 but never under the button) with the bound ability's icon, a wash while hovered and the slot's key on a
+; note above it; a right click on a slot empties it; and, right of the slots where they fit, the hints "Wheel:
+; zoom  Drag: move" and "Tab: Character" (the only way to the character sheet).
+; Locals: [rsp] respec cost, [rsp+4] y, [rsp+8] x of slot 0, [rsp+12] note x, [rsp+16..39] key name
+; ebx = slot, r12d = enabled / slot hovered, r13d / r14d = slot x / y, r15d = note width
 web_footer:
     ENTER_FRAME 40
     mov     eax, [ui_h]
@@ -1741,7 +1467,7 @@ web_footer:
     call    rpg_respec_cost
     mov     [rsp], eax
     lea     r15, [coin_buf]
-    APPZ    s_unlearn
+    APPZ    s_respec
     APPN    dword [rsp]
     APPZ    s_coins_sfx
     mov     byte [r15], 0
@@ -1760,7 +1486,7 @@ web_footer:
     lea     rdi, [coin_buf]
     mov     esi, 24
     mov     edx, [rsp + 4]
-    mov     ecx, 120
+    mov     ecx, 124
     mov     r8d, r12d
     call    ui_button
     test    eax, eax
@@ -1770,6 +1496,9 @@ web_footer:
     mov     eax, [ui_w]
     shr     eax, 1
     sub     eax, 44                     ; the 89 units of four slots centred on ui_w / 2
+    mov     ecx, 152
+    cmp     eax, ecx
+    cmovl   eax, ecx                    ; ... but right of the button
     mov     [rsp + 8], eax
     xor     ebx, ebx
 .slot:
@@ -1783,32 +1512,23 @@ web_footer:
     call    hit
     mov     r12d, eax
     test    r12d, r12d
-    jz      .backing
+    jz      .draw
     cmp     dword [ui_input + UIINPUT.rmb_pressed], 0
-    je      .backing
+    je      .draw
     mov     edi, ebx
     mov     esi, -1
     call    rpg_bar_set                 ; a right click empties the slot
-.backing:
-    mov     edi, r13d
-    mov     esi, r14d
-    mov     edx, 20
+.draw:
+    mov     edi, NINE_RUNE
+    mov     esi, r13d
+    mov     edx, r14d
     mov     ecx, 20
-    mov     r8d, RGBA(0, 0, 0, 115)
-    call    ui_rect
-    mov     r8d, EDGE_COL
-    mov     eax, RGBA(255, 255, 255, 170)
-    test    r12d, r12d
-    cmovnz  r8d, eax
-    mov     edi, r13d
-    mov     esi, r14d
-    mov     edx, 20
-    mov     ecx, 20
-    call    ui_frame
+    mov     r8d, 20
+    call    ui_nine
     mov     edi, ebx
     call    rpg_bar_ability
     test    eax, eax
-    js      .label
+    js      .wash
     mov     edi, eax
     call    rpg_ability_tile
     mov     edi, eax
@@ -1817,6 +1537,15 @@ web_footer:
     mov     ecx, 16
     mov     r8d, WHITE
     call    ui_tile_icon
+.wash:
+    test    r12d, r12d
+    jz      .label
+    mov     edi, r13d
+    mov     esi, r14d
+    mov     edx, 20
+    mov     ecx, 20
+    mov     r8d, C_HOVER
+    call    ui_rect
 .label:
     lea     rax, [ability_binds]
     movzx   eax, byte [rax + rbx]
@@ -1826,30 +1555,48 @@ web_footer:
     call    key_name
     mov     byte [rsp + 19], 0          ; at most three characters fit over a slot
     lea     rdi, [rsp + 16]
-    lea     esi, [r13 + 1]
+    mov     esi, 1
+    call    ui_text_width
+    test    eax, eax
+    jz      .next                       ; an unbound key has no note
+    lea     r15d, [rax + 3]             ; note width: the ink + 4
+    mov     esi, r15d
+    shr     esi, 1
+    neg     esi
+    lea     esi, [rsi + r13 + 10]       ; centred over the slot
+    mov     [rsp + 12], esi
+    mov     edi, NINE_NOTE
     lea     edx, [r14 - 9]
-    mov     ecx, WHITE
+    mov     ecx, r15d
+    mov     r8d, 9
+    call    ui_nine
+    lea     rdi, [rsp + 16]
+    mov     esi, [rsp + 12]
+    add     esi, 2
+    lea     edx, [r14 - 8]
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
+.next:
     inc     ebx
     cmp     ebx, NUM_ABILITY_SLOTS
     jb      .slot
+    mov     r13d, [rsp + 8]
+    add     r13d, 90                    ; the hints start right of the slots
     lea     rdi, [s_wheel_hint]
-    mov     esi, 1
-    call    ui_text_width
-    mov     esi, [ui_w]
-    sub     esi, 24 - 1                 ; right aligned: the ink ends at ui_w - 24
-    sub     esi, eax
-    lea     rdi, [s_wheel_hint]
-    mov     edx, [rsp + 4]
-    add     edx, 6
-    mov     ecx, GREY
-    mov     r8d, 1
-    call    ui_text
+    mov     esi, [rsp + 4]
+    inc     esi
+    mov     edx, r13d
+    call    web_hint
+    lea     rdi, [s_tab_char]
+    mov     esi, [rsp + 4]
+    add     esi, 11
+    mov     edx, r13d
+    call    web_hint
     LEAVE_FRAME 40
 
 ; screen_skills(): the grimoire - an open book over the world with the skill web (see above) on it:
-; header, the web in its viewport, the footer and a tooltip for the hovered node. A click on a node
+; header, the web in its viewport (clipped), the footer and a tooltip for the hovered node. A click on a node
 ; spends a skill point (rpg_spend); Tab opens the character sheet. Everyone may open it.
 ; ebx = node being drawn
 screen_skills:
@@ -1871,7 +1618,14 @@ screen_skills:
     call    web_clamp                   ; the screen may have changed size since the last frame
     call    web_zoom_input
     call    web_input
-    call    web_spread
+    call    web_book
+    mov     edi, WEB_VX                 ; the web is clipped to its viewport; the draw calls up to ui_unclip
+    mov     esi, WEB_VY                 ; never leave early, so the clip is always lifted
+    mov     edx, [ui_w]
+    sub     edx, WEB_VX + WEB_VR
+    mov     ecx, [ui_h]
+    sub     ecx, WEB_VY + WEB_VB
+    call    ui_clip
     call    web_draw_edges
     call    web_draw_compass
     xor     ebx, ebx
@@ -1881,6 +1635,7 @@ screen_skills:
     inc     ebx
     cmp     ebx, NUM_WEB_NODES
     jb      .node
+    call    ui_unclip
     call    web_footer
     mov     edi, [web_hover]
     test    edi, edi
@@ -1948,8 +1703,8 @@ stat_compact:
     mov     rax, r12
     LEAVE_FRAME 8
 
-; plus_box(edi x, esi y, edx enabled) -> eax 1 when clicked: a 9 x 9 "+" button (the click sound is
-; played by whatever the click does)
+; plus_box(edi x, esi y, edx enabled) -> eax 1 when clicked: an 11 x 11 button (a parchment plate, brighter
+; under the mouse, greyed when disabled) with a "+" in ink (the click sound is played by whatever the click does)
 plus_box:
     ENTER_FRAME 24
     mov     r12d, edi
@@ -1958,41 +1713,32 @@ plus_box:
     xor     ebx, ebx                    ; hovered (a disabled button never is)
     test    r14d, r14d
     jz      .draw
-    mov     edx, 9
-    mov     ecx, 9
+    mov     edx, 11
+    mov     ecx, 11
     call    hit
     mov     ebx, eax
 .draw:
-    mov     r8d, RGBA(255, 255, 255, 16)
-    mov     eax, RGBA(255, 255, 255, 38)
-    mov     ecx, RGBA(255, 255, 255, 77)
+    mov     edi, NINE_BUTTON_OFF
+    mov     eax, NINE_BUTTON
+    mov     ecx, NINE_BUTTON_HOT
     test    r14d, r14d
-    cmovnz  r8d, eax
+    cmovnz  edi, eax
     test    ebx, ebx
-    cmovnz  r8d, ecx
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, 9
-    mov     ecx, 9
-    call    ui_rect
-    test    ebx, ebx
-    jz      .plus
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, 9
-    mov     ecx, 9
-    mov     r8d, RGBA(255, 255, 255, 128)
-    call    ui_frame
-.plus:
+    cmovnz  edi, ecx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, 11
+    mov     r8d, 11
+    call    ui_nine
     lea     rdi, [s_plus]
-    lea     esi, [r12 + 4]
-    lea     edx, [r13 + 1]
-    mov     ecx, WHITE
-    mov     eax, GREY
+    lea     esi, [r12 + 5]
+    lea     edx, [r13 + 2]
+    mov     ecx, C_INK
+    mov     eax, C_INK_SOFT
     test    r14d, r14d
     cmovz   ecx, eax
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
     xor     eax, eax
     test    ebx, ebx
     jz      .ret
@@ -2025,6 +1771,7 @@ screen_character:
     call    rpg_recompute
     mov     edi, CH_W
     mov     esi, CH_H
+    lea     rdx, [s_character]
     call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
@@ -2042,12 +1789,18 @@ screen_character:
     lea     r14d, [r14 + r13 + 18]      ; row y
     lea     edi, [r12 + 8]
     mov     esi, r14d
-    mov     edx, 117
+    mov     edx, 119
     mov     ecx, 12
     call    hit
     test    eax, eax
     jz      .attr_draw
     mov     [rsp], ebx
+    lea     edi, [r12 + 8]              ; the hovered row is washed
+    mov     esi, r14d
+    mov     edx, 119
+    mov     ecx, 12
+    mov     r8d, C_HOVER
+    call    ui_rect
 .attr_draw:
     lea     rax, [attr_tiles]
     movzx   edi, byte [rax + rbx]
@@ -2061,9 +1814,9 @@ screen_character:
     mov     rdi, rax
     lea     esi, [r12 + 22]
     lea     edx, [r14 + 2]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     mov     edi, ebx
     call    rpg_attr
     mov     edi, eax
@@ -2077,11 +1830,11 @@ screen_character:
     sub     esi, eax
     lea     rdi, [coin_buf]
     lea     edx, [r14 + 2]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     lea     edi, [r12 + 116]
-    lea     esi, [r14 + 1]
+    mov     esi, r14d
     xor     edx, edx
     cmp     dword [rsp + 8], 0
     setg    dl                          ; enabled while attribute points are left
@@ -2114,7 +1867,7 @@ screen_character:
     APPZ    s_slash
     APPN    dword [surv_max_health]
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 18, LABEL_COL
+    TXTL    coin_buf, r12, 140, r13, 18, C_INK
     call    armor_points
     add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
     mov     ecx, 20
@@ -2129,14 +1882,14 @@ screen_character:
     APPN    eax
     APPZ    s_armor_end
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 27, LABEL_COL
+    TXTL    coin_buf, r12, 140, r13, 27, C_INK
     lea     r15, [coin_buf]
     APPZ    s_hit
     APPN    dword [rsp + 12]
     APPZ    s_crit
     APPN    dword [rsp + 16]
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 36, LABEL_COL
+    TXTL    coin_buf, r12, 140, r13, 36, C_INK
     mov     eax, [rsp + 20]
     xor     edx, edx
     mov     ecx, 10
@@ -2152,13 +1905,13 @@ screen_character:
     add     r15, 2
     APPZ    s_per_s
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 45, LABEL_COL
+    TXTL    coin_buf, r12, 140, r13, 45, C_INK
     ; ---- divider and the stat list
     lea     edi, [r12 + 8]
     lea     esi, [r13 + 66]
     mov     edx, CH_W - 16
     mov     ecx, 1
-    mov     r8d, EDGE_COL
+    mov     r8d, C_GOLD
     call    ui_rect
     call    sheet_build
     mov     ebx, eax                    ; rows listed
@@ -2225,40 +1978,43 @@ screen_character:
     jae     .fits
     lea     rdi, [coin_buf]
 .fits:
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     jmp     .text
 .head:
     sub     edi, SH_OFFENSE
     lea     rax, [sheet_head]
     mov     rdi, [rax + rdi*8]
-    mov     ecx, GOLD
+    mov     ecx, C_RUBRIC
 .text:
     mov     esi, [rsp + 24]
     mov     edx, [rsp + 28]
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     inc     r15d
     cmp     r15d, 2 * CH_ROWS
     jb      .row
 .list_done:
-    TXTC    s_tab_skills, r12, CH_W / 2, r13, 221, GREY
+    TXTC    s_tab_grimoire, r12, CH_W / 2, r13, 221, C_INK_SOFT
     mov     eax, [rsp]
     test    eax, eax
     js      .ret
     mov     edi, eax
     call    rpg_attr_desc
-    mov     rdi, rax
-    lea     rsi, [s_empty]
+    mov     [tip_paras], rax
+    mov     dword [tip_cols], C_CREAM
+    lea     rdi, [tip_paras]
+    lea     rsi, [tip_cols]
+    mov     edx, 1
     call    tooltip_wrapped
 .ret:
     LEAVE_FRAME 40
 
 ; ---- traders -------------------------------------------------------------------------------------
 
-; screen_trade(): the current trader's trade_count offers (trade_open picked the table) as
-; "give -> get" rows with a Trade button each (enabled while trade_can), under its trade_title;
-; the panel is as high as its rows. Hovering an icon names the item, or for a gear offer says
-; what it rolls.
+; screen_trade(): the current trader's trade_count offers (trade_open picked the table) as "give -> get" rows
+; with a Trade button each (enabled while trade_can), on a page under a ribbon with the trade_title; the page
+; is as high as its rows. The coins in the pack hang on a note over the page's bottom right edge. Hovering an
+; icon names the item, or for a gear offer says what it rolls.
 ; Locals: [rsp] item id under the mouse (0 = none), [rsp+4] trade_can of the row, [rsp+8] 1 when
 ; that icon is the "get" side
 screen_trade:
@@ -2269,17 +2025,12 @@ screen_trade:
     mov     edi, TR_W
     imul    esi, [trade_count], TR_ROW
     add     esi, TR_BASE
+    mov     rdx, [trade_title]
     call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
     mov     dword [rsp], 0
-    mov     rdi, [trade_title]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    mov     ecx, GOLD
-    mov     r8d, 1
-    call    ui_text
-    lea     r15, [coin_buf]
+    lea     r15, [coin_buf]             ; the note: "Coins: N", 4 units over the page's bottom edge
     APPZ    s_coins
     mov     edi, GOLD_COIN
     call    inv_count
@@ -2288,30 +2039,40 @@ screen_trade:
     lea     rdi, [coin_buf]
     mov     esi, 1
     call    ui_text_width
-    lea     esi, [r12 + TR_W - 8 + 1]   ; right aligned at px + 212
-    sub     esi, eax
+    lea     ebx, [rax + 3]              ; note width: the ink + 4
+    lea     r15d, [r12 + TR_W - 12]
+    sub     r15d, ebx                   ; note x
+    imul    r14d, [trade_count], TR_ROW
+    lea     r14d, [r14 + r13 + TR_BASE - 4] ; note y
+    mov     edi, NINE_NOTE
+    mov     esi, r15d
+    mov     edx, r14d
+    mov     ecx, ebx
+    mov     r8d, 9
+    call    ui_nine
     lea     rdi, [coin_buf]
-    lea     edx, [r13 + 6]
-    mov     ecx, GOLD
+    lea     esi, [r15 + 2]
+    lea     edx, [r14 + 1]
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     xor     ebx, ebx
 .row:
     imul    eax, ebx, TR_ROW
-    lea     r14d, [rax + r13 + 22]      ; row y
+    lea     r14d, [rax + r13 + TR_TOP]  ; row y
     mov     edi, ebx
     call    trade_offer
     mov     r15, rax
     mov     edi, ebx
     call    trade_can
     mov     [rsp + 4], eax
-    lea     edi, [r12 + 4]              ; row backing
-    mov     esi, r14d
-    mov     edx, TR_W - 8
-    mov     ecx, 20
-    mov     r8d, RGBA(0, 0, 0, 55)
-    call    ui_rect
-    mov     edi, [r15 + TRADEOFFER.give]        ; give: icon, then the count (red when it cannot be paid)
+    mov     edi, NINE_SLOT              ; row backing
+    lea     esi, [r12 + 4]
+    mov     edx, r14d
+    mov     ecx, TR_W - 8
+    mov     r8d, 20
+    call    ui_nine
+    mov     edi, [r15 + TRADEOFFER.give]        ; give: icon, then the count (rubric when it cannot be paid)
     lea     esi, [r12 + 10]
     lea     edx, [r14 + 2]
     mov     ecx, 16
@@ -2334,13 +2095,13 @@ screen_trade:
     lea     rdi, [coin_buf]
     lea     esi, [r12 + 29]
     lea     edx, [r14 + 6]
-    mov     ecx, WHITE
-    mov     eax, RED
+    mov     ecx, C_INK
+    mov     eax, C_RUBRIC
     cmp     dword [rsp + 4], 0
     cmove   ecx, eax
     mov     r8d, 1
-    call    ui_text
-    TXTL    s_arrow, r12, 66, r14, 6, GREY
+    call    ui_text_ink
+    TXTL    s_arrow, r12, 66, r14, 6, C_INK_SOFT
     mov     edi, [r15 + TRADEOFFER.get]         ; get: icon and count
     lea     esi, [r12 + 90]
     lea     edx, [r14 + 2]
@@ -2364,9 +2125,9 @@ screen_trade:
     lea     rdi, [coin_buf]
     lea     esi, [r12 + 109]
     lea     edx, [r14 + 6]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     lea     rdi, [s_trade]
     lea     esi, [r12 + 162]
     mov     edx, r14d
@@ -2417,7 +2178,8 @@ screen_trade:
 ; ---- elder -----------------------------------------------------------------------------------------
 
 ; screen_dialog(): the current quest of the chain (rpg.asm's quest state) with Accept / Complete /
-; Leave; when the chain is finished a farewell. Locals: [rsp] quest accepted, [rsp+4] progress
+; Leave, on a page under the ribbon "Elder"; when the chain is finished a farewell.
+; Locals: [rsp] quest accepted, [rsp+4] progress
 screen_dialog:
     ENTER_FRAME 24
     call    close_check
@@ -2425,14 +2187,14 @@ screen_dialog:
     jnz     .ret
     mov     edi, DL_W
     mov     esi, DL_H
+    lea     rdx, [s_elder]
     call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
-    TXTL    s_elder, r12, 8, r13, 6, WHITE
     call    quests_current
     test    rax, rax
     jnz     .quest
-    TXTC    s_saved, r12, DL_W / 2, r13, 40, LABEL_COL
+    TXTC    s_saved, r12, DL_W / 2, r13, 40, C_INK
     BTN     s_farewell, r12, (DL_W - 118) / 2, r13, 92, 118
     test    eax, eax
     jnz     .close
@@ -2444,24 +2206,24 @@ screen_dialog:
     mov     rdi, [r14 + QUESTINFO.title]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 24]
-    mov     ecx, GOLD
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     mov     rdi, [r14 + QUESTINFO.line1]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 40]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     mov     rdi, [r14 + QUESTINFO.line2]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 52]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     cmp     dword [rsp], 0
     je      .buttons
-    lea     r15, [coin_buf]             ; "Progress: p/c", green once it is done
+    lea     r15, [coin_buf]             ; "Progress: p/c", in rubric once it is done
     APPZ    s_progress
     call    quests_progress
     mov     ecx, [r14 + QUESTINFO.count]
@@ -2472,8 +2234,8 @@ screen_dialog:
     APPZ    s_slash
     APPN    dword [r14 + QUESTINFO.count]
     mov     byte [r15], 0
-    mov     ecx, WHITE
-    mov     eax, GREEN
+    mov     ecx, C_INK
+    mov     eax, C_RUBRIC
     mov     edx, [rsp + 4]
     cmp     edx, [r14 + QUESTINFO.count]
     cmovae  ecx, eax
@@ -2481,7 +2243,7 @@ screen_dialog:
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 68]
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
 .buttons:
     cmp     dword [rsp], 0
     je      .offer
@@ -2515,15 +2277,11 @@ screen_dialog:
 
 ; ---- factions ----------------------------------------------------------------------------------
 
-; draw_standing(edi faction, esi x, edx y): "Standing: N (Tier)" at (x, y) in the colour of the
-; faction's tier. ebx = faction, r12d = x, r13d = y, r15 = write cursor into coin_buf
+; draw_standing(edi faction, esi x, edx y): "Standing: N (Tier)" at (x, y) in the colour of the faction's tier, on a
+; dark plate (NINE_TOOLTIP, 4 units of padding) so that the light tier colours read on parchment.
+; ebx = faction, r12d = x, r13d = y, r14d = the tier colour, r15 = write cursor into coin_buf
 draw_standing:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    push    r15
+    ENTER_FRAME 8
     mov     ebx, edi
     mov     r12d, esi
     mov     r13d, edx
@@ -2542,18 +2300,23 @@ draw_standing:
     mov     byte [r15], 0
     mov     edi, ebx
     call    faction_tier_color
-    mov     ecx, eax
+    mov     r14d, eax
+    lea     rdi, [coin_buf]
+    mov     esi, 1
+    call    ui_text_width
+    mov     edi, NINE_TOOLTIP
+    lea     esi, [r12 - 4]
+    lea     edx, [r13 - 4]
+    lea     ecx, [rax + 8]
+    mov     r8d, 16
+    call    ui_nine
     lea     rdi, [coin_buf]
     mov     esi, r12d
     mov     edx, r13d
+    mov     ecx, r14d
     mov     r8d, 1
     call    ui_text
-    pop     r15
-    pop     r13
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
+    LEAVE_FRAME 8
 
 ; screen_leader(): ST_LEADER, what the leader of screen_faction says: "<Faction> Leader", the
 ; standing in its tier colour, a greeting by tier (a tier under Neutral reads as Neutral), the
@@ -2567,23 +2330,18 @@ screen_leader:
     call    close_check
     test    eax, eax
     jnz     .ret
-    mov     edi, DL_W
-    mov     esi, DL_H
-    call    panel_begin
-    mov     r12d, [s_px]
-    mov     r13d, [s_py]
     mov     r14d, [screen_faction]
-    lea     r15, [hdr_buf]              ; "<Faction> Leader"
+    lea     r15, [hdr_buf]              ; "<Faction> Leader": the ribbon over the page
     lea     rax, [faction_names]
     APPP    [rax + r14*8]
     APPZ    s_leader_sfx
     mov     byte [r15], 0
-    lea     rdi, [hdr_buf]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    mov     ecx, GOLD
-    mov     r8d, 1
-    call    ui_text
+    mov     edi, DL_W
+    mov     esi, DL_H
+    lea     rdx, [hdr_buf]
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
     mov     edi, r14d
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 24]
@@ -2597,9 +2355,9 @@ screen_leader:
     mov     rdi, [rdx + rax*8]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 40]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     lea     rdx, [faction_rivals]       ; "Rivals: A, B"
     movzx   ebx, byte [rdx + r14]
     lea     r15, [row_buf]
@@ -2623,9 +2381,9 @@ screen_leader:
     lea     rdi, [row_buf]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 64]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     lea     r15, [row_buf]              ; "Champion: <name>", with " (fallen)" once defeated
     APPZ    s_champion
     lea     rdx, [champion_names]
@@ -2640,9 +2398,9 @@ screen_leader:
     lea     rdi, [row_buf]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 78]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     BTN     s_leave, r12, (DL_W - 100) / 2, r13, 118, 100
     test    eax, eax
     jz      .ret
@@ -2665,23 +2423,18 @@ screen_shrine:
     call    close_check
     test    eax, eax
     jnz     .ret
-    mov     edi, TB_W
-    mov     esi, TB_H
-    call    panel_begin
-    mov     r12d, [s_px]
-    mov     r13d, [s_py]
     mov     r14d, [screen_faction]
-    lea     r15, [hdr_buf]              ; "<Faction> Shrine"
+    lea     r15, [hdr_buf]              ; "<Faction> Shrine": the ribbon over the page
     lea     rax, [faction_names]
     APPP    [rax + r14*8]
     APPZ    s_shrine_sfx
     mov     byte [r15], 0
-    lea     rdi, [hdr_buf]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    mov     ecx, GOLD
-    mov     r8d, 1
-    call    ui_text
+    mov     edi, TB_W
+    mov     esi, TB_H
+    lea     rdx, [hdr_buf]
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
     mov     edi, r14d
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 24]
@@ -2698,9 +2451,9 @@ screen_shrine:
     lea     rdi, [hdr_buf]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 40]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     mov     edi, GOLD_COIN              ; what the pack holds
     call    inv_count
     mov     [rsp], eax
@@ -2755,9 +2508,9 @@ screen_shrine:
     lea     rdi, [coin_buf]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 108]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     BTN     s_leave, r12, (TB_W - 100) / 2, r13, 126, 100
     test    eax, eax
     jz      .banner
@@ -2765,7 +2518,7 @@ screen_shrine:
     call    app_goto
     jmp     .ret
 .banner:
-    lea     edi, [r13 - 18]             ; a tier change shows its banner (faction_add), which this
+    lea     edi, [r13 - 29]             ; a tier change shows its banner (faction_add), which this
     mov     eax, 2                      ; panel covers in the middle of the screen: above the panel
     cmp     edi, eax
     cmovl   edi, eax

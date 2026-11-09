@@ -1,17 +1,21 @@
-; invscreen.asm - the inventory screens: survival inventory with armor, jewelry and a 2x2
-; crafting grid, the 3x3 crafting-table screen, the furnace and chest screens and the
-; creative item palette. Immediate mode: every frame draws the panel and its slots,
-; turns presses on hovered slots into inv_click calls, then draws the tooltip and the
-; stack held on the cursor.
-; The survival inventory, the crafting table and the furnace screen carry the recipe book
-; (recipebook.asm) on the left of the panel; the tooltip of its hovered entry (book_tip) takes the
-; place of the slot tooltip.
+; invscreen.asm - the inventory screens, drawn as an open grimoire: the survival inventory (the
+; character page or the recipe book on the left, the 2x2 crafting grid and the satchel on the right),
+; the creative item palette (the character page on the left), the 3x3 crafting-table screen, the
+; furnace and the chest. Immediate mode: every frame draws the book and its slots, turns presses on
+; hovered slots into inv_click calls, then draws the tooltip and the stack held on the cursor.
+; The right page is PANEL_W x PANEL_H at (s_px, s_py): every cell coordinate of a screen is relative
+; to it. The left page, BOOK_W wide and LEFT_SPAN left of the right one, is the character page
+; (silhouette, armor, jewelry and hand cells, health and armor) or, on the crafting-table and furnace
+; screens, the recipe book (recipebook.asm); the survival inventory shows either, chosen with the
+; tabs above it. The tooltip of the recipe book's hovered entry (book_tip) takes the place of the
+; slot tooltip.
 ; Slot references (inv_click): 0..35 slots, 36..44 grid cells, 45 result, 47..50 armor
 ; (all at inv + ref*4), 51.. cells of the open container (inv_container), 78..80 the jewelry cells
-; (ring, ring, amulet; survival inventory only). Gear changes the stats, so every inv_click that
+; (ring, ring, amulet; the character page). Gear changes the stats, so every inv_click that
 ; changed something is followed by rpg_recompute. A hovered stack shows item_tooltip's lines;
 ; with Shift held the equipped item of its kind is shown beside it.
 %include "common.inc"
+%include "theme.inc"
 default rel
 
 global screen_inventory, screen_crafting, screen_furnace, screen_chest
@@ -19,51 +23,69 @@ global screen_inventory, screen_crafting, screen_furnace, screen_chest
 extern game_mode, frame_input, ui_input, inv, craft_size, inv_container
 extern app_goto, app_entered
 extern ui_w, ui_h, ui_mx, ui_my
-extern ui_rect, ui_frame, ui_text, ui_text_width, ui_slot, ui_item_icon, ui_tooltip
-extern ui_tooltip_lines
-extern inv_click, inv_close_screen, item_tooltip, gear_equipped_for, gear_stack_worn, rpg_recompute
-extern item_max_stack, i32_to_str
+extern ui_rect, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
+extern armor_effective
+extern ui_slot, ui_item_icon, ui_tile_icon, ui_icon9, ui_nine, ui_book, ui_ribbon
+extern ui_tooltip, ui_tooltip_lines
+extern inv_click, inv_close_screen, inv_held, item_tooltip, gear_equipped_for, gear_stack_worn
+extern rpg_recompute, rpg_title, rpg_level, rpg_stats, armor_points, surv, surv_max_health
+extern item_max_stack, i32_to_str, str_append, audio_play
 extern book_reset, book_draw, book_ghost_draw, book_tip
 
-%define PANEL_W     176
+%define PANEL_W     176                 ; the right page
 %define PANEL_H     166
-%define LABEL_COL   RGBA(220, 220, 220, 255)
-%define GREY_COL    RGBA(170, 170, 170, 255)
-%define PANEL_COL   RGBA(62, 62, 68, 235)
-%define EDGE_COL    RGBA(255, 255, 255, 70)
 %define PAL_VISIBLE 6
 %define PAL_TRACK   (PAL_VISIBLE * 18)
 
-%define BOOK_W      124                 ; the recipe book panel (recipebook.asm) and its gap to the panel
-%define BOOK_GAP    2
-%define BOOK_CRAFT  0                   ; book kinds; screen_begin takes kind + 1, 0 = no book
+%define BOOK_W      124                 ; the left page (recipebook.asm draws its page this wide)
+%define LEFT_SPAN   128                 ; the left page and the 4-wide spine: s_px - LEFT_SPAN is its x
+%define BOOK_MIN_W  316                 ; the whole book, cover included; a narrower screen gets no left page
+%define BOOK_CRAFT  0                   ; recipe book kinds; screen_begin takes 1 + kind
 %define BOOK_FURNACE 1
+%define LEFT_CHARACTER 3                ; screen_begin's other left page: the character page
+
+%define TAB_DY      -20                 ; the survival inventory's tabs: top, relative to the pages
+%define TAB_H       16
+%define TAB_CHAR_X  2                   ; x from the left page, and width
+%define TAB_CHAR_W  70
+%define TAB_REC_X   74
+%define TAB_REC_W   52
 
 %define CLOSE_INVENTORY 0               ; do_close / check_close screen kinds
 %define CLOSE_CRAFTING  1
 %define CLOSE_CONTAINER 2
 
 section .rodata
-s_inventory:  db "Inventory", 0
+align 4
+f_click_vol:  dd 0.6
 s_crafting:   db "Crafting", 0
 s_creative:   db "Creative", 0
+s_satchel:    db "Satchel", 0
 s_hotbar:     db "Hotbar", 0
 s_arrow:      db "->", 0
-s_armor:      db "Armor", 0
-s_jewelry:    db "Jewelry", 0
+s_level:      db "Level ", 0
+s_health:     db "Health ", 0
+s_armor:      db "Armor ", 0
+s_slash:      db "/", 0
+s_in_hand:    db "In hand", 0
 s_equipped:   db "Equipped", 0
+s_tab_character: db "Character", 0
+s_tab_recipes:   db "Recipes", 0
 s_furnace:    db "Furnace", 0
 s_chest:      db "Chest", 0
 
 section .bss
 alignb 8
 hover_ptr:    resq 1                    ; ITEMSTACK under the mouse this frame, 0 = none
+hover_note:   resq 1                    ; zstr tooltip of the display-only cell under the mouse, 0 = none
 tip_lines:    resq 12                   ; item_tooltip lines of the hovered stack ...
 tip_cols:     resd 12
 cmp_lines:    resq 13                   ; ... and of the equipped one, under an "Equipped" line
 cmp_cols:     resd 13
-s_px:         resd 1                    ; panel origin in GUI units
+s_px:         resd 1                    ; the right page's origin in GUI units
 s_py:         resd 1
+s_left:       resd 1                    ; the left page screen_begin drew: 0 = none, else its left argument
+inv_left:     resd 1                    ; the survival inventory's left page: 0 character, 1 recipes (kept)
 show_counts:  resd 1                    ; draw stack counts on the slots
 hover_pal:    resd 1                    ; the creative palette cell under the mouse: id | 1 << 8
 pal_scroll:   resd 1                    ; creative palette: first visible row
@@ -88,38 +110,50 @@ palette_build:
     mov     [palette_n], eax
     ret
 
-; label(rdi s, esi x, edx y): grey 1x text
-label:
-    mov     ecx, LABEL_COL
+; caption(rdi s, esi x, edx y): a heading in rubric ink on a page
+caption:
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    jmp     ui_text
+    jmp     ui_text_ink
 
-; screen_begin(edi show_counts, esi with_book): reset per-frame state, draw the dimmer, the panel
-; and, for with_book = 1 + BOOK_CRAFT or 1 + BOOK_FURNACE (0 = none), the recipe book to the
-; left of the panel. With a book the pair is centred; the panel never moves left of the book.
+; page_title(rdi s): the title of the right page, on a ribbon hanging over its top edge
+page_title:
+    mov     esi, [s_px]
+    add     esi, PANEL_W / 2
+    mov     edx, [s_py]
+    sub     edx, 7
+    jmp     ui_ribbon
+
+; screen_begin(edi show_counts, esi left): reset per-frame state, draw the dimmer and the open book and,
+; on its left page, left = LEFT_CHARACTER the character page, 1 + BOOK_CRAFT or 1 + BOOK_FURNACE the
+; recipe book of that kind, 0 nothing (a single right page). The right page is at (s_px, s_py); with a
+; left page the book is centred on the screen, cover included. A screen narrower than BOOK_MIN_W has no
+; room for a left page and gets none: s_left = the page that was drawn.
 screen_begin:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 8
+    xor     ebx, ebx
+    cmp     dword [ui_w], BOOK_MIN_W
+    jl      .have_left
     mov     ebx, esi
+.have_left:
+    mov     [s_left], ebx
     mov     [show_counts], edi
     mov     qword [hover_ptr], 0
+    mov     qword [hover_note], 0
     mov     byte [book_tip], 0
     mov     eax, [ui_w]
-    sub     eax, PANEL_W
+    sub     eax, PANEL_W                ; a single page is centred
+    xor     ecx, ecx
     test    ebx, ebx
-    jz      .centre
-    sub     eax, BOOK_W + BOOK_GAP
-    sar     eax, 1
-    add     eax, BOOK_W + BOOK_GAP
-    mov     ecx, BOOK_W + BOOK_GAP
-    cmp     eax, ecx
-    cmovl   eax, ecx                    ; a narrow window pushes the panel right, not the book off
-    jmp     .have_x
-.centre:
-    sar     eax, 1
+    jz      .have_x
+    sub     eax, BOOK_MIN_W - PANEL_W   ; the pair, with the cover
+    mov     ecx, LEFT_SPAN
 .have_x:
+    sar     eax, 1
+    add     eax, ecx
     mov     [s_px], eax
     mov     eax, [ui_h]
     sub     eax, PANEL_H
@@ -129,27 +163,31 @@ screen_begin:
     xor     esi, esi
     mov     edx, [ui_w]
     mov     ecx, [ui_h]
-    mov     r8d, RGBA(0, 0, 0, 100)
+    mov     r8d, C_DIM
     call    ui_rect
     mov     edi, [s_px]
     mov     esi, [s_py]
-    mov     edx, PANEL_W
-    mov     ecx, PANEL_H
-    mov     r8d, PANEL_COL
-    call    ui_rect
-    mov     edi, [s_px]
-    mov     esi, [s_py]
-    mov     edx, PANEL_W
-    mov     ecx, PANEL_H
-    mov     r8d, EDGE_COL
-    call    ui_frame
+    xor     edx, edx                    ; no left page: the right page is at x
+    mov     ecx, PANEL_W
+    mov     r8d, PANEL_H
+    test    ebx, ebx
+    jz      .cover
+    sub     edi, LEFT_SPAN
+    mov     edx, BOOK_W
+.cover:
+    call    ui_book
     test    ebx, ebx
     jz      .done
     mov     edi, [s_px]
-    sub     edi, BOOK_W + BOOK_GAP
+    sub     edi, LEFT_SPAN
     mov     esi, [s_py]
-    lea     edx, [rbx - 1]
+    cmp     ebx, LEFT_CHARACTER
+    je      .character
+    lea     edx, [rbx - 1]              ; the recipe book of that kind
     call    book_draw
+    jmp     .done
+.character:
+    call    draw_character
 .done:
     add     rsp, 8
     pop     rbx
@@ -208,33 +246,6 @@ check_close:
     pop     rbp
     ret
 
-; draw_cell(rdi ITEMSTACK*, esi x, edx y, ecx show_count) -> eax hover: ui_slot plus a
-; thin border (the 18-unit cells touch, so the slots need a visible separator)
-draw_cell:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    sub     rsp, 8
-    mov     r12d, esi
-    mov     r13d, edx
-    call    ui_slot
-    mov     ebx, eax
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, 18
-    mov     ecx, 18
-    mov     r8d, RGBA(16, 16, 20, 150)
-    call    ui_frame
-    mov     eax, ebx
-    add     rsp, 8
-    pop     r13
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
-
 ; slot_cell(rdi ITEMSTACK*, esi x, edx y, ecx ref): draw one slot, click it via inv_click
 slot_cell:
     push    rbp
@@ -244,7 +255,7 @@ slot_cell:
     mov     rbx, rdi
     mov     r12d, ecx
     mov     ecx, [show_counts]
-    call    draw_cell
+    call    ui_slot
     test    eax, eax
     jz      .ret
     cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
@@ -288,7 +299,7 @@ pal_cell:
     mov     esi, edi
     mov     rdi, rsp
     xor     ecx, ecx
-    call    draw_cell
+    call    ui_slot
     test    eax, eax
     jz      .ret
     mov     eax, [rsp]                  ; the palette cell's stack {id, 1, 0}
@@ -387,7 +398,7 @@ draw_main:
     pop     rbp
     ret
 
-; draw_player_inv(edi px, esi py): "Inventory" label, main slots and hotbar
+; draw_player_inv(edi px, esi py): "Satchel" caption, main slots and hotbar
 draw_player_inv:
     push    rbp
     mov     rbp, rsp
@@ -395,10 +406,10 @@ draw_player_inv:
     push    r12
     mov     ebx, edi
     mov     r12d, esi
-    lea     rdi, [s_inventory]
+    lea     rdi, [s_satchel]
     lea     esi, [rbx + 8]
     lea     edx, [r12 + 72]
-    call    label
+    call    caption
     mov     edi, ebx
     mov     esi, r12d
     call    draw_main
@@ -452,6 +463,300 @@ draw_grid:
     pop     rbp
     ret
 
+; text_num(rdi dst, rsi prefix zstr, edx value) -> rax past the number (no NUL): the prefix, then
+; the value in decimal
+text_num:
+    push    rbx
+    mov     ebx, edx
+    call    str_append
+    mov     edi, ebx
+    mov     rsi, rax
+    call    i32_to_str
+    pop     rbx
+    ret
+
+; gear_cell(rdi ITEMSTACK*, esi x, edx y, ecx ref, r8d glyph): a cell of the character page, clicked
+; through slot_cell; while it is empty it shows the ink glyph tile of what it takes
+; rbx = the stack, r12d = x, r13d = y, r14d = glyph
+gear_cell:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, r8d
+    call    slot_cell
+    cmp     byte [rbx + ITEMSTACK.count], 0
+    jne     .ret
+    mov     edi, r14d
+    lea     esi, [r12 + 1]
+    lea     edx, [r13 + 1]
+    mov     ecx, 16
+    mov     r8d, C_INK_SOFT
+    call    ui_tile_icon
+.ret:
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; tab(rdi label, esi x, edx w, ecx selected) -> eax 1 if an unselected tab was pressed: a TAB_H high
+; plate above the pages (top at s_py + TAB_DY), lit when selected, a hover wash otherwise, the label in
+; ink centred on it. A press clicks as a button does.
+; rbx = label, r12d = x, r13d = w, r14d = selected, r15d = y, [rsp] 1 while the mouse is over it
+tab:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    mov     r15d, [s_py]
+    add     r15d, TAB_DY
+    xor     ecx, ecx
+    mov     eax, [ui_mx]
+    sub     eax, r12d
+    cmp     eax, r13d
+    jae     .over_known                 ; unsigned: also rejects mx < x
+    mov     eax, [ui_my]
+    sub     eax, r15d
+    cmp     eax, TAB_H
+    setb    cl
+.over_known:
+    mov     [rsp], ecx
+    mov     edi, NINE_BUTTON
+    mov     eax, NINE_BUTTON_HOT
+    test    r14d, r14d
+    cmovnz  edi, eax
+    mov     esi, r12d
+    mov     edx, r15d
+    mov     ecx, r13d
+    mov     r8d, TAB_H
+    call    ui_nine
+    test    r14d, r14d
+    jnz     .label
+    cmp     dword [rsp], 0
+    je      .label
+    lea     edi, [r12 + 1]
+    lea     esi, [r15 + 1]
+    lea     edx, [r13 - 2]
+    mov     ecx, TAB_H - 2
+    mov     r8d, C_HOVER
+    call    ui_rect
+.label:
+    mov     eax, r13d
+    shr     eax, 1
+    lea     esi, [r12 + rax]            ; x + w / 2
+    lea     edx, [r15 + 4]
+    mov     rdi, rbx
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink_centered
+    xor     eax, eax
+    test    r14d, r14d
+    jnz     .ret
+    cmp     dword [rsp], 0
+    je      .ret
+    cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
+    je      .ret
+    mov     edi, SND_CLICK
+    movss   xmm0, [f_click_vol]
+    call    audio_play
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; draw_tabs(): the survival inventory's tabs above the left page, "Character" and "Recipes", the one of
+; the page shown lit; a press on the other one switches inv_left. Nothing when screen_begin dropped the
+; left page (a narrow screen).
+; ebx = x of the left page, r12d = the page this frame shows
+draw_tabs:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    cmp     dword [s_left], 0
+    je      .ret
+    mov     ebx, [s_px]
+    sub     ebx, LEFT_SPAN
+    mov     r12d, [inv_left]
+    lea     rdi, [s_tab_character]
+    lea     esi, [rbx + TAB_CHAR_X]
+    mov     edx, TAB_CHAR_W
+    xor     ecx, ecx
+    test    r12d, r12d
+    sete    cl
+    call    tab
+    test    eax, eax
+    jz      .recipes
+    mov     dword [inv_left], 0
+.recipes:
+    lea     rdi, [s_tab_recipes]
+    lea     esi, [rbx + TAB_REC_X]
+    mov     edx, TAB_REC_W
+    xor     ecx, ecx
+    test    r12d, r12d
+    setne   cl
+    call    tab
+    test    eax, eax
+    jz      .ret
+    mov     dword [inv_left], 1
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; JEWEL ref, y offset, glyph tile: one jewelry cell of the character page (draw_character)
+%macro JEWEL 3
+    lea     rdi, [inv + INVENTORY.jewelry + (%1 - SLOTREF_JEWELRY) * 4]
+    lea     esi, [r12 + 96]
+    lea     edx, [r13 + %2]
+    mov     ecx, %1
+    mov     r8d, %3
+    call    gear_cell
+%endmacro
+
+; draw_character(edi lx, esi py): the character page, the left page of the book with its corner at
+; (lx, py): the archetype title and "Level N" centred on it, the silhouette (TILE_SIL0, 3 x 6 tiles of
+; 16 units) with the four armor cells (refs 47..50) on its left and, on its right, the amulet, the two
+; rings (refs 80, 78, 79) and the stack in hand (display only, "In hand" tooltip), then the Health and
+; Armor lines. An empty gear cell shows the ink glyph of its kind.
+; r12d = lx, r13d = py, ebx = loop counter, [rsp] the text line (48 bytes)
+draw_character:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 56
+    mov     r12d, edi
+    mov     r13d, esi
+    call    rpg_title
+    mov     rdi, rax
+    lea     esi, [r12 + 62]
+    lea     edx, [r13 + 5]
+    mov     ecx, C_RUBRIC
+    mov     r8d, 1
+    call    ui_text_ink_centered
+    call    rpg_level
+    mov     edx, eax
+    mov     rdi, rsp
+    lea     rsi, [s_level]
+    call    text_num
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    lea     esi, [r12 + 62]
+    lea     edx, [r13 + 15]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink_centered
+    xor     ebx, ebx
+.sil:                                   ; silhouette sub-tile ebx: row ebx / 3, column ebx % 3
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    shl     eax, 4                      ; 16 * row
+    lea     edi, [rax + rdx + TILE_SIL0]
+    shl     edx, 4                      ; 16 * column
+    lea     esi, [r12 + rdx + 38]
+    lea     edx, [r13 + rax + 26]
+    mov     ecx, 16
+    mov     r8d, WHITE
+    call    ui_tile_icon
+    inc     ebx
+    cmp     ebx, 18
+    jb      .sil
+    xor     ebx, ebx
+.armor:
+    lea     ecx, [rbx + SLOTREF_ARMOR]
+    lea     rdi, [inv + rcx*4]
+    lea     esi, [r12 + 10]
+    imul    eax, ebx, 24
+    lea     edx, [r13 + rax + 28]
+    lea     r8d, [rbx + TILE_SLOT_HEAD]
+    call    gear_cell
+    inc     ebx
+    cmp     ebx, 4
+    jb      .armor
+    JEWEL   SLOTREF_JEWELRY + 2, 36, TILE_SLOT_AMULET
+    JEWEL   SLOTREF_JEWELRY + 0, 60, TILE_SLOT_RING
+    JEWEL   SLOTREF_JEWELRY + 1, 84, TILE_SLOT_RING
+    call    inv_held
+    mov     rdi, rax
+    lea     esi, [r12 + 96]
+    lea     edx, [r13 + 108]
+    mov     ecx, [show_counts]
+    call    ui_slot
+    test    eax, eax
+    jz      .vitals
+    lea     rax, [s_in_hand]
+    mov     [hover_note], rax
+.vitals:
+    mov     edi, TILE_HEART_FULL
+    lea     esi, [r12 + 10]
+    lea     edx, [r13 + 128]
+    call    ui_icon9
+    mov     edx, [surv + SURVIVAL.health]
+    mov     rdi, rsp
+    lea     rsi, [s_health]
+    call    text_num
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     edi, [surv_max_health]
+    mov     rsi, rax
+    call    i32_to_str
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    lea     esi, [r12 + 22]
+    lea     edx, [r13 + 128]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    mov     edi, TILE_ARMOR_FULL
+    lea     esi, [r12 + 10]
+    lea     edx, [r13 + 140]
+    call    ui_icon9
+    call    armor_effective
+    mov     edx, eax
+    mov     rdi, rsp
+    lea     rsi, [s_armor]
+    call    text_num
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    lea     esi, [r12 + 22]
+    lea     edx, [r13 + 140]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    add     rsp, 56
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; container_cell(edi k, esi x, edx y): cell k of the open container, ref 51 + k
 container_cell:
     mov     rax, [inv_container]
@@ -473,9 +778,9 @@ container_gone:
     mov     eax, 1
     ret
 
-; container_begin(edi with_book) -> eax 1 if the screen closed: Escape/inventory key, or the block
-; behind it is gone. Otherwise draws the dimmer, the panel and the book (with_book as for
-; screen_begin). A freshly entered screen resets the book first.
+; container_begin(edi left) -> eax 1 if the screen closed: Escape/inventory key, or the block
+; behind it is gone. Otherwise draws the dimmer and the book (left as for screen_begin). A freshly
+; entered screen resets the recipe book first.
 container_begin:
     push    rbp
     mov     rbp, rsp
@@ -508,9 +813,10 @@ container_begin:
     pop     rbp
     ret
 
-; draw_overlay(): the recipe book's tooltip or the hovered stack's item_tooltip (empty cursor
-; only), plus with Shift held the equipped item of its kind on the left of the mouse (drawn first,
-; so the hovered stack's panel stays whole where the two meet), or the stack carried on the cursor
+; draw_overlay(): the recipe book's tooltip, the hovered stack's item_tooltip (empty cursor only) or the
+; note of a display-only cell, plus with Shift held the equipped item of its kind on the left of the
+; mouse (drawn first, so the hovered stack's panel stays whole where the two meet), or the stack
+; carried on the cursor
 draw_overlay:
     push    rbp
     mov     rbp, rsp
@@ -528,7 +834,7 @@ draw_overlay:
 .hover:
     mov     rbx, [hover_ptr]
     test    rbx, rbx
-    jz      .ret
+    jz      .note
     mov     rdi, rbx
     lea     rsi, [tip_lines]
     lea     rdx, [tip_cols]
@@ -554,7 +860,7 @@ draw_overlay:
     call    item_tooltip                ; its text lives in the other buffer: the hovered lines stay valid
     lea     rcx, [s_equipped]
     mov     [cmp_lines], rcx
-    mov     dword [cmp_cols], GREY_COL
+    mov     dword [cmp_cols], C_GOLD_TEXT
     lea     esi, [rax + 1]
     lea     rdi, [cmp_lines]
     lea     rdx, [cmp_cols]
@@ -566,6 +872,10 @@ draw_overlay:
     lea     rdx, [tip_cols]
     xor     ecx, ecx
     call    ui_tooltip_lines
+    jmp     .ret
+.note:
+    mov     rdi, [hover_note]           ; 0 when the mouse is over no display-only cell
+    call    ui_tooltip
     jmp     .ret
 .cursor:
     movzx   edi, byte [rbx + ITEMSTACK.id]
@@ -597,7 +907,7 @@ draw_overlay:
     mov     rdi, rsp
     mov     edx, [ui_my]
     inc     edx
-    mov     ecx, 0xFFFFFFFF
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
 .ret:
@@ -607,8 +917,9 @@ draw_overlay:
     pop     rbp
     ret
 
-; screen_inventory(): survival 2x2 inventory with armor and jewelry cells and the recipe book, or
-; the creative palette in creative mode
+; screen_inventory(): the survival inventory (the character page or the recipe book on the left, the
+; 2x2 crafting grid and the satchel on the right) or, in creative mode, the character page and the
+; item palette
 screen_inventory:
     push    rbp
     mov     rbp, rsp
@@ -631,72 +942,49 @@ screen_inventory:
     jnz     .ret
     xor     edi, edi
     cmp     dword [game_mode], MODE_SURVIVAL
-    sete    dil
-    mov     esi, edi                    ; survival: the crafting book beside the panel
+    sete    dil                         ; counts on the stacks in survival only
+    mov     esi, LEFT_CHARACTER
+    test    edi, edi
+    jz      .begin                      ; creative: no recipe book
+    mov     eax, 1 + BOOK_CRAFT
+    cmp     dword [inv_left], 0
+    cmovne  esi, eax
+.begin:
     call    screen_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
     cmp     dword [game_mode], MODE_CREATIVE
     je      .creative
+    call    draw_tabs
     lea     rdi, [s_crafting]
-    lea     esi, [r12 + 88]
+    lea     esi, [r12 + 48]
     lea     edx, [r13 + 6]
-    call    label
-    lea     edi, [r12 + 98]
+    call    caption
+    lea     edi, [r12 + 50]
     lea     esi, [r13 + 18]
     mov     edx, 2
     call    draw_grid
-    lea     edi, [r12 + 98]
+    lea     edi, [r12 + 50]
     lea     esi, [r13 + 18]
     call    book_ghost_draw
     lea     rdi, [s_arrow]
-    lea     esi, [r12 + 138]
+    lea     esi, [r12 + 92]
     lea     edx, [r13 + 32]
-    call    label
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
     lea     rdi, [inv + INVENTORY.result]
-    lea     esi, [r12 + 154]
+    lea     esi, [r12 + 110]
     lea     edx, [r13 + 28]
     mov     ecx, SLOTREF_RESULT
     call    slot_cell
-    lea     rdi, [s_armor]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    call    label
-    xor     ebx, ebx
-.armor:
-    lea     ecx, [rbx + SLOTREF_ARMOR]
-    lea     rdi, [inv + rcx*4]
-    imul    eax, ebx, 18
-    lea     esi, [r12 + rax + 8]
-    lea     edx, [r13 + 17]
-    call    slot_cell
-    inc     ebx
-    cmp     ebx, 4
-    jb      .armor
-    lea     rdi, [s_jewelry]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 38]
-    call    label
-    xor     ebx, ebx
-.jewelry:
-    lea     ecx, [rbx + SLOTREF_JEWELRY]
-    lea     rdi, [inv + INVENTORY.jewelry + rbx*4]
-    imul    eax, ebx, 18
-    lea     esi, [r12 + rax + 8]
-    lea     edx, [r13 + 48]
-    call    slot_cell
-    inc     ebx
-    cmp     ebx, 3
-    jb      .jewelry
     mov     edi, r12d
     mov     esi, r13d
     call    draw_player_inv
     jmp     .overlay
 .creative:
     lea     rdi, [s_creative]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    call    label
+    call    page_title
     ; wheel up scrolls towards the first row
     mov     eax, [pal_scroll]
     sub     eax, [ui_input + UIINPUT.scroll]
@@ -741,7 +1029,7 @@ screen_inventory:
     lea     esi, [r13 + 18]
     mov     edx, 2
     mov     ecx, PAL_TRACK
-    mov     r8d, RGBA(255, 255, 255, 40)
+    mov     r8d, C_LOCKED
     call    ui_rect
     mov     eax, [palette_n]
     add     eax, 8
@@ -759,12 +1047,12 @@ screen_inventory:
     div     r14d
     mov     ecx, eax
     mov     edx, 2
-    mov     r8d, RGBA(255, 255, 255, 160)
+    mov     r8d, C_INK_SOFT
     call    ui_rect
     lea     rdi, [s_hotbar]
     lea     esi, [r12 + 8]
     lea     edx, [r13 + 130]
-    call    label
+    call    caption
     mov     edi, r12d
     mov     esi, r13d
     call    draw_hotbar
@@ -800,9 +1088,7 @@ screen_crafting:
     mov     r12d, [s_px]
     mov     r13d, [s_py]
     lea     rdi, [s_crafting]
-    lea     esi, [r12 + 28]
-    lea     edx, [r13 + 6]
-    call    label
+    call    page_title
     lea     edi, [r12 + 30]
     lea     esi, [r13 + 17]
     mov     edx, 3
@@ -813,7 +1099,9 @@ screen_crafting:
     lea     rdi, [s_arrow]
     lea     esi, [r12 + 92]
     lea     edx, [r13 + 39]
-    call    label
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
     lea     rdi, [inv + INVENTORY.result]
     lea     esi, [r12 + 124]
     lea     edx, [r13 + 35]
@@ -847,9 +1135,7 @@ screen_furnace:
     mov     r13d, [s_py]
     mov     rbx, [inv_container]
     lea     rdi, [s_furnace]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    call    label
+    call    page_title
     xor     edi, edi                    ; input
     lea     esi, [r12 + 56]
     lea     edx, [r13 + 17]
@@ -859,7 +1145,7 @@ screen_furnace:
     lea     esi, [r13 + 37]
     mov     edx, 14
     mov     ecx, 14
-    mov     r8d, RGBA(0, 0, 0, 90)
+    mov     r8d, C_LOCKED
     call    ui_rect
     movzx   ecx, word [rbx + CONTAINER.burn_max]
     test    ecx, ecx
@@ -881,6 +1167,12 @@ screen_furnace:
     mov     r8d, RGBA(255, 140, 20, 255)
     call    ui_rect
 .no_flame:
+    mov     edi, NINE_BAR               ; the gauge's frame, over its edge
+    lea     esi, [r12 + 56]
+    lea     edx, [r13 + 36]
+    mov     ecx, 16
+    mov     r8d, 16
+    call    ui_nine
     mov     edi, 1                      ; fuel
     lea     esi, [r12 + 56]
     lea     edx, [r13 + 53]
@@ -890,7 +1182,7 @@ screen_furnace:
     lea     esi, [r13 + 39]
     mov     edx, 24
     mov     ecx, 6
-    mov     r8d, RGBA(0, 0, 0, 90)
+    mov     r8d, C_LOCKED
     call    ui_rect
     movzx   eax, word [rbx + CONTAINER.cook]
     imul    eax, eax, 24
@@ -906,9 +1198,15 @@ screen_furnace:
     lea     edi, [r12 + 80]
     lea     esi, [r13 + 39]
     mov     ecx, 6
-    mov     r8d, RGBA(255, 255, 255, 200)
+    mov     r8d, C_INK
     call    ui_rect
 .no_progress:
+    mov     edi, NINE_BAR
+    lea     esi, [r12 + 79]
+    lea     edx, [r13 + 38]
+    mov     ecx, 26
+    mov     r8d, 8
+    call    ui_nine
     mov     edi, 2                      ; output
     lea     esi, [r12 + 116]
     lea     edx, [r13 + 35]
@@ -940,9 +1238,7 @@ screen_chest:
     mov     r12d, [s_px]
     mov     r13d, [s_py]
     lea     rdi, [s_chest]
-    lea     esi, [r12 + 8]
-    lea     edx, [r13 + 6]
-    call    label
+    call    page_title
     xor     ebx, ebx
 .cell:
     mov     eax, ebx

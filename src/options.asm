@@ -1,28 +1,30 @@
 ; options.asm - Settings and Controls screens, and key_name (GLFW key code -> label).
 ; Both screens are immediate-mode: call once per frame after ui_begin. Settings
 ; are edited live in the global `settings` struct; Done / Escape on the Settings
-; screen writes the settings file and returns to app_settings_parent.
+; screen writes the settings file and returns to app_settings_parent. Both stand on a
+; parchment page (screen_page) with the title on a ribbon over its top edge; the labels on it
+; are ink.
 %include "common.inc"
+%include "theme.inc"
 %include "gl.inc"
 default rel
 
 global screen_settings, screen_controls, key_name
 
 extern ui_w, ui_h, ui_input
-extern ui_text, ui_text_centered, ui_button, ui_slider
+extern ui_rect, ui_panel, ui_ribbon, ui_text_ink, ui_text_ink_centered, ui_button, ui_slider
 extern settings, settings_path, settings_save, settings_apply, settings_reset_keys
 extern app_goto, app_settings_parent, app_entered, app_window
 extern str_append, i32_to_str
 
-%define WHITE   0xFFFFFFFF
-%define RED     RGBA(255, 85, 85, 255)
-
-; Controls layout (GUI units): two columns of 8 rows when they fit, else one column of 15.
-; wide (ui_w >= 470): the 465-unit layout, labels 125 wide, 100-wide key buttons
-; compact (ui_w >= 408): 401 units, labels 112 wide, 84-wide key buttons (the 426-wide GUI
+; Controls layout (GUI units): two columns of 8 rows when they fit, else one column of 16. The
+; rows stand on a page CTRL_PAGE_PAD wider than their span, so a layout needs that much room:
+; wide (ui_w >= 481): the 465-unit layout, labels 125 wide, 100-wide key buttons
+; compact (ui_w >= 417): 401 units, labels 112 wide, 84-wide key buttons (the 426-wide GUI
 ;   of the default 1280x720 window)
-%define CTRL_WIDE_W     470
-%define CTRL_COMPACT_W  408
+%define CTRL_PAGE_PAD   16
+%define CTRL_WIDE_W     (465 + CTRL_PAGE_PAD)
+%define CTRL_COMPACT_W  (401 + CTRL_PAGE_PAD)
 %define CTRL_ROWS       8
 
 section .rodata
@@ -199,6 +201,49 @@ opt_cycle:
     pop     rbp
     ret
 
+; screen_page(rdi title, esi want_w): the page behind the Settings and Controls rows, over a C_DIM
+; veil like the pause screen's, centred, want_w wide (at most ui_w), from y 8 to ui_h - 4 so the
+; 20-high buttons at ui_h - 28 sit inside its border; the title on a ribbon hanging over its top
+; edge. Preserves rbx, r12-r15.
+screen_page:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r13d, esi
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    mov     r8d, C_DIM
+    call    ui_rect
+    mov     r12d, [ui_w]
+    cmp     r13d, r12d
+    cmovg   r13d, r12d                  ; w = min(want_w, ui_w)
+    mov     edx, r13d
+    mov     eax, r12d
+    sub     eax, r13d
+    shr     eax, 1
+    mov     edi, eax                    ; x = (ui_w - w) / 2
+    mov     esi, 8
+    mov     ecx, [ui_h]
+    sub     ecx, 12
+    call    ui_panel
+    mov     rdi, rbx
+    shr     r12d, 1
+    mov     esi, r12d                   ; the ribbon is centred on the screen
+    mov     edx, 1
+    call    ui_ribbon
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; ---- Settings screen --------------------------------------------------------
 
 %macro SLIDER 3                         ; def, x offset from centre, row
@@ -231,11 +276,8 @@ screen_settings:
     mov     r12d, [ui_w]
     shr     r12d, 1                     ; cx
     lea     rdi, [s_settings]
-    mov     esi, r12d
-    mov     edx, 12
-    mov     ecx, WHITE
-    mov     r8d, 1
-    call    ui_text_centered
+    mov     esi, 330
+    call    screen_page
     SLIDER  slider_fov, -155, 0
     SLIDER  slider_sens, 5, 0
     SLIDER  slider_render, -155, 1
@@ -344,12 +386,6 @@ screen_controls:
 .layout:
     mov     r12d, [ui_w]
     shr     r12d, 1                     ; cx
-    lea     rdi, [s_controls]
-    mov     esi, r12d
-    mov     edx, 10
-    mov     ecx, WHITE
-    mov     r8d, 1
-    call    ui_text_centered
     ; layout: [rsp+36] rows per column, [rsp+40] column step, [rsp+44] label x of column 0,
     ; [rsp+48] button offset from the label, [rsp+52] button width, [rsp+56] label x of the row
     mov     eax, [ui_w]
@@ -390,6 +426,15 @@ screen_controls:
     mov     eax, 14
     cmp     r14d, eax
     cmovl   r14d, eax
+    mov     esi, [rsp + 40]             ; the page: the rows' span plus CTRL_PAGE_PAD, at least as
+    add     esi, [rsp + 48]             ; wide as the Settings page
+    add     esi, [rsp + 52]
+    add     esi, CTRL_PAGE_PAD
+    mov     eax, 330
+    cmp     esi, eax
+    cmovl   esi, eax
+    lea     rdi, [s_controls]
+    call    screen_page
     xor     ebx, ebx                    ; row
 .row:
     mov     eax, ebx
@@ -401,14 +446,25 @@ screen_controls:
     mov     r13d, r14d
     imul    r13d, edx
     add     r13d, 28                    ; y
-    mov     rax, [bind_labels + rbx*8]
-    mov     rdi, rax
+    mov     rdi, [bind_labels + rbx*8]
     mov     esi, [rsp + 56]
     lea     edx, [r13 + 6]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
-    lea     rdi, [s_empty]
+    call    ui_text_ink
+    lea     r15, [s_capturing]          ; the key button's label: the capture prompt ...
+    mov     dword [rsp + 60], 0
+    cmp     [capturing], ebx
+    je      .button
+    mov     edi, ebx                    ; ... or the key's name
+    call    is_dup
+    mov     [rsp + 60], eax
+    mov     edi, [settings + SETTINGS.keys + rbx*4]
+    mov     rsi, rsp
+    call    key_name
+    mov     r15, rsp
+.button:
+    mov     rdi, r15
     mov     esi, [rsp + 56]
     add     esi, [rsp + 48]
     mov     edx, r13d
@@ -416,35 +472,21 @@ screen_controls:
     mov     r8d, 1
     call    ui_button
     test    eax, eax
-    jz      .label
+    jz      .clicked
     mov     [capturing], ebx
-.label:
-    mov     ecx, WHITE
-    cmp     [capturing], ebx
-    jne     .key_label
-    lea     rdi, [s_capturing]
-    jmp     .draw
-.key_label:
-    mov     edi, ebx
-    call    is_dup
-    mov     ecx, WHITE
-    mov     edx, RED
-    test    eax, eax
-    cmovnz  ecx, edx
-    mov     r15d, ecx                   ; label colour, kept across key_name
-    mov     edi, [settings + SETTINGS.keys + rbx*4]
-    mov     rsi, rsp
-    call    key_name
-    mov     ecx, r15d
-    mov     rdi, rsp
-.draw:
-    mov     esi, [rsp + 52]
+.clicked:
+    cmp     dword [rsp + 60], 0
+    je      .next
+    mov     rdi, r15                    ; a key bound twice: its label again in red ink over the
+    mov     esi, [rsp + 52]             ; button's own
     shr     esi, 1
     add     esi, [rsp + 48]
     add     esi, [rsp + 56]             ; centre of the key button
     lea     edx, [r13 + 6]
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
+.next:
     inc     ebx
     cmp     ebx, NUM_BINDINGS
     jb      .row

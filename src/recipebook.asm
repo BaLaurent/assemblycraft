@@ -1,20 +1,22 @@
-; recipebook.asm - the recipe book: a panel beside the inventory, crafting-table and furnace
-; screens, and the ghost of a missing recipe in the crafting grid.
+; recipebook.asm - the recipe book: the contents of the left page of the inventory book (the survival
+; inventory's Recipes tab, the crafting-table and furnace screens), and the ghost of a missing recipe
+; in the crafting grid.
 ; The entry lists are built once from the tables. Craft entries are the runs of adjacent recipe
 ; records with the same output (the run's first record stands for it), smelt entries every item
 ; with an item_smelt result, fuel entries every item with an item_burn value. Every frame the
 ; shown list is filtered and drawn as a 6-column grid of 18-unit cells. A press on a craft entry
 ; fills the grid (recipe_fill) or, when something is missing, leaves a ghost of the pattern in
 ; the grid; a press on a furnace entry moves that item into the furnace (cont_fill_from_inv).
-; invscreen.asm places the panel, calls book_ghost_draw after the grid and draws book_tip, the
-; tooltip of the hovered entry, last.
+; invscreen.asm draws the book and its page, places the contents with book_draw, calls book_ghost_draw
+; after the grid and draws book_tip, the tooltip of the hovered entry, last.
 %include "common.inc"
+%include "theme.inc"
 default rel
 
 global book_reset, book_draw, book_ghost_draw, book_tip
 
 extern ui_mx, ui_my, ui_input
-extern ui_rect, ui_frame, ui_text, ui_button, ui_slot, ui_tile_icon
+extern ui_rect, ui_frame, ui_text_ink_centered, ui_button, ui_slot, ui_tile_icon
 extern inv, craft_size
 extern recipes, recipes_end
 extern recipe_uses, recipe_have, recipe_fits, recipe_sets, recipe_fill
@@ -24,22 +26,19 @@ extern audio_play, i32_to_str
 
 %define BOOK_CRAFT      0               ; book kinds (invscreen.asm passes the same numbers)
 %define BOOK_FURNACE    1
-%define BOOK_W          124             ; panel size; invscreen.asm lays the screen out with BOOK_W
-%define BOOK_H          166             ; = PANEL_H, the panel it stands beside
+%define BOOK_W          124             ; the left page's size; invscreen.asm draws the page itself
+%define BOOK_H          166             ; = PANEL_H, the right page it stands beside
 %define COLS            6
 %define CELL            18
-%define TOP_CRAFT       40              ; y of the first cell row inside the panel
+%define TOP_CRAFT       40              ; y of the first cell row inside the page
 %define TOP_FURNACE     62              ; (the furnace book has the tab button above its cells)
 %define ROWS_CRAFT      ((BOOK_H - TOP_CRAFT - 6) / CELL)
 %define ROWS_FURNACE    ((BOOK_H - TOP_FURNACE - 6) / CELL)
 %define MAX_ENTRIES     256
 %define TIP_MAX         180             ; the tooltip text stops here; book_tip is 192 bytes
-%define PANEL_COL       RGBA(62, 62, 68, 235)
-%define EDGE_COL        RGBA(255, 255, 255, 70)
-%define LABEL_COL       RGBA(220, 220, 220, 255)
 
 ; locals of book_draw
-%define L_TOP           0               ; first cell row, relative to the panel
+%define L_TOP           0               ; first cell row, relative to the page
 %define L_ROWS          4               ; rows shown at a time
 %define L_TOTAL         8               ; rows the filtered list needs
 %define L_TRACK         12              ; scrollbar track height
@@ -644,8 +643,8 @@ book_reset:
     mov     byte [book_tip], 0
     ret
 
-; book_draw(edi x, esi y, edx kind) - the book panel with its top-left corner at (x, y):
-; BOOK_CRAFT (0) or BOOK_FURNACE (1). Draws, handles presses and the wheel, and leaves the
+; book_draw(edi x, esi y, edx kind) - the contents of the recipe page, whose top-left corner is at
+; (x, y): BOOK_CRAFT (0) or BOOK_FURNACE (1). Draws, handles presses and the wheel, and leaves the
 ; hovered entry's tooltip in book_tip.
 book_draw:
     push    rbp
@@ -662,33 +661,21 @@ book_draw:
     mov     [book_kind], edx
     mov     byte [book_tip], 0
     call    build_entries
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, BOOK_W
-    mov     ecx, BOOK_H
-    mov     r8d, PANEL_COL
-    call    ui_rect
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, BOOK_W
-    mov     ecx, BOOK_H
-    mov     r8d, EDGE_COL
-    call    ui_frame
     lea     rdi, [s_recipes]
-    lea     esi, [r12 + 6]
+    lea     esi, [r12 + BOOK_W / 2]
     lea     edx, [r13 + 6]
-    mov     ecx, LABEL_COL
+    mov     ecx, C_RUBRIC
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink_centered
     ; filter button
     lea     rax, [book_filter]
     mov     r14d, [rax + rbx*4]
     lea     eax, [r14 + rbx*2]
     lea     rcx, [filter_labels]
     mov     rdi, [rcx + rax*8]
-    lea     esi, [r12 + 4]
+    lea     esi, [r12 + 6]
     lea     edx, [r13 + 16]
-    mov     ecx, 116
+    mov     ecx, 112
     mov     r8d, 1
     call    ui_button
     test    eax, eax
@@ -707,9 +694,9 @@ book_draw:
     mov     eax, [book_tab]
     lea     rcx, [tab_labels]
     mov     rdi, [rcx + rax*8]
-    lea     esi, [r12 + 4]
+    lea     esi, [r12 + 6]
     lea     edx, [r13 + 38]
-    mov     ecx, 116
+    mov     ecx, 112
     mov     r8d, 1
     call    ui_button
     test    eax, eax
@@ -718,7 +705,7 @@ book_draw:
     mov     dword [book_scroll], 0
 .list:
     call    collect
-    ; rows of the filtered list, the wheel (only over the panel), and the scroll limits
+    ; rows of the filtered list, the wheel (only over the page), and the scroll limits
     mov     eax, [vis_n]
     add     eax, COLS - 1
     xor     edx, edx
@@ -799,22 +786,16 @@ book_draw:
     mov     ecx, 1
     call    ui_slot
     mov     [rsp + L_HOVER], eax
-    mov     edi, [rsp + L_CX]
-    mov     esi, [rsp + L_CY]
-    mov     edx, CELL
-    mov     ecx, CELL
-    mov     r8d, RGBA(16, 16, 20, 150)
-    call    ui_frame
     lea     rax, [vis_flag]
     movzx   eax, byte [rax + r15]
     test    eax, F_FITS
     jz      .too_big
     test    eax, F_OK
     jnz     .no_overlay
-    mov     r8d, RGBA(150, 30, 30, 90)  ; cannot be made / not owned
+    mov     r8d, RGBA(150, 32, 28, 90)  ; cannot be made / not owned
     jmp     .overlay
 .too_big:
-    mov     r8d, RGBA(0, 0, 0, 140)     ; does not fit the grid
+    mov     r8d, C_DIM                  ; does not fit the grid
 .overlay:
     mov     edi, [rsp + L_CX]
     inc     edi
@@ -830,7 +811,7 @@ book_draw:
     mov     esi, [rsp + L_CY]
     mov     edx, CELL
     mov     ecx, CELL
-    mov     r8d, RGBA(255, 255, 255, 120)
+    mov     r8d, C_GOLD
     call    ui_frame
     lea     rax, [vis_flag]
     movzx   esi, byte [rax + r15]
@@ -847,7 +828,7 @@ book_draw:
     add     esi, r13d
     mov     edx, 2
     mov     ecx, eax
-    mov     r8d, RGBA(255, 255, 255, 40)
+    mov     r8d, C_LOCKED
     call    ui_rect
     mov     r15d, [rsp + L_TRACK]       ; thumb height: the whole track when nothing scrolls
     xor     r14d, r14d                  ; thumb offset
@@ -878,7 +859,7 @@ book_draw:
     add     esi, r14d
     mov     edx, 2
     mov     ecx, r15d
-    mov     r8d, RGBA(255, 255, 255, 160)
+    mov     r8d, C_INK_SOFT
     call    ui_rect
     add     rsp, 40
     pop     r15
@@ -939,7 +920,7 @@ book_ghost_draw:
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     mov     ecx, 16
-    mov     r8d, RGBA(255, 255, 255, 90)
+    mov     r8d, RGBA(255, 255, 255, 150)
     call    ui_tile_icon
     mov     rdi, rbx
     mov     esi, [rsp]
@@ -953,7 +934,7 @@ book_ghost_draw:
     mov     esi, [rsp + 8]
     mov     edx, 16
     mov     ecx, 16
-    mov     r8d, RGBA(200, 40, 40, 70)
+    mov     r8d, RGBA(150, 32, 28, 60)
     call    ui_rect
 .next:
     inc     r15d

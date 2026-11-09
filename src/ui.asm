@@ -1811,7 +1811,7 @@ ui_unclip:
     add     rsp, 8
     ret
 
-; ui_ribbon(rdi s, esi cx, edx y): a crimson ribbon (text width + 24) x 14 centred on cx, top y,
+; ui_ribbon(rdi s, esi cx, edx y): a crimson ribbon (ink width + 24) x 14 centred on cx, top y,
 ; the text on it in cream
 ui_ribbon:
     push    rbp
@@ -1825,7 +1825,7 @@ ui_ribbon:
     mov     r13d, edx
     mov     esi, 1
     call    ui_text_width
-    lea     ecx, [rax + 24]             ; ribbon width
+    lea     ecx, [rax + 23]             ; ribbon width: ink + 24
     mov     esi, ecx
     shr     esi, 1
     neg     esi
@@ -1896,10 +1896,10 @@ ui_book:
     lea     ecx, [rax + 5]
     cmp     ecx, r15d
     ja      .right
-    lea     edi, [rbx + r13 + 2]
+    lea     edi, [rbx + r13 + 1]
     lea     esi, [r12 + rax]
     mov     edx, 1
-    mov     ecx, 2
+    mov     ecx, 1
     mov     r8d, C_GOLD
     call    ui_rect
     add     dword [rsp], 6

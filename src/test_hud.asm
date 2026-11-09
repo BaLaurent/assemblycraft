@@ -642,11 +642,11 @@ wv_rows:
 
 section .text
 
-; test_web_view_mapping: web_node_xy is the node's cell times 28 at zoom 1 and 13 at zoom 0 (Path of
-; the Warrior, cell (0, -2): (0, -56) and (0, -26); node 4, cell (-1, -3): (-28, -84) and (-13, -39)).
+; test_web_view_mapping: web_node_xy is the node's cell times 28 at zoom 1 and 9 at zoom 0 (Path of the
+; Warrior, cell (0, -2): (0, -56) and (0, -18); node 4, cell (-1, -3): (-28, -84) and (-9, -27)).
 ; web_pick on the compass centre, which has no node, answers -1 at both zooms. For every one of the
 ; 88 nodes at both zooms the pick box (half 11 for an ordinary node and 14 for a path node at zoom 1,
-; 5 and 6 at zoom 0) answers that node at its centre and its four corners and anything else one unit
+; 3 and 5 at zoom 0) answers that node at its centre and its four corners and anything else one unit
 ; outside each side: it is inclusive, exactly that size, and no lower-numbered node's box reaches it
 ; (so the first hit in id order is the node itself).
 ; ebx = node, r12d = zoom, r13d / r14d = node centre dx / dy, r15d = half, [rsp] probe row
@@ -674,7 +674,7 @@ test_web_view_mapping:
     mov     ecx, 2
     test    eax, eax
     jnz     .fail_c
-    cmp     edx, -26
+    cmp     edx, -18
     jne     .fail_c
     mov     edi, 4                      ; Weapon Mastery, cell (-1, -3)
     mov     esi, 1
@@ -688,9 +688,9 @@ test_web_view_mapping:
     xor     esi, esi
     call    web_node_xy
     mov     ecx, 4
-    cmp     eax, -13
+    cmp     eax, -9
     jne     .fail_c
-    cmp     edx, -39
+    cmp     edx, -27
     jne     .fail_c
     mov     edi, WV_OX                  ; the compass centre: no node
     mov     esi, WV_OY
@@ -721,11 +721,11 @@ test_web_view_mapping:
     mov     r14d, edx
     mov     edi, ebx
     call    rpg_web_node
-    mov     r15d, 5                     ; half-size by zoom and kind
+    mov     r15d, 3                     ; half-size by zoom and kind
     mov     ecx, 11
     test    r12d, r12d
     cmovnz  r15d, ecx
-    mov     ecx, 6
+    mov     ecx, 5
     mov     edx, 14
     test    r12d, r12d
     cmovnz  ecx, edx
