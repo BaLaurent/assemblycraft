@@ -108,6 +108,7 @@ extern test_net_kill_credit, test_net_pvp_toggle
 extern test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
 extern test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
 extern test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
+extern test_net_spawn_per_centre, test_net_spawn_rotation
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -375,6 +376,8 @@ tests:
     TEST net_quest_refund
     TEST net_proj_owner
     TEST net_relay_limit
+    TEST net_spawn_per_centre
+    TEST net_spawn_rotation
     dq 0
 
 section .rodata
@@ -634,6 +637,8 @@ section .rodata
     TESTNAME net_quest_refund
     TESTNAME net_proj_owner
     TESTNAME net_relay_limit
+    TESTNAME net_spawn_per_centre
+    TESTNAME net_spawn_rotation
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

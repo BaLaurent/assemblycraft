@@ -16,7 +16,7 @@ global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
 global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 global make_elite, mob_scale, mob_blow, mob_blow_raw, mob_melee_hit, mob_arrow_flags, mob_index
-global knock_player, mob_reel, mob_stunned_text, folk_strike_mob, mob_coins, mob_drop, spawn_near_player
+global knock_player, mob_reel, mob_stunned_text, folk_strike_mob, mob_coins, mob_drop, spawn_near_player, mobs_spawn_tick
 global mob_spawn_level, mob_tgt_slot, mob_tgt_body, mob_affix_status, mob_set_stun, mob_set_mark
 global mob_launch, mob_replica_init
 
@@ -42,7 +42,9 @@ extern nm_ready_count, nm_centre, net_role, net_self, net_hit_peer, net_applying
 extern net_nearest_target, net_nearest_dist2, net_mob_hit_player, net_mob_damage_out, net_kill_credit
 extern net_stream_centres, net_event_out, net_mobfx_out, stream_rdist, structures_boss_reward
 
-%define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive
+%define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive within 96 blocks of each player (c_far2)
+%define HOSTILE_CAP_ALL 48              ; ...and over all the players together (MAX_MOBS is 64: the rest is for the animals and the folk)
+%define SC_MAX        NET_MAX_PEERS     ; spawn centres: the local player and up to 7 guests
 %define PIG_CAP       10                ; pigs the spawner keeps alive
 %define CHICKEN_CAP   8                 ; chickens the spawner keeps alive
 %define CHICKEN_START 6                 ; chickens a new world starts with
@@ -254,6 +256,13 @@ spawn_rr:   resd 1                      ; the passive spawner's round-robin over
 alignb 8
 mob_tgt_body: resq 1                    ; ...and that player's BODY (the local player's, a remote player's proxy)
 spawn_ctr:  resq 1                      ; spawn_near_player's centre BODY; 0: the local player's
+spawn_rr_n: resd 1                      ; the night spawner's rotation: the centre it starts with
+sc_n:       resd 1                      ; the spawn centres of this tick (spawn_gather) ...
+sc_total:   resd 1                      ; ... the hostile mobs alive ...
+sc_level:   resd SC_MAX                 ; ... the level a spawn around each gets (0: mob_level_for's own) ...
+sc_cnt:     resd SC_MAX                 ; ... how many hostile mobs live within 96 blocks of each ...
+alignb 8
+sc_body:    resq SC_MAX                 ; ... and the BODY of each: the local player's first
 
 section .text
 
@@ -2561,13 +2570,111 @@ spawn_passive:
     pop     rbp
     ret
 
+; spawn_gather() -> eax the number of centres the night spawner serves: the local player (sc_body[0], level 0) and, on a host,
+; every remote player who lives (nm_centre: his body and level), at most SC_MAX. Fills sc_n, sc_body, sc_level, sc_total (every
+; live hostile mob) and sc_cnt: with one centre sc_cnt[0] is sc_total (every hostile mob there is counts, as in an offline
+; game), with more sc_cnt[c] is the number of hostile mobs within 96 blocks of centre c (spawn_tally).
+; rbx = the mob, r12d = centres so far, r13d = the remote player asked for
+spawn_gather:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    lea     rax, [player]
+    mov     [sc_body], rax
+    mov     dword [sc_level], 0
+    mov     r12d, 1
+    xor     r13d, r13d
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .count
+.remote:
+    cmp     r12d, SC_MAX
+    jae     .count
+    mov     edi, r13d
+    call    nm_centre                   ; rax = the BODY of the r13d-th remote player who lives, edx = his level
+    test    rax, rax
+    jz      .count
+    lea     rcx, [sc_body]
+    mov     [rcx + r12*8], rax
+    lea     rcx, [sc_level]
+    mov     [rcx + r12*4], edx
+    inc     r12d
+    inc     r13d
+    jmp     .remote
+.count:
+    mov     [sc_n], r12d
+    mov     edi, 1
+    call    mob_count_kind
+    mov     [sc_total], eax
+    mov     [sc_cnt], eax               ; (one centre: all of them)
+    cmp     r12d, 1
+    jbe     .ret
+    lea     rdi, [sc_cnt]               ; several: each counts its own neighbourhood
+    xor     eax, eax
+    mov     ecx, SC_MAX
+    rep     stosd
+    lea     rbx, [mobs]
+.mob:
+    mov     eax, [rbx + MOB.type]
+    test    eax, eax
+    jz      .next
+    movzx   eax, byte [t_hostile + rax - 1]
+    cmp     eax, 1
+    jne     .next
+    mov     rdi, rbx
+    call    spawn_tally
+.next:
+    add     rbx, MOB_size
+    lea     rax, [mobs_end]
+    cmp     rbx, rax
+    jb      .mob
+.ret:
+    mov     eax, [sc_n]
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; spawn_tally(rdi mob): a hostile mob counts for every spawn centre within 96 blocks of it (c_far2: the distance past which a
+; hostile mob vanishes): sc_cnt[c] goes up for each
+spawn_tally:
+    mov     ecx, [sc_n]
+    lea     rsi, [sc_body]
+    lea     rdx, [sc_cnt]
+.centre:
+    mov     rax, [rsi]
+    movss   xmm0, [rdi + BODY.x]
+    subss   xmm0, [rax + BODY.x]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rdi + BODY.z]
+    subss   xmm1, [rax + BODY.z]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [c_far2]
+    jae     .next
+    inc     dword [rdx]
+.next:
+    add     rsi, 8
+    add     rdx, 4
+    dec     ecx
+    jnz     .centre
+    ret
+
 ; mobs_spawn_tick(): the ambient spawner, once per fixed step.
-; Every 60 steps at night in Survival (difficulty > 0): a zombie, skeleton, creeper or spider
-; while fewer than 12 hostile mobs live, 4 % of them elite (make_elite). On a host every remote player who
-; lives is a centre of his own: the cap grows by 6 for each of them (at most 48) and each centre gets one
-; attempt, at the level of the player it spawns around (mob_spawn_level). Every 1800 steps by day: a pig (at
-; most 10) and a chicken (at most 8), around one player per tick, in turn.
-; r13d = the cap, r12d = the centre being served (-1: the local player, 0.. the remote ones: nm_centre)
+; Every 60 steps at night in Survival (difficulty > 0): a zombie, skeleton, creeper or spider around each player, 4 % of them
+; elite (make_elite). Every player is a centre of his own: the local one and, on a host, every remote player who lives
+; (spawn_gather). A centre gets a spawn while fewer than 12 hostile mobs live within 96 blocks of it and fewer than 48 live in
+; all, so each player meets what a game of his own would give him, whoever else plays and however far: a guest 5000 blocks away
+; is not starved by the mobs that crowd the host. The centres take their turns from a start that rotates every tick, so that none
+; is always first when it is the total that runs short. A game with one centre (offline, or a host nobody has joined) counts every
+; hostile mob there is and has no total limit: the rule it always had. An attempt is at the level of the player it spawns
+; around (mob_spawn_level). Every 1800 steps by day: a pig (at most 10) and a chicken (at most 8), around one player per tick,
+; in turn.
+; r12d = the centre being served, r13d = centres still to serve, ebx = the mob spawned
 mobs_spawn_tick:
     push    rbp
     mov     rbp, rsp
@@ -2589,22 +2696,29 @@ mobs_spawn_tick:
     call    sky_is_night
     test    eax, eax
     jz      .passive
-    mov     r13d, HOSTILE_CAP
-    cmp     byte [net_role], NET_ROLE_OFF
-    je      .cap_set
-    call    nm_ready_count              ; the remote players
-    lea     eax, [rax + rax*2]
-    lea     r13d, [r13 + rax*2]         ; 6 more for each
-    mov     eax, 48
-    cmp     r13d, eax
-    cmova   r13d, eax
-.cap_set:
-    mov     r12d, -1
+    call    spawn_gather                ; eax = the centres
+    mov     ecx, eax
+    mov     eax, [spawn_rr_n]           ; the centre to start with rotates: none is always first
+    inc     dword [spawn_rr_n]
+    xor     edx, edx
+    div     ecx
+    mov     r12d, edx
+    mov     r13d, [sc_n]
 .attempt:
-    mov     edi, 1
-    call    mob_count_kind
-    cmp     eax, r13d
+    lea     rax, [sc_cnt]
+    cmp     dword [rax + r12*4], HOSTILE_CAP
+    jae     .next_centre                ; this player has his share
+    cmp     dword [sc_n], 1
+    je      .go                         ; one centre: every hostile mob is counted above, no total limit
+    cmp     dword [sc_total], HOSTILE_CAP_ALL
     jae     .next_centre
+.go:
+    lea     rax, [sc_body]
+    mov     rax, [rax + r12*8]
+    mov     [spawn_ctr], rax
+    lea     rax, [sc_level]
+    mov     eax, [rax + r12*4]
+    mov     [mob_spawn_level], eax
     call    rng_next                    ; which kind: night_kinds[rng % 4]
     and     eax, 3
     movzx   edi, byte [night_kinds + rax]
@@ -2615,6 +2729,14 @@ mobs_spawn_tick:
     test    eax, eax
     js      .next_centre                ; no spot found: nothing spawned
     mov     ebx, eax
+    cmp     dword [sc_n], 1
+    je      .elite
+    inc     dword [sc_total]            ; it counts for the total and for every centre within its reach
+    imul    edi, ebx, MOB_size
+    lea     rax, [mobs]
+    add     rdi, rax
+    call    spawn_tally
+.elite:
     call    rng_next                    ; 4 % of the night's mobs are elite
     xor     edx, edx
     mov     ecx, 100
@@ -2626,17 +2748,13 @@ mobs_spawn_tick:
     add     rdx, rax
     call    make_elite
 .next_centre:
-    cmp     byte [net_role], NET_ROLE_OFF
-    je      .centres_done
     inc     r12d
-    mov     edi, r12d
-    call    nm_centre                   ; rax = the BODY of the r12d-th remote player who lives, edx = his level
-    test    rax, rax
-    jz      .centres_done
-    mov     [spawn_ctr], rax
-    mov     [mob_spawn_level], edx
-    jmp     .attempt
-.centres_done:
+    cmp     r12d, [sc_n]
+    jb      .served
+    xor     r12d, r12d
+.served:
+    dec     r13d
+    jnz     .attempt
     mov     qword [spawn_ctr], 0
     mov     dword [mob_spawn_level], 0
 .passive:

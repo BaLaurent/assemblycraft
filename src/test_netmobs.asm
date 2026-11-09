@@ -9,6 +9,7 @@ default rel
 global test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
 global test_net_kill_credit, test_net_pvp_toggle
 global test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
+global test_net_spawn_per_centre, test_net_spawn_rotation
 
 extern net_role, net_self, net_pvp, net_applying, net_hit_peer, net_peers, net_capture, net_captured
 extern mobs, mobs_clear, mobs_step, mob_spawn, mob_replica_init, mob_set_stun, drops, drops_clear
@@ -22,6 +23,7 @@ extern net_nearest_target, net_players_raycast, net_hurt_send_direct, nm_on_inte
 extern world_origin_x, world_origin_z, structures_step, mob_spawn_level
 extern inv, inv_clear, inv_sel, rpg_keystones, gear_powers, combat_stamina
 extern net_drop_flush, net_pos_out, combat_melee, combat_fang_slot, combat_fang_t, abilities_cd, folk_on_player_hit
+extern mobs_spawn_tick
 
 %define CAP_SIZE 16384
 
@@ -29,6 +31,15 @@ section .rodata
 align 4
 k_20_5:   dd 20.5
 k_neg1:   dd -1.0
+k_225_5:  dd 225.5
+k_100_5:  dd 100.5
+k_96_5:   dd 96.5
+k_36_5:   dd 36.5
+k_240_5:  dd 240.5
+k_133:    dd 133.0
+k_200:    dd 200.0
+k_1000:   dd 1000.0
+k_m1000:  dd -1000.0
 k_half_w: dd 0.3
 k_height: dd 1.8
 k_speed:  dd 4.317
@@ -1919,6 +1930,261 @@ test_net_folk_provoker_kept:
 .out:
     call    nt_restore
     mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ==== the night spawner: a share per player ===========================================================================
+
+; nt_floor_rect(edi x0, esi x1, edx z0, ecx z1): a stone floor at y = 10 for x in x0..x1 and z in z0..z1, both inclusive
+nt_floor_rect:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r13d, edi
+    mov     r14d, esi
+    mov     r12d, edx
+    mov     r15d, ecx
+.z:
+    mov     ebx, r13d
+.x:
+    mov     edi, ebx
+    mov     esi, 10
+    mov     edx, r12d
+    mov     ecx, STONE
+    call    world_set
+    inc     ebx
+    cmp     ebx, r14d
+    jle     .x
+    inc     r12d
+    cmp     r12d, r15d
+    jle     .z
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; count_x(xmm0 lo, xmm1 hi) -> eax the live mobs with lo <= x < hi
+count_x:
+    xor     eax, eax
+    lea     rcx, [mobs]
+    mov     edx, MAX_MOBS
+.l:
+    cmp     dword [rcx + MOB.type], MOB_NONE
+    je      .n
+    movss   xmm2, [rcx + BODY.x]
+    comiss  xmm2, xmm0
+    jb      .n
+    comiss  xmm2, xmm1
+    jae     .n
+    inc     eax
+.n:
+    add     rcx, MOB_size
+    dec     edx
+    jnz     .l
+    ret
+
+; ticks(edi n): n ticks of the spawner on a night step (game_time 40020: a multiple of 60, in the dark)
+ticks:
+    push    rbx
+    mov     ebx, edi
+.t:
+    mov     dword [game_time], 40020
+    call    mobs_spawn_tick
+    dec     ebx
+    jnz     .t
+    pop     rbx
+    ret
+
+; setup_two(): an arena floor over x -10..270 and z 50..150, the local player A at (40.5, 100.5), a READY guest B in slot 1 at
+; (225.5, 100.5): 185 blocks apart, so that nothing spawned around either lies within 96 blocks of the other. A host.
+setup_two:
+    sub     rsp, 8
+    call    world_clear
+    mov     edi, -10
+    mov     esi, 270
+    mov     edx, 50
+    mov     ecx, 150
+    call    nt_floor_rect
+    call    nt_fixture
+    mov     dword [player + BODY.x], __float32__(40.5)
+    mov     dword [player + BODY.z], __float32__(100.5)
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    mov     edi, 1
+    movss   xmm0, [k_225_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_100_5]
+    call    peer_ready
+    add     rsp, 8
+    ret
+
+; far_mobs(edi n): n zombies in a row far from both centres (z = 240.5: 140 blocks from either)
+far_mobs:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     r12d, edi
+    xor     ebx, ebx
+.m:
+    lea     eax, [rbx*4 + 4]
+    cvtsi2ss xmm0, eax
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_240_5]
+    mov     edi, MOB_ZOMBIE
+    call    mob_spawn
+    inc     ebx
+    cmp     ebx, r12d
+    jb      .m
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; Every player is served on his own. A (the local player) has 18 zombies around him, more than the 12 a player gets; B (a guest 185
+; blocks away) has none. Over 12 night ticks A's side of the arena (x < 133) is left at 18 and B's side gets 5 to 12 hostile mobs: B is
+; served, and no further than his own share, however crowded the host is (the one shared cap of 12 + 6 starved the guest). A game
+; with one centre keeps the old rule, which counts every hostile mob there is: 12 zombies far from the player, host nobody has
+; joined or offline, leave no room for a spawn; with 11 there is.
+test_net_spawn_per_centre:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    setup_two
+    xor     ebx, ebx
+.crowd:
+    mov     eax, ebx
+    xor     edx, edx
+    mov     ecx, 6
+    div     ecx
+    cvtsi2ss xmm2, eax
+    addss   xmm2, [k_96_5]
+    cvtsi2ss xmm0, edx
+    addss   xmm0, [k_36_5]
+    movss   xmm1, [k_11]
+    mov     edi, MOB_ZOMBIE
+    call    mob_spawn
+    inc     ebx
+    cmp     ebx, 18
+    jb      .crowd
+    mov     edi, 12
+    call    ticks
+    movss   xmm0, [k_m1000]
+    movss   xmm1, [k_133]
+    call    count_x
+    cmp     eax, 18
+    jne     .fail                               ; A's side: nothing more was spawned for him
+    movss   xmm0, [k_133]
+    movss   xmm1, [k_1000]
+    call    count_x
+    cmp     eax, 5
+    jb      .fail                               ; B was served ...
+    cmp     eax, 12
+    ja      .fail                               ; ... up to his own share
+    mov     dword [net_peers + 1 * PEER_size + PEER.state], PEER_FREE
+    call    mobs_clear                          ; one centre: 12 zombies far from the player fill the cap of the old rule
+    mov     edi, 12
+    call    far_mobs
+    mov     edi, 3
+    call    ticks                               ; a host nobody joined
+    movss   xmm0, [k_m1000]
+    movss   xmm1, [k_1000]
+    call    count_x
+    cmp     eax, 12
+    jne     .fail
+    mov     byte [net_role], NET_ROLE_OFF       ; offline
+    mov     edi, 3
+    call    ticks
+    movss   xmm0, [k_m1000]
+    movss   xmm1, [k_1000]
+    call    count_x
+    cmp     eax, 12
+    jne     .fail
+    mov     dword [mobs + MOB.type], MOB_NONE   ; 11: room for one
+    mov     edi, 6
+    call    ticks
+    movss   xmm0, [k_m1000]
+    movss   xmm1, [k_1000]
+    call    count_x
+    cmp     eax, 12
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    nt_restore
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; Who goes first rotates. Two empty centres (A and B as above) and 47 hostile mobs far from both leave room for one spawn in the 48 the
+; world may hold. Each tick one spawn is made, for the centre whose turn it is first (at most one: the total is what is short), and
+; taken away again: over 8 ticks A and B get at least 3 each. Without the rotation the same centre is always first and the other starves.
+test_net_spawn_rotation:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    call    setup_two
+    mov     edi, 47
+    call    far_mobs
+    xor     r12d, r12d                          ; spawns for A
+    xor     r13d, r13d                          ; spawns for B
+    mov     ebx, 8
+.tick:
+    mov     edi, 1
+    call    ticks
+    lea     rsi, [mobs]
+    mov     edx, MAX_MOBS
+    xor     r8d, r8d                            ; new mobs this tick: those not in the far row
+.scan:
+    cmp     dword [rsi + MOB.type], MOB_NONE
+    je      .next
+    movss   xmm0, [rsi + BODY.z]
+    comiss  xmm0, [k_200]
+    jae     .next
+    inc     r8d
+    movss   xmm0, [rsi + BODY.x]
+    comiss  xmm0, [k_133]
+    jae     .b
+    inc     r12d
+    jmp     .gone
+.b:
+    inc     r13d
+.gone:
+    mov     dword [rsi + MOB.type], MOB_NONE    ; taken away again
+.next:
+    add     rsi, MOB_size
+    dec     edx
+    jnz     .scan
+    cmp     r8d, 1
+    ja      .fail                               ; one spawn at most: the total allows no more
+    dec     ebx
+    jnz     .tick
+    cmp     r12d, 3
+    jb      .fail
+    cmp     r13d, 3
+    jb      .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    nt_restore
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp
