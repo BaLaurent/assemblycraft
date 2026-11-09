@@ -182,6 +182,8 @@ exp_stats:
     EXPS "Magic find", FMT_PCT, 138, "+7% magic find"
     EXPS "All damage", FMT_PCT, 160, "+7% all damage"
     EXPS "Weapon damage", FMT_FLAT, 156, "+7 weapon damage"
+    EXPS "Gun damage", FMT_PCT, TILE_STAT_GUN, "+7% gun damage"
+    EXPS "Reload speed", FMT_PCT, TILE_STAT_RELOAD, "+7% reload speed"
 exp_stats_end:
 %if exp_stats_end - exp_stats != NUM_STATS * 24
 %error "exp_stats needs one record per stat"

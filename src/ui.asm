@@ -1057,7 +1057,7 @@ ui_item_icon:
     jae     .ret
     cmp     byte [item_max_stack + rax], 0
     je      .ret                        ; air and the unused ids have no icon
-    movzx   edi, byte [item_icon + rax] ; atlas tile
+    movzx   edi, word [item_icon + rax*2] ; atlas tile
     mov     r8d, WHITE
     jmp     ui_tile_icon
 .ret:

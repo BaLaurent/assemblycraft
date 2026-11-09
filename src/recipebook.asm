@@ -916,7 +916,7 @@ book_ghost_draw:
     mov     [rsp + 8], ecx
     mov     eax, [rsp]
     lea     rdx, [item_icon]
-    movzx   edi, byte [rdx + rax]
+    movzx   edi, word [rdx + rax*2]
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     mov     ecx, 16

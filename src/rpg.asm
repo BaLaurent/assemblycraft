@@ -193,6 +193,8 @@ stat_tab:                               ; by stat id
     STATI "Magic find",       "% magic find",               FMT_PCT,    TILE_ITEM0 + GOLD_COIN - COAL
     STATI "All damage",       "% all damage",               FMT_PCT,    TILE_STAT0 + STAT_CRIT_DMG
     STATI "Weapon damage",    " weapon damage",             FMT_FLAT,   TILE_STAT0 + STAT_MELEE_DMG
+    STATI "Gun damage",       "% gun damage",               FMT_PCT,    TILE_STAT_GUN
+    STATI "Reload speed",     "% reload speed",             FMT_PCT,    TILE_STAT_RELOAD
 %if $ - stat_tab != NUM_STATS * STATINFO_size
 %error "stat_tab needs one record per stat"
 %endif

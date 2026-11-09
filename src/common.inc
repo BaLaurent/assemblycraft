@@ -200,7 +200,13 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define IRON_SPEAR     (FIRST_ITEM + 78)
 %define DIAMOND_SPEAR  (FIRST_ITEM + 79)
 %define BOAT           (FIRST_ITEM + 80)
-%define NUM_ITEMS      (FIRST_ITEM + 81) ; 225
+%define REVOLVER       (FIRST_ITEM + 81) ; 0.10.4: two guns and four gun attachments
+%define HUNTING_RIFLE  (FIRST_ITEM + 82)
+%define SCOPE          (FIRST_ITEM + 83) ; attachments, fixed onto a gun in the crafting grid
+%define EXTENDED_MAG   (FIRST_ITEM + 84)
+%define RIFLED_BARREL  (FIRST_ITEM + 85)
+%define COMPENSATOR    (FIRST_ITEM + 86)
+%define NUM_ITEMS      (FIRST_ITEM + 87) ; 231
 
 ; ---- directions / block shapes ---------------------------------------------
 %define DIR_N          0                ; -z
@@ -228,7 +234,17 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_SHAPE_BOXES 9
 %define RECIPE_SIZE    13               ; w, h, out id, out count, cells[9] (row-major in w x h)
 %define LIGHT_SKY_FULL 0xF0             ; packed light: sky<<4 | block
-%define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER
+%define NUM_GUNS       5                ; PISTOL..ROCKET_LAUNCHER (0.10.4: 7 with REVOLVER, HUNTING_RIFLE)
+
+; a firearm stack's ITEMSTACK.dmg word = rounds loaded | attachments
+%define GUN_ROUNDS_MASK 0x00FF          ; bits 0..7: rounds loaded
+%define ATT_SCOPE      0x100            ; bit = 0x100 << (attachment id - SCOPE)
+%define ATT_EXTMAG     0x200
+%define ATT_RIFLED     0x400
+%define ATT_COMP       0x800
+%define BOW_FULL       11               ; bow damage at full draw
+%define WEB_SUB        8                ; WEBNODE.x/.y are in 1/8 cell
+%define WEB_EXTENT     71               ; every node lies within +-WEB_EXTENT
 
 ; ---- tools ----------------------------------------------------------------
 %define TOOL_NONE      0
@@ -364,6 +380,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_STAT_BLEED    238
 %define TILE_STAT_AREA     239
 %define TILE_STAT_ELITE    254
+%define TILE_STAT_GUN      230          ; the last two free byte tiles
+%define TILE_STAT_RELOAD   231
 %define TILE_KEYSTONE      255
 ; 0.9 tiles: the 24 tiles the font left at y 192..239 (192..199, 208..215, 224..231)
 %define TILE_WATER         192
@@ -409,6 +427,14 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_SLOT_RING      348
 %define TILE_SLOT_AMULET    349
 %define TILE_QUILL          351         ; quill left of a hovered button label
+%define TILE_CLASS_MARKSMAN 352         ; Path of the Marksman emblem
+%define TILE_MK_ABIL0       353         ; 353 + slot: Powder Grenade, Bullseye, Fan the Hammer, Flashbang
+%define TILE_ICON_REVOLVER  357         ; 357..362: revolver, hunting rifle, scope, extended
+%define TILE_ICON_HRIFLE    358         ; magazine, rifled barrel, compensator
+%define TILE_ICON_SCOPE     359
+%define TILE_ICON_EXTMAG    360
+%define TILE_ICON_RIFLED    361
+%define TILE_ICON_COMP      362
 %define TILE_SIL0           365         ; character silhouette: 3x6 tile block, sub-tile (r,c) = 365+16r+c
 %define NINE_PAGE           0           ; ui_nine kinds
 %define NINE_LEATHER        1
@@ -538,8 +564,11 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define AF_BIG          4
 %define AF_BLEED        8
 %define AF_ATTACK       16              ; a weapon attack (bow shot, staff bolt), not a skill
+%define AF_NOWIN        32              ; a bow arrow that ignores the mob hurt window
+%define AF_FLASH        64              ; a grenade that flashes (stuns) instead of exploding
 %define AF_ELEM_SHIFT   8               ; ARROWENT.flags bits 8..10 = element (ELEM_*)
 %define PROJ_KNIFE      5
+%define PROJ_GRENADE    6               ; lobbed powder charge
 %define MAX_PRIMED      32              ; primed TNT
 %define MAX_FIRES       1024
 %define MAX_PARTICLES   768
@@ -557,6 +586,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ARCH_MAGE       2
 %define ARCH_ARCHER     3
 %define ARCH_ROGUE      4
+%define ARCH_MARKSMAN   5
 %define NUM_ARCHETYPES  4
 %define MAX_LEVEL       50
 %define NUM_ABILITY_SLOTS 4             ; slots of the ability bar
@@ -566,6 +596,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NODE_KEYSTONE   2
 %define NODE_PATH       3               ; archetype path node
 %define NUM_ABILITIES   16              ; ability id = (archetype-1)*4 + slot
+%define ABIL_GRENADE    16
+%define ABIL_BULLSEYE   17
+%define ABIL_FANHAMMER  18
+%define ABIL_FLASHBANG  19
 %define ABIL_SHADOWSTEP 12
 %define NUM_KEYSTONES   12
 %define NUM_WEB_NODES   88              ; 4 paths, 4 * 18 archetype nodes, 12 bridges
@@ -591,6 +625,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define KS_ASSASSINATE  9
 %define KS_SHADOW_DANCE 10
 %define KS_VENOM_BLADES 11
+%define KS_DEADSHOT     12
+%define KS_QUARTERMASTER 13
+%define KS_POWDER_KEG   14
 
 %define ELEM_PHYS       0
 %define ELEM_FIRE       1
@@ -612,6 +649,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SRC_RANGED_SKILL 4
 %define SRC_SPELL       5
 %define SRC_THORNS      6
+%define SRC_GUN         7               ; bullets (family stat STAT_GUN_DMG)
+%define SRC_GUN_SKILL   8               ; grenades (family stat STAT_GUN_DMG)
 
 %define HITF_ELEM_MASK  7               ; combat_hit_mob flags: bits 0..2 element
 %define HITF_CRIT       0x100
@@ -705,7 +744,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define STAT_MAGIC_FIND    41
 %define STAT_ALL_DMG       42
 %define STAT_WEAPON_DMG    43
-%define NUM_STATS          44
+%define STAT_GUN_DMG       44
+%define STAT_RELOAD_SPEED  45
+%define NUM_STATS          46
 
 %define RES_STAMINA     0
 %define RES_MANA        1

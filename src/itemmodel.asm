@@ -150,7 +150,7 @@ item_model_draw:
 
     ; ---- sprite: front and back faces with the whole icon ----------------------
 .sprite:
-    movzx   r12d, byte [item_icon + rbx]   ; tile
+    movzx   r12d, word [item_icon + rbx*2]   ; tile
     mov     r13d, r12d
     and     r13d, 15
     shl     r13d, 8                     ; u0 = col * 256

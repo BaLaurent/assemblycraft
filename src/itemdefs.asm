@@ -1,6 +1,6 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..224 (NUM_ITEMS).
+; itemdefs.asm - per-item data tables, indexed by item id 0..230 (NUM_ITEMS).
 ; Ids 0..136 are the blocks (variant ids: the item form is block_base), 137..143 are unused,
-; 144..224 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat.
+; 144..230 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat/attachments.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel
@@ -180,6 +180,12 @@ n_ihammer:  db "Iron Warhammer", 0
 n_dhammer:  db "Diamond Warhammer", 0
 n_ispear:   db "Iron Spear", 0
 n_dspear:   db "Diamond Spear", 0
+n_revolver: db "Revolver", 0
+n_hrifle:   db "Hunting Rifle", 0
+n_scope:    db "Scope", 0
+n_extmag:   db "Extended Magazine", 0
+n_rifled:   db "Rifled Barrel", 0
+n_comp:     db "Compensator", 0
 
 align 8
 ; display name; every variant id points at its base's name
@@ -226,59 +232,63 @@ item_names:
     dq n_ring, n_amulet, n_phoenix, n_storm, n_ember, n_viper
     dq n_ihammer, n_dhammer, n_ispear, n_dspear
     dq n_boat
+    dq n_revolver, n_hrifle, n_scope, n_extmag, n_rifled, n_comp
     END_TABLE item_names, 8, n_unused
 
-; atlas tile of the inventory icon: a block's side tile or icon tile (0 for non-base
-; variants), tiles 32.. for STICK..PORKCHOP, TILE_ITEM0 + id - COAL from COAL to GOLD_COIN,
-; then the 0.8 jewelry and weapon tiles
+; atlas tile of the inventory icon (a word: the 0.10.4 tiles lie past 255): a block's side tile
+; or icon tile (0 for non-base variants), tiles 32.. for STICK..PORKCHOP,
+; TILE_ITEM0 + id - COAL from COAL to GOLD_COIN, then the jewelry, weapon and gun tiles
+align 2
 item_icon:
-    db 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
-    db 26, 27, 28, 29, 30, 31, 44, 45, 46
-    db 0, TILE_STONE_BRICK, TILE_MOSSY_BRICK ; FIRE, stone bricks, mossy
-    db TILE_SANDSTONE_SIDE, TILE_SMOOTH_STONE, TILE_MOSSY_COBBLE, TILE_CRACKED_BRICK
-    db TILE_BOOKSHELF, TILE_WOOL, TILE_IRON_BLOCK, TILE_GOLD_BLOCK, TILE_DIAMOND_BLOCK
-    db TILE_COAL_BLOCK
+    dw 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
+    dw 26, 27, 28, 29, 30, 31, 44, 45, 46
+    dw 0, TILE_STONE_BRICK, TILE_MOSSY_BRICK ; FIRE, stone bricks, mossy
+    dw TILE_SANDSTONE_SIDE, TILE_SMOOTH_STONE, TILE_MOSSY_COBBLE, TILE_CRACKED_BRICK
+    dw TILE_BOOKSHELF, TILE_WOOL, TILE_IRON_BLOCK, TILE_GOLD_BLOCK, TILE_DIAMOND_BLOCK
+    dw TILE_COAL_BLOCK
 %assign i 0
 %rep 5
-    db TILE_ICON_SLAB0 + i
+    dw TILE_ICON_SLAB0 + i
 %assign i i + 1
 %endrep
 %assign i 0
 %rep 5
-    db TILE_ICON_STAIRS0 + i, 0, 0, 0
+    dw TILE_ICON_STAIRS0 + i, 0, 0, 0
 %assign i i + 1
 %endrep
-    db TILE_ICON_WOOD_DOOR
-    times 15 db 0
-    db TILE_ICON_IRON_DOOR
-    times 15 db 0
-    db TILE_TRAPDOOR
-    times 7 db 0
-    db TILE_LADDER, 0, 0, 0
-    db TILE_TORCH, 0, 0, 0, 0
-    db TILE_ICON_FENCE, TILE_ICON_GLASS_PANE
-    db 0, TILE_ICE, 0, TILE_SNOW, TILE_MUD, 0, TILE_CACTUS_SIDE ; WATER .. CACTUS
-    db TILE_PINE_LOG, TILE_PINE_LEAVES, TILE_BIRCH_LOG, TILE_BIRCH_LEAVES
-    db TILE_ICON_BED
-    times 7 db 0
-    times 5 db 0                        ; SHRINE: no item form
-    times 2 db 0                        ; DRY_GRASS, LAVA: no item form
-    PAD_TO item_icon, STICK, 1, 0
+    dw TILE_ICON_WOOD_DOOR
+    times 15 dw 0
+    dw TILE_ICON_IRON_DOOR
+    times 15 dw 0
+    dw TILE_TRAPDOOR
+    times 7 dw 0
+    dw TILE_LADDER, 0, 0, 0
+    dw TILE_TORCH, 0, 0, 0, 0
+    dw TILE_ICON_FENCE, TILE_ICON_GLASS_PANE
+    dw 0, TILE_ICE, 0, TILE_SNOW, TILE_MUD, 0, TILE_CACTUS_SIDE ; WATER .. CACTUS
+    dw TILE_PINE_LOG, TILE_PINE_LEAVES, TILE_BIRCH_LOG, TILE_BIRCH_LEAVES
+    dw TILE_ICON_BED
+    times 7 dw 0
+    times 5 dw 0                        ; SHRINE: no item form
+    times 2 dw 0                        ; DRY_GRASS, LAVA: no item form
+    PAD_TO item_icon, STICK, 2, 0
 %assign i 0
 %rep COAL - STICK
-    db 32 + i
+    dw 32 + i
 %assign i i + 1
 %endrep
 %assign i 0
 %rep RING - COAL
-    db TILE_ITEM0 + i
+    dw TILE_ITEM0 + i
 %assign i i + 1
 %endrep
-    db TILE_RING, TILE_AMULET, TILE_RING, TILE_RING ; ring, amulet, Phoenix Ring, Band of Storms
-    db TILE_AMULET, TILE_AMULET         ; Ember, Viper amulets
-    db TILE_IRON_HAMMER, TILE_DIAMOND_HAMMER, TILE_IRON_SPEAR, TILE_DIAMOND_SPEAR
-    db TILE_ICON_BOAT
-    END_TABLE item_icon, 1, 0
+    dw TILE_RING, TILE_AMULET, TILE_RING, TILE_RING ; ring, amulet, Phoenix Ring, Band of Storms
+    dw TILE_AMULET, TILE_AMULET         ; Ember, Viper amulets
+    dw TILE_IRON_HAMMER, TILE_DIAMOND_HAMMER, TILE_IRON_SPEAR, TILE_DIAMOND_SPEAR
+    dw TILE_ICON_BOAT
+    dw TILE_ICON_REVOLVER, TILE_ICON_HRIFLE, TILE_ICON_SCOPE, TILE_ICON_EXTMAG
+    dw TILE_ICON_RIFLED, TILE_ICON_COMP
+    END_TABLE item_icon, 2, 0
 
 ; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
 item_max_stack:
@@ -326,6 +336,8 @@ item_max_stack:
     db 64                               ; gold coin
     times 10 db 1                       ; jewelry, hammers, spears
     db 1                                ; boat
+    times 2 db 1                        ; revolver, hunting rifle
+    times 4 db 16                       ; attachments
     END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD

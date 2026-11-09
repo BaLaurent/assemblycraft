@@ -1243,10 +1243,10 @@ test_new_blocks_tables:
     movzx   eax, byte [item_max_stack + BOAT]
     cmp     eax, 1
     jne     .fail
-    movzx   eax, byte [item_icon + BED]
+    movzx   eax, word [item_icon + BED*2]
     cmp     eax, TILE_ICON_BED
     jne     .fail
-    movzx   eax, byte [item_icon + BOAT]
+    movzx   eax, word [item_icon + BOAT*2]
     cmp     eax, TILE_ICON_BOAT
     jne     .fail
     lea     rbx, [name_rows]
@@ -1334,7 +1334,7 @@ test_shrine_block_tables:
     jne     .fail
     cmp     byte [item_max_stack + rbx], 0
     jne     .fail
-    cmp     byte [item_icon + rbx], 0
+    cmp     word [item_icon + rbx*2], 0
     jne     .fail
     lea     rdx, [item_names]
     mov     rdi, [rdx + rbx*8]
@@ -1471,8 +1471,9 @@ test_terrain_blocks_tables:
     movzx   eax, byte [block_light + rbx]
     cmp     al, [r12 + 33]
     jne     .fail
-    movzx   eax, byte [item_icon + rbx]
-    cmp     al, [r12 + 34]
+    movzx   eax, word [item_icon + rbx*2]
+    movzx   ecx, byte [r12 + 34]
+    cmp     eax, ecx
     jne     .fail
     movzx   eax, byte [item_max_stack + rbx]
     cmp     al, [r12 + 35]
