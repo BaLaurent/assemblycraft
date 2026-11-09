@@ -21,11 +21,19 @@
 ; Lengths are checked before a byte of a packet is read: a datagram that is too short, too long, of another
 ; magic or version, or of a kind clients never send, is dropped without an answer.
 ;
-; Rooms (256): a room is the pair (host endpoint, RV_HOST nonce) and lives 30 s past its last RV_HOST. RV_JOIN
-; with the code (any letter case) records the sender as one of the room's 7 guests (a known endpoint is refreshed,
-; the oldest is replaced when all 7 are taken), a guest lives 30 s past its last packet. RV_RELAY is forwarded when
-; the sender is the room's host or a guest and the destination is the host or a guest other than the sender, at
-; most 2 MiB per room per second; it refreshes the sender's guest entry.
+; Rooms (256): a room is a host endpoint plus the nonce of its RV_HOST and lives 30 s past its last RV_HOST. An
+; endpoint owns at most one room: an RV_HOST with another nonce replaces it (new code, guests dropped), so one socket
+; cannot fill the table; a source IP owns at most 4 rooms (ACR_MAX_PER_IP), a fifth endpoint of that IP is ignored
+; until one of them expires. RV_JOIN with the code (any letter case) records the sender as one of the room's 7
+; guests: a known endpoint is refreshed, a free entry is taken, else the entry quiet longest is replaced - but never
+; one that joined or relayed within the last 5 s (ACR_ACTIVE): with 7 guests playing, a further join is answered
+; RV_NOROOM and nobody is told about it. A guest lives 30 s past its last packet. RV_RELAY is forwarded when the
+; sender is the room's host or a guest and the destination is the host or a guest other than the sender, at most
+; 2 MiB per room per second; it refreshes the sender's guest entry.
+;
+; The lan endpoint of RV_HOST / RV_JOIN is passed on to the other side only when it can be a lan address of the
+; sender: 10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, or the sender's own public IP; else it goes on as
+; 0.0.0.0:0. Otherwise a room code, or a room, could point the other side's punch packets at a third party.
 
 %include "common.inc"
 default rel
@@ -37,6 +45,8 @@ global _start
 %define ACR_MAX_GUESTS   7              ; NET_MAX_PEERS - 1
 %define ACR_TTL          30             ; seconds: a room without RV_HOST, a guest without any packet
 %define ACR_BUDGET       2097152        ; relayed bytes per room per second
+%define ACR_MAX_PER_IP   4              ; rooms one source IP may own
+%define ACR_ACTIVE       5              ; seconds: a guest that joined or relayed this recently is never replaced
 %define ACR_BUF          2048           ; datagram buffers
 %define ACR_HDR          4              ; RV_MAGIC u16, version u8, kind u8
 %define ACR_CODE_LEN     6
@@ -116,6 +126,7 @@ s_open_host:    db "open host", 0
 s_join:         db "join", 0
 s_relay_start:  db "relay start", 0
 s_expired:      db "expired", 0
+s_replaced:     db "replaced", 0
 s_probe_ok:     db "probe ok: room ", 0
 s_probe_you:    db ", you are ", 0
 s_probe_fail:   db "probe failed", 10, 0
@@ -130,6 +141,10 @@ s_t_expiry:     db "expiry", 0
 s_t_relay_auth: db "relay_auth", 0
 s_t_join:       db "join", 0
 s_t_budget:     db "relay_budget", 0
+s_t_room_per_endpoint: db "room_per_endpoint", 0
+s_t_room_per_ip: db "room_per_ip", 0
+s_t_guest_no_evict: db "guest_no_evict", 0
+s_t_lan_filter: db "lan_filter", 0
 ; scripted random bytes for the self-test: byte & 31 indexes s_alphabet
 s_script_collide: db 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0,  1, 1, 1, 1, 1, 1     ; AAAAAA, AAAAAA again, BBBBBB
 s_script_abcdef:  db 0, 1, 2, 3, 4, 5                                           ; ABCDEF
@@ -138,6 +153,37 @@ t_code_b:       db "BBBBBB", 0, 0
 t_code_abcdef:  db "ABCDEF", 0, 0
 t_lower_abcdef: db "abcdef", 0, 0
 t_code_none:    db "000000", 0, 0                                               ; '0' is not in the alphabet
+; lan_filter rows: the lan ip (first octet first); 1 = it has to come through as it is, 0 = it has to come through as
+; 0.0.0.0:0; the row with 0xFF ends the table. The sender's public IP in the test is 203.0.113.9.
+t_lan_rows:
+    db 10, 0, 0, 1,         1, 0, 0, 0
+    db 10, 255, 255, 255,   1, 0, 0, 0
+    db 172, 16, 0, 1,       1, 0, 0, 0
+    db 172, 31, 255, 255,   1, 0, 0, 0
+    db 192, 168, 0, 1,      1, 0, 0, 0
+    db 192, 168, 255, 255,  1, 0, 0, 0
+    db 127, 0, 0, 1,        1, 0, 0, 0
+    db 127, 255, 255, 254,  1, 0, 0, 0
+    db 169, 254, 0, 1,      1, 0, 0, 0
+    db 169, 254, 255, 255,  1, 0, 0, 0
+    db 203, 0, 113, 9,      1, 0, 0, 0              ; the sender's own public IP, whatever the port
+    db 8, 8, 8, 8,          0, 0, 0, 0
+    db 9, 255, 255, 255,    0, 0, 0, 0
+    db 11, 0, 0, 1,         0, 0, 0, 0
+    db 172, 15, 255, 255,   0, 0, 0, 0
+    db 172, 32, 0, 1,       0, 0, 0, 0
+    db 192, 167, 255, 255,  0, 0, 0, 0
+    db 192, 169, 0, 1,      0, 0, 0, 0
+    db 126, 255, 255, 255,  0, 0, 0, 0
+    db 128, 0, 0, 1,        0, 0, 0, 0
+    db 169, 253, 255, 255,  0, 0, 0, 0
+    db 169, 255, 0, 1,      0, 0, 0, 0
+    db 100, 64, 0, 1,       0, 0, 0, 0              ; carrier-grade NAT space is not a lan we can vouch for
+    db 203, 0, 113, 10,     0, 0, 0, 0              ; next to the sender's IP is not the sender's IP
+    db 0, 0, 0, 0,          0, 0, 0, 0
+    db 255, 255, 255, 255,  0, 0, 0, 0
+    db 224, 0, 0, 251,      0, 0, 0, 0
+    db 0, 0, 0, 0,          0xFF, 0, 0, 0
 align 8
 tv_1s:          dq 1, 0                                                         ; timeval for SO_RCVTIMEO
 st_table:       dq s_t_rooms, st_rooms
@@ -145,6 +191,10 @@ st_table:       dq s_t_rooms, st_rooms
                 dq s_t_relay_auth, st_relay_auth
                 dq s_t_join, st_join
                 dq s_t_budget, st_relay_budget
+                dq s_t_room_per_endpoint, st_room_per_endpoint
+                dq s_t_room_per_ip, st_room_per_ip
+                dq s_t_guest_no_evict, st_guest_no_evict
+                dq s_t_lan_filter, st_lan_filter
                 dq 0, 0
 
 section .data
@@ -155,6 +205,7 @@ t_exp_expired:  db "room ??????", " expired", 10, 0
 t_exp_rs1:      db "room ??????", " relay start 10.0.0.1:27615", 10, 0
 t_exp_rs2:      db "room ??????", " relay start 10.0.0.2:27615", 10, 0
 t_exp_rs3:      db "room ??????", " relay start 10.0.0.3:27615", 10, 0
+t_exp_replaced: db "room ??????", " replaced", 10, 0
 
 section .bss
 alignb 8
@@ -428,16 +479,19 @@ relay_step:
     pop     r12
     ret
 
-; on_host(rdi src, rsi buf, rdx len): RV_HOST nonce u32, lan NADDR. The pair (src, nonce) names a room: a repeat
-; refreshes it, anything else opens a new room under a new unique code (nothing when the 256 slots are taken or
-; no random bytes can be had). Every RV_HOST that is accepted is answered with RV_ROOM, so a host sees the
-; answer to a late retry as well.
+; on_host(rdi src, rsi buf, rdx len): RV_HOST nonce u32, lan NADDR. An endpoint owns at most one room. The same
+; nonce again refreshes it; another nonce replaces it (the old code stops existing, its guests are dropped); an
+; endpoint without a room gets one under a new unique code, unless its IP already owns ACR_MAX_PER_IP rooms or the
+; table is full (nothing then). Nothing either when no random bytes can be had: a room that was to be replaced stays
+; as it was. Every RV_HOST that is accepted is answered with RV_ROOM, so a host sees the answer to a late retry as
+; well. The lan endpoint is kept as it came only when lan_filter lets it through.
 on_host:
     push    rbx
     push    r12
     push    r13
     push    r14
     push    r15
+    sub     rsp, 16                     ; the code drawn for a new or replacing room
     cmp     rdx, ACR_LEN_HOST
     jb      .ret
     mov     r12, rdi                    ; src
@@ -445,38 +499,66 @@ on_host:
     mov     ebx, [r13 + 4]              ; nonce
     lea     rdi, [r13 + 8]
     call    key_load
-    mov     r14, rax                    ; the host's lan endpoint
+    mov     rdi, rax
+    mov     rsi, r12
+    call    lan_filter
+    mov     r14, rax                    ; the host's lan endpoint, 0 when it may not be named
     lea     r15, [rooms]
     mov     ecx, ACR_MAX_ROOMS
-.find:
+.find:                                  ; the endpoint's own room
     cmp     dword [r15 + ACR_ROOM.used], 0
     je      .find_next
     cmp     [r15 + ACR_ROOM.host_pub], r12
     jne     .find_next
     cmp     [r15 + ACR_ROOM.nonce], ebx
     je      .refresh
+    jmp     .draw                       ; another nonce: this slot gets a new room
 .find_next:
     add     r15, ACR_ROOM_size
     dec     ecx
     jnz     .find
-    lea     r15, [rooms]                ; a new room in the first free slot
+    lea     r15, [rooms]                ; no room yet: how many does its IP own?
+    mov     ecx, ACR_MAX_ROOMS
+    xor     edx, edx
+.count:
+    cmp     dword [r15 + ACR_ROOM.used], 0
+    je      .count_next
+    cmp     [r15 + ACR_ROOM.host_pub], r12d
+    jne     .count_next
+    inc     edx
+.count_next:
+    add     r15, ACR_ROOM_size
+    dec     ecx
+    jnz     .count
+    cmp     edx, ACR_MAX_PER_IP
+    jae     .ret                        ; as many as it may: no room, no answer
+    lea     r15, [rooms]                ; the first free slot
     mov     ecx, ACR_MAX_ROOMS
 .free:
     cmp     dword [r15 + ACR_ROOM.used], 0
-    je      .open
+    je      .draw
     add     r15, ACR_ROOM_size
     dec     ecx
     jnz     .free
     jmp     .ret                        ; table full: no room, no answer
-.open:
+.draw:                                  ; r15: a free slot, or the room this endpoint gives up
+    mov     rdi, rsp
+    call    gen_code
+    test    eax, eax
+    jz      .ret                        ; no code: nothing changes
+    cmp     dword [r15 + ACR_ROOM.used], 0
+    je      .wipe
+    mov     rdi, r15
+    lea     rsi, [s_replaced]
+    xor     edx, edx
+    call    log_room                    ; the old code's last line
+.wipe:
     mov     rdi, r15
     xor     eax, eax
     mov     ecx, ACR_ROOM_size / 8
     rep stosq
-    lea     rdi, [r15 + ACR_ROOM.code]
-    call    gen_code
-    test    eax, eax
-    jz      .ret
+    mov     rax, [rsp]
+    mov     [r15 + ACR_ROOM.code], rax
     mov     dword [r15 + ACR_ROOM.used], 1
     mov     [r15 + ACR_ROOM.nonce], ebx
     mov     [r15 + ACR_ROOM.host_pub], r12
@@ -498,6 +580,7 @@ on_host:
     mov     edx, ACR_LEN_ROOM
     call    send_dgram
 .ret:
+    add     rsp, 16
     pop     r15
     pop     r14
     pop     r13
@@ -506,8 +589,9 @@ on_host:
     ret
 
 ; on_join(rdi src, rsi buf, rdx len): RV_JOIN code[6], pad[2], nonce u32, lan NADDR. A known room (code in any letter
-; case) records the sender as a guest and RV_PEER goes to both sides, each told about the other; an unknown code
-; gets RV_NOROOM with the code as it came.
+; case) with a place for the sender (guest_record) records it as a guest, and RV_PEER goes to both sides, each told
+; about the other; the guest's lan endpoint reaches the host only when lan_filter lets it through. An unknown code,
+; or a room whose 7 guests are all playing, gets RV_NOROOM with the code as it came, and nobody else hears of it.
 on_join:
     push    rbx
     push    r12
@@ -522,31 +606,23 @@ on_join:
     mov     rdi, rax
     call    room_find
     test    rax, rax
-    jnz     .found
-    mov     esi, RV_NOROOM
-    call    tx_begin
-    mov     ecx, [r13 + 4]
-    mov     [rax + 4], ecx
-    movzx   ecx, word [r13 + 8]
-    mov     [rax + 8], cx
-    mov     word [rax + 10], 0
-    mov     rdi, r12
-    mov     rsi, rax
-    mov     edx, ACR_LEN_NOROOM
-    call    send_dgram
-    jmp     .ret
-.found:
+    jz      .noroom
     mov     rbx, rax                    ; the room
     mov     rdi, rbx
     mov     rsi, r12
     call    guest_record
+    test    rax, rax
+    jz      .noroom                     ; seven guests playing: no place for another
     mov     rdi, rbx
     lea     rsi, [s_join]
     mov     rdx, r12
     call    log_room
     lea     rdi, [r13 + 16]
     call    key_load
-    mov     r14, rax                    ; the guest's lan endpoint
+    mov     rdi, rax
+    mov     rsi, r12
+    call    lan_filter
+    mov     r14, rax                    ; the guest's lan endpoint, 0 when it may not be named
     mov     esi, RV_PEER                ; to the guest: the host is the other side
     call    tx_begin
     mov     rcx, [rbx + ACR_ROOM.code]
@@ -554,7 +630,7 @@ on_join:
     mov     rcx, [rbx + ACR_ROOM.host_pub]
     mov     [rax + 12], rcx             ; other_pub
     mov     rcx, [rbx + ACR_ROOM.host_lan]
-    mov     [rax + 20], rcx             ; other_lan
+    mov     [rax + 20], rcx             ; other_lan (already filtered when the room was opened)
     mov     [rax + 28], r12             ; self_pub
     mov     rdi, r12
     mov     rsi, rax
@@ -571,6 +647,19 @@ on_join:
     mov     rdi, rcx
     mov     rsi, rax
     mov     edx, ACR_LEN_PEER
+    call    send_dgram
+    jmp     .ret
+.noroom:
+    mov     esi, RV_NOROOM
+    call    tx_begin
+    mov     ecx, [r13 + 4]
+    mov     [rax + 4], ecx
+    movzx   ecx, word [r13 + 8]
+    mov     [rax + 8], cx
+    mov     word [rax + 10], 0
+    mov     rdi, r12
+    mov     rsi, rax
+    mov     edx, ACR_LEN_NOROOM
     call    send_dgram
 .ret:
     pop     r14
@@ -827,14 +916,16 @@ rng_bytes:
     xor     eax, eax
     ret
 
-; guest_record(rdi room, rsi key) -> rax guest entry: the guest with this endpoint refreshed, else a free entry,
-; else the entry of the oldest guest (all 7 in use). Its "relay start" flag is cleared: a join starts a new session.
+; guest_record(rdi room, rsi key) -> rax guest entry, or 0 when the room has no place for a new guest. The guest
+; with this endpoint is refreshed; else a free entry is taken; else the entry quiet longest gives way - but only one
+; quiet for ACR_ACTIVE seconds or more: a guest that joined or relayed more recently is playing, and a further join
+; must not cut it off. The "relay start" flag is cleared: a join starts a new session.
 guest_record:
     lea     rdx, [rdi + ACR_ROOM.guests]
     mov     ecx, ACR_MAX_GUESTS
     mov     r11d, [acr_now]
     xor     r8d, r8d                    ; first free entry
-    xor     r9d, r9d                    ; oldest entry in use
+    xor     r9d, r9d                    ; the quietest entry that may be replaced
     xor     r10d, r10d                  ; its age
 .scan:
     test    dword [rdx + ACR_GUEST.flags], 1
@@ -843,11 +934,13 @@ guest_record:
     je      .refresh
     mov     eax, r11d
     sub     eax, [rdx + ACR_GUEST.seen]
+    cmp     eax, ACR_ACTIVE
+    jb      .scan_next                  ; playing: never replaced
     test    r9, r9
-    jz      .older
+    jz      .quieter
     cmp     eax, r10d
     jbe     .scan_next
-.older:
+.quieter:
     mov     r9, rdx
     mov     r10d, eax
     jmp     .scan_next
@@ -862,7 +955,11 @@ guest_record:
     mov     rdx, r8
     test    rdx, rdx
     jnz     .fill
-    mov     rdx, r9                     ; all in use: the oldest gives way
+    mov     rdx, r9                     ; all in use: the quietest of those that are not playing
+    test    rdx, rdx
+    jnz     .fill
+    xor     eax, eax                    ; all playing: no place
+    ret
 .fill:
     mov     [rdx + ACR_GUEST.pub], rsi
 .refresh:
@@ -886,6 +983,45 @@ guest_find:
     jnz     .l
     xor     eax, eax
 .ret:
+    ret
+
+; lan_filter(rdi lan key, rsi pub key) -> rax the lan key when it may be passed on to the other side, else 0. A lan
+; endpoint only serves peers behind the same NAT, so it has to look like one: 10/8, 172.16/12, 192.168/16, 127/8,
+; 169.254/16, or the same IP as the sender's public endpoint (no NAT at all). Anything else would turn an RV_HOST or
+; RV_JOIN into an order for the other side to send punch packets to a third party.
+lan_filter:
+    mov     eax, edi                    ; the ip, the first octet in the low byte
+    cmp     eax, esi
+    je      .keep                       ; the sender's own public ip
+    movzx   ecx, al                     ; first octet
+    cmp     ecx, 10
+    je      .keep
+    cmp     ecx, 127
+    je      .keep
+    shr     eax, 8
+    movzx   edx, al                     ; second octet
+    cmp     ecx, 172
+    je      .b172
+    cmp     ecx, 192
+    je      .b192
+    cmp     ecx, 169
+    jne     .drop
+    cmp     edx, 254
+    je      .keep                       ; 169.254/16
+    jmp     .drop
+.b172:
+    and     edx, 0xF0
+    cmp     edx, 16
+    je      .keep                       ; 172.16/12: second octet 16..31
+    jmp     .drop
+.b192:
+    cmp     edx, 168
+    je      .keep                       ; 192.168/16
+.drop:
+    xor     eax, eax
+    ret
+.keep:
+    mov     rax, rdi
     ret
 
 ; key_load(rdi NADDR*) -> rax key: ip | port << 32, the pad dropped.
@@ -1708,6 +1844,93 @@ st_host:
     pop     rbx
     ret
 
+; st_host_at(rdi src key, esi nonce, rdx lan key) -> eax datagrams sent back: an RV_HOST from src announcing lan.
+st_host_at:
+    push    rbx
+    mov     rbx, rdi
+    mov     edi, esi
+    mov     rsi, rdx
+    call    tb_host
+    mov     rdi, rbx
+    mov     esi, ACR_LEN_HOST
+    call    st_send
+    mov     eax, [cap_count]
+    pop     rbx
+    ret
+
+; st_epk(edi n, esi k) -> rax key of endpoint n on another port: st_ep(n) with k xored into the port word.
+st_epk:
+    mov     r8d, esi
+    call    st_ep
+    shl     r8, 32
+    xor     rax, r8
+    ret
+
+; st_host_k(edi n, esi k, edx nonce) -> eax datagrams sent back: an RV_HOST from st_epk(n, k) announcing st_lan(n).
+st_host_k:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edx
+    mov     r13d, edi
+    call    st_epk
+    mov     rbx, rax
+    mov     edi, r13d
+    call    st_lan
+    mov     rdx, rax
+    mov     rdi, rbx
+    mov     esi, r12d
+    call    st_host_at
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; st_join_raw(rdi src key, rsi code ptr, rdx lan key) -> eax datagrams sent back: an RV_JOIN from src announcing lan.
+st_join_raw:
+    push    rbx
+    mov     rbx, rdi
+    mov     rdi, rsi
+    mov     esi, 1
+    call    tb_join
+    mov     rdi, rbx
+    mov     esi, ACR_LEN_JOIN
+    call    st_send
+    mov     eax, [cap_count]
+    pop     rbx
+    ret
+
+; st_relay_guests(rdi code ptr) -> eax how many of guests 2..8 had a 16-byte RV_RELAY to host 1 forwarded.
+st_relay_guests:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     r14, rdi
+    mov     edi, 1
+    call    st_ep
+    mov     r13, rax                    ; the host
+    mov     ebx, 2
+    xor     r12d, r12d                  ; forwarded
+.next:
+    mov     edi, ebx
+    call    st_ep
+    mov     rdi, rax
+    mov     rsi, r14
+    mov     rdx, r13
+    mov     ecx, 16
+    call    st_relay
+    add     r12d, eax                   ; 1 forwarded, 0 dropped
+    inc     ebx
+    cmp     ebx, 8
+    jbe     .next
+    mov     eax, r12d
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
 ; st_host_ok(edi n, esi nonce, rdx code_out) -> eax 0 when the RV_HOST from endpoint n was answered by exactly one
 ; well-formed RV_ROOM to that endpoint (length, kind, zero pad, pub = the endpoint); its code qword is stored at
 ; code_out. Otherwise the number of the first thing that was wrong.
@@ -1933,7 +2156,7 @@ st_rooms:
     call    st_count_rooms
     cmp     eax, 100
     CHK     e, 7
-    mov     edi, 1                      ; the same endpoint with another nonce is another room with another code
+    mov     edi, 1                      ; the same endpoint with another nonce replaces its room: a new code, still 100
     mov     esi, 0x5555
     lea     rdx, [t_tmp]
     call    st_host_ok
@@ -1944,7 +2167,7 @@ st_rooms:
     cmp     rax, [rcx]
     CHK     ne, 9
     call    st_count_rooms
-    cmp     eax, 101
+    cmp     eax, 100
     CHK     e, 10
     call    st_reset                    ; a drawn code that is taken is drawn again: AAAAAA, then AAAAAA, then BBBBBB
     lea     rdi, [s_script_collide]
@@ -2671,6 +2894,424 @@ st_relay_budget:
     CHK     e, 9
     xor     eax, eax
 .out:
+    pop     r12
+    pop     rbx
+    ret
+
+; --- room_per_endpoint: an endpoint owns one room; another nonce replaces it, however many nonces come ---
+st_room_per_endpoint:
+    push    rbx
+    push    r12
+    mov     edi, 1                      ; endpoint 1 opens a room (nonce 1) and takes guest 2
+    mov     esi, 1
+    lea     rdx, [t_code]
+    call    st_host_ok
+    test    eax, eax
+    CHK     z, 1
+    mov     edi, 2
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 2
+    CHK     e, 2
+    mov     edi, 1                      ; nonce 2 from the same endpoint: the room is replaced, under a new code
+    mov     esi, 2
+    lea     rdx, [t_code2]
+    call    st_host_ok
+    test    eax, eax
+    CHK     z, 3
+    mov     rax, [t_code2]
+    cmp     rax, [t_code]
+    CHK     ne, 4
+    call    st_count_rooms
+    cmp     eax, 1
+    CHK     e, 5
+    mov     edi, 1
+    call    st_ep
+    mov     rdi, rax
+    call    st_room_of
+    mov     rbx, rax                    ; the room
+    test    rbx, rbx
+    CHK     nz, 6
+    mov     rax, [rbx + ACR_ROOM.code]
+    cmp     rax, [t_code2]
+    CHK     e, 7
+    cmp     dword [rbx + ACR_ROOM.nonce], 2
+    CHK     e, 8
+    mov     rdi, rbx
+    call    st_count_guests
+    test    eax, eax
+    CHK     z, 9                        ; guest 2 went with the old room
+    mov     edi, 3                      ; the old code is gone
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 1
+    CHK     e, 10
+    xor     edi, edi
+    call    cap_rec
+    mov     rdi, rax
+    mov     esi, RV_NOROOM
+    mov     edx, ACR_LEN_NOROOM
+    call    st_hdr_ok
+    test    eax, eax
+    CHK     z, 11
+    mov     edi, 2                      ; guest 2 cannot relay into the new room
+    call    st_ep
+    mov     r12, rax
+    mov     edi, 1
+    call    st_ep
+    mov     rdx, rax
+    mov     rdi, r12
+    lea     rsi, [t_code2]
+    mov     ecx, 8
+    call    st_relay
+    test    eax, eax
+    CHK     z, 12
+    lea     rdi, [t_exp_replaced]       ; the log says so, then opens the new one
+    lea     rsi, [t_code]
+    call    st_patch
+    lea     rdi, [t_exp_replaced]
+    call    log_has
+    cmp     eax, 1
+    CHK     e, 13
+    lea     rdi, [t_exp_open]
+    lea     rsi, [t_code2]
+    call    st_patch
+    lea     rdi, [t_exp_open]
+    call    log_has
+    cmp     eax, 1
+    CHK     e, 14
+    mov     edi, 4                      ; guest 4 joins the new room
+    lea     rsi, [t_code2]
+    call    st_join_send
+    cmp     eax, 2
+    CHK     e, 15
+    lea     rdi, [s_script_abcdef]      ; no random bytes left: a replacing RV_HOST gets no answer and changes nothing
+    xor     esi, esi
+    call    st_set_script
+    mov     edi, 1
+    mov     esi, 3
+    call    st_host
+    test    eax, eax
+    CHK     z, 16
+    mov     qword [rng_script], 0
+    mov     rax, [rbx + ACR_ROOM.code]
+    cmp     rax, [t_code2]
+    CHK     e, 17
+    cmp     dword [rbx + ACR_ROOM.nonce], 2
+    CHK     e, 18
+    mov     rdi, rbx
+    call    st_count_guests
+    cmp     eax, 1
+    CHK     e, 19
+    mov     r12d, 3                     ; 256 more nonces from the one endpoint: still one room
+.flood:
+    mov     edi, 1
+    mov     esi, r12d
+    lea     rdx, [t_tmp]
+    call    st_host_ok
+    test    eax, eax
+    CHK     z, 20
+    inc     r12d
+    cmp     r12d, 3 + 256
+    jb      .flood
+    call    st_count_rooms
+    cmp     eax, 1
+    CHK     e, 21
+    mov     edi, 7                      ; another endpoint can still open its own
+    mov     esi, 1
+    lea     rdx, [t_tmp]
+    call    st_host_ok
+    test    eax, eax
+    CHK     z, 22
+    call    st_count_rooms
+    cmp     eax, 2
+    CHK     e, 23
+    xor     eax, eax
+.out:
+    pop     r12
+    pop     rbx
+    ret
+
+; --- room_per_ip: one source IP owns at most ACR_MAX_PER_IP rooms; refreshing or replacing one is not opening one ---
+st_room_per_ip:
+    push    rbx
+    xor     ebx, ebx                    ; four endpoints on 10.0.0.1 (ports 27615 ^ 0..3) open a room each
+.four:
+    mov     edi, 1
+    mov     esi, ebx
+    lea     edx, [rbx + 1]
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 1
+    inc     ebx
+    cmp     ebx, ACR_MAX_PER_IP
+    jb      .four
+    call    st_count_rooms
+    cmp     eax, ACR_MAX_PER_IP
+    CHK     e, 2
+    mov     edi, 1                      ; a fifth endpoint of that IP gets nothing
+    mov     esi, ACR_MAX_PER_IP
+    mov     edx, 9
+    call    st_host_k
+    test    eax, eax
+    CHK     z, 3
+    call    st_count_rooms
+    cmp     eax, ACR_MAX_PER_IP
+    CHK     e, 4
+    mov     edi, 2                      ; another IP is not affected
+    xor     esi, esi
+    mov     edx, 1
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 5
+    mov     edi, 1                      ; a refresh of one of the four is answered
+    xor     esi, esi
+    mov     edx, 1
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 6
+    mov     edi, 1                      ; so is a new nonce: it replaces that endpoint's room
+    mov     esi, 1
+    mov     edx, 99
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 7
+    call    st_count_rooms
+    cmp     eax, ACR_MAX_PER_IP + 1
+    CHK     e, 8
+    mov     qword [clock_val], 1015     ; t = 1015: three of the four refresh, the one replaced at 1000 does not
+    xor     ebx, ebx
+.refresh:
+    cmp     ebx, 1
+    je      .skip
+    mov     edi, 1
+    mov     esi, ebx
+    lea     edx, [rbx + 1]
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 9
+.skip:
+    inc     ebx
+    cmp     ebx, ACR_MAX_PER_IP
+    jb      .refresh
+    mov     edi, 1030                   ; t = 1030: the room that was not refreshed since 1000 is gone, and the other IP's
+    call    st_tick
+    call    st_count_rooms
+    cmp     eax, ACR_MAX_PER_IP - 1
+    CHK     e, 10
+    mov     edi, 1                      ; the fifth endpoint has a place now
+    mov     esi, ACR_MAX_PER_IP
+    mov     edx, 9
+    call    st_host_k
+    cmp     eax, 1
+    CHK     e, 11
+    xor     eax, eax
+.out:
+    pop     rbx
+    ret
+
+; --- guest_no_evict: seven guests that are playing are not replaced by an eighth join ---
+st_guest_no_evict:
+    push    rbx
+    push    r12
+    mov     edi, 1
+    mov     esi, 1
+    lea     rdx, [t_code]
+    call    st_host_ok
+    test    eax, eax
+    CHK     z, 1
+    mov     ebx, 2                      ; t = 1000: guests 2..8 fill the 7 entries
+.join:
+    mov     edi, ebx
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 2
+    CHK     e, 2
+    inc     ebx
+    cmp     ebx, 8
+    jbe     .join
+    mov     qword [clock_val], 1001     ; t = 1001: all seven relay: they are playing
+    lea     rdi, [t_code]
+    call    st_relay_guests
+    cmp     eax, 7
+    CHK     e, 3
+    mov     edi, 9                      ; an eighth joins: RV_NOROOM for it, RV_PEER for nobody
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 1
+    CHK     e, 4
+    xor     edi, edi
+    call    cap_rec
+    mov     rbx, rax
+    mov     rdi, rbx
+    mov     esi, RV_NOROOM
+    mov     edx, ACR_LEN_NOROOM
+    call    st_hdr_ok
+    test    eax, eax
+    CHK     z, 5
+    mov     edi, 9
+    call    st_ep
+    cmp     [rbx], rax                  ; sent to the eighth
+    CHK     e, 6
+    mov     edi, 1
+    call    st_ep
+    mov     rdi, rax
+    call    st_room_of
+    mov     r12, rax                    ; the room
+    mov     rdi, r12
+    call    st_count_guests
+    cmp     eax, 7
+    CHK     e, 7
+    mov     edi, 9
+    call    st_ep
+    mov     rdi, r12
+    mov     rsi, rax
+    call    guest_find
+    test    rax, rax
+    CHK     z, 8                        ; not recorded
+    lea     rdi, [t_code]               ; every one of the seven still relays
+    call    st_relay_guests
+    cmp     eax, 7
+    CHK     e, 9
+    mov     qword [clock_val], 1005     ; t = 1005: they were last active 4 s ago: still playing
+    mov     edi, 9
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 1
+    CHK     e, 10
+    mov     qword [clock_val], 1006     ; t = 1006: 5 s: the quietest (all alike: the first, guest 2) gives way
+    mov     edi, 9
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 2
+    CHK     e, 11
+    mov     edi, 2
+    call    st_ep
+    mov     rdi, r12
+    mov     rsi, rax
+    call    guest_find
+    test    rax, rax
+    CHK     z, 12
+    mov     edi, 9
+    call    st_ep
+    mov     rdi, r12
+    mov     rsi, rax
+    call    guest_find
+    test    rax, rax
+    CHK     nz, 13
+    mov     ebx, 3                      ; guests 3..8 are all still there
+.keep:
+    mov     edi, ebx
+    call    st_ep
+    mov     rdi, r12
+    mov     rsi, rax
+    call    guest_find
+    test    rax, rax
+    CHK     nz, 14
+    inc     ebx
+    cmp     ebx, 8
+    jbe     .keep
+    mov     edi, 3                      ; a guest that is in already is answered even when the room is full
+    lea     rsi, [t_code]
+    call    st_join_send
+    cmp     eax, 2
+    CHK     e, 15
+    xor     eax, eax
+.out:
+    pop     r12
+    pop     rbx
+    ret
+
+%define ST_PUB_IP   0x097100CB          ; 203.0.113.9
+%define ST_PORT_H   0xDF6B              ; 27615, network byte order read as a little-endian word
+%define ST_PORT_G   0x409C              ; 40000
+
+; --- lan_filter: a lan endpoint reaches the other side only when it can be one, in both directions ---
+; Host 203.0.113.9:27615 and guest 203.0.113.9:40000 announce each row of t_lan_rows in turn; the RV_PEER the other
+; side gets must carry the row as it is (port 27615) or all zero. A failure returns 100 + row (the guest's lan
+; towards the host) or 200 + row (the host's lan towards the guest).
+st_lan_filter:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     rax, ST_PUB_IP | (ST_PORT_H << 32)
+    mov     [t_k1], rax
+    mov     rax, ST_PUB_IP | (ST_PORT_G << 32)
+    mov     [t_k2], rax
+    mov     edi, 1
+    call    st_lan
+    mov     rdx, rax                    ; a lan address that is fine
+    mov     rdi, [t_k1]
+    mov     esi, 1
+    call    st_host_at
+    cmp     eax, 1
+    CHK     e, 1
+    xor     edi, edi
+    call    cap_rec
+    mov     rax, [rax + 12 + 4]
+    mov     [t_code], rax               ; the room's code
+    mov     edi, 2
+    call    st_lan
+    mov     r14, rax                    ; the guest's own lan address, a fine one
+    lea     rbx, [t_lan_rows]
+    xor     r15d, r15d
+.row:
+    cmp     byte [rbx + 4], 0xFF
+    je      .rows_done
+    mov     r12d, [rbx]
+    mov     rax, 0xDF6B
+    shl     rax, 32
+    or      r12, rax                    ; the row's endpoint, port 27615
+    xor     r13d, r13d
+    cmp     byte [rbx + 4], 0
+    cmovne  r13, r12                    ; what has to come through
+    mov     rdi, [t_k2]                 ; the guest announces the row: the host's RV_PEER shows what came through
+    lea     rsi, [t_code]
+    mov     rdx, r12
+    call    st_join_raw
+    cmp     eax, 2
+    jne     .fail_guest
+    mov     rdi, [t_k1]
+    call    cap_find
+    test    rax, rax
+    jz      .fail_guest
+    cmp     [rax + 12 + 20], r13
+    jne     .fail_guest
+    mov     rdi, [t_k1]                 ; the host announces the row: the guest's RV_PEER shows what came through
+    mov     esi, 1
+    mov     rdx, r12
+    call    st_host_at
+    cmp     eax, 1
+    jne     .fail_host
+    mov     rdi, [t_k2]
+    lea     rsi, [t_code]
+    mov     rdx, r14
+    call    st_join_raw
+    cmp     eax, 2
+    jne     .fail_host
+    mov     rdi, [t_k2]
+    call    cap_find
+    test    rax, rax
+    jz      .fail_host
+    cmp     [rax + 12 + 20], r13
+    jne     .fail_host
+    add     rbx, 8
+    inc     r15d
+    jmp     .row
+.rows_done:
+    xor     eax, eax
+    jmp     .out
+.fail_guest:
+    lea     eax, [r15 + 100]
+    jmp     .out
+.fail_host:
+    lea     eax, [r15 + 200]
+.out:
+    pop     r15
+    pop     r14
+    pop     r13
     pop     r12
     pop     rbx
     ret
