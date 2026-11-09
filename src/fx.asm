@@ -15,6 +15,7 @@ global fx_particles, fx_shake, fx_shake_yaw, fx_shake_pitch, fx_flash, fx_shift
 
 extern rng_next, player_eye, world_is_solid, block_tiles, render_box16
 extern glIsEnabled, glGetFloatv
+extern net_role, net_applying, net_fx_out
 
 %define GL_CURRENT_COLOR 0x0B00
 
@@ -218,7 +219,32 @@ fx_count:
 ; fx_explosion(xmm0..2 centre, xmm3 radius): 12 r fireball particles, 6 r smoke puffs, and the
 ; camera shake and screen flash for the player's distance.
 ; rbx = the particle being filled, r12d = index, r13d = count.
+; In multiplayer the blast is also sent to the other peers (net_fx_out), unless a message is being applied.
 fx_explosion:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .local
+    cmp     byte [net_applying], 0
+    jne     .local
+    sub     rsp, 24
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    movss   [rsp + 12], xmm3
+    movaps  xmm4, xmm3                  ; net_fx_out(edi kind, esi sub, edx count, xmm0 f, xmm1..3 position)
+    movaps  xmm3, xmm2
+    movaps  xmm2, xmm1
+    movaps  xmm1, xmm0
+    movaps  xmm0, xmm4
+    mov     edi, FXN_EXPLOSION
+    xor     esi, esi
+    xor     edx, edx
+    call    net_fx_out
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    add     rsp, 24
+.local:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -564,7 +590,36 @@ rand_dir:
 ; burst_tab. Any other kind spawns nothing; when the table is full the rest is dropped.
 ; rbx = the particle being filled, r12d = particles left, r13 = the kind's burst_tab row,
 ; r14d = kind.
+; In multiplayer the burst is also sent to the other peers (net_fx_out), unless a message is being applied.
 fx_burst:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .local
+    cmp     byte [net_applying], 0
+    jne     .local
+    sub     rsp, 40
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    movss   [rsp + 12], xmm3
+    mov     [rsp + 16], edi
+    mov     [rsp + 20], esi
+    movaps  xmm4, xmm3                  ; f = the speed
+    movaps  xmm3, xmm2
+    movaps  xmm2, xmm1
+    movaps  xmm1, xmm0
+    movaps  xmm0, xmm4
+    mov     edx, esi                    ; count
+    mov     esi, edi                    ; sub = the particle kind
+    mov     edi, FXN_BURST
+    call    net_fx_out
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    mov     edi, [rsp + 16]
+    mov     esi, [rsp + 20]
+    add     rsp, 40
+.local:
     push    rbp
     mov     rbp, rsp
     push    rbx

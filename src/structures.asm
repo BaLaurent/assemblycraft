@@ -17,6 +17,7 @@ global sites, site_count
 global region_plan, camp_plan, structures_stamp, structures_fill_chest, structures_refresh
 global structures_reset, structures_step, structures_nearest, structures_mark_freed
 global structures_on_mob_killed, structures_on_boss_killed, structures_shift, site_state
+global structures_dungeon_reward, structures_boss_reward
 global roads_edges, roads_in_rect, roads_prepare, road_mark, road_mask, camp_main, patrol_point, patrol_consider
 global camp_clearing, camp_homes
 
@@ -29,6 +30,7 @@ extern rng_next, floor_i, block_flags
 extern game_mode, game_time, settings, player
 extern rpg_state, rpg_level, rpg_add_xp, quests_on_dungeon_cleared
 extern hud_banner, audio_play
+extern mob_spawn_level, nm_centre, net_role, net_event_out
 
 %define OP_SHELL     255                ; box id: stone or mossy brick picked by the cell's hash
 %define OP_IFAIR     1                  ; box flag: only replace AIR
@@ -49,6 +51,9 @@ extern hud_banner, audio_play
 %define POP_ENTRIES  64                 ; sites camp_npcs has populated this session
 %define PATROL_ENTRIES 16               ; roads whose patrol is on its cooldown
 %define PATROL_COOLDOWN 36000           ; steps before a road's patrol may be materialised again
+%define SN_NPC       1                  ; structures_near flags: camp_npcs and the patrols are due this step...
+%define SN_SURVIVAL  2                  ; ...the game is in Survival above Peaceful (the dungeon spawner and the crypt run)...
+%define SN_SPAWN     4                  ; ...and this is the step of a dungeon spawn attempt
 
 ; a region plan remembered by plan_get; seed identifies the world seed (hash32(0, 0, 0))
 struc PLANENT
@@ -147,6 +152,7 @@ c_absmask: dd 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF
 
 s_awakens: db "The Fallen King awakens!", 0
 s_cleared: db "Dungeon cleared!", 0
+s_victory: db "Victory! The Fallen King is no more.", 0
 
 spawn_types: db MOB_ZOMBIE, MOB_SKELETON, MOB_SPIDER
 
@@ -403,13 +409,17 @@ loot_counts: db (loot_crypt - loot_dungeon) / 4, (loot_camp - loot_crypt) / 4, (
 align 8
 build_fns:   dq build_village, build_dungeon, build_crypt, build_camp ; by site kind - 1
 
+section .data
+align 8
+st_body:    dq player                   ; the BODY structures_near is working for: the local player's, or a remote player's proxy
+
 section .bss
 alignb 16
 sites:      resb MAX_SITES * SITE_size  ; the sites around the player, local coordinates
 site_count: resd 1
 st_timer:   resd 1                      ; steps to the next dungeon spawn attempt
 st_npc:     resd 1                      ; steps to the next check for missing site folk and the patrols
-pcell:      resd 3                      ; the player's cell, set by structures_step
+pcell:      resd 3                      ; the cell of the player structures_near is working for
 gb_buf:     resq 1                      ; the GENBUF being stamped (generator thread only)
 gb_x0:      resd 1                      ; its first absolute x and z
 gb_z0:      resd 1
@@ -3055,11 +3065,13 @@ camp_npcs:
 .member:
     cvtsi2ss xmm0, dword [rbx + SITE.x]
     addss   xmm0, [c_half]
-    subss   xmm0, [player + BODY.x]
+    mov     rax, [st_body]
+    subss   xmm0, [rax + BODY.x]
     mulss   xmm0, xmm0
     cvtsi2ss xmm1, dword [rbx + SITE.z]
     addss   xmm1, [c_half]
-    subss   xmm1, [player + BODY.z]
+    mov     rax, [st_body]
+    subss   xmm1, [rax + BODY.z]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     comiss  xmm0, [c_npc_r2]
@@ -3273,11 +3285,13 @@ patrol_consider:
     sub     r13d, [world_origin_z]
     cvtsi2ss xmm0, r12d
     addss   xmm0, [c_half]
-    subss   xmm0, [player + BODY.x]
+    mov     rax, [st_body]
+    subss   xmm0, [rax + BODY.x]
     mulss   xmm0, xmm0
     cvtsi2ss xmm1, r13d
     addss   xmm1, [c_half]
-    subss   xmm1, [player + BODY.z]
+    mov     rax, [st_body]
+    subss   xmm1, [rax + BODY.z]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     comiss  xmm0, [c_patrol_r2_min]
@@ -3444,11 +3458,13 @@ patrols_step:
     push    r14
     push    r15
     sub     rsp, 288
-    movss   xmm0, [player + BODY.x]
+    mov     rax, [st_body]
+    movss   xmm0, [rax + BODY.x]
     call    floor_i
     add     eax, [world_origin_x]
     mov     r12d, eax                   ; the player's absolute cell
-    movss   xmm0, [player + BODY.z]
+    mov     rax, [st_body]
+    movss   xmm0, [rax + BODY.z]
     call    floor_i
     add     eax, [world_origin_z]
     mov     r13d, eax
@@ -3514,15 +3530,26 @@ in_box:
     xor     eax, eax
     ret
 
-; boss_level() -> eax the level the Fallen King wakes at: the player's + 3, at least 20
-; elite_level() -> eax the level of a dungeon elite: the player's + 2 (a blank character is level 1)
-boss_level:
+; spawn_level() -> eax the level a site's mob is measured from: the remote player's (mob_spawn_level) while
+; structures_near works for one, else the local player's; a blank character reads level 1
+; boss_level() -> eax the level the Fallen King wakes at: that level + 3, at least 20
+; elite_level() -> eax the level of a dungeon elite: that level + 2
+spawn_level:
+    mov     eax, [mob_spawn_level]
+    test    eax, eax
+    jnz     .have
     sub     rsp, 8
     call    rpg_level
     add     rsp, 8
+.have:
     mov     ecx, 1
     cmp     eax, ecx
     cmovl   eax, ecx
+    ret
+boss_level:
+    sub     rsp, 8
+    call    spawn_level
+    add     rsp, 8
     add     eax, 3
     mov     ecx, 20
     cmp     eax, ecx
@@ -3530,11 +3557,8 @@ boss_level:
     ret
 elite_level:
     sub     rsp, 8
-    call    rpg_level
+    call    spawn_level
     add     rsp, 8
-    mov     ecx, 1
-    cmp     eax, ecx
-    cmovl   eax, ecx
     add     eax, 2
     ret
 
@@ -3614,15 +3638,16 @@ dungeon_spawn:
     mov     [rsp + 12], ecx
     cvtsi2ss xmm0, eax
     addss   xmm0, [c_half]
-    subss   xmm0, [player + BODY.x]
+    mov     rax, [st_body]
+    subss   xmm0, [rax + BODY.x]
     mulss   xmm0, xmm0
     cvtsi2ss xmm1, dword [rbx + SITE.y]
-    subss   xmm1, [player + BODY.y]
+    subss   xmm1, [rax + BODY.y]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     cvtsi2ss xmm1, ecx
     addss   xmm1, [c_half]
-    subss   xmm1, [player + BODY.z]
+    subss   xmm1, [rax + BODY.z]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     comiss  xmm0, [c_36]
@@ -3721,8 +3746,74 @@ wake_boss:
 ; (camp_npcs) and the roads' patrols considered (patrols_step), in every mode. In Survival above Peaceful,
 ; every 90 steps the dungeon the player is in (box grown by 2, not cleared yet) tries to spawn an elite,
 ; and the crypt wakes the boss when the player is inside, it is not defeated and none is alive.
-; Persistent state is created only for the sites the player is inside.
+; Persistent state is created only for the sites the player is inside. The counters tick once per step;
+; what depends on where a player stands is structures_near, which runs for the local player and, on a
+; host, for every remote player who lives, with his level in mob_spawn_level meanwhile.
+; r12d = SN_* flags of this step, r13d = the remote player being served
 structures_step:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    xor     r12d, r12d
+    mov     eax, [st_npc]
+    dec     eax
+    jg      .npc_wait
+    mov     eax, NPC_PERIOD
+    mov     [st_npc], eax
+    or      r12d, SN_NPC
+    jmp     .gate
+.npc_wait:
+    mov     [st_npc], eax
+.gate:
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .go
+    cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
+    je      .go
+    or      r12d, SN_SURVIVAL
+    mov     eax, [st_timer]
+    dec     eax
+    jg      .tick
+    mov     eax, SPAWN_PERIOD
+    or      r12d, SN_SPAWN
+.tick:
+    mov     [st_timer], eax
+.go:
+    lea     rdi, [player]
+    mov     esi, r12d
+    call    structures_near
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret
+    xor     r13d, r13d
+.remote:
+    mov     edi, r13d
+    call    nm_centre                   ; rax = the BODY of the r13d-th remote player who lives, edx = his level
+    test    rax, rax
+    jz      .done
+    mov     [mob_spawn_level], edx
+    mov     rdi, rax
+    mov     esi, r12d
+    call    structures_near
+    inc     r13d
+    jmp     .remote
+.done:
+    mov     dword [mob_spawn_level], 0
+.ret:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; structures_near(rdi BODY*, esi SN_* flags): the part of structures_step that depends on where a player
+; stands. camp_npcs and patrols_step (when SN_NPC says they are due) and, in Survival above Peaceful
+; (SN_SURVIVAL), the dungeon spawner (SN_SPAWN: on the step of an attempt) and the crypt's boss are run for the
+; player standing at that body: st_body and pcell name him meanwhile.
+; rbx = SITE*, r12d = sites left, r13 = the body, r14d = the flags, r15d = 1 on the step of a spawn attempt
+structures_near:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -3731,39 +3822,29 @@ structures_step:
     push    r14
     push    r15
     sub     rsp, 8
-    mov     eax, [st_npc]
-    dec     eax
-    jg      .npc_wait
-    mov     eax, NPC_PERIOD
-    mov     [st_npc], eax
+    mov     r13, rdi
+    mov     r14d, esi
+    mov     [st_body], rdi
+    test    r14d, SN_NPC
+    jz      .gate
     call    camp_npcs
     call    patrols_step
-    jmp     .gate
-.npc_wait:
-    mov     [st_npc], eax
 .gate:
-    cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .ret
-    cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
-    je      .ret
-    movss   xmm0, [player + BODY.x]
+    test    r14d, SN_SURVIVAL
+    jz      .ret
+    movss   xmm0, [r13 + BODY.x]
     call    floor_i
     mov     [pcell], eax
-    movss   xmm0, [player + BODY.y]
+    movss   xmm0, [r13 + BODY.y]
     addss   xmm0, [c_eps]
     call    floor_i
     mov     [pcell + 4], eax
-    movss   xmm0, [player + BODY.z]
+    movss   xmm0, [r13 + BODY.z]
     call    floor_i
     mov     [pcell + 8], eax
     xor     r15d, r15d                  ; 1 on the step of a spawn attempt
-    mov     eax, [st_timer]
-    dec     eax
-    jg      .tick
-    mov     eax, SPAWN_PERIOD
-    mov     r15d, 1
-.tick:
-    mov     [st_timer], eax
+    test    r14d, SN_SPAWN
+    setnz   r15b
     lea     rbx, [sites]
     mov     r12d, [site_count]
 .site:
@@ -3815,6 +3896,8 @@ structures_step:
     dec     r12d
     jmp     .site
 .ret:
+    lea     rax, [player]               ; st_body is the local player's again
+    mov     [st_body], rax
     add     rsp, 8
     pop     r15
     pop     r14
@@ -3842,6 +3925,26 @@ structures_on_mob_killed:
     cmp     ecx, DUNGEON_KILLS
     jb      .done
     or      byte [rax + SITESTATE.flags], SS_CLEARED
+    xor     edi, edi                    ; (the reward's argument is unused: each game pays by its own player's level)
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .reward
+    mov     esi, edi
+    mov     edi, EV_DUNGEON_CLEARED
+    call    net_event_out               ; every player's reward, the host's included
+    jmp     .quest
+.reward:
+    call    structures_dungeon_reward
+.quest:
+    call    quests_on_dungeon_cleared
+.done:
+    add     rsp, 8
+    ret
+
+; structures_dungeon_reward(edi arg): a player's share of a cleared dungeon: 150 XP + 15 per level of his, a
+; banner and a chime. arg is unused (the formula reads the player's own level): offline it is called directly, a
+; host sends EV_DUNGEON_CLEARED, which every game answers with this.
+structures_dungeon_reward:
+    sub     rsp, 8
     movzx   edi, byte [rpg_state + RPGSAVE.level]
     imul    edi, edi, 15
     add     edi, 150
@@ -3852,8 +3955,19 @@ structures_on_mob_killed:
     mov     edi, SND_QUEST
     movss   xmm0, [c_one]
     call    audio_play
-    call    quests_on_dungeon_cleared
-.done:
+    add     rsp, 8
+    ret
+
+; structures_boss_reward(edi level): a player's share of the Fallen King's fall: 500 XP + 25 per level of the
+; boss (edi) and the victory banner. Offline it is called directly, a host sends EV_BOSS_KILLED with the level.
+structures_boss_reward:
+    sub     rsp, 8
+    imul    edi, edi, 25
+    add     edi, 500
+    call    rpg_add_xp
+    lea     rdi, [s_victory]
+    mov     esi, RGBA(255, 215, 60, 255)
+    call    hud_banner
     add     rsp, 8
     ret
 

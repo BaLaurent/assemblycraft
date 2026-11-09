@@ -8,7 +8,6 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define WORLD_H        256
 %define CHUNK          16
 %define COL_CHUNKS     16
-%define COL_GRID       64               ; toroidal column table: slot (acz & 63)*64 + (acx & 63)
 %define MAX_COLUMNS    4096
 %define CHUNK_BYTES    8192             ; 4096 block bytes, then 4096 packed-light bytes
 %define POOL_CHUNKS    32768

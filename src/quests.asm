@@ -3,11 +3,14 @@
 ; the character. Rewards are XP and coins, sometimes an item; what does not fit in the
 ; inventory is dropped at the player's feet. Each faction's trader sells from its own table
 ; (trade_open picks it); a gear item an offer sells (jewelry, weapons, armour) is rolled when it
+; In multiplayer the chain is the world's, one for everybody: the host owns the position (QUEST_SYNC tells the guests), a guest
+; asks for accepting, counting and handing in, and a hand-in rewards every connected player (QUEST_REWARD).
 ; is bought: a magic-or-better piece of the tier of the player's level.
 %include "common.inc"
 default rel
 
 global quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
+global quests_pay, quests_advance, quests_reward, quests_settle, quests_bump
 global quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
 global trade_offer, trade_can, trade_execute, trade_open
 global trade_cur, trade_count, trade_title
@@ -15,6 +18,7 @@ global trade_cur, trade_count, trade_title
 extern rpg_state, rpg_add_xp, rpg_give_item
 extern inv_count, inv_remove_one, inv_add_dmg, drops_spawn, player, audio_play, hud_banner
 extern item_gear, gear_roll, gear_tier_for_level
+extern net_role, net_out, net_quest_sync_out
 
 section .rodata.str progbits alloc noexec nowrite align=1
 
@@ -161,7 +165,8 @@ quests_progress:
     pop     rbp
     ret
 
-; quests_accept() -> eax 1 when the current quest was just accepted (counting starts from 0)
+; quests_accept() -> eax 1 when the current quest was just accepted (counting starts from 0). On a guest the host is asked
+; (QUEST_ACCEPT) and 1 means the request went out; the host's QUEST_SYNC brings the answer.
 quests_accept:
     push    rbp
     mov     rbp, rsp
@@ -170,9 +175,21 @@ quests_accept:
     jz      .no
     cmp     byte [rpg_state + RPGSAVE.quest_state], 0
     jne     .no
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .ask
     mov     byte [rpg_state + RPGSAVE.quest_state], 1
     mov     word [rpg_state + RPGSAVE.quest_progress], 0
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .yes
+    call    net_quest_sync_out
+.yes:
     mov     eax, 1
+    pop     rbp
+    ret
+.ask:
+    movzx   edi, byte [rpg_state + RPGSAVE.quest]
+    mov     esi, MT_QUEST_ACCEPT
+    call    quest_send
     pop     rbp
     ret
 .no:
@@ -203,9 +220,40 @@ quests_can_complete:
     pop     rbp
     ret
 
-; quests_complete() -> eax 1 when the quest was handed in: Q_BRING takes its items, then XP,
-; coins and the item reward are paid, the chain moves on, sound and banner
+; quests_complete() -> eax 1 when the quest was handed in: Q_BRING takes its items (quests_pay), then the chain moves on and
+; XP, coins and the item are paid, sound and banner (quests_settle). On a guest the host decides: the items are taken here,
+; QUEST_COMPLETE goes out and the quest shows as handed in (quest_state 2) until the host's QUEST_SYNC answers; the reward,
+; for every player this one included, and the new position come back from the host.
 quests_complete:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    movzx   ebx, byte [rpg_state + RPGSAVE.quest] ; the quest being handed in
+    call    quests_pay
+    test    eax, eax
+    jz      .ret
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .guest
+    mov     edi, ebx
+    call    quests_settle
+    mov     eax, 1
+    jmp     .ret
+.guest:
+    mov     edi, ebx
+    mov     esi, MT_QUEST_COMPLETE
+    call    quest_send
+    mov     byte [rpg_state + RPGSAVE.quest_state], 2 ; no second hand-in while the host has not answered
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; quests_pay() -> eax 1 when the quest on offer can be handed in (accepted, goal reached): a Q_BRING quest's items are taken
+; from the inventory. 0, and nothing taken, otherwise.
+quests_pay:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -216,14 +264,55 @@ quests_complete:
     call    quests_current
     mov     rbx, rax
     cmp     dword [rbx + QUESTINFO.type], Q_BRING
-    jne     .paid_in
+    jne     .paid
     mov     r12d, [rbx + QUESTINFO.count]
 .take:
     mov     edi, [rbx + QUESTINFO.target]
     call    inv_remove_one
     dec     r12d
     jnz     .take
-.paid_in:
+.paid:
+    mov     eax, 1
+.ret:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; quests_advance() -> eax 1 when the chain moved on: the quest on offer was accepted (and the chain is not over); the next one
+; is not accepted yet and has no progress. 0 otherwise.
+quests_advance:
+    sub     rsp, 8
+    call    quests_current
+    test    rax, rax
+    jz      .no
+    cmp     byte [rpg_state + RPGSAVE.quest_state], 1
+    jne     .no
+    inc     byte [rpg_state + RPGSAVE.quest]
+    mov     byte [rpg_state + RPGSAVE.quest_state], 0
+    mov     word [rpg_state + RPGSAVE.quest_progress], 0
+    mov     eax, 1
+    add     rsp, 8
+    ret
+.no:
+    xor     eax, eax
+    add     rsp, 8
+    ret
+
+; quests_reward(edi quest): the pay of quest number `quest`: XP, coins and the item reward (what does not fit drops at the
+; feet), the quest sound and the "Quest complete!" banner. Nothing for a number beyond the chain.
+quests_reward:
+    cmp     edi, NUM_QUESTS
+    jb      .go
+    ret
+.go:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    imul    eax, edi, QUESTINFO_size
+    lea     rbx, [quest_tab]
+    add     rbx, rax
     mov     edi, [rbx + QUESTINFO.xp]
     call    rpg_add_xp
     mov     esi, [rbx + QUESTINFO.coins]
@@ -234,28 +323,69 @@ quests_complete:
 .no_coins:
     mov     edi, [rbx + QUESTINFO.item]
     test    edi, edi
-    jz      .next
+    jz      .done
     mov     esi, [rbx + QUESTINFO.item_count]
     call    rpg_give_item
-.next:
-    inc     byte [rpg_state + RPGSAVE.quest]
-    mov     byte [rpg_state + RPGSAVE.quest_state], 0
-    mov     word [rpg_state + RPGSAVE.quest_progress], 0
+.done:
     mov     edi, SND_QUEST
     movss   xmm0, [f_vol_full]
     call    audio_play
     lea     rdi, [s_done]
     mov     esi, RGBA(255, 215, 60, 255)
     call    hud_banner
-    mov     eax, 1
-.ret:
-    pop     r12
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
 
-; bump(edi type): +1 progress when the quest on offer is accepted, of that type and not done yet
-bump:
+; quests_settle(edi quest): the chain's quest number `quest` is done (the host or offline): the chain moves on; on the host
+; the guests are rewarded (QUEST_REWARD), then this player is (quests_reward); on the host the guests then learn the new
+; position (QUEST_SYNC).
+quests_settle:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+    call    quests_advance
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .reward
+    mov     edi, ebx
+    mov     esi, MT_QUEST_REWARD
+    call    quest_send                  ; net_out: to every guest
+.reward:
+    mov     edi, ebx
+    call    quests_reward
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .ret
+    call    net_quest_sync_out
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; quest_send(edi arg, esi type) -> eax 1 when queued: a one-byte reliable message (net_out: the host's go to every guest, a
+; guest's to the host)
+quest_send:
+    sub     rsp, 24
+    mov     [rsp], dil
+    mov     edi, esi
+    mov     rsi, rsp
+    mov     edx, 1
+    mov     ecx, 1
+    call    net_out
+    add     rsp, 24
+    ret
+
+; quests_bump(edi type): +1 progress when the quest on offer is accepted, of that type and not done yet. The host or offline
+; counts it (the host tells the guests: QUEST_SYNC); a guest asks the host (QUEST_BUMP), who checks it all again.
+quests_bump:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .count
+    mov     esi, MT_QUEST_BUMP
+    jmp     quest_send
+.count:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -272,6 +402,9 @@ bump:
     cmp     ecx, [rax + QUESTINFO.count]
     jae     .ret
     inc     word [rpg_state + RPGSAVE.quest_progress]
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .ret
+    call    net_quest_sync_out
 .ret:
     add     rsp, 8
     pop     rbx
@@ -302,7 +435,7 @@ quests_on_kill:
     cmp     [rax + QUESTINFO.target], ebx
     jne     .ret                        ; another kind of mob
 .count:
-    call    bump
+    call    quests_bump
 .ret:
     pop     r12
     pop     rbx
@@ -312,12 +445,12 @@ quests_on_kill:
 ; quests_on_dungeon_cleared(): counts for a Q_CLEAR quest
 quests_on_dungeon_cleared:
     mov     edi, Q_CLEAR
-    jmp     bump
+    jmp     quests_bump
 
 ; quests_on_boss_killed(): counts for a Q_BOSS quest
 quests_on_boss_killed:
     mov     edi, Q_BOSS
-    jmp     bump
+    jmp     quests_bump
 
 ; ---- trades ----------------------------------------------------------------------
 

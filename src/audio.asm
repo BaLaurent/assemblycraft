@@ -16,6 +16,7 @@ extern pa_simple_new, pa_simple_write, pa_simple_free
 extern sfx_build, sfx_table, sfx_pool, sfx_info
 extern exp2_ss, sincos_deg
 extern settings, player, player_eye
+extern net_role, net_applying, net_sound_out
 
 %define MAX_FRAMES 2048                 ; most frames written per audio_update (46 ms)
 %define ECHO_L     7497                 ; 170 ms
@@ -354,7 +355,27 @@ audio_mix:
 
 ; audio_play_at(edi snd, xmm0 x, xmm1 y, xmm2 z, xmm3 vol): start_voice, faded by the distance from the
 ; player's eye (silent at 16 blocks) and panned by which side of the player's facing it lies on
+; In multiplayer the sound is also sent to the other peers (net_sound_out), whether this machine plays it or not, unless a
+; message is being applied (net_applying): a sound heard from another peer is not sent on.
 audio_play_at:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .local
+    cmp     byte [net_applying], 0
+    jne     .local
+    sub     rsp, 24
+    mov     [rsp + 16], edi
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    movss   [rsp + 12], xmm3
+    call    net_sound_out               ; the same registers: snd, position, volume
+    mov     edi, [rsp + 16]
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    add     rsp, 24
+.local:
     cmp     dword [audio_enabled], 0
     je      .off
     push    rbp

@@ -67,7 +67,7 @@ armor_effective:
     ret
 
 ; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
-; armor bonus, at most 20) reduces damage from mobs (a faction's folk: CAUSE_FOLK..CAUSE_LAST)
+; armor bonus, at most 20) reduces damage from mobs (a faction's folk, and another player: CAUSE_FOLK..CAUSE_LAST)
 ; and explosions; environmental damage (a fall, fire, hunger, suffocation, drowning) is given for
 ; a 20-health character and scales with the maximum health (env_scale). A hit that lands starts
 ; 30 steps of invulnerability and wakes a sleeper (sleep_cancel). A blow that would kill may be
@@ -92,7 +92,7 @@ survival_damage:
     je      .armored
     cmp     r12d, CAUSE_BOSS
     je      .armored
-    lea     eax, [r12 - CAUSE_FOLK]     ; a faction's folk: CAUSE_FOLK .. CAUSE_LAST
+    lea     eax, [r12 - CAUSE_FOLK]     ; a faction's folk and another player (PvP): CAUSE_FOLK .. CAUSE_LAST (= CAUSE_PLAYER)
     cmp     eax, CAUSE_LAST - CAUSE_FOLK
     jbe     .armored
     cmp     r12d, CAUSE_SKELETON

@@ -1,0 +1,11 @@
+[Unit]
+Description=AssemblyCraft rendezvous and relay
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/usr/local/bin/acrelay --port 27600
+DynamicUser=yes
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

@@ -11,11 +11,13 @@
 ; of 120 bytes: db lx, db y, db lz, db kind, 27 x 4 slot bytes, dw burn, dw burn_max, dw cook, dw 0.
 ; Light is never saved. Up to 16 region tables are cached (least recently used goes first); a missing
 ; file or one with a bad header is cached as absent. Main thread only.
+; region_encode_column and region_read_blob give the COL9 blob of a column without any file (the multiplayer
+; column transfer): the blob is built, or read, in blob_buf; decode_blob turns one into a GENBUF.
 %include "common.inc"
 default rel
 
 global region_dir, region_set_dir, region_read_column, region_write_column, region_flush_cache
-global region_has_column
+global region_has_column, region_encode_column, region_read_blob, blob_buf, decode_blob
 
 extern conts, item_max_stack
 extern file_pread, mkdir_p, str_append, str_copy, i32_to_str, sys_print
@@ -278,11 +280,11 @@ reg_get:
 
 ; ---- reading ----------------------------------------------------------------------------------------------
 
-; region_read_column(edi acx, esi acz, rdx GENBUF*) -> eax 1 found and decoded into the buffer
-; (blocks, top, nconts/conts with absolute coordinates, nchests 0, cx/cz), 0 absent or corrupt (a
-; corrupt blob prints "region r.X.Z.bin: column (cx,cz) unreadable, regenerated" and is forgotten).
-; The biome map is not stored: the caller fills it.
-region_read_column:
+; region_read_blob(edi acx, esi acz) -> eax the length of the column's stored blob, which is now in
+; blob_buf; 0 when there is none (no directory, no entry) or it is unreadable (an entry shorter than a header,
+; longer than BLOB_MAX or cut off by its file prints "region r.X.Z.bin: column (cx,cz) unreadable,
+; regenerated" and is forgotten). The blob is not decoded.
+region_read_blob:
     push    rbx
     push    r12
     push    r13
@@ -293,7 +295,6 @@ region_read_column:
     je      .absent
     mov     r12d, edi                   ; acx
     mov     r13d, esi                   ; acz
-    mov     r14, rdx                    ; the buffer
     mov     edi, r12d
     sar     edi, 5
     mov     esi, r13d
@@ -333,15 +334,42 @@ region_read_column:
     mov     edx, [rsp]
     cmp     rax, rdx
     jne     .corrupt
-    lea     rdi, [blob_buf]
-    mov     esi, edx
-    mov     rdx, r14
-    mov     ecx, r12d
-    mov     r8d, r13d
-    call    decode_blob
-    test    eax, eax
-    jnz     .ret
+    mov     eax, edx
+    jmp     .ret
 .corrupt:
+    mov     edi, r12d
+    mov     esi, r13d
+    call    region_forget
+.absent:
+    xor     eax, eax
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; region_forget(edi acx, esi acz): the column's stored blob is unreadable: say so on stderr and forget its
+; entry, so that the column is regenerated.
+region_forget:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    mov     r13d, esi
+    sar     edi, 5
+    sar     esi, 5
+    call    reg_get
+    mov     rbx, rax
+    mov     eax, r13d
+    and     eax, 31
+    shl     eax, 5
+    mov     ecx, r12d
+    and     ecx, 31
+    or      eax, ecx
+    mov     dword [rbx + RC_ENT + rax*8], 0     ; forget the entry: the column is regenerated
     mov     edi, r12d
     sar     edi, 5
     mov     esi, r13d
@@ -350,13 +378,38 @@ region_read_column:
     mov     ecx, r12d
     mov     r8d, r13d
     call    region_msg
-    mov     dword [rbx + RC_ENT + r15*8], 0     ; forget the entry: the column is regenerated
-.absent:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; region_read_column(edi acx, esi acz, rdx GENBUF*) -> eax 1 found and decoded into the buffer
+; (blocks, top, nconts/conts with absolute coordinates, nchests 0, cx/cz), 0 absent or corrupt (a
+; corrupt blob prints "region r.X.Z.bin: column (cx,cz) unreadable, regenerated" and is forgotten).
+; The biome map is not stored: the caller fills it.
+region_read_column:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi                   ; acx
+    mov     r13d, esi                   ; acz
+    mov     rbx, rdx                    ; the buffer
+    call    region_read_blob
+    test    eax, eax
+    jz      .ret                        ; absent, or unreadable and reported
+    mov     esi, eax
+    lea     rdi, [blob_buf]
+    mov     rdx, rbx
+    mov     ecx, r12d
+    mov     r8d, r13d
+    call    decode_blob
+    test    eax, eax
+    jnz     .ret
+    mov     edi, r12d
+    mov     esi, r13d
+    call    region_forget               ; the blob does not decode: the column is regenerated
     xor     eax, eax
 .ret:
-    add     rsp, 8
-    pop     r15
-    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -677,23 +730,15 @@ pwrite_all:
     pop     rbx
     ret
 
-; region_write_column(rdi COLUMN*) -> eax 0 / -errno.
-; Encodes the column's chunks and the containers of conts[] inside it, then stores the blob in its
-; region file: in place when the old blob's sector count is at least the new one, else appended at the
-; end (the entry then points there). A world without a directory has nothing to write (returns 0).
-; Sets CF_CONTS in the column's flags when it holds containers, clears it when it does not.
-region_write_column:
-    push    rbp
-    mov     rbp, rsp
+; region_encode_column(rdi COLUMN*) -> eax the length of the column's COL9 blob, built in blob_buf: its
+; non-empty chunks (FIRE as AIR) and the containers of conts[] inside it (at most MAX_COL_CONTS). No file is
+; touched and no flag of the column changes; the container count is the word at blob_buf + 6.
+region_encode_column:
     push    rbx
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, 40                     ; [rsp] blob length, [rsp + 8] region entry, [rsp + 16] index,
-                                        ; [rsp + 24] fd, [rsp + 32] entry bytes
-    cmp     byte [region_dir], 0
-    je      .none
     mov     rbx, rdi
     lea     r12, [blob_buf]
     mov     dword [r12], COL_MAGIC
@@ -768,13 +813,39 @@ region_write_column:
     dec     ecx
     jnz     .cont
     mov     [r12 + 6], r15w
+    sub     r13, r12
+    mov     eax, r13d                   ; the blob length
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; region_write_column(rdi COLUMN*) -> eax 0 / -errno.
+; Encodes the column (region_encode_column), then stores the blob in its region file: in place when the
+; old blob's sector count is at least the new one, else appended at the end (the entry then points there).
+; A world without a directory has nothing to write (returns 0).
+; Sets CF_CONTS in the column's flags when it holds containers, clears it when it does not.
+region_write_column:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 48                     ; [rsp] blob length, [rsp + 8] region entry, [rsp + 16] index,
+                                        ; [rsp + 24] fd, [rsp + 32] entry bytes
+    cmp     byte [region_dir], 0
+    je      .none
+    mov     rbx, rdi
+    call    region_encode_column
+    mov     [rsp], eax                  ; the blob length
     and     dword [rbx + COLUMN.flags], ~CF_CONTS
-    test    r15d, r15d
-    jz      .nocont
+    cmp     word [blob_buf + 6], 0
+    je      .nocont
     or      dword [rbx + COLUMN.flags], CF_CONTS
 .nocont:
-    sub     r13, r12
-    mov     [rsp], r13d                 ; the blob length
     mov     edi, [rbx + COLUMN.cx]
     sar     edi, 5
     mov     esi, [rbx + COLUMN.cz]
@@ -894,8 +965,7 @@ region_write_column:
 .none:
     xor     eax, eax
 .ret:
-    add     rsp, 40
-    pop     r15
+    add     rsp, 48
     pop     r14
     pop     r13
     pop     r12

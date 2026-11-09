@@ -12,6 +12,7 @@ global cont_fill_from_inv
 
 extern world_origin_x, world_origin_z, world_get, world_set, world_column_ready, drops_spawn
 extern item_max_stack, item_burn, item_smelt
+extern net_role, net_cont_removed
 extern inv_container, inv_count, inv_remove_one, inv_take_stack
 
 %define SLOT_IN   (CONTAINER.slots)
@@ -163,8 +164,14 @@ conts_free_column:
     ret
 
 ; cont_block_removed(edi x, esi y, edx z) - the block at the cell is gone: every stack of its
-; record pops out as an item drop and the record is freed. No record there: nothing happens.
+; record pops out as an item drop and the record is freed. No record there: nothing happens. A guest
+; does nothing at all (the host spills the real contents when it applies the guest's edit); the host
+; tells net_cont_removed first, so that the peers holding the container open are let go.
 cont_block_removed:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .go
+    ret
+.go:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -180,6 +187,13 @@ cont_block_removed:
     test    rax, rax
     jz      .ret
     mov     rbx, rax
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .spill
+    mov     edi, [rbx + CONTAINER.x]    ; the record's own (absolute) cell
+    mov     esi, [rbx + CONTAINER.y]
+    mov     edx, [rbx + CONTAINER.z]
+    call    net_cont_removed            ; the peers that hold it open are let go
+.spill:
     xor     r15d, r15d
 .slot:
     cmp     byte [rbx + CONTAINER.slots + r15*4 + 1], 0

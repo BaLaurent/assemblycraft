@@ -11,7 +11,7 @@
 %include "gl.inc"
 default rel
 
-global mobs_render
+global mobs_render, mob_parts_draw, folk_tables
 
 extern mobs, render_box16, sincos_deg, light_bind_at, light_bind_index
 
@@ -269,18 +269,83 @@ folk_model:
 .done:
     ret
 
+; mob_parts_draw(rdi parts, rsi extra or 0, edx count, xmm0 swing_deg, xmm1 r, xmm2 g, xmm3 b): draw
+; the first count parts of the table at rdi in the model space the caller has set up (translated to
+; the feet, turned to the heading, scaled: see mobs_render), every one tinted (r, g, b); a part with
+; a swing factor turns about X at its pivot by factor * swing_deg. Then the rigid part at rsi, when
+; there is one (a role extra). mobs_render and peers_render (peerrender.asm) draw their bodies with it.
+; r14 = part, r15d = parts left; stack: [rsp] swing, [rsp+4..12] tint rgb, [rsp+16] limb angle,
+; [rsp+32] the extra part (0 once drawn)
+mob_parts_draw:
+    push    rbp
+    mov     rbp, rsp
+    push    r14
+    push    r15
+    sub     rsp, 48
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    movss   [rsp + 12], xmm3
+    mov     [rsp + 32], rsi
+    mov     r14, rdi
+    mov     r15d, edx
+    test    r15d, r15d
+    jz      .extra
+.part:
+    movss   xmm0, [r14 + P_SWING]
+    xorps   xmm1, xmm1
+    ucomiss xmm0, xmm1
+    jne     .swung
+    DRAW_PART
+    jmp     .part_next
+.swung:
+    mulss   xmm0, [rsp]
+    movss   [rsp + 16], xmm0
+    call    glPushMatrix
+    xorps   xmm0, xmm0
+    movss   xmm1, [r14 + P_PIVOT_Y]
+    movss   xmm2, [r14 + P_PIVOT_Z]
+    call    glTranslatef
+    movss   xmm0, [rsp + 16]
+    movss   xmm1, [f_one]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    glRotatef
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    subss   xmm1, [r14 + P_PIVOT_Y]
+    xorps   xmm2, xmm2
+    subss   xmm2, [r14 + P_PIVOT_Z]
+    call    glTranslatef
+    DRAW_PART
+    call    glPopMatrix
+.part_next:
+    add     r14, PART_SIZE
+    dec     r15d
+    jnz     .part
+.extra:
+    mov     r14, [rsp + 32]             ; then the role extra part, if any
+    test    r14, r14
+    jz      .done
+    mov     qword [rsp + 32], 0
+    mov     r15d, 1
+    jmp     .part
+.done:
+    add     rsp, 48
+    pop     r15
+    pop     r14
+    pop     rbp
+    ret
+
 ; mobs_render(): draw every live mob.
-; rbx = mob, r12 = end of the table, r13d = model index, r14 = part, r15d = parts left
-; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] limb angle, [rsp+20] flash flag,
-; [rsp+24] size factor, [rsp+32] the folk's role extra part (0 once drawn)
+; rbx = mob, r12 = end of the table, r13d = model index
+; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+20] flash flag, [rsp+24] size factor
 mobs_render:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    push    r14
-    push    r15
     sub     rsp, 40
     lea     rbx, [mobs]
     lea     r12, [mobs + MAX_MOBS * MOB_size]
@@ -447,53 +512,22 @@ mobs_render:
 .model:
     shl     r13d, 4
     lea     rax, [models]
-    mov     r14, [rax + r13]
-    mov     r15d, [rax + r13 + 8]
-    mov     qword [rsp + 32], 0         ; no role extra part
+    mov     rdi, [rax + r13]            ; the model's parts and how many there are
+    mov     edx, [rax + r13 + 8]
+    xor     esi, esi                    ; no role extra part
     cmp     dword [rbx + MOB.type], MOB_FOLK
-    jne     .part
+    jne     .draw
     mov     rdi, rbx
-    call    folk_model
-    mov     r14, rax
-    mov     [rsp + 32], rdx
-.part:
-    movss   xmm0, [r14 + P_SWING]
-    xorps   xmm1, xmm1
-    ucomiss xmm0, xmm1
-    jne     .swung
-    DRAW_PART
-    jmp     .part_next
-.swung:
-    mulss   xmm0, [rsp]
-    movss   [rsp + 16], xmm0
-    call    glPushMatrix
-    xorps   xmm0, xmm0
-    movss   xmm1, [r14 + P_PIVOT_Y]
-    movss   xmm2, [r14 + P_PIVOT_Z]
-    call    glTranslatef
-    movss   xmm0, [rsp + 16]
-    movss   xmm1, [f_one]
-    xorps   xmm2, xmm2
-    xorps   xmm3, xmm3
-    call    glRotatef
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    subss   xmm1, [r14 + P_PIVOT_Y]
-    xorps   xmm2, xmm2
-    subss   xmm2, [r14 + P_PIVOT_Z]
-    call    glTranslatef
-    DRAW_PART
-    call    glPopMatrix
-.part_next:
-    add     r14, PART_SIZE
-    dec     r15d
-    jnz     .part
-    mov     r14, [rsp + 32]             ; then the role extra part, if any
-    test    r14, r14
-    jz      .parts_done
-    mov     qword [rsp + 32], 0
-    mov     r15d, 1
-    jmp     .part
+    call    folk_model                  ; rax = its 6-part table, rdx = its role extra part or 0
+    mov     rdi, rax
+    mov     rsi, rdx
+    mov     edx, FOLK_PARTS
+.draw:
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    call    mob_parts_draw
 .parts_done:
     cmp     dword [rsp + 20], 0
     je      .unflash
@@ -508,8 +542,6 @@ mobs_render:
     mov     edi, LIGHT_SKY_FULL
     call    light_bind_index
     add     rsp, 40
-    pop     r15
-    pop     r14
     pop     r13
     pop     r12
     pop     rbx

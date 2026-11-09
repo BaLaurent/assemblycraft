@@ -8,19 +8,24 @@
 ; A column whose install does not fit (world_install: the container table or the pool is full) holds back
 ; only itself: it is tried again BACKOFF_FRAMES frames later and every other column carries on.
 ;
-; Radii: R = settings.render_dist (2..16); columns within Chebyshev R + 1 of the centre column are
-; loaded, columns beyond R + 2 are unloaded (saved first when modified or holding containers).
+; Radii: R = stream_rdist() (settings.render_dist clamped to 2..16, capped by net_rdist_cap while hosting);
+; columns within Chebyshev R + 1 of the centre column are loaded, columns beyond R + 2 are unloaded (saved
+; first when modified or holding containers). A hosting peer also loads the columns within MP_SIM_R + 1 of
+; every remote player's column (net_stream_centres) and keeps those within MP_SIM_R + 2. A guest asks the
+; host for each column it needs (net_column_verdict): it generates a pristine one itself and installs the
+; host's blob for an edited one; it never reads or writes region files.
 ; Coordinates passed to stream_update / stream_area_ready are local cells (x, z).
 %include "common.inc"
 default rel
 
 global stream_begin, stream_end, stream_update, stream_area_ready, stream_thread_start
-global stream_thread_stop, stream_stats, stream_spiral, stream_spiral_n
-global gen_bufs, fail_until, stream_frame  ; read by test_stream's buffer-pinning check
+global stream_thread_stop, stream_stats, stream_spiral, stream_spiral_n, stream_rdist, stream_try_column
+global gen_bufs, install_waiting, stream_frame  ; read by test_stream's buffer-pinning check
+global stream_ccx, stream_ccz                   ; read by render.asm
 
 extern settings
 extern world_origin_x, world_origin_z, columns, chunk_pool_used
-extern world_column, world_column_claim, world_install, world_install_err, world_unload
+extern world_column, world_column_claim, world_column_release, world_install, world_install_err, world_unload
 extern world_save_dirty, world_drop_all
 extern region_dir, region_set_dir, region_has_column, region_read_column, region_write_column
 extern region_flush_cache
@@ -29,6 +34,7 @@ extern worldgen_set_seed, gen_column, gen_biome
 extern time_mono_ns, sys_print
 extern pthread_create, pthread_join, pthread_mutex_lock, pthread_mutex_unlock
 extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
+extern net_role, net_rdist_cap, net_stream_centres, net_column_verdict, net_column_take, net_column_forget
 
 %define SPIRAL_R        18              ; offsets -18..18: 37 x 37 = 1369 entries
 %define SPIRAL_MAX      (37 * 37)
@@ -36,12 +42,14 @@ extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
 %define MAX_READS       4               ; region columns decoded per stream_update
 %define MAX_INLINE      4               ; columns generated inline per stream_update
 %define MAX_LIGHT       6               ; columns lit per stream_update
+%define FAIL_MAX        64              ; columns backing off at once (fail_list)
 
 section .rodata
 d_1e9:          dq 1.0e9
 s_no_thread:    db "generator thread unavailable; generating on the main thread", 10, 0
 s_pool_full:    db "chunk pool full", 10, 0
 s_conts_full:   db "container table full", 10, 0
+s_cols_full:    db "column table full", 10, 0
 
 section .bss
 alignb 64
@@ -57,7 +65,17 @@ stream_frame:   resd 1                  ; stream_update calls so far
 msg_done:       resd 1                  ; the "full" message of this session was printed
 stream_spiral_n: resd 1
 stream_spiral:  resd SPIRAL_MAX * 2     ; (dx, dz) pairs, nearest first
-fail_until:     resd MAX_COLUMNS        ; by column slot: the stream_frame from which a failed install may be retried
+fail_n:         resd 1                  ; entries of fail_list in use
+fail_list:      resd FAIL_MAX * 3       ; {acx, acz, until}: a column whose install did not fit, and the stream_frame from which it may be retried
+alignb 8
+su_deadline:    resq 1                  ; stream_update: the time_mono_ns() value its steps 3 and 4 stop at
+su_reads:       resd 1                  ; columns read from a region file or taken from the host so far this call
+su_inline:      resd 1                  ; columns generated inline so far
+su_lit:         resd 1                  ; columns lit so far
+su_nex:         resd 1                  ; remote players' columns this call (a hosting peer)
+su_ex:          resd 2 * (NET_MAX_PEERS - 1)    ; their (acx, acz) pairs
+stream_ccx:     resd 1                  ; the centre column of the last stream_update (absolute chunk coordinates):
+stream_ccz:     resd 1                  ; render.asm measures the columns it never meshes from it
 
 section .text
 
@@ -345,10 +363,7 @@ stream_begin:
     mov     edi, ebx
     call    worldgen_set_seed
     inc     dword [stream_session]
-    lea     rdi, [fail_until]           ; no column is backing off in the new session
-    xor     eax, eax
-    mov     ecx, MAX_COLUMNS
-    rep     stosd
+    mov     dword [fail_n], 0           ; no column is backing off in the new session
     mov     dword [msg_done], 0
     mov     rdi, r12
     call    region_set_dir
@@ -377,9 +392,17 @@ stream_end:
     mov     eax, [rbx + COLUMN.state]
     test    eax, eax
     jz      .next
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .drop
+    mov     edi, [rbx + COLUMN.cx]      ; what the host sent for the column is not wanted any more
+    mov     esi, [rbx + COLUMN.cz]
+    call    net_column_forget
+    mov     eax, [rbx + COLUMN.state]
+.drop:
     cmp     eax, COL_PENDING
     jne     .real
-    mov     dword [rbx + COLUMN.state], COL_FREE
+    mov     rdi, rbx
+    call    world_column_release
     jmp     .next
 .real:
     mov     rdi, rbx
@@ -398,16 +421,21 @@ stream_end:
 ; ---- one frame -----------------------------------------------------------------------------------------------------------
 
 ; install_waiting(edi acx, esi acz) -> eax 1 while an install of that column that did not fit is still
-; backing off, else 0. The frame counter is compared as a signed difference, so it may wrap. Clobbers ecx.
+; backing off, else 0. The frame counter is compared as a signed difference, so it may wrap.
+; Clobbers ecx, rdx.
 install_waiting:
-    mov     eax, esi
-    and     eax, 63
-    shl     eax, 6
-    mov     ecx, edi
-    and     ecx, 63
-    or      eax, ecx                    ; the column's slot
-    lea     rcx, [fail_until]
-    mov     eax, [rcx + rax*4]
+    mov     ecx, [fail_n]
+    lea     rdx, [fail_list]
+.scan:
+    test    ecx, ecx
+    jz      .no
+    dec     ecx
+    lea     eax, [rcx + rcx*2]          ; the entry's first dword
+    cmp     [rdx + rax*4], edi
+    jne     .scan
+    cmp     [rdx + rax*4 + 4], esi
+    jne     .scan
+    mov     eax, [rdx + rax*4 + 8]
     sub     eax, [stream_frame]
     test    eax, eax
     jle     .no
@@ -417,38 +445,76 @@ install_waiting:
     xor     eax, eax
     ret
 
-; install_failed(edi acx, esi acz): world_install did not take that column (the pool or the container
+; install_failed(edi acx, esi acz): the column did not install (the pool, the container table or the column
 ; table is full). It is not tried again for BACKOFF_FRAMES frames - nothing else waits - and the reason is
-; printed once per session. Clobbers rax, rcx, rdx, rsi, rdi.
+; printed once per session. fail_list holds FAIL_MAX columns: the entry of that column is overwritten, else
+; a new one is added, else the entry that expires first is replaced.
+; Clobbers rax, rcx, rdx, rsi, rdi, r8-r11.
 install_failed:
     sub     rsp, 8
-    mov     eax, esi
-    and     eax, 63
-    shl     eax, 6
-    mov     ecx, edi
-    and     ecx, 63
-    or      eax, ecx                    ; the column's slot
-    mov     ecx, [stream_frame]
-    add     ecx, BACKOFF_FRAMES
-    lea     rdx, [fail_until]
-    mov     [rdx + rax*4], ecx
+    mov     r8d, [stream_frame]
+    add     r8d, BACKOFF_FRAMES         ; until
+    lea     rdx, [fail_list]
+    xor     ecx, ecx
+.scan:
+    cmp     ecx, [fail_n]
+    jae     .new
+    lea     eax, [rcx + rcx*2]
+    cmp     [rdx + rax*4], edi
+    jne     .next
+    cmp     [rdx + rax*4 + 4], esi
+    je      .write
+.next:
+    inc     ecx
+    jmp     .scan
+.new:
+    cmp     dword [fail_n], FAIL_MAX
+    jae     .oldest
+    mov     eax, [fail_n]
+    lea     eax, [rax + rax*2]
+    inc     dword [fail_n]
+    jmp     .write
+.oldest:
+    xor     ecx, ecx
+    xor     eax, eax                    ; the entry to replace: entry 0 so far
+    mov     r9d, [rdx + 8]
+    sub     r9d, [stream_frame]         ; its frames to go
+.o_next:
+    inc     ecx
+    cmp     ecx, FAIL_MAX
+    jae     .write
+    lea     r10d, [rcx + rcx*2]
+    mov     r11d, [rdx + r10*4 + 8]
+    sub     r11d, [stream_frame]
+    cmp     r11d, r9d
+    jge     .o_next
+    mov     r9d, r11d
+    mov     eax, r10d
+    jmp     .o_next
+.write:
+    mov     [rdx + rax*4], edi
+    mov     [rdx + rax*4 + 4], esi
+    mov     [rdx + rax*4 + 8], r8d
     cmp     dword [msg_done], 0
     jne     .ret
     mov     dword [msg_done], 1
     mov     edi, 2
     lea     rsi, [s_pool_full]
-    cmp     dword [world_install_err], 2
-    jne     .print
-    lea     rsi, [s_conts_full]
-.print:
+    mov     eax, [world_install_err]
+    lea     rcx, [s_conts_full]
+    cmp     eax, 2
+    cmove   rsi, rcx
+    lea     rcx, [s_cols_full]
+    cmp     eax, 3
+    cmove   rsi, rcx
     call    sys_print
 .ret:
     add     rsp, 8
     ret
 
-; install_from_region(edi acx, esi acz) -> eax 1 installed from its region file, 0 the file has no readable
-; blob for it (generate instead), -1 the install did not fit (the slot is free again).
-install_from_region:
+; install_decoded(edi acx, esi acz) -> eax 1 installed, -1 did not fit (the column is free again): the column
+; decoded into load_buf gets its biome map (it is not stored), a record and its install.
+install_decoded:
     push    rbx
     push    r12
     push    r13
@@ -456,10 +522,6 @@ install_from_region:
     push    r15
     mov     r12d, edi
     mov     r13d, esi
-    lea     rdx, [load_buf]
-    call    region_read_column
-    test    eax, eax
-    jz      .ret
     xor     r14d, r14d                  ; lz: the biome map is not stored
 .bz:
     xor     r15d, r15d                  ; lx
@@ -484,6 +546,8 @@ install_from_region:
     mov     edi, r12d
     mov     esi, r13d
     call    world_column_claim
+    test    rax, rax
+    jz      .no_record
     lea     rdi, [load_buf]
     call    world_install
     test    eax, eax
@@ -493,8 +557,13 @@ install_from_region:
     call    world_column
     test    rax, rax
     jz      .failed
-    mov     dword [rax + COLUMN.state], COL_FREE
+    mov     rdi, rax
+    call    world_column_release
 .failed:
+    mov     eax, -1
+    jmp     .ret
+.no_record:
+    mov     dword [world_install_err], 3
     mov     eax, -1
     jmp     .ret
 .done:
@@ -507,22 +576,65 @@ install_from_region:
     pop     rbx
     ret
 
-; generate_inline(edi acx, esi acz) -> eax 0 installed, -1 did not fit: gen_column on the first buffer
-; on this thread (no worker), then install.
+; install_from_region(edi acx, esi acz) -> eax 1 installed from its region file, 0 the file has no readable
+; blob for it (generate instead), -1 the install did not fit (the column is free again).
+install_from_region:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    mov     r13d, esi
+    lea     rdx, [load_buf]
+    call    region_read_column
+    test    eax, eax
+    jz      .ret
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_decoded
+.ret:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; install_from_net(edi acx, esi acz) -> eax as install_from_region, from the blob the host sent for that
+; column (net_column_take decodes it into load_buf and frees its entry).
+install_from_net:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    mov     r13d, esi
+    lea     rdx, [load_buf]
+    call    net_column_take
+    test    eax, eax
+    jz      .ret
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_decoded
+.ret:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; generate_inline(edi acx, esi acz) -> eax 0 installed, -1 did not fit (the column is free again): a record
+; first - with none free nothing is generated - then gen_column on the first buffer on this thread (no
+; worker), then install.
 generate_inline:
     push    rbx
     push    r12
     push    r13
     mov     r12d, edi
     mov     r13d, esi
+    call    world_column_claim
+    test    rax, rax
+    jz      .no_record
     lea     rbx, [gen_bufs]
-    mov     [rbx + GENBUF.cx], edi
-    mov     [rbx + GENBUF.cz], esi
+    mov     [rbx + GENBUF.cx], r12d
+    mov     [rbx + GENBUF.cz], r13d
     mov     rdi, rbx
     call    gen_column
-    mov     edi, r12d
-    mov     esi, r13d
-    call    world_column_claim
     mov     rdi, rbx
     call    world_install
     test    eax, eax
@@ -532,8 +644,13 @@ generate_inline:
     call    world_column
     test    rax, rax
     jz      .failed
-    mov     dword [rax + COLUMN.state], COL_FREE
+    mov     rdi, rax
+    call    world_column_release
 .failed:
+    mov     eax, -1
+    jmp     .ret
+.no_record:
+    mov     dword [world_install_err], 3
     mov     eax, -1
 .ret:
     pop     r13
@@ -541,37 +658,9 @@ generate_inline:
     pop     rbx
     ret
 
-; stream_update(edi x, esi z, xmm0 budget_s): one frame around the local cell (x, z).
-; 1. unload the columns beyond R + 2, 2. install the generator's finished columns, 3. start the missing
-; columns within R + 1 nearest first (region file, worker or inline), 4. light the columns that hold
-; blocks. Steps 3 and 4 stop when budget_s seconds have passed; 1 and 2 always run. A column whose install
-; did not fit (world_install -1) is passed over for BACKOFF_FRAMES frames - its buffer stays DONE, or its
-; slot goes free again - and every other column carries on.
-stream_update:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 56                     ; [0] deadline, [8] ccx, [12] ccz, [16] L, [20] K, [24] reads,
-                                        ; [28] inline, [32] spiral index, [36] lit
-    mov     r12d, edi
-    mov     r13d, esi
-    cvtss2sd xmm0, xmm0
-    mulsd   xmm0, [d_1e9]
-    cvttsd2si rbx, xmm0                 ; the budget in ns
-    call    sp_ensure
-    call    time_mono_ns
-    add     rax, rbx
-    mov     [rsp], rax
-    add     r12d, [world_origin_x]
-    sar     r12d, 4                     ; the centre column
-    add     r13d, [world_origin_z]
-    sar     r13d, 4
-    mov     [rsp + 8], r12d
-    mov     [rsp + 12], r13d
+; stream_rdist() -> eax the radius R the stream and the renderer work with: settings.render_dist clamped to
+; 2..MAX_RENDER_DIST, at most net_rdist_cap while that is not 0 (a hosting peer). Clobbers ecx.
+stream_rdist:
     mov     eax, [settings + SETTINGS.render_dist]
     cmp     eax, 2
     jge     .r_lo
@@ -581,11 +670,290 @@ stream_update:
     jle     .r_hi
     mov     eax, MAX_RENDER_DIST
 .r_hi:
+    mov     ecx, [net_rdist_cap]
+    test    ecx, ecx
+    jz      .ret
+    cmp     eax, ecx
+    cmovg   eax, ecx
+.ret:
+    ret
+
+; stream_try_column(edi acx, esi acz) -> eax 0 nothing started (loaded or on its way already, backing off,
+; no read budget left, or a guest that waits for the host's answer), 1 the column was installed, requested or
+; failed to install (and backs off), 2 this frame's budget is spent (every generator buffer busy, MAX_INLINE
+; reached, or the deadline passed): stop starting columns. The budgets are the su_* statics stream_update
+; resets: a column comes from its region file (a guest: the host's blob, or - the host said it is
+; pristine - the generator), else from the worker or inline.
+stream_try_column:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    mov     r13d, esi
+    call    world_column
+    test    rax, rax
+    jnz     .skip                       ; loaded or on its way
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_waiting
+    test    eax, eax
+    jnz     .skip                       ; its install did not fit lately: the next column
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .guest
+    mov     edi, r12d
+    mov     esi, r13d
+    call    region_has_column
+    test    eax, eax
+    jz      .generate
+    cmp     dword [su_reads], MAX_READS
+    jae     .skip                       ; this one waits for the next frame
+    inc     dword [su_reads]
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_from_region
+    jmp     .installed
+.guest:
+    mov     edi, r12d
+    mov     esi, r13d
+    call    net_column_verdict          ; 0 asked the host and waits, 1 pristine, 2 its blob arrived
+    test    eax, eax
+    jz      .skip
+    cmp     eax, 1
+    je      .generate
+    cmp     dword [su_reads], MAX_READS
+    jae     .skip
+    inc     dword [su_reads]
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_from_net
+.installed:
+    test    eax, eax
+    jz      .generate                   ; unreadable: regenerate it
+    jns     .check
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_failed              ; this column backs off; the ones after it go on
+    jmp     .check
+.generate:
+    cmp     dword [gen_threaded], 0
+    je      .inline
+    mov     edi, r12d
+    mov     esi, r13d
+    call    world_column_claim          ; the record first: with none free nothing is requested
+    test    rax, rax
+    jz      .no_record
+    mov     rbx, rax
+    mov     edi, r12d
+    mov     esi, r13d
+    call    request_worker
+    test    eax, eax
+    jnz     .check
+    mov     rdi, rbx                    ; every buffer is busy: the column stays missing, stop for this frame
+    call    world_column_release
+    jmp     .spent
+.inline:
+    cmp     dword [su_inline], MAX_INLINE
+    jae     .spent
+    inc     dword [su_inline]
+    mov     edi, r12d
+    mov     esi, r13d
+    call    generate_inline
+    test    eax, eax
+    jns     .check
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_failed
+.check:
+    call    time_mono_ns
+    cmp     rax, [su_deadline]
+    jae     .spent
+    mov     eax, 1
+    jmp     .ret
+.no_record:
+    mov     dword [world_install_err], 3
+    mov     edi, r12d
+    mov     esi, r13d
+    call    install_failed
+    jmp     .check
+.spent:
+    mov     eax, 2
+    jmp     .ret
+.skip:
+    xor     eax, eax
+.ret:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; stream_dispatch(edi ccx, esi ccz, edx L) -> eax 1 when the frame's budget is spent (stop starting
+; columns), else 0: every column within Chebyshev L of the column (ccx, ccz), nearest first, goes through
+; stream_try_column.
+stream_dispatch:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    mov     r15d, edx
+    imul    r15d, r15d
+    add     r15d, r15d                  ; 2 L^2: no cell of the square lies farther out
+    xor     ebx, ebx                    ; spiral index
+.next:
+    cmp     ebx, [stream_spiral_n]
+    jae     .done
+    mov     eax, [stream_spiral + rbx*8]        ; dx
+    mov     ecx, [stream_spiral + rbx*8 + 4]    ; dz
+    inc     ebx
+    mov     edx, eax
+    imul    edx, edx
+    mov     esi, ecx
+    imul    esi, esi
+    add     edx, esi
+    cmp     edx, r15d
+    ja      .done                       ; sorted by distance: nothing nearer follows
+    lea     edx, [rax + r14]
+    lea     esi, [rcx + r14]
+    lea     r8d, [r14 + r14]
+    cmp     edx, r8d
+    ja      .next                       ; beyond the load radius
+    cmp     esi, r8d
+    ja      .next
+    lea     edi, [rax + r12]
+    lea     esi, [rcx + r13]
+    call    stream_try_column
+    cmp     eax, 2
+    jne     .next
+    mov     eax, 1
+    jmp     .ret
+.done:
+    xor     eax, eax
+.ret:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; stream_light(edi ccx, esi ccz, edx L) -> eax 1 when the frame's lighting budget is spent (MAX_LIGHT columns
+; or the deadline), else 0: the columns within Chebyshev L of the column (ccx, ccz) that hold blocks, nearest
+; first, are lit.
+stream_light:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    mov     r15d, edx
+    imul    r15d, r15d
+    add     r15d, r15d                  ; 2 L^2
+    xor     ebx, ebx                    ; spiral index
+.next:
+    cmp     ebx, [stream_spiral_n]
+    jae     .done
+    cmp     dword [su_lit], MAX_LIGHT
+    jae     .stop
+    mov     eax, [stream_spiral + rbx*8]        ; dx
+    mov     ecx, [stream_spiral + rbx*8 + 4]    ; dz
+    inc     ebx
+    mov     edx, eax
+    imul    edx, edx
+    mov     esi, ecx
+    imul    esi, esi
+    add     edx, esi
+    cmp     edx, r15d
+    ja      .done
+    lea     edx, [rax + r14]
+    lea     esi, [rcx + r14]
+    lea     r8d, [r14 + r14]
+    cmp     edx, r8d
+    ja      .next
+    cmp     esi, r8d
+    ja      .next
+    lea     edi, [rax + r12]
+    lea     esi, [rcx + r13]
+    call    world_column
+    test    rax, rax
+    jz      .next
+    cmp     dword [rax + COLUMN.state], COL_BLOCKS
+    jne     .next
+    mov     rdi, rax
+    call    light_column
+    inc     dword [su_lit]
+    call    time_mono_ns
+    cmp     rax, [su_deadline]
+    jb      .next
+.stop:
+    mov     eax, 1
+    jmp     .ret
+.done:
+    xor     eax, eax
+.ret:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; stream_update(edi x, esi z, xmm0 budget_s): one frame around the local cell (x, z).
+; 1. unload the columns beyond R + 2 of the local column and beyond MP_SIM_R + 2 of every remote player's
+; column, 2. install the generator's finished columns, 3. start the missing columns within R + 1 nearest
+; first (region file, the host's blob, worker or inline), then those within MP_SIM_R + 1 of each remote
+; player (a hosting peer: net_stream_centres), 4. light the columns that hold blocks, in the same order.
+; Steps 3 and 4 stop when budget_s seconds have passed; 1 and 2 always run. A column whose install did not
+; fit (world_install -1) is passed over for BACKOFF_FRAMES frames - its buffer stays DONE, or its record goes
+; free again - and every other column carries on.
+stream_update:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [0] L, [4] K
+    mov     r12d, edi
+    mov     r13d, esi
+    cvtss2sd xmm0, xmm0
+    mulsd   xmm0, [d_1e9]
+    cvttsd2si rbx, xmm0                 ; the budget in ns
+    call    sp_ensure
+    call    time_mono_ns
+    add     rax, rbx
+    mov     [su_deadline], rax
+    add     r12d, [world_origin_x]
+    sar     r12d, 4                     ; the centre column
+    add     r13d, [world_origin_z]
+    sar     r13d, 4
+    mov     [stream_ccx], r12d
+    mov     [stream_ccz], r13d
+    call    stream_rdist
     lea     ecx, [rax + 1]
-    mov     [rsp + 16], ecx             ; L = R + 1
+    mov     [rsp], ecx                  ; L = R + 1
     add     eax, 2
-    mov     [rsp + 20], eax             ; K = R + 2
+    mov     [rsp + 4], eax              ; K = R + 2
     inc     dword [stream_frame]
+    xor     eax, eax
+    mov     [su_reads], eax
+    mov     [su_inline], eax
+    mov     [su_lit], eax
+    mov     [su_nex], eax
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .unload
+    lea     rdi, [su_ex]
+    call    net_stream_centres
+    mov     ecx, NET_MAX_PEERS - 1
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [su_nex], eax
 .unload:
     lea     r14, [columns]
     xor     r15d, r15d                  ; slot
@@ -607,8 +975,38 @@ stream_update:
     sub     esi, edx                    ; |dz|
     cmp     ecx, esi
     cmovl   ecx, esi
-    cmp     ecx, [rsp + 20]
+    cmp     ecx, [rsp + 4]
     jle     .u_next                     ; within the keep radius
+    mov     ecx, [su_nex]
+.u_remote:                              ; or within MP_SIM_R + 2 of a remote player's column
+    test    ecx, ecx
+    jz      .u_unload
+    dec     ecx
+    mov     edx, [r14 + COLUMN.cx]
+    sub     edx, [su_ex + rcx*8]
+    mov     esi, edx
+    sar     esi, 31
+    xor     edx, esi
+    sub     edx, esi                    ; |dx|
+    mov     esi, [r14 + COLUMN.cz]
+    sub     esi, [su_ex + rcx*8 + 4]
+    mov     r8d, esi
+    sar     r8d, 31
+    xor     esi, r8d
+    sub     esi, r8d                    ; |dz|
+    cmp     edx, esi
+    cmovl   edx, esi
+    cmp     edx, MP_SIM_R + 2
+    jg      .u_remote
+    jmp     .u_next                     ; kept for that player
+.u_unload:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .u_state
+    mov     edi, [r14 + COLUMN.cx]      ; the host is asked again when the column is wanted back
+    mov     esi, [r14 + COLUMN.cz]
+    call    net_column_forget
+    mov     eax, [r14 + COLUMN.state]
+.u_state:
     cmp     eax, COL_PENDING
     je      .u_pending
     test    dword [r14 + COLUMN.flags], CF_MODIFIED | CF_CONTS
@@ -622,7 +1020,8 @@ stream_update:
     call    world_unload
     jmp     .u_next
 .u_pending:
-    mov     dword [r14 + COLUMN.state], COL_FREE    ; a stale worker result is dropped at install
+    mov     rdi, r14
+    call    world_column_release        ; a stale worker result is dropped at install
 .u_next:
     add     r14, COLUMN_size
     inc     r15d
@@ -657,7 +1056,8 @@ stream_update:
     jz      .c_free
     cmp     dword [rax + COLUMN.state], COL_PENDING
     jne     .c_free
-    mov     dword [rax + COLUMN.state], COL_FREE
+    mov     rdi, rax
+    call    world_column_release
 .c_free:
     mov     rdi, r15
     mov     esi, GB_FREE
@@ -666,123 +1066,43 @@ stream_update:
     inc     r14d
     jmp     .collect
 .dispatch:
-    mov     dword [rsp + 24], 0
-    mov     dword [rsp + 28], 0
-    mov     dword [rsp + 32], 0
-.d_loop:
-    mov     eax, [rsp + 32]
-    cmp     eax, [stream_spiral_n]
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, [rsp]
+    call    stream_dispatch
+    test    eax, eax
+    jnz     .light                      ; the frame's budget is spent
+    xor     ebx, ebx                    ; remote player
+.d_remote:
+    cmp     ebx, [su_nex]
     jae     .light
-    inc     dword [rsp + 32]
-    mov     ecx, [stream_spiral + rax*8 + 4]    ; dz
-    mov     eax, [stream_spiral + rax*8]        ; dx
-    mov     r9d, [rsp + 16]
-    lea     r8d, [rax + r9]
-    lea     r10d, [rcx + r9]
-    add     r9d, r9d
-    cmp     r8d, r9d
-    ja      .d_loop                     ; beyond the load radius
-    cmp     r10d, r9d
-    ja      .d_loop
-    add     eax, [rsp + 8]
-    add     ecx, [rsp + 12]
-    mov     r14d, eax                   ; acx
-    mov     r15d, ecx                   ; acz
-    mov     edx, ecx
-    and     edx, 63
-    shl     edx, 6
-    and     eax, 63
-    or      edx, eax
-    imul    edx, edx, COLUMN_size
-    lea     rax, [columns]
-    cmp     dword [rax + rdx + COLUMN.state], COL_FREE
-    jne     .d_loop                     ; loaded or on its way
-    mov     edi, r14d
-    mov     esi, r15d
-    call    install_waiting
+    mov     edi, [su_ex + rbx*8]
+    mov     esi, [su_ex + rbx*8 + 4]
+    mov     edx, MP_SIM_R + 1
+    call    stream_dispatch
+    inc     ebx
     test    eax, eax
-    jnz     .d_loop                     ; its install did not fit lately: the next column
-    mov     edi, r14d
-    mov     esi, r15d
-    call    region_has_column
-    test    eax, eax
-    jz      .generate
-    cmp     dword [rsp + 24], MAX_READS
-    jae     .d_loop                     ; this one waits for the next frame
-    inc     dword [rsp + 24]
-    mov     edi, r14d
-    mov     esi, r15d
-    call    install_from_region
-    test    eax, eax
-    jz      .generate                   ; unreadable: regenerate it
-    jns     .d_check
-    mov     edi, r14d
-    mov     esi, r15d
-    call    install_failed              ; this column backs off; the ones after it go on
-    jmp     .d_check
-.generate:
-    cmp     dword [gen_threaded], 0
-    je      .inline
-    mov     edi, r14d
-    mov     esi, r15d
-    call    request_worker
-    test    eax, eax
-    jz      .light                      ; every buffer is busy: stop for this frame
-    mov     edi, r14d
-    mov     esi, r15d
-    call    world_column_claim
-    jmp     .d_check
-.inline:
-    cmp     dword [rsp + 28], MAX_INLINE
-    jae     .light
-    inc     dword [rsp + 28]
-    mov     edi, r14d
-    mov     esi, r15d
-    call    generate_inline
-    test    eax, eax
-    jns     .d_check
-    mov     edi, r14d
-    mov     esi, r15d
-    call    install_failed
-.d_check:
-    call    time_mono_ns
-    cmp     rax, [rsp]
-    jb      .d_loop
+    jz      .d_remote
 .light:
-    mov     dword [rsp + 32], 0
-    mov     dword [rsp + 36], 0
-.l_loop:
-    mov     eax, [rsp + 32]
-    cmp     eax, [stream_spiral_n]
+    mov     edi, r12d
+    mov     esi, r13d
+    mov     edx, [rsp]
+    call    stream_light
+    test    eax, eax
+    jnz     .done
+    xor     ebx, ebx
+.l_remote:
+    cmp     ebx, [su_nex]
     jae     .done
-    cmp     dword [rsp + 36], MAX_LIGHT
-    jae     .done
-    inc     dword [rsp + 32]
-    mov     esi, [stream_spiral + rax*8 + 4]    ; dz
-    mov     edi, [stream_spiral + rax*8]        ; dx
-    mov     r9d, [rsp + 16]
-    lea     r8d, [rdi + r9]
-    lea     r10d, [rsi + r9]
-    add     r9d, r9d
-    cmp     r8d, r9d
-    ja      .l_loop
-    cmp     r10d, r9d
-    ja      .l_loop
-    add     edi, [rsp + 8]
-    add     esi, [rsp + 12]
-    call    world_column
-    test    rax, rax
-    jz      .l_loop
-    cmp     dword [rax + COLUMN.state], COL_BLOCKS
-    jne     .l_loop
-    mov     rdi, rax
-    call    light_column
-    inc     dword [rsp + 36]
-    call    time_mono_ns
-    cmp     rax, [rsp]
-    jb      .l_loop
+    mov     edi, [su_ex + rbx*8]
+    mov     esi, [su_ex + rbx*8 + 4]
+    mov     edx, MP_SIM_R + 1
+    call    stream_light
+    inc     ebx
+    test    eax, eax
+    jz      .l_remote
 .done:
-    add     rsp, 56
+    add     rsp, 24
     pop     r15
     pop     r14
     pop     r13

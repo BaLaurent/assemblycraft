@@ -3,6 +3,8 @@
 ; Villagers, Bandits, Ashen Cult, Beastfolk, Stonekin (FAC_*). Standings are clamped to
 ; -1000..1000, the Ashen Cult to at most 199 so it can never become Friendly. A tier change shows
 ; a banner. The header also holds one bit per faction: its champion is defeated.
+; In multiplayer the standings are the world's: the host owns them (STANDING tells the guests), a guest asks the host
+; (FACTION_ADD) and takes the answer over (faction_set_from_net).
 %include "common.inc"
 default rel
 
@@ -10,9 +12,10 @@ global faction_reset, faction_validate, faction_standing, faction_tier, faction_
 global faction_on_kill, faction_enemies, faction_hostile, faction_tribute, faction_tier_color
 global faction_champion_defeated, faction_defeat_champion
 global faction_names, faction_members, faction_short, tier_names, champion_names
-global faction_wanted, faction_rivals, screen_faction
+global faction_wanted, faction_rivals, screen_faction, faction_set_from_net
 
 extern world_header, hud_banner, str_append, inv_count, inv_remove_one, audio_play
+extern net_role, net_faction_add_out, net_standing_out
 
 %define STANDING_ADDR   world_header + WORLDHDR.standing
 %define COL_UP          RGBA(140, 255, 90, 255)
@@ -159,7 +162,8 @@ faction_tier:
 
 ; faction_add(edi f, esi delta) -> eax the new standing. The result is clamped to -1000..1000
 ; (the Ashen Cult to 199). When it lands in another tier the banner "<Faction>: now <Tier>" shows,
-; green for a rise and red for a fall.
+; green for a rise and red for a fall. A guest changes nothing: the host owns the standing and the banner comes with his
+; answer (FACTION_ADD out, STANDING back); the value returned is the one the host will make of it. The host tells the guests.
 faction_add:
     push    rbp
     mov     rbp, rsp
@@ -169,6 +173,11 @@ faction_add:
     push    r14
     mov     ebx, edi
     mov     r13d, esi
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .apply
+    call    net_faction_add_out         ; edi = f, esi = delta are still in place
+    mov     edi, ebx
+.apply:
     call    faction_standing
     mov     edi, eax
     mov     r12d, eax                   ; old standing
@@ -186,32 +195,22 @@ faction_add:
     cmp     eax, ecx
     cmovl   eax, ecx
     mov     r13d, eax                   ; new standing
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .done
     lea     rcx, [STANDING_ADDR]
     mov     [rcx + rbx * 2], ax
-    mov     edi, eax
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .tier
+    cmp     eax, r12d
+    je      .tier
+    call    net_standing_out            ; the guests learn it
+.tier:
+    mov     edi, r13d
     call    standing_tier
-    mov     r12d, eax                   ; new tier
-    cmp     eax, r14d
-    je      .done
-    mov     r14d, COL_UP
-    jg      .text
-    mov     r14d, COL_DOWN
-.text:
-    lea     rdi, [tier_buf]
-    lea     rax, [faction_names]
-    mov     rsi, [rax + rbx * 8]
-    call    str_append
-    mov     rdi, rax
-    lea     rsi, [s_now]
-    call    str_append
-    mov     rdi, rax
-    lea     rcx, [tier_names]
-    mov     rsi, [rcx + r12 * 8]
-    call    str_append
-    mov     byte [rax], 0
-    lea     rdi, [tier_buf]
-    mov     esi, r14d
-    call    hud_banner
+    mov     edx, eax                    ; new tier
+    mov     edi, ebx
+    mov     esi, r14d                   ; old tier
+    call    tier_banner
 .done:
     mov     eax, r13d
     pop     r14
@@ -365,10 +364,100 @@ faction_champion_defeated:
     and     eax, 1
     ret
 
-; faction_defeat_champion(edi f): records faction f's champion as defeated
+; faction_defeat_champion(edi f): records faction f's champion as defeated (the host tells the guests)
 faction_defeat_champion:
     mov     ecx, edi
     mov     eax, 1
     shl     eax, cl
     or      [world_header + WORLDHDR.champions], al
+    cmp     byte [net_role], NET_ROLE_HOST
+    je      net_standing_out
+    ret
+
+; tier_banner(edi f, esi old tier, edx new tier): the banner "<Faction>: now <Tier>" when the tier changed, green for a rise
+; and red for a fall
+tier_banner:
+    cmp     esi, edx
+    jne     .go
+    ret
+.go:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, edx
+    mov     r13d, COL_UP
+    mov     eax, COL_DOWN
+    cmp     edx, esi
+    cmovl   r13d, eax
+    lea     rdi, [tier_buf]
+    lea     rax, [faction_names]
+    mov     rsi, [rax + rbx * 8]
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_now]
+    call    str_append
+    mov     rdi, rax
+    lea     rcx, [tier_names]
+    mov     rsi, [rcx + r12 * 8]
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [tier_buf]
+    mov     esi, r13d
+    call    hud_banner
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; faction_set_from_net(rdi int16[8], esi champions): a guest takes over the standings and the champion bits the host sent
+; (back into range as after a load); every faction whose tier changed shows the "<Faction>: now <Tier>" banner.
+; rbx = the new standings, r12d = faction, r13d = champions; frame: each faction's old tier (bytes)
+faction_set_from_net:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r13d, esi
+    xor     r12d, r12d
+.old:
+    lea     rcx, [STANDING_ADDR]
+    movsx   edi, word [rcx + r12 * 2]
+    call    standing_tier
+    mov     [rsp + r12], al
+    inc     r12d
+    cmp     r12d, NUM_FACTIONS
+    jb      .old
+    lea     rdi, [STANDING_ADDR]
+    mov     rax, [rbx]
+    mov     [rdi], rax
+    mov     rax, [rbx + 8]
+    mov     [rdi + 8], rax
+    mov     [world_header + WORLDHDR.champions], r13b
+    call    faction_validate
+    xor     r12d, r12d
+.new:
+    lea     rcx, [STANDING_ADDR]
+    movsx   edi, word [rcx + r12 * 2]
+    call    standing_tier
+    movzx   edx, al
+    movzx   esi, byte [rsp + r12]
+    mov     edi, r12d
+    call    tier_banner
+    inc     r12d
+    cmp     r12d, NUM_FACTIONS
+    jb      .new
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
     ret

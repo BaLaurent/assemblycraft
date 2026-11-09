@@ -5,7 +5,7 @@
 ; unit 1 turns each vertex's packed light (VERTEX.pad = sky << 4 | block) into a colour through a
 ; 256 x 1 light map rebuilt every frame. Every chunk of the streamed world has two VBO ranges
 ; (opaque and alpha-tested vertices first, translucent vertices after them) in the buffer
-; slot_vbo[slot * 16 + cy], slot = the column's index in the toroidal column table.
+; slot_vbo[slot * 16 + cy], slot = the column's record index in the column table (world_column_slot).
 ; render_box and render_box_px are the textured box primitives shared with mobrender.asm,
 ; itemmodel.asm and hand.asm; the CPU copy of the atlas is exported too.
 %include "common.inc"
@@ -18,10 +18,11 @@ global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, 
 extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
-extern mobs_render, boats_render, drops_render, arrows_render, tnt_render
+extern mobs_render, boats_render, drops_render, arrows_render, tnt_render, peers_render
 extern fire_render, fx_render, fx_shake_yaw, fx_shake_pitch, game_aim
 extern light_lut_build, light_bind_index, block_sel_bounds
-extern columns, world_origin_x, world_origin_z
+extern columns, world_origin_x, world_origin_z, world_column, world_column_slot, stream_rdist, stream_ccx, stream_ccz
+extern net_role
 extern stream_spiral, stream_spiral_n, time_mono_ns
 extern player, player_eye_in_water
 
@@ -341,7 +342,7 @@ mesh_column:
 ; try_column(edi acx, esi acz) -> eax 0 nothing to do, 1 remeshed it, 2 the budget ran out
 ; A column is meshable when it is COL_LIT and its 8 neighbours are COL_LIT too (the mesher reads
 ; one cell of each neighbour for culling, occlusion and light); it is worth meshing when a chunk
-; of it is dirty. Table slots are checked directly: a slot is the column only if its cx/cz match.
+; of it is dirty. The columns are looked up in the column table (world_column).
 try_column:
     push    rbp
     mov     rbp, rsp
@@ -351,24 +352,14 @@ try_column:
     sub     rsp, 8
     mov     r12d, edi
     mov     r13d, esi
-    mov     eax, esi
-    and     eax, COL_GRID - 1
-    shl     eax, 6
-    mov     ecx, edi
-    and     ecx, COL_GRID - 1
-    or      eax, ecx
-    mov     ebx, eax                    ; slot
-    imul    rax, rax, COLUMN_size
-    lea     rcx, [columns]
-    add     rax, rcx
-    cmp     [rax + COLUMN.cx], r12d
-    jne     .no
-    cmp     [rax + COLUMN.cz], r13d
-    jne     .no
+    call    world_column
+    test    rax, rax
+    jz      .no
     cmp     dword [rax + COLUMN.state], COL_LIT
     jne     .no
     cmp     dword [rax + COLUMN.dirty], 0
     je      .no
+    mov     rbx, rax                    ; the column
     mov     r8d, -1                     ; dz
 .nz:
     mov     r9d, -1                     ; dx
@@ -377,19 +368,9 @@ try_column:
     add     edi, r9d
     mov     esi, r13d
     add     esi, r8d
-    mov     eax, esi
-    and     eax, COL_GRID - 1
-    shl     eax, 6
-    mov     ecx, edi
-    and     ecx, COL_GRID - 1
-    or      eax, ecx
-    imul    rax, rax, COLUMN_size
-    lea     rcx, [columns]
-    add     rax, rcx
-    cmp     [rax + COLUMN.cx], edi
-    jne     .no
-    cmp     [rax + COLUMN.cz], esi
-    jne     .no
+    call    world_column                ; (clobbers rax and rcx only)
+    test    rax, rax
+    jz      .no
     cmp     dword [rax + COLUMN.state], COL_LIT
     jne     .no
     inc     r9d
@@ -398,10 +379,10 @@ try_column:
     inc     r8d
     cmp     r8d, 1
     jle     .nz
-    imul    rdi, rbx, COLUMN_size
-    lea     rcx, [columns]
-    add     rdi, rcx
-    mov     esi, ebx
+    mov     rdi, rbx
+    call    world_column_slot
+    mov     esi, eax                    ; its slot
+    mov     rdi, rbx
     call    mesh_column                 ; eax = 1 when the budget ran out
     inc     eax                         ; 1 meshed, 2 out of budget
     jmp     .ret
@@ -417,10 +398,12 @@ try_column:
 
 ; render_update_chunks(xmm0 budget_s): remesh the dirty chunks of meshable columns, nearest first,
 ; until time_mono_ns() passes the budget (at least one chunk is meshed whenever there is work).
-; Walks stream_spiral (nearest first) up to render_dist + 1 columns around the camera column
+; Walks stream_spiral (nearest first) up to stream_rdist() + 1 columns around the camera column
 ; (rc_acx, rc_acz: the camera of the last render_world). When that walk finds nothing it falls
-; back to every column of the table, so a stale centre (a load wait that draws no world frame)
-; cannot leave a dirty meshable column unmeshed.
+; back to every column of the table, so a stale centre (a load wait that draws no world frame) cannot
+; leave a dirty meshable column unmeshed - except on a hosting peer, which keeps columns loaded for remote
+; players: those farther than stream_rdist() + 1 from the column of the stream_update just before
+; (stream_ccx, stream_ccz: fresh in a load wait too, unlike the camera column) are never meshed.
 render_update_chunks:
     push    rbp
     mov     rbp, rsp
@@ -437,8 +420,8 @@ render_update_chunks:
     cvttsd2si rcx, xmm0
     add     rax, rcx
     mov     [ru_deadline], rax
-    mov     r15d, [settings + SETTINGS.render_dist]
-    inc     r15d                        ; walk radius R + 1 (Chebyshev)
+    call    stream_rdist
+    lea     r15d, [rax + 1]             ; walk radius R + 1 (Chebyshev)
     mov     r13d, r15d
     imul    r13d, r13d
     add     r13d, r13d                  ; 2 (R + 1)^2: no square cell lies farther out
@@ -495,6 +478,25 @@ render_update_chunks:
     je      .scan_next
     mov     edi, [rax + COLUMN.cx]
     mov     esi, [rax + COLUMN.cz]
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .scan_try
+    mov     ecx, edi
+    sub     ecx, [stream_ccx]
+    mov     edx, ecx
+    sar     edx, 31
+    xor     ecx, edx
+    sub     ecx, edx                    ; |dx|
+    cmp     ecx, r15d
+    jg      .scan_next                  ; kept for a remote player, not for this screen: never meshed
+    mov     ecx, esi
+    sub     ecx, [stream_ccz]
+    mov     edx, ecx
+    sar     edx, 31
+    xor     ecx, edx
+    sub     ecx, edx                    ; |dz|
+    cmp     ecx, r15d
+    jg      .scan_next
+.scan_try:
     call    try_column
     cmp     eax, 2
     je      .finish
@@ -753,11 +755,11 @@ chunk_arrays_off:
     add     rsp, 8
     ret
 
-; draw_chunks(edi pass): draw the chunk buffers of the columns within render_dist (Chebyshev) of the
+; draw_chunks(edi pass): draw the chunk buffers of the columns within stream_rdist() (Chebyshev) of the
 ; camera column (rc_acx, rc_acz), walking stream_spiral. Pass 0 goes nearest first and draws the
 ; opaque and alpha-tested vertices [0, slot_count); pass 1 goes farthest first and draws the
-; translucent vertices [slot_count, slot_count + slot_tcount). A column counts only while its table
-; slot still holds it (cx, cz, COL_LIT); it is skipped when its centre is farther than lim2 from the
+; translucent vertices [slot_count, slot_count + slot_tcount). A column counts only while it is in the
+; column table as COL_LIT; it is skipped when its centre is farther than lim2 from the
 ; eye, a chunk when it is empty or frustum_test says it is outside. Each chunk is drawn under
 ; glTranslatef(its local origin) and glScalef(1/16). The caller sets the client arrays, the texture
 ; units, fog and blend state.
@@ -774,7 +776,7 @@ draw_chunks:
     push    r15
     sub     rsp, 56
     mov     [rsp], edi
-    mov     eax, [settings + SETTINGS.render_dist]
+    call    stream_rdist
     mov     [rsp + 4], eax
     xor     ebx, ebx
     mov     r14d, 1
@@ -808,22 +810,17 @@ draw_chunks:
     add     edx, [rc_acz]
     mov     [rsp + 8], eax
     mov     [rsp + 12], edx
-    mov     ecx, edx
-    and     ecx, COL_GRID - 1
-    shl     ecx, 6
-    mov     esi, eax
-    and     esi, COL_GRID - 1
-    or      ecx, esi
-    mov     [rsp + 16], ecx             ; slot
-    imul    r12, rcx, COLUMN_size
-    lea     rsi, [columns]
-    add     r12, rsi
-    cmp     [r12 + COLUMN.cx], eax
-    jne     .skip
-    cmp     [r12 + COLUMN.cz], edx
-    jne     .skip
+    mov     edi, eax
+    mov     esi, edx
+    call    world_column
+    test    rax, rax
+    jz      .skip
+    mov     r12, rax
     cmp     dword [r12 + COLUMN.state], COL_LIT
     jne     .skip
+    mov     rdi, r12
+    call    world_column_slot
+    mov     [rsp + 16], eax             ; slot
     mov     eax, [rsp + 8]
     shl     eax, 4
     sub     eax, [world_origin_x]
@@ -1223,8 +1220,9 @@ render_world:
     mov     [rc_acz], eax
 
     ; ---- fog and draw distance from the render distance -----------------------
-    cvtsi2ss xmm0, dword [settings + SETTINGS.render_dist]
-    mulss   xmm0, [f_16]                ; fog end = render_dist * 16
+    call    stream_rdist
+    cvtsi2ss xmm0, eax
+    mulss   xmm0, [f_16]                ; fog end = R * 16
     movss   xmm1, xmm0
     addss   xmm1, [f_8]
     mulss   xmm1, xmm1
@@ -1239,7 +1237,8 @@ render_world:
 .fog_air:
     mov     edi, GL_FOG_END
     call    glFogf
-    cvtsi2ss xmm0, dword [settings + SETTINGS.render_dist]
+    call    stream_rdist
+    cvtsi2ss xmm0, eax
     mulss   xmm0, [f_16]
     mulss   xmm0, [f_fog_near]
 .fog_start:
@@ -1288,6 +1287,7 @@ render_world:
     mov     edi, LIGHT_SKY_FULL         ; the array draw left unit 1's texcoord undefined;
     call    light_bind_index            ; entities bind their own light and put this back
     call    mobs_render
+    call    peers_render
     call    boats_render
     call    drops_render
     call    arrows_render

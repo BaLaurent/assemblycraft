@@ -3,11 +3,14 @@
 ; rockets, grenades and fireballs exploding on impact, drawing. Projectiles are not saved with the world; they
 ; live in local coordinates (arrows_shift follows the origin) and expire on their own, so nothing
 ; removes them when a column unloads.
+; In multiplayer a player's projectile is also sent to the other peers (net_proj_out): they fly a ghost of it (AF_GHOST)
+; that hits nothing, is never picked up and never explodes; the owner's machine decides all of that and says when the
+; real one ended (PROJ_END). arrow_net pairs a projectile with its twin.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift
+global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift, arrow_net
 
 extern player, raycast, ray_aabb, mobs_raycast, explode_at, explode_magic, explode_mob_mult
 extern mobs, folk_hit_by, faction_enemies, rpg_keystones, ab_flash_at
@@ -15,6 +18,8 @@ extern surv, game_mode, inv_add
 extern audio_play, audio_play_at
 extern render_box, atan2_deg, fx_burst
 extern player_take_hit, combat_hit_mob, combat_calc, combat_player_status, combat_kb_mult
+extern combat_hit_player, net_players_raycast, net_hurt_send, net_explosion_players
+extern net_proj_out, net_proj_end_out, net_role, net_applying, net_peers, explode_pvp
 extern glIsEnabled
 
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
@@ -34,7 +39,11 @@ extern glIsEnabled
 %define S_H     96                      ; float unit horizontal heading (x, z)
 %define S_IDX   104                     ; int mob index hit
 %define S_BLK   108                     ; int 1 when raycast found a block
-%define S_FRAME 112
+%define S_WHO   112                     ; int the player hit: 0 the local one (the host, or offline), 1..7 a remote one, -1 nobody
+%define S_SRC   116                     ; float where a shot at a player comes from: x, z
+%define S_RAD   124                     ; float blast radius of a powder grenade
+%define S_APPLY 128                     ; int net_applying while the trail is drawn
+%define S_FRAME 144
 
 section .rodata
 align 4
@@ -104,6 +113,8 @@ section .bss
 alignb 16
 arrows:      resb MAX_ARROWS * ARROWENT_size
 arrows_end:
+arrow_net:   resd MAX_ARROWS            ; per projectile: ((owner peer + 1) << 8) | owner slot (owner peer 255 = the world's), the
+                                        ; tag that pairs it with its twin on the other peers; 0 = not mirrored
 
 section .text
 
@@ -112,6 +123,9 @@ arrows_clear:
     lea     rdi, [arrows]
     mov     ecx, MAX_ARROWS * ARROWENT_size
     xor     eax, eax
+    rep     stosb
+    lea     rdi, [arrow_net]
+    mov     ecx, MAX_ARROWS * 4
     rep     stosb
     ret
 
@@ -122,6 +136,8 @@ arrows_clear:
 ; AF_ELEM_SHIFT.. and AF_ATTACK, AF_CRIT, AF_BLEED; AF_NOWIN: a bow arrow that ignores the mob hurt
 ; window; AF_FLASH: a grenade that flashes instead of burning). damage is the base the damage pipeline
 ; scales when it lands (a bullet's, a bolt's, a grenade's blast). Velocities are blocks per second.
+; In multiplayer a player's projectile (on the host a monster's or a folk's too) is sent to the other peers (net_proj_out)
+; unless it is a ghost (AF_GHOST) or a message is being applied; arrow_net[slot] stays 0 for a projectile that is not.
 arrows_spawn:
     lea     r9, [arrows]
     xor     eax, eax
@@ -149,6 +165,24 @@ arrows_spawn:
     mov     [r9 + ARROWENT.kind], ecx
     mov     [r9 + ARROWENT.flags], r8d
     mov     dword [r9 + ARROWENT.live], 1
+    lea     rcx, [arrow_net]
+    mov     dword [rcx + rax*4], 0      ; not mirrored (net_proj_out tags the ones that are)
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .done
+    cmp     byte [net_applying], 0
+    jne     .done                       ; a ghost, or anything else a message made, is not sent back
+    test    r8d, AF_GHOST
+    jnz     .done
+    test    edi, edi
+    jz      .mirror                     ; the player's projectile: every peer shows it
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .done                       ; a monster's or a folk's exists only on the host
+.mirror:
+    push    rax
+    mov     edi, eax
+    call    net_proj_out
+    pop     rax
+.done:
     ret
 
 ; arrow_advance(rdi arrow, rsi dir[3], xmm0 t, rdx out[3]): out = arrow position + dir * t.
@@ -218,6 +252,11 @@ arrow_hdir:
 ; also meets the folk of a rival faction nearer than the block (folk_hit_by); friends and monsters let
 ; it pass, and the player takes the rest with a death cause of its faction (CAUSE_FOLK + faction).
 ; Stuck arrows time out; the player walks over its own to pick it up again.
+; Multiplayer: a ghost (AF_GHOST, the twin of another peer's projectile) only flies and meets blocks: a plain arrow sticks
+; for a second, anything else ends there; it never hits, explodes, sounds or is picked up. A player's own projectile also
+; meets the other players when PvP is on (net_players_raycast; the nearest of mob, player and block wins; the blow is
+; combat_hit_player's). On the host the shots of monsters and folk meet the remote players too (net_hurt_send). A step ends
+; by telling the others which real projectiles ended (arrows_net_sweep).
 ; rbx = arrow, r12 = end of the table
 arrows_step:
     push    rbp
@@ -290,17 +329,43 @@ arrows_step:
 
     ; ---- a creature nearer than the block ----------------------------------------
 .creature:
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jnz     .settle                     ; a ghost hits nothing: its owner's machine decides
     mov     eax, [rbx + ARROWENT.owner]
     test    eax, eax
     jnz     .mob_shot
+    mov     dword [rsp + S_WHO], -1
     mov     rdi, rbx
     lea     rsi, [rsp + S_DIR]
     movss   xmm0, [rsp + S_TMAX]
     call    mobs_raycast
+    mov     [rsp + S_IDX], eax
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .mob_only
+    movss   xmm1, [rsp + S_TMAX]        ; another player (PvP) counts when nearer than the mob, else than the block
+    test    eax, eax
+    js      .player_ray
+    movaps  xmm1, xmm0
+.player_ray:
+    movss   [rsp + S_T], xmm1
+    movaps  xmm0, xmm1
+    mov     rdi, rbx
+    lea     rsi, [rsp + S_DIR]
+    call    net_players_raycast         ; eax = slot or -1 (always -1 with PvP off), xmm0 = his distance
+    test    eax, eax
+    js      .no_player
+    mov     [rsp + S_WHO], eax
+    movss   [rsp + S_T], xmm0
+    jmp     .target
+.no_player:
+    cmp     dword [rsp + S_IDX], 0
+    jl      .settle                     ; nobody in front of the block
+    jmp     .target                     ; the mob (S_T is its distance)
+.mob_only:
     test    eax, eax
     js      .settle                     ; no mob in front of the block
-    mov     [rsp + S_IDX], eax
     movss   [rsp + S_T], xmm0
+.target:
     HIT_POINT
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_ROCKET
@@ -349,6 +414,14 @@ arrows_step:
     cvtsi2ss xmm0, dword [rbx + ARROWENT.damage]
     movss   xmm1, [rsp + S_H]
     movss   xmm2, [rsp + S_H + 4]
+    mov     eax, [rsp + S_WHO]
+    test    eax, eax
+    js      .hit_mob
+    mov     edi, eax                    ; a player (PvP): the shooter's damage pipeline, the blow goes through the host
+    and     edx, ~HITF_HURTWIN          ; (his hurt window is the invulnerability after a hit)
+    call    combat_hit_player
+    jmp     .impact
+.hit_mob:
     call    combat_hit_mob
     jmp     .impact
 .mob_shot:
@@ -387,8 +460,11 @@ arrows_step:
 .player_arrow:
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .settle                     ; nobody to hit in Creative
+    mov     dword [rsp + S_WHO], -1
+    movss   xmm0, [rsp + S_TMAX]
+    movss   [rsp + S_T], xmm0           ; the nearest hit so far: the block (or the whole step)
     cmp     dword [surv + SURVIVAL.dead], 0
-    jne     .settle
+    jne     .others
     movss   xmm0, [player + BODY.x]     ; the player's box
     movss   xmm1, [c_half_w]
     movaps  xmm2, xmm0
@@ -410,11 +486,26 @@ arrows_step:
     lea     rsi, [rsp + S_DIR]
     lea     rdx, [rsp + S_LO]
     lea     rcx, [rsp + S_HI]
-    movss   xmm0, [rsp + S_TMAX]
+    movss   xmm0, [rsp + S_T]
     call    ray_aabb
     test    eax, eax
-    jz      .settle
+    jz      .others
     movss   [rsp + S_T], xmm0
+    mov     dword [rsp + S_WHO], 0      ; the local player: slot 0 (the host, or offline)
+.others:                                ; the host also meets the other players
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .victim
+    mov     rdi, rbx
+    lea     rsi, [rsp + S_DIR]
+    movss   xmm0, [rsp + S_T]
+    call    arrow_peer_hit              ; eax = slot or -1, xmm0 = his distance
+    test    eax, eax
+    js      .victim
+    mov     [rsp + S_WHO], eax
+    movss   [rsp + S_T], xmm0
+.victim:
+    cmp     dword [rsp + S_WHO], 0
+    jl      .settle                     ; nobody in the way
     HIT_POINT
     movss   xmm2, [c_src_t]             ; the shot's source: 0.1 s back along its path
     movss   xmm0, [rbx + ARROWENT.vx]
@@ -425,6 +516,10 @@ arrows_step:
     mulss   xmm1, xmm2
     movss   xmm4, [rbx + ARROWENT.z]
     subss   xmm4, xmm1
+    movss   [rsp + S_SRC], xmm3         ; where the shot comes from (a remote player's blow needs it too)
+    movss   [rsp + S_SRC + 4], xmm4
+    cmp     dword [rsp + S_WHO], 0
+    jne     .peer_hit
     movaps  xmm0, xmm3
     movaps  xmm1, xmm4
     mov     edi, [rbx + ARROWENT.damage]
@@ -478,11 +573,54 @@ arrows_step:
     call    audio_play_at
     jmp     .remove
 
+    ; ---- a remote player was hit (the host: a monster's or a folk's shot): the blow goes to his machine --------------
+.peer_hit:
+    mov     r8d, 255                    ; no status...
+    xor     r9d, r9d
+    mov     eax, [rbx + ARROWENT.flags] ; ...unless an elemental arrow (an elite skeleton's) afflicts him, as it would
+    shr     eax, AF_ELEM_SHIFT          ; the local player
+    and     eax, HITF_ELEM_MASK
+    mov     edi, STS_BURN
+    cmp     eax, ELEM_FIRE
+    je      .peer_afflict
+    mov     edi, STS_CHILL
+    cmp     eax, ELEM_FROST
+    je      .peer_afflict
+    mov     edi, STS_POISON
+    cmp     eax, ELEM_POISON
+    jne     .peer_send
+.peer_afflict:
+    mov     r8d, edi
+    mov     eax, [rbx + ARROWENT.damage]
+    xor     edx, edx
+    mov     ecx, 3
+    div     ecx
+    mov     r9d, 1
+    cmp     eax, r9d
+    cmovae  r9d, eax                    ; max(1, damage / 3)
+.peer_send:
+    mov     edi, [rsp + S_WHO]          ; slot
+    mov     esi, [rbx + ARROWENT.damage]
+    mov     edx, [rbx + ARROWENT.owner]
+    add     edx, CAUSE_FOLK - OWNER_FOLK ; the death cause as for the local player: a folk's faction, else a skeleton
+    cmp     dword [rbx + ARROWENT.owner], OWNER_FOLK
+    mov     eax, CAUSE_SKELETON
+    cmovb   edx, eax
+    mov     ecx, 255                    ; no mob to stun when he parries
+    movss   xmm0, [rsp + S_SRC]
+    movss   xmm1, [rsp + S_SRC + 4]
+    movss   xmm2, [c_kb]
+    xorps   xmm3, xmm3
+    call    net_hurt_send
+    jmp     .impact
+
     ; ---- no creature: the block holds an arrow, stops a bullet, sets off a rocket; else
     ; the projectile flies on --------------------------------------------------------
 .settle:
     cmp     dword [rsp + S_BLK], 0
     je      .fly
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jnz     .ghost_block
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_BULLET
     je      .bullet_block
@@ -511,6 +649,19 @@ arrows_step:
     movss   xmm2, [rbx + ARROWENT.z]
     movss   xmm3, [c_stick_vol]
     call    audio_play_at
+    jmp     .next
+.ghost_block:                           ; a ghost: a plain arrow sticks (quietly), everything else just ends
+    cmp     dword [rbx + ARROWENT.kind], PROJ_ARROW
+    jne     .remove
+    test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
+    jnz     .remove
+    mov     rdi, rbx
+    lea     rsi, [rsp + S_DIR]
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    mov     rdx, rbx
+    call    arrow_advance               ; stops just short of the surface
+    mov     dword [rbx + ARROWENT.stuck], 1
     jmp     .next
 .bullet_block:                          ; the bullet is spent on the surface
     movss   xmm0, [rsp + S_TMAX]
@@ -544,7 +695,9 @@ arrows_step:
     movss   xmm0, [rsp + S_HP]
     movss   xmm1, [rsp + S_HP + 4]
     movss   xmm2, [rsp + S_HP + 8]
+    mov     byte [explode_pvp], 1       ; a player's rocket: the other players feel the blast when PvP is on
     call    explode_at
+    mov     byte [explode_pvp], 0
     mov     dword [explode_mob_mult], __float32__(1.0)
     jmp     .next
 .grenade_block:                         ; just short of the surface it hit, like a rocket
@@ -568,6 +721,7 @@ arrows_step:
     jz      .grenade_go
     mulss   xmm3, [c_keg]               ; Powder Keg: 50 % wider
 .grenade_go:
+    movss   [rsp + S_RAD], xmm3
     mov     esi, SRC_GUN_SKILL
     mov     edx, ELEM_FIRE
     test    dword [rbx + ARROWENT.flags], AF_CRIT
@@ -578,6 +732,15 @@ arrows_step:
     movss   xmm1, [rsp + S_HP + 4]
     movss   xmm2, [rsp + S_HP + 8]
     call    explode_magic
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .next
+    movss   xmm0, [rsp + S_HP]          ; in multiplayer the grenade's blast also hurts the other players (PvP only)
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    movss   xmm3, [rsp + S_RAD]
+    mov     byte [explode_pvp], 1
+    call    net_explosion_players
+    mov     byte [explode_pvp], 0
     jmp     .next
 .magic_block:                           ; a fireball or explosive arrow: just short of the surface
     movss   xmm0, [rsp + S_TMAX]
@@ -621,6 +784,8 @@ arrows_step:
     call    fx_burst
     jmp     .remove
 .expired:                               ; out of time: an arrow, bullet or bolt vanishes,
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jnz     .remove                     ; a ghost never goes off: the real one did, where it was
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_ROCKET
     je      .go_off
@@ -663,18 +828,30 @@ arrows_step:
     cmp     eax, PROJ_FIREBALL
     jne     .next
 .trail:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .trail_fx
+    movzx   eax, byte [net_applying]
+    mov     [rsp + S_APPLY], eax
+    mov     byte [net_applying], 1      ; every peer draws the trail of the ghost he sees: it is not sent
+.trail_fx:
     movss   xmm0, [rbx + ARROWENT.x]
     movss   xmm1, [rbx + ARROWENT.y]
     movss   xmm2, [rbx + ARROWENT.z]
     movss   xmm3, [c_trail_v]
     mov     esi, 1
     call    fx_burst
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .next
+    mov     eax, [rsp + S_APPLY]
+    mov     [net_applying], al
     jmp     .next
 
     ; ---- stuck in a block -----------------------------------------------------------
 .stuck:
     inc     dword [rbx + ARROWENT.stuck]
     mov     eax, [rbx + ARROWENT.stuck]
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jnz     .stuck_mob                  ; a ghost stays a second and is never picked up
     cmp     dword [rbx + ARROWENT.owner], 0
     jne     .stuck_mob
     cmp     eax, STUCK_OWN_STEPS
@@ -719,7 +896,109 @@ arrows_step:
     add     rbx, ARROWENT_size
     cmp     rbx, r12
     jb      .loop
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .done
+    call    arrows_net_sweep
+.done:
     add     rsp, S_FRAME
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; arrow_peer_hit(rdi arrow, rsi dir float[3], xmm0 max) -> eax the nearest remote player (slot 1..7) the arrow's step meets
+; within max blocks, -1 for none; xmm0 = his distance. Host only: a peer's proxy body (net_peers) is his box, 0.6 x 1.8.
+; rbx = peer record, r12d = slot, r13 = arrow, r14 = dir; frame: lo[3] @0, hi[3] @12, nearest distance @24, its slot @28
+arrow_peer_hit:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 32
+    mov     r13, rdi
+    mov     r14, rsi
+    movss   [rsp + 24], xmm0
+    mov     dword [rsp + 28], -1
+    mov     r12d, 1                     ; slot 0 is the host's own player: the caller's
+.slot:
+    imul    eax, r12d, PEER_size
+    lea     rbx, [net_peers]
+    add     rbx, rax
+    cmp     dword [rbx + PEER.state], PEER_READY
+    jne     .next
+    test    word [rbx + PEER.ps + PSTATE.flags], PS_DEAD
+    jnz     .next
+    movss   xmm1, [c_half_w]
+    movss   xmm0, [rbx + PEER.body + BODY.x]
+    movaps  xmm2, xmm0
+    subss   xmm0, xmm1
+    addss   xmm2, xmm1
+    movss   [rsp], xmm0
+    movss   [rsp + 12], xmm2
+    movss   xmm0, [rbx + PEER.body + BODY.z]
+    movaps  xmm2, xmm0
+    subss   xmm0, xmm1
+    addss   xmm2, xmm1
+    movss   [rsp + 8], xmm0
+    movss   [rsp + 20], xmm2
+    movss   xmm0, [rbx + PEER.body + BODY.y]
+    movss   [rsp + 4], xmm0
+    addss   xmm0, [c_height]
+    movss   [rsp + 16], xmm0
+    mov     rdi, r13
+    mov     rsi, r14
+    lea     rdx, [rsp]
+    lea     rcx, [rsp + 12]
+    movss   xmm0, [rsp + 24]
+    call    ray_aabb
+    test    eax, eax
+    jz      .next
+    movss   [rsp + 24], xmm0
+    mov     [rsp + 28], r12d
+.next:
+    inc     r12d
+    cmp     r12d, NET_MAX_PEERS
+    jb      .slot
+    mov     eax, [rsp + 28]
+    movss   xmm0, [rsp + 24]
+    add     rsp, 32
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; arrows_net_sweep(): at the end of a step, in multiplayer: a projectile that ended (live = 0) while it carried a network tag
+; is announced to the others when it was the real one (net_proj_end_out clears the tag); a ghost just forgets its tag.
+; rbx = the projectile, r12d = its slot
+arrows_net_sweep:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    lea     rbx, [arrows]
+    xor     r12d, r12d
+.l:
+    lea     rax, [arrow_net]
+    cmp     dword [rax + r12*4], 0
+    je      .next
+    cmp     dword [rbx + ARROWENT.live], 0
+    jne     .next
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jz      .real
+    mov     dword [rax + r12*4], 0
+    jmp     .next
+.real:
+    mov     edi, r12d
+    call    net_proj_end_out
+.next:
+    add     rbx, ARROWENT_size
+    inc     r12d
+    cmp     r12d, MAX_ARROWS
+    jb      .l
     pop     r12
     pop     rbx
     pop     rbp

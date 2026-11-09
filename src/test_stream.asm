@@ -2,12 +2,13 @@
 %include "common.inc"
 default rel
 
-global test_stream_sync, test_stream_thread
+global test_stream_sync, test_stream_thread, test_stream_extra_centres
 
 extern settings, world_clear, world_set, world_get, world_column, world_chunk, world_origin_x, world_origin_z
 extern stream_begin, stream_end, stream_update, stream_thread_start, stream_thread_stop
 extern gen_column, time_mono, dir_remove_tree, region_set_dir, region_write_column, region_plan
-extern worldgen_set_seed, conts, cont_create, cont_at, gen_bufs, fail_until, stream_frame
+extern worldgen_set_seed, conts, cont_create, cont_at, gen_bufs, install_waiting, stream_frame
+extern net_role, net_peers, gen_seed, col_index
 
 section .rodata
 dir_stream:     db "/tmp/ac9t-stream", 0
@@ -28,6 +29,9 @@ t_ccx:          resd 1                 ; the chest column
 t_ccz:          resd 1
 pinned:         resd 1                 ; a DONE buffer was seen holding a column that backs off
 pinned_n:       resd 1
+sv_role:        resd 1                 ; test_stream_extra_centres borrows the net role and the peer in slot 1:
+sv_peer:        resd 5                 ; their state, position (ax, az, fx and fz, y)
+sv_seed:        resd 1
 
 section .text
 
@@ -298,27 +302,27 @@ window_ok:
 ; pinned_check(): sets [pinned] when a DONE generator buffer belongs to a column whose install is
 ; backing off - such a buffer would stay held, and 8 of them would stop all generation for the session
 pinned_check:
-    lea     rdx, [gen_bufs]
-    mov     ecx, GEN_SLOTS
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    lea     rbx, [gen_bufs]
+    mov     r12d, GEN_SLOTS
 .l:
-    cmp     dword [rdx + GENBUF.state], GB_DONE
+    cmp     dword [rbx + GENBUF.state], GB_DONE
     jne     .n
-    mov     eax, [rdx + GENBUF.cz]
-    and     eax, 63
-    shl     eax, 6
-    mov     r8d, [rdx + GENBUF.cx]
-    and     r8d, 63
-    or      eax, r8d                    ; the column's slot
-    lea     r8, [fail_until]
-    mov     eax, [r8 + rax*4]
-    sub     eax, [stream_frame]
+    mov     edi, [rbx + GENBUF.cx]
+    mov     esi, [rbx + GENBUF.cz]
+    call    install_waiting
     test    eax, eax
-    jle     .n
+    jz      .n
     mov     dword [pinned], 1
 .n:
-    add     rdx, GENBUF_size
-    dec     ecx
+    add     rbx, GENBUF_size
+    dec     r12d
     jnz     .l
+    add     rsp, 8
+    pop     r12
+    pop     rbx
     ret
 
 ; no worker: stream_update generates inline. Load the columns around (8, 8), compare one with a direct
@@ -717,4 +721,181 @@ pump_chest_column:
     movss   xmm0, [k_004]
     call    stream_update
     add     rsp, 8
+    ret
+
+; ---- columns kept for remote players -----------------------------------------------------------------------
+
+; count_loaded(edi acx, esi acz, edx r) -> eax how many columns within Chebyshev r of (acx, acz) are in the table
+count_loaded:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r15d, edx
+    xor     ebp, ebp                    ; the count
+    mov     r14d, edx
+    neg     r14d                        ; dz
+.z:
+    mov     ebx, r15d
+    neg     ebx                         ; dx
+.x:
+    lea     edi, [r12 + rbx]
+    lea     esi, [r13 + r14]
+    call    world_column
+    test    rax, rax
+    jz      .next
+    inc     ebp
+.next:
+    inc     ebx
+    cmp     ebx, r15d
+    jle     .x
+    inc     r14d
+    cmp     r14d, r15d
+    jle     .z
+    mov     eax, ebp
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
+    pop     rbx
+    ret
+
+; set_peer(edi acx): the peer in slot 1 is READY in the middle of column (acx, 0), 70 blocks up
+set_peer:
+    shl     edi, 4
+    add     edi, 8
+    mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.ax], edi
+    mov     dword [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.az], 8
+    mov     dword [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.fx], 0
+    mov     dword [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.y], 0x428C0000    ; 70.0
+    mov     dword [net_peers + PEER_size + PEER.state], PEER_READY
+    ret
+
+; a hosting peer loads the columns around a remote player: the local player stands in column (0, 0), the
+; peer in slot 1 (READY) in column (200, 0), 3200 blocks away; stream_update (inline) lights the 11 x 11
+; columns around it (MP_SIM_R + 1 = 5), still lights the local 7 x 7 and loads nothing just outside the square.
+; Then the peer walks to column 400: the square at 200 is unloaded (it is beyond MP_SIM_R + 2 of every centre)
+; while the local area stays, and the column at 400 is loaded. -> eax 0 = pass
+test_stream_extra_centres:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    xor     ebx, ebx                    ; 0 = pass
+    movzx   eax, byte [net_role]
+    mov     [sv_role], eax
+    mov     eax, [net_peers + PEER_size + PEER.state]
+    mov     [sv_peer], eax
+    mov     eax, [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.ax]
+    mov     [sv_peer + 4], eax
+    mov     eax, [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.az]
+    mov     [sv_peer + 8], eax
+    mov     eax, [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.fx]
+    mov     [sv_peer + 12], eax
+    mov     eax, [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.y]
+    mov     [sv_peer + 16], eax
+    mov     eax, [gen_seed]
+    mov     [sv_seed], eax
+    mov     r12d, [settings + SETTINGS.render_dist]
+    mov     dword [settings + SETTINGS.render_dist], 2
+    call    world_clear
+    mov     edi, 42
+    xor     esi, esi
+    call    stream_begin                ; no world directory: nothing is saved or read back
+    mov     edi, 8
+    mov     esi, 8
+    call    pump                        ; the local 7 x 7 columns
+    test    eax, eax
+    jnz     .bad
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 200
+    call    set_peer
+    mov     edi, 8
+    mov     esi, 8
+    mov     edx, 80
+    call    pump_n
+    mov     edi, 200                    ; the 11 x 11 around the remote player are lit
+    xor     esi, esi
+    mov     edx, 5
+    call    count_lit
+    cmp     eax, 121
+    jne     .bad
+    xor     edi, edi                    ; the local 7 x 7 still are
+    xor     esi, esi
+    mov     edx, 3
+    call    count_lit
+    cmp     eax, 49
+    jne     .bad
+    mov     edi, 200                    ; and 13 x 13 columns are loaded there, not one more
+    xor     esi, esi
+    mov     edx, 6
+    call    count_loaded
+    cmp     eax, 121
+    jne     .bad
+    mov     edi, 400                    ; the remote player walks to column 400
+    call    set_peer
+    mov     edi, 8
+    mov     esi, 8
+    mov     edx, 3
+    call    pump_n
+    mov     edi, 200                    ; nothing is left around 200
+    xor     esi, esi
+    mov     edx, 6
+    call    count_loaded
+    test    eax, eax
+    jnz     .bad
+    xor     edi, edi                    ; the local area stayed
+    xor     esi, esi
+    mov     edx, 3
+    call    count_lit
+    cmp     eax, 49
+    jne     .bad
+    mov     edi, 400                    ; and the new place started to load
+    xor     esi, esi
+    call    world_column
+    test    rax, rax
+    jz      .bad
+    jmp     .done
+.bad:
+    mov     ebx, 1
+.done:
+    mov     eax, [sv_role]
+    mov     [net_role], al
+    mov     eax, [sv_peer]
+    mov     [net_peers + PEER_size + PEER.state], eax
+    mov     eax, [sv_peer + 4]
+    mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.ax], eax
+    mov     eax, [sv_peer + 8]
+    mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.az], eax
+    mov     eax, [sv_peer + 12]
+    mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.fx], eax
+    mov     eax, [sv_peer + 16]
+    mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.y], eax
+    xor     edi, edi
+    call    stream_end
+    lea     rdi, [col_index]            ; every record went back: nothing is left in the index
+    mov     ecx, COL_INDEX / 4
+    xor     eax, eax
+    repe    scasd
+    je      .clean
+    mov     ebx, 1
+.clean:
+    mov     edi, [sv_seed]
+    call    worldgen_set_seed
+    mov     [settings + SETTINGS.render_dist], r12d
+    mov     eax, ebx
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
     ret

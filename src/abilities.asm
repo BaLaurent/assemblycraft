@@ -24,10 +24,10 @@ global meteor_tgt, rain_tgt                 ; read by test_mobs (entities_rebase
 global ab_flash_at                          ; the flashbang burst at a point (arrows.asm calls it)
 
 extern player, mobs
-extern mobs_raycast, mob_is_hostile, yaw_from, ray_aabb
+extern mobs_raycast, mob_is_hostile, yaw_from, ray_aabb, mob_set_stun, mob_set_mark, mob_launch
 extern raycast, world_is_solid
 extern arrows_spawn, fx_burst, fx_explosion, fx_shake
-extern audio_play, hand_swing
+extern audio_play, hand_swing, net_swing_t
 extern inv_held, item_attack_damage
 extern rng_next, sincos_deg
 extern rpg_rank, rpg_stat, rpg_keystone, rpg_bar_ability, rpg_ability_info
@@ -1047,7 +1047,9 @@ ab_warcry:
     call    mob_is_hostile
     test    eax, eax
     jz      .next
-    mov     dword [rbx + MOB.stun], WARCRY_STUN
+    mov     edi, r12d
+    mov     esi, WARCRY_STUN
+    call    mob_set_stun                ; (a guest asks the host)
 .next:
     add     rbx, MOB_size
     inc     r12d
@@ -1113,9 +1115,10 @@ ab_slam:
     test    eax, eax
     jz      .next                       ; it died of the blow
     movss   xmm0, [k_slam_vy]
-    movss   [r13 + BODY.vy], xmm0
+    mov     edi, r12d
+    call    mob_launch                  ; (a guest asks the host)
     mov     ecx, SLAM_STUN
-    cmp     eax, MOB_BOSS
+    cmp     dword [r13 + MOB.type], MOB_BOSS
     jne     .stun
     mov     ecx, SLAM_STUN_BOSS
 .stun:
@@ -1125,7 +1128,9 @@ ab_slam:
 .set:
     cmp     [r13 + MOB.stun], ecx       ; never shortening a longer stun
     jge     .next
-    mov     [r13 + MOB.stun], ecx
+    mov     edi, r12d
+    mov     esi, ecx
+    call    mob_set_stun
 .next:
     inc     r12d
     cmp     r12d, MAX_MOBS
@@ -1373,7 +1378,9 @@ ab_mark:
     imul    eax, [rdx], MOB_size
     lea     rbx, [mobs]
     add     rbx, rax
-    mov     dword [rbx + MOB.mark_t], MARK_STEPS
+    mov     edi, [rdx]
+    mov     esi, MARK_STEPS
+    call    mob_set_mark                ; (a guest asks the host)
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
     addss   xmm1, [rbx + BODY.height]
@@ -1652,7 +1659,9 @@ ab_flash_at:
 .stun:
     cmp     [rbx + MOB.stun], ecx
     jge     .next                       ; never shortening a longer stun
-    mov     [rbx + MOB.stun], ecx
+    mov     edi, r12d
+    mov     esi, ecx
+    call    mob_set_stun
 .next:
     add     rbx, MOB_size
     inc     r12d
@@ -1736,7 +1745,9 @@ ab_charge_step:
     jnz     .next                       ; juggernauts ignore stuns
     cmp     dword [rbx + MOB.stun], 30
     jge     .next                       ; never shortening a longer stun (a freeze)
-    mov     dword [rbx + MOB.stun], 30
+    mov     edi, r12d
+    mov     esi, 30
+    call    mob_set_stun
 .next:
     add     rbx, MOB_size
     inc     r12d
@@ -1805,6 +1816,7 @@ ab_whirl_pulse:
     mov     edi, SND_WHIRL
     movss   xmm0, [k_vol]
     call    audio_play
+    mov     dword [net_swing_t], 10     ; the other players see the cast swing (PS_SWING)
     call    hand_swing
     leave
     ret

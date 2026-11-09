@@ -5,10 +5,10 @@
 %include "common.inc"
 default rel
 
-global status_apply, status_step, status_speed_mult, status_damage_mult
+global status_apply, status_apply_ex, status_step, status_speed_mult, status_damage_mult
 
 extern mobs, mob_strike, rpg_stats, gear_powers
-extern combat_hit_flags, dmgnum_text, audio_play_at
+extern combat_hit_flags, dmgnum_text, audio_play_at, net_role, net_status_out
 
 %define BURN_STEPS    180               ; burn and bleed last 3 s
 %define POISON_STEPS  240               ; poison and shock 4 s
@@ -54,16 +54,66 @@ section .text
 %%done:
 %endmacro
 
-; status_apply(edi mob, esi kind, xmm0 magnitude): put one status (STS_*) on a mob. magnitude is the
-; scaled damage of the hit that causes it; D = 1 + DOT_DMG / 100 strengthens the damage over time:
+; status_apply(edi mob, esi kind, xmm0 magnitude): put one status (STS_*) on a mob with the local player's
+; stats: status_apply_ex with his DOT_DMG and whether he wears the Viper amulet. On a guest the host owns
+; the mob: a STATUS message (net_status_out) asks it to apply the status, and a third chill shows its
+; "FROZEN" over the mob's head at once.
+status_apply:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .guest
+    mov     edx, [rpg_stats + STAT_DOT_DMG * 4]
+    xor     ecx, ecx
+    test    dword [gear_powers], 1 << LP_VIPER
+    setnz   cl
+    jmp     status_apply_ex
+.guest:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     edx, [rpg_stats + STAT_DOT_DMG * 4]
+    xor     ecx, ecx
+    test    dword [gear_powers], 1 << LP_VIPER
+    setnz   cl
+    call    net_status_out              ; (edi idx, esi kind, xmm0 magnitude, edx dot stat, ecx viper)
+    cmp     r12d, STS_CHILL
+    jne     .guest_done
+    cmp     ebx, MAX_MOBS
+    jae     .guest_done
+    imul    ebx, ebx, MOB_size
+    lea     rax, [mobs]
+    add     rbx, rax
+    cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .guest_done
+    cmp     dword [rbx + MOB.freeze_cd], 0
+    jg      .guest_done                 ; cooling down from a freeze: the stacks stop at 2, no new freeze
+    cmp     dword [rbx + MOB.chill], 2
+    jb      .guest_done                 ; (the third chill freezes)
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.height]
+    addss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    mov     edi, TXT_FROZEN
+    call    dmgnum_text
+.guest_done:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; status_apply_ex(edi mob, esi kind, xmm0 magnitude, edx dot_stat, ecx viper): put one status (STS_*) on a
+; mob. magnitude is the scaled damage of the hit that causes it; D = 1 + dot_stat / 100 (the applier's
+; DOT_DMG) strengthens the damage over time:
 ;   burn, bleed: 3 s, damage per tick = max(old, 0.5 * magnitude * D / 6)
 ;   poison: one more stack (10; 20 with the Viper amulet), 4 s, per stack and tick = max(old, 0.08 * magnitude * D)
 ;   chill: one more stack, 2 s; the third freezes the mob (stun 90, 30 for the boss, 20 for a
 ;     juggernaut; the stacks go, the freeze cools down 120 steps and holds chill at 2 stacks meanwhile)
 ;   shock: one more stack (3), 4 s
 ; Nothing for a bad index, an empty slot or an unknown kind.
-; rbx = MOB*, r12d = kind. Frame: [rsp] magnitude, [rsp+4] D
-status_apply:
+; rbx = MOB*, r12d = kind. Frame: [rsp] magnitude, [rsp+4] D, [rsp+8] viper (the applier wears the amulet)
+status_apply_ex:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -78,10 +128,11 @@ status_apply:
     je      .ret
     mov     r12d, esi
     movss   [rsp], xmm0
-    cvtsi2ss xmm1, dword [rpg_stats + STAT_DOT_DMG * 4]
+    cvtsi2ss xmm1, edx                  ; the applier's DOT_DMG
     divss   xmm1, [k_100]
     addss   xmm1, [k_1]
     movss   [rsp + 4], xmm1
+    mov     [rsp + 8], ecx
     cmp     r12d, STS_BURN
     je      .burn
     cmp     r12d, STS_BLEED
@@ -116,7 +167,7 @@ status_apply:
     inc     eax
     mov     ecx, POISON_CAP
     mov     edx, POISON_CAP_LP
-    test    dword [gear_powers], 1 << LP_VIPER
+    test    dword [rsp + 8], 1
     cmovnz  ecx, edx
     cmp     eax, ecx
     cmova   eax, ecx

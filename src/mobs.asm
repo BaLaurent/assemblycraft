@@ -17,18 +17,20 @@ global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_gro
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 global make_elite, mob_scale, mob_blow, mob_blow_raw, mob_melee_hit, mob_arrow_flags, mob_index
 global knock_player, mob_reel, mob_stunned_text, folk_strike_mob, mob_coins, mob_drop, spawn_near_player
+global mob_spawn_level, mob_tgt_slot, mob_tgt_body, mob_affix_status, mob_set_stun, mob_set_mark
+global mob_launch, mob_replica_init
 
-extern body_init, body_step, body_in_liquid, body_intersects_block, player, player_eye
+extern body_init, body_step, body_in_liquid, body_intersects_block, player
 extern rng_next, sincos_deg, atan2_deg
 extern world_top_y, world_get, world_column_ready, world_header, raycast, light_get, block_flags
 extern world_origin_x, world_origin_z
 extern sky_brightness, sky_is_night
-extern surv, drops_spawn, audio_play_at
+extern drops_spawn, audio_play_at
 extern settings, game_mode, game_time
 extern arrows_spawn, explode_at, fx_explosion
-extern player_take_hit, combat_hit_flags, combat_stealth_t
+extern combat_hit_flags
 extern dmgnum_spawn, dmgnum_text, hud_banner
-extern rpg_on_mob_killed, rpg_add_xp, quests_on_boss_killed
+extern rpg_on_mob_killed, quests_on_boss_killed
 extern structures_on_mob_killed, structures_on_boss_killed
 extern rpg_level, rpg_stats
 extern combat_player_status, combat_attacker, combat_kb_mult, status_speed_mult, explode_dmg_mult
@@ -36,6 +38,9 @@ extern gear_drop_from_mob
 extern folk_ai, folk_hostile, folk_class_health, folk_base_speed, folk_is_fighter
 extern folk_on_player_hit, folk_on_death, folk_drops, folk_scare, folk_travel_tick
 extern status_apply
+extern nm_ready_count, nm_centre, net_role, net_self, net_hit_peer
+extern net_nearest_target, net_nearest_dist2, net_mob_hit_player, net_mob_damage_out, net_kill_credit
+extern net_stream_centres, net_event_out, net_mobfx_out, stream_rdist, structures_boss_reward
 
 %define HOSTILE_CAP   12                ; hostile mobs the spawner keeps alive
 %define PIG_CAP       10                ; pigs the spawner keeps alive
@@ -226,7 +231,6 @@ c_fan_step: dd 10.0                     ; degrees between the 5 arrows of a voll
 c_boss_death_r: dd 3.0
 c_two:      dd 2.0
 s_furious:  db "The Fallen King grows furious!", 0
-s_victory:  db "Victory! The Fallen King is no more.", 0
 s_empty:    db 0
 s_afx_molten:     db "Molten", 0
 s_afx_frozen:     db "Frozen", 0
@@ -244,6 +248,12 @@ section .bss
 alignb 16
 mobs:       resb MAX_MOBS * MOB_size
 mobs_end:
+mob_spawn_level: resd 1                 ; the level a spawn gets (mob_level_for) when it is around a remote player; 0: the local player's
+mob_tgt_slot: resd 1                    ; the peer slot of the player the mob being updated hunts or strikes
+spawn_rr:   resd 1                      ; the passive spawner's round-robin over the players
+alignb 8
+mob_tgt_body: resq 1                    ; ...and that player's BODY (the local player's, a remote player's proxy)
+spawn_ctr:  resq 1                      ; spawn_near_player's centre BODY; 0: the local player's
 
 section .text
 
@@ -290,13 +300,17 @@ mob_count_kind:
     ret
 
 ; mob_level_for(edi origin) -> eax the level of a mob born at that MOB.origin (a world_header.sites
-; index + 1, 0 = no site): the player's, two above it in a dungeon, the player's + 3 but at least
-; 20 for the Fallen King of a crypt. Any other origin (a village, a camp, an index no record backs)
-; gives the player's level.
+; index + 1, 0 = no site): the player's (mob_spawn_level while a spawn is around a remote player,
+; else the local player's), two above it in a dungeon, the player's + 3 but at least 20 for the Fallen
+; King of a crypt. Any other origin (a village, a camp, an index no record backs) gives the player's level.
 mob_level_for:
     push    rbx
     mov     ebx, edi
+    mov     eax, [mob_spawn_level]      ; a spawn around a remote player: that player's level
+    test    eax, eax
+    jnz     .level
     call    rpg_level
+.level:
     mov     ecx, 1
     cmp     eax, ecx
     cmovl   eax, ecx                    ; a blank character reads level 0: count it as 1
@@ -657,8 +671,9 @@ yaw_from:
 ; also burns (mob_lava_burn; a mob that burns to death is gone: eax 0 with MOB.type MOB_NONE); one that
 ; would step into water or lava (WATER or LAVA 0.7 blocks ahead at its feet or just below that) turns
 ; about when it wanders and stops when it is hunting or walking home; one that walks into an obstacle hops.
-; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player, [rsp+12] 1 while its
-; heading is steered on purpose (hunting, walking home), else 0.
+; Frame: [rsp] dx, [rsp+4] dz, [rsp+8] horizontal distance^2 to the player it hunts, [rsp+12] 1 while its
+; heading is steered on purpose (hunting, walking home), else 0. The hunted player is the nearest one that
+; lives (net_nearest_target): mob_tgt_body and mob_tgt_slot name his body and peer slot for the hunters' AI.
 mob_ai:
     push    rbp
     mov     rbp, rsp
@@ -681,23 +696,29 @@ mob_ai:
     jne     .idle
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
     je      .idle
-    cmp     dword [surv + SURVIVAL.dead], 0
-    jne     .idle
+    xor     edi, edi                    ; the Fallen King sees through smoke...
     cmp     ecx, MOB_BOSS
-    je      .seen                       ; the Fallen King sees through smoke
-    cmp     dword [combat_stealth_t], 0
-    jg      .idle                       ; hidden in smoke: nothing hunts him
+    je      .seen
+    mov     edi, 1                      ; ...everyone else loses a player hidden in it
 .seen:
-    movss   xmm0, [player + BODY.x]
+    movss   xmm0, [rbx + BODY.x]        ; the nearest player that lives (and is not hidden)
+    movss   xmm1, [rbx + BODY.z]
+    call    net_nearest_target          ; rax = his body or 0, edx = his peer slot
+    test    rax, rax
+    jz      .idle                       ; nobody to hunt
+    mov     [mob_tgt_body], rax
+    mov     [mob_tgt_slot], edx
+    movss   xmm0, [rax + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0                 ; dx
-    movss   xmm1, [player + BODY.z]
+    movss   xmm1, [rax + BODY.z]
     subss   xmm1, [rbx + BODY.z]
     movss   [rsp + 4], xmm1             ; dz
     mulss   xmm0, xmm0
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     movss   [rsp + 8], xmm0
+    mov     ecx, [rbx + MOB.type]       ; (the call clobbered it)
     movss   xmm1, [c_hunt2]
     cmp     ecx, MOB_ZOMBIE
     jne     .not_zombie
@@ -735,7 +756,8 @@ mob_ai:
 .closing:
     cmp     dword [rbx + MOB.cooldown], 0
     jne     .jump
-    movss   xmm0, [player + BODY.y]     ; body centres are both feet + 0.9, so only the feet differ
+    mov     rax, [mob_tgt_body]
+    movss   xmm0, [rax + BODY.y]        ; body centres are both feet + 0.9, so only the feet differ
     subss   xmm0, [rbx + BODY.y]
     mulss   xmm0, xmm0
     addss   xmm0, [rsp + 8]
@@ -753,7 +775,8 @@ mob_ai:
     mov     dword [rbx + MOB.input + INPUT.fwd], 0
     dec     dword [rbx + MOB.windup]
     jnz     .jump                       ; the arm is still up
-    movss   xmm0, [player + BODY.y]     ; the blow lands only on a player still within reach
+    mov     rax, [mob_tgt_body]
+    movss   xmm0, [rax + BODY.y]        ; the blow lands only on a player still within reach
     subss   xmm0, [rbx + BODY.y]
     mulss   xmm0, xmm0                  ; dy^2
     comiss  xmm0, [c_reach_y2]          ; |dy| < 1.5
@@ -770,6 +793,7 @@ mob_ai:
     mov     edx, CAUSE_ZOMBIE
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.z]
+    movss   xmm2, [c_kb]
     call    mob_melee_hit
     cmp     eax, HIT_PARRIED
     je      .parried
@@ -1256,13 +1280,141 @@ mob_index:
     div     ecx
     ret
 
-; mob_melee_hit(rdi mob, esi base, edx cause, xmm0 src_x, xmm1 src_z) -> eax HIT_*
-; One melee blow of that mob on the player, from (src_x, src_z): mob_blow's damage through
-; player_take_hit, with combat_attacker naming the mob meanwhile (thorns strike back at it). A blow
+; mob_affix_status(rdi mob, rsi parts int[5], edx n) -> eax STS_* of the n-th (from 0) status the elemental
+; affixes of the mob's blow put on its target, edx its magnitude (that affix's part of the blow, parts as
+; mob_blow filled them); eax -1 when there is no n-th. The order: burn (MOLTEN), chill (FROZEN), poison
+; (VENOMOUS). Clobbers ecx.
+mob_affix_status:
+    xor     ecx, ecx                    ; statuses passed so far
+    test    byte [rdi + MOB.affix], AFX_MOLTEN
+    jz      .not_molten
+    cmp     ecx, edx
+    je      .burn
+    inc     ecx
+.not_molten:
+    test    byte [rdi + MOB.affix], AFX_FROZEN
+    jz      .not_frozen
+    cmp     ecx, edx
+    je      .chill
+    inc     ecx
+.not_frozen:
+    test    byte [rdi + MOB.affix], AFX_VENOMOUS
+    jz      .none
+    cmp     ecx, edx
+    je      .poison
+.none:
+    mov     eax, -1
+    ret
+.burn:
+    mov     eax, STS_BURN
+    mov     edx, [rsi + ELEM_FIRE*4]
+    ret
+.chill:
+    mov     eax, STS_CHILL
+    mov     edx, [rsi + ELEM_FROST*4]
+    ret
+.poison:
+    mov     eax, STS_POISON
+    mov     edx, [rsi + ELEM_POISON*4]
+    ret
+
+; mob_set_stun(edi idx, esi steps): the mob in slot idx is stunned for at least that many steps (a longer
+; stun stays); an empty or bad slot changes nothing. On a guest the host owns the mob: a MOBFX message asks
+; for the stun instead.
+mob_set_stun:
+    cmp     edi, MAX_MOBS
+    jae     .ret
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .ask
+    imul    eax, edi, MOB_size
+    lea     rcx, [mobs]
+    add     rcx, rax
+    cmp     dword [rcx + MOB.type], MOB_NONE
+    je      .ret
+    cmp     [rcx + MOB.stun], esi
+    jge     .ret
+    mov     [rcx + MOB.stun], esi
+.ret:
+    ret
+.ask:
+    test    esi, esi
+    jle     .ret
+    mov     edx, esi
+    mov     esi, MFX_STUN
+    jmp     net_mobfx_out               ; (edi idx, esi kind, edx ivalue, xmm0 fvalue)
+
+; mob_set_mark(edi idx, esi steps): the mob in slot idx is Hunter's Marked for that many steps; an empty or
+; bad slot changes nothing. On a guest a MOBFX message asks the host.
+mob_set_mark:
+    cmp     edi, MAX_MOBS
+    jae     .ret
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .ask
+    imul    eax, edi, MOB_size
+    lea     rcx, [mobs]
+    add     rcx, rax
+    cmp     dword [rcx + MOB.type], MOB_NONE
+    je      .ret
+    mov     [rcx + MOB.mark_t], esi
+.ret:
+    ret
+.ask:
+    mov     edx, esi
+    mov     esi, MFX_MARK
+    jmp     net_mobfx_out
+
+; mob_launch(edi idx, xmm0 vy): the mob in slot idx is thrown up at vy blocks/s (BODY.vy = vy); an empty or
+; bad slot changes nothing. On a guest a MOBFX message asks the host.
+mob_launch:
+    cmp     edi, MAX_MOBS
+    jae     .ret
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .ask
+    imul    eax, edi, MOB_size
+    lea     rcx, [mobs]
+    add     rcx, rax
+    cmp     dword [rcx + MOB.type], MOB_NONE
+    je      .ret
+    movss   [rcx + BODY.vy], xmm0
+.ret:
+    ret
+.ask:
+    mov     esi, MFX_LAUNCH
+    xor     edx, edx
+    jmp     net_mobfx_out
+
+; mob_replica_init(rdi mob, esi type 1..8): a guest creates the copy of a host mob in the slot at rdi:
+; everything cleared, the body given the type's box and speed (body_init as mob_spawn does) and the type set
+mob_replica_init:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    lea     ecx, [rsi - 1]
+    movss   xmm0, [t_half_w + rcx*4]
+    movss   xmm1, [t_height + rcx*4]
+    movss   xmm2, [t_speed + rcx*4]
+    call    body_init                   ; zeroes the body, then sets box and speed
+    lea     rdi, [rbx + BODY_size]      ; clear everything after the body
+    mov     ecx, MOB_size - BODY_size
+    xor     eax, eax
+    rep     stosb
+    mov     [rbx + MOB.type], r12d
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; mob_melee_hit(rdi mob, esi base, edx cause, xmm0 src_x, xmm1 src_z, xmm2 kb) -> eax HIT_*
+; One melee blow of that mob on the player it hunts (mob_tgt_slot), from (src_x, src_z): mob_blow's damage
+; through net_mob_hit_player. The local player takes it through player_take_hit, with combat_attacker naming
+; the mob meanwhile (thorns strike back at it); another peer's game decides about its own player: HIT_REMOTE,
+; the statuses and the shove (kb blocks/s, the caller's knockback speed) go with the HURT message. A blow
 ; that lands (HIT_TAKEN) also sets the player burning (MOLTEN), chilled (FROZEN) or poisoned
 ; (VENOMOUS) by that affix's part, and heals a VAMPIRIC mob by half the blow (at least 1, up to
-; its maximum).
-; Frame: [rsp] parts int[5], [rsp+20] src x, [rsp+24] src z
+; its maximum); a blow aimed at another peer heals it at once.
+; Frame: [rsp] parts int[5], [rsp+20] src x, [rsp+24] src z, [rsp+28] kb, [rsp+32] status index
 mob_melee_hit:
     push    rbp
     mov     rbp, rsp
@@ -1274,39 +1426,42 @@ mob_melee_hit:
     mov     r12d, edx
     movss   [rsp + 20], xmm0
     movss   [rsp + 24], xmm1
+    movss   [rsp + 28], xmm2
     mov     rdx, rsp
     call    mob_blow                    ; rdi = the mob, esi = the base damage
     mov     r13d, eax                   ; the whole blow
     mov     rdi, rbx
     call    mob_index
     mov     [combat_attacker], eax
-    mov     edi, r13d
-    mov     esi, r12d
+    mov     rdi, rbx
+    mov     esi, r13d
+    mov     edx, r12d
+    mov     rcx, rsp
     movss   xmm0, [rsp + 20]
     movss   xmm1, [rsp + 24]
-    call    player_take_hit
+    movss   xmm2, [rsp + 28]
+    movss   xmm3, [c_lift_vy]
+    call    net_mob_hit_player
     mov     dword [combat_attacker], -1
     mov     r12d, eax                   ; HIT_*
+    cmp     eax, HIT_REMOTE
+    je      .vampiric
     cmp     eax, HIT_TAKEN
     jne     .ret
-    test    byte [rbx + MOB.affix], AFX_MOLTEN
-    jz      .not_molten
-    mov     edi, STS_BURN
-    mov     esi, [rsp + ELEM_FIRE*4]
+    mov     dword [rsp + 32], 0
+.status:                                ; burn, chill, poison: the affixes' statuses in that order
+    mov     rdi, rbx
+    mov     rsi, rsp
+    mov     edx, [rsp + 32]
+    call    mob_affix_status
+    test    eax, eax
+    js      .vampiric
+    mov     edi, eax
+    mov     esi, edx
     call    combat_player_status
-.not_molten:
-    test    byte [rbx + MOB.affix], AFX_FROZEN
-    jz      .not_frozen
-    mov     edi, STS_CHILL
-    mov     esi, [rsp + ELEM_FROST*4]
-    call    combat_player_status
-.not_frozen:
-    test    byte [rbx + MOB.affix], AFX_VENOMOUS
-    jz      .not_venomous
-    mov     edi, STS_POISON
-    mov     esi, [rsp + ELEM_POISON*4]
-    call    combat_player_status
-.not_venomous:
+    inc     dword [rsp + 32]
+    jmp     .status
+.vampiric:
     test    byte [rbx + MOB.affix], AFX_VAMPIRIC
     jz      .ret
     mov     eax, r13d
@@ -1375,7 +1530,8 @@ ai_creeper:
     push    rbx
     sub     rsp, 8
     mov     rbx, rdi
-    movss   xmm0, [player + BODY.y]
+    mov     rax, [mob_tgt_body]
+    movss   xmm0, [rax + BODY.y]
     addss   xmm0, [c_chest]
     movss   xmm1, [rbx + BODY.y]
     addss   xmm1, [c_mid]
@@ -1467,8 +1623,14 @@ ai_skeleton:
     movss   [rsp + 4], xmm0
     movss   xmm0, [rbx + BODY.z]
     movss   [rsp + 8], xmm0
-    lea     rdi, [rsp + 24]
-    call    player_eye
+    mov     rax, [mob_tgt_body]         ; the hunted player's eye: feet + 1.62 up
+    mov     ecx, [rax + BODY.x]
+    mov     [rsp + 24], ecx
+    movss   xmm0, [rax + BODY.y]
+    addss   xmm0, [c_eye]
+    movss   [rsp + 28], xmm0
+    mov     ecx, [rax + BODY.z]
+    mov     [rsp + 32], ecx
     xor     ecx, ecx
 .aim:                                   ; dir = player eye - own eye
     movss   xmm0, [rsp + 24 + rcx*4]
@@ -1609,7 +1771,8 @@ ai_spider:
     movss   xmm0, [r12 + 8]             ; horizontal distance^2
     comiss  xmm0, [c_bite2]
     jae     .leap
-    movss   xmm1, [player + BODY.y]
+    mov     rax, [mob_tgt_body]
+    movss   xmm1, [rax + BODY.y]
     subss   xmm1, [rbx + BODY.y]
     mulss   xmm1, xmm1
     comiss  xmm1, [c_reach_y2]
@@ -1626,7 +1789,8 @@ ai_spider:
     mov     dword [rbx + MOB.input + INPUT.fwd], 0
     dec     dword [rbx + MOB.windup]
     jnz     .done                       ; still rearing
-    movss   xmm1, [player + BODY.y]     ; the bite lands only on a player still in reach
+    mov     rax, [mob_tgt_body]
+    movss   xmm1, [rax + BODY.y]        ; the bite lands only on a player still in reach
     subss   xmm1, [rbx + BODY.y]
     mulss   xmm1, xmm1
     comiss  xmm1, [c_reach_y2]
@@ -1643,6 +1807,7 @@ ai_spider:
     mov     edx, CAUSE_SPIDER
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.z]
+    movss   xmm2, [c_kb_spider]
     call    mob_melee_hit
     cmp     eax, HIT_PARRIED
     je      .parried
@@ -1734,7 +1899,8 @@ ai_boss:
     mov     [rbx + MOB.input + INPUT.fwd], eax
     cmp     dword [rbx + MOB.cooldown], 0
     jne     .timers
-    movss   xmm1, [player + BODY.y]
+    mov     rax, [mob_tgt_body]
+    movss   xmm1, [rax + BODY.y]
     subss   xmm1, [rbx + BODY.y]
     mulss   xmm1, xmm1
     addss   xmm1, xmm0                  ; distance^2 including the height difference
@@ -1794,7 +1960,8 @@ boss_slam:
     mov     rbx, rdi
     mov     r12, rsi
     mov     r13d, edx
-    movss   xmm0, [player + BODY.y]
+    mov     rax, [mob_tgt_body]
+    movss   xmm0, [rax + BODY.y]
     subss   xmm0, [rbx + BODY.y]
     mulss   xmm0, xmm0
     comiss  xmm0, [c_slam_dy2]
@@ -1816,6 +1983,7 @@ boss_slam:
     mov     edx, CAUSE_BOSS
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.z]
+    movss   xmm2, [c_slam_kb]
     call    mob_melee_hit
     cmp     eax, HIT_PARRIED
     je      .parried
@@ -1901,8 +2069,14 @@ boss_volley:
     movss   [rsp + 4], xmm0
     movss   xmm0, [rbx + BODY.z]
     movss   [rsp + 8], xmm0
-    lea     rdi, [rsp + 24]
-    call    player_eye
+    mov     rax, [mob_tgt_body]         ; the hunted player's eye: feet + 1.62 up
+    mov     ecx, [rax + BODY.x]
+    mov     [rsp + 24], ecx
+    movss   xmm0, [rax + BODY.y]
+    addss   xmm0, [c_eye]
+    movss   [rsp + 28], xmm0
+    mov     ecx, [rax + BODY.z]
+    mov     [rsp + 32], ecx
     xor     ecx, ecx
 .aim:                                   ; dir = player eye - own head
     movss   xmm0, [rsp + 24 + rcx*4]
@@ -2113,6 +2287,13 @@ mob_update:
 .despawn:
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
     je      .remove                     ; peaceful: no zombies at all
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .near_local
+    movss   xmm0, [rbx + BODY.x]        ; online: it stays while any player is within 96 blocks
+    movss   xmm1, [rbx + BODY.z]
+    call    net_nearest_dist2
+    jmp     .far
+.near_local:
     movss   xmm0, [player + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     mulss   xmm0, xmm0
@@ -2120,6 +2301,7 @@ mob_update:
     subss   xmm1, [rbx + BODY.z]
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
+.far:
     comiss  xmm0, [c_far2]
     jbe     .done
 .remove:
@@ -2290,12 +2472,16 @@ spawn_near_player:
     cvtsi2ss xmm2, edx
     movss   xmm0, [rsp]
     mulss   xmm0, xmm2
-    addss   xmm0, [player + BODY.x]     ; x = px + sin * dist
+    mov     rax, [spawn_ctr]            ; the centre: the local player, unless a spawn is around a remote one
+    lea     rcx, [player]
+    test    rax, rax
+    cmovz   rax, rcx
+    addss   xmm0, [rax + BODY.x]        ; x = px + sin * dist
     roundss xmm0, xmm0, 9
     cvttss2si esi, xmm0
     movss   xmm1, [rsp + 4]
     mulss   xmm1, xmm2
-    movss   xmm3, [player + BODY.z]
+    movss   xmm3, [rax + BODY.z]
     subss   xmm3, xmm1                  ; z = pz - cos * dist
     roundss xmm3, xmm3, 9
     cvttss2si edx, xmm3
@@ -2377,12 +2563,17 @@ spawn_passive:
 
 ; mobs_spawn_tick(): the ambient spawner, once per fixed step.
 ; Every 60 steps at night in Survival (difficulty > 0): a zombie, skeleton, creeper or spider
-; while fewer than 12 hostile mobs live, 4 % of them elite (make_elite). Every 1800 steps by day:
-; a pig (at most 10) and a chicken (at most 8).
+; while fewer than 12 hostile mobs live, 4 % of them elite (make_elite). On a host every remote player who
+; lives is a centre of his own: the cap grows by 6 for each of them (at most 48) and each centre gets one
+; attempt, at the level of the player it spawns around (mob_spawn_level). Every 1800 steps by day: a pig (at
+; most 10) and a chicken (at most 8), around one player per tick, in turn.
+; r13d = the cap, r12d = the centre being served (-1: the local player, 0.. the remote ones: nm_centre)
 mobs_spawn_tick:
     push    rbp
     mov     rbp, rsp
     push    rbx
+    push    r12
+    push    r13
     sub     rsp, 8
     mov     eax, [game_time]
     xor     edx, edx
@@ -2398,10 +2589,22 @@ mobs_spawn_tick:
     call    sky_is_night
     test    eax, eax
     jz      .passive
+    mov     r13d, HOSTILE_CAP
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .cap_set
+    call    nm_ready_count              ; the remote players
+    lea     eax, [rax + rax*2]
+    lea     r13d, [r13 + rax*2]         ; 6 more for each
+    mov     eax, 48
+    cmp     r13d, eax
+    cmova   r13d, eax
+.cap_set:
+    mov     r12d, -1
+.attempt:
     mov     edi, 1
     call    mob_count_kind
-    cmp     eax, HOSTILE_CAP
-    jae     .passive
+    cmp     eax, r13d
+    jae     .next_centre
     call    rng_next                    ; which kind: night_kinds[rng % 4]
     and     eax, 3
     movzx   edi, byte [night_kinds + rax]
@@ -2410,18 +2613,32 @@ mobs_spawn_tick:
     mov     ecx, GROUND_HOSTILE
     call    spawn_near_player
     test    eax, eax
-    js      .passive                    ; no spot found: nothing spawned
+    js      .next_centre                ; no spot found: nothing spawned
     mov     ebx, eax
     call    rng_next                    ; 4 % of the night's mobs are elite
     xor     edx, edx
     mov     ecx, 100
     div     ecx
     cmp     edx, NATURAL_ELITE_PCT
-    jae     .passive
+    jae     .next_centre
     imul    edx, ebx, MOB_size
     lea     rax, [mobs]
     add     rdx, rax
     call    make_elite
+.next_centre:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .centres_done
+    inc     r12d
+    mov     edi, r12d
+    call    nm_centre                   ; rax = the BODY of the r12d-th remote player who lives, edx = his level
+    test    rax, rax
+    jz      .centres_done
+    mov     [spawn_ctr], rax
+    mov     [mob_spawn_level], edx
+    jmp     .attempt
+.centres_done:
+    mov     qword [spawn_ctr], 0
+    mov     dword [mob_spawn_level], 0
 .passive:
     mov     eax, [game_time]
     xor     edx, edx
@@ -2433,24 +2650,54 @@ mobs_spawn_tick:
     call    sky_is_night
     test    eax, eax
     jnz     .done
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .animals
+    call    nm_ready_count
+    inc     eax                         ; the centres: the local player and the remote ones
+    mov     ecx, eax
+    mov     eax, [spawn_rr]
+    inc     dword [spawn_rr]
+    xor     edx, edx
+    div     ecx
+    mov     r12d, edx                   ; this tick's centre: 0 the local player, k the (k - 1)th remote one
+    test    r12d, r12d
+    jz      .animals
+    lea     edi, [r12 - 1]
+    call    nm_centre
+    test    rax, rax
+    jz      .animals                    ; (a remote player who is gone or dead: the local one)
+    mov     [spawn_ctr], rax
+    mov     [mob_spawn_level], edx
+.animals:
     mov     edi, MOB_PIG
     mov     esi, PIG_CAP
     call    spawn_passive
     mov     edi, MOB_CHICKEN
     mov     esi, CHICKEN_CAP
     call    spawn_passive
+    mov     qword [spawn_ctr], 0
+    mov     dword [mob_spawn_level], 0
 .done:
     add     rsp, 8
+    pop     r13
+    pop     r12
     pop     rbx
     pop     rbp
     ret
 
 ; mob_forget_far(rdi mob): the mob stands in a column that is not ready. When that column lies more
-; than R + 2 columns from the player's (Chebyshev, absolute chunk coordinates; R = settings.render_dist
-; clamped to 2..MAX_RENDER_DIST, so R + 2 is the radius beyond which the stream unloads) nothing will
-; ever load it: the mob is removed (MOB_NONE).
+; than R + 2 columns from the player's (Chebyshev, absolute chunk coordinates; R = stream_rdist(): the render
+; distance clamped to 2..MAX_RENDER_DIST, and capped while hosting, so R + 2 is the radius beyond which the
+; stream unloads) and, on a host, more than MP_SIM_R + 2 from the column of every remote player
+; (net_stream_centres: the areas the stream keeps around them) nothing will ever load it: the mob is removed
+; (MOB_NONE).
+; rbx = the mob; frame: [rsp] its column's chunk x, [rsp+4] z, [rsp+8] its Chebyshev distance to the
+; player's column, [rsp+16] the remote players' columns (7 x, z pairs)
 mob_forget_far:
-    movss   xmm0, [rdi + BODY.x]
+    push    rbx
+    sub     rsp, 80
+    mov     rbx, rdi
+    movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [player + BODY.x]
     roundss xmm0, xmm0, 9
     roundss xmm1, xmm1, 9
@@ -2460,12 +2707,13 @@ mob_forget_far:
     add     ecx, [world_origin_x]
     sar     eax, 4
     sar     ecx, 4
+    mov     [rsp], eax
     sub     eax, ecx
     mov     ecx, eax
     sar     ecx, 31
     xor     eax, ecx
     sub     eax, ecx                    ; |columns apart on x|
-    movss   xmm0, [rdi + BODY.z]
+    movss   xmm0, [rbx + BODY.z]
     movss   xmm1, [player + BODY.z]
     roundss xmm0, xmm0, 9
     roundss xmm1, xmm1, 9
@@ -2475,6 +2723,7 @@ mob_forget_far:
     add     ecx, [world_origin_z]
     sar     edx, 4
     sar     ecx, 4
+    mov     [rsp + 4], edx
     sub     edx, ecx
     mov     ecx, edx
     sar     ecx, 31
@@ -2482,24 +2731,49 @@ mob_forget_far:
     sub     edx, ecx                    ; |columns apart on z|
     cmp     eax, edx
     cmovb   eax, edx                    ; the larger one (unsigned: a wild coordinate counts as far)
-    mov     ecx, [settings + SETTINGS.render_dist]
-    mov     edx, 2
-    cmp     ecx, edx
-    cmovl   ecx, edx
-    mov     edx, MAX_RENDER_DIST
-    cmp     ecx, edx
-    cmovg   ecx, edx
-    add     ecx, 2                      ; the keep radius K
-    cmp     eax, ecx
+    mov     [rsp + 8], eax
+    call    stream_rdist
+    add     eax, 2                      ; the keep radius K
+    cmp     [rsp + 8], eax
     jbe     .keep
-    mov     dword [rdi + MOB.type], MOB_NONE
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .remove
+    lea     rdi, [rsp + 16]
+    call    net_stream_centres          ; eax = how many remote players
+    xor     ecx, ecx
+.centre:
+    cmp     ecx, eax
+    jae     .remove
+    mov     edx, [rsp + 16 + rcx*8]     ; the column of remote player ecx: how far apart on x and z
+    sub     edx, [rsp]
+    mov     esi, edx
+    sar     esi, 31
+    xor     edx, esi
+    sub     edx, esi
+    mov     esi, [rsp + 20 + rcx*8]
+    sub     esi, [rsp + 4]
+    mov     edi, esi
+    sar     edi, 31
+    xor     esi, edi
+    sub     esi, edi
+    cmp     edx, esi
+    cmovb   edx, esi
+    cmp     edx, MP_SIM_R + 2           ; within the area the stream keeps around him
+    jbe     .keep
+    inc     ecx
+    jmp     .centre
+.remove:
+    mov     dword [rbx + MOB.type], MOB_NONE
 .keep:
+    add     rsp, 80
+    pop     rbx
     ret
 
 ; mobs_step(): one fixed 1/60 s step for every mob, then the spawner. A mob whose column is not
 ; ready (not generated yet, or not lit) stands frozen: no AI, no physics, no timers. A frozen mob
-; more than render_dist + 2 columns from the player's column is removed (mob_forget_far): that column
-; will not load, and the mob would count against the spawn caps for good.
+; more than render_dist + 2 columns from the player's column (on a host, and more than MP_SIM_R + 2 from
+; every remote player's) is removed (mob_forget_far): that column will not load, and the mob would count
+; against the spawn caps for good.
 mobs_step:
     push    rbp
     mov     rbp, rsp
@@ -2846,8 +3120,9 @@ mob_drops:
     jmp     .done
 
 ; boss_death(rdi mob): the Fallen King falls (his loot comes from mob_drops): the crypt he was born
-; in (MOB.origin) is recorded as cleared (structures_on_boss_killed), 500 XP + 25 per level of his,
-; the quest chain moves on, a banner and a blast at his heart
+; in (MOB.origin) is recorded as cleared (structures_on_boss_killed); 500 XP + 25 per level of his and the
+; victory banner are every player's (structures_boss_reward; a host sends them as EV_BOSS_KILLED, which
+; applies to itself too); the quest chain moves on and a blast shakes his heart
 boss_death:
     push    rbp
     mov     rbp, rsp
@@ -2860,13 +3135,16 @@ boss_death:
     call    structures_on_boss_killed
 .xp:
     mov     edi, [rbx + MOB.level]
-    imul    edi, edi, 25
-    add     edi, 500
-    call    rpg_add_xp
+    cmp     byte [net_role], NET_ROLE_HOST
+    je      .event
+    call    structures_boss_reward
+    jmp     .quest
+.event:
+    mov     esi, edi
+    mov     edi, EV_BOSS_KILLED
+    call    net_event_out
+.quest:
     call    quests_on_boss_killed
-    lea     rdi, [s_victory]
-    mov     esi, RGBA(255, 215, 60, 255)
-    call    hud_banner
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.height]
     mulss   xmm1, [c_half]
@@ -2923,6 +3201,8 @@ mob_damage:
     mov     r12d, esi                   ; damage
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .guest                      ; a guest only asks: the host applies the blow
     mov     eax, [rbx + MOB.health]
     mov     [rsp + 8], eax
     sub     [rbx + MOB.health], esi
@@ -2935,6 +3215,12 @@ mob_damage:
     jnz     .tag_done                   ; the tick of a burn another folk set is no blow of the player's
 .tag:
     mov     dword [rbx + MOB.tagged], TAG_STEPS
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .tag_done
+    test    byte [combat_hit_flags], HF_DOT
+    jnz     .tag_done                   ; a tick of damage over time keeps the credit of whoever hit it last
+    mov     eax, [net_hit_peer]         ; the peer whose blow this is (0: the host's own)
+    mov     [rbx + MOB.peer], eax
 .tag_done:
     test    byte [combat_hit_flags], HF_DOT
     jnz     .number                     ; a tick of damage over time is no blow
@@ -2999,6 +3285,18 @@ mob_damage:
     jg      .alive
     cmp     dword [rbx + MOB.tagged], 0
     jle     .origin
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .xp_here
+    movzx   eax, byte [net_self]
+    cmp     [rbx + MOB.peer], eax
+    je      .xp_here
+    mov     edi, [rbx + MOB.peer]       ; another peer had a hand in it: the XP is his (a KILL message)
+    mov     esi, [rbx + MOB.type]
+    mov     edx, [rbx + MOB.elite]
+    mov     ecx, [rbx + MOB.level]
+    call    net_kill_credit
+    jmp     .origin
+.xp_here:
     mov     edi, [rbx + MOB.type]       ; the player had a hand in it: XP
     mov     esi, [rbx + MOB.elite]
     mov     edx, [rbx + MOB.level]
@@ -3049,6 +3347,27 @@ mob_damage:
 .yes:
     mov     eax, 1
     jmp     .ret
+.guest:                                 ; the host owns the mob: it gets the blow (HIT), the guest feels it at once
+    mov     [rsp + 12], r8d             ; strike (1) or hurt (0)
+    test    byte [combat_hit_flags], HF_DOT
+    jnz     .ask                        ; a tick of damage over time makes no sound
+    mov     eax, [rbx + MOB.type]
+    movzx   edi, byte [t_hurt + rax - 1]
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    movss   xmm2, [rbx + BODY.z]
+    movss   xmm3, [c_vol_hurt]
+    call    audio_play_at
+.ask:
+    mov     rdi, rbx
+    call    mob_index
+    mov     edi, eax
+    mov     esi, r12d
+    mov     edx, [rsp + 12]
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    call    net_mob_damage_out          ; the HIT message, the number over the mob; spends combat_hit_flags
+    jmp     .yes
 .no:
     xor     eax, eax
 .ret:

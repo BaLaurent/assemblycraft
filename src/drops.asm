@@ -2,6 +2,8 @@
 ; slide to a stop, spin and bob, and are picked up when the player walks over them.
 ; Drops are not saved with the world and live in local coordinates: drops_shift follows the
 ; origin, drops_remove_box removes the drops of a column that unloads.
+; In multiplayer the host owns the drops: a guest only stages what it makes in the last slot (net_drop_flush sends it), the
+; host gives a remote player what he walks over (net_give_out), and the snapshots show the guests the host's.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -13,6 +15,7 @@ extern player, player_eye, player_forward, world_is_solid, rng_next, sincos_deg
 extern inv_add_dmg, audio_play, surv, item_max_stack, item_model_draw, item_model_is_block
 extern light_bind_at, light_bind_index, gear_rarity, gear_rarity_color
 extern glIsEnabled, glGetFloatv
+extern net_role, net_peers, net_give_out, net_drop_flush
 
 %define DESPAWN_STEPS 18000             ; 5 minutes
 %define SPAWN_DELAY   10                ; steps before a fresh drop can be picked up
@@ -106,6 +109,13 @@ drops_spawn:
     mov     r12d, edi
     mov     r13d, esi
     mov     r14d, edx
+    lea     r8, [drops_end]             ; the slots a drop may take
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .search
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .stage
+    sub     r8, DROP_size               ; the host leaves the last slot to a guest's staging (snapshots never touch it)
+.search:
     lea     rbx, [drops]                ; first free slot, else the oldest
     lea     rcx, [drops]
     mov     edx, -1                     ; oldest age seen
@@ -119,12 +129,20 @@ drops_spawn:
     mov     rbx, rcx
 .next:
     add     rcx, DROP_size
-    lea     rax, [drops_end]
-    cmp     rcx, rax
+    cmp     rcx, r8
     jb      .find
     jmp     .fill
 .free:
     mov     rbx, rcx
+    jmp     .fill
+.stage:                                 ; a guest only stages its drop, in the last slot: the host makes the real one
+    call    net_drop_flush              ; eax 1 once the slot is free (what was staged before has been sent)
+    test    eax, eax
+    jnz     .staged
+    mov     eax, -1                     ; it could not be sent: this drop is not made, the staged one is kept
+    jmp     .ret
+.staged:
+    lea     rbx, [drops + (MAX_DROPS - 1) * DROP_size]
 .fill:
     mov     eax, [rsp]
     mov     [rbx + DROP.x], eax
@@ -336,7 +354,7 @@ drops_step:
     cmp     dword [rbx + DROP.delay], 0
     jne     .next
     cmp     dword [surv + SURVIVAL.dead], 0
-    jne     .next
+    jne     .remote
     movss   xmm0, [rbx + DROP.x]
     subss   xmm0, [player + BODY.x]
     mulss   xmm0, xmm0
@@ -345,19 +363,19 @@ drops_step:
     mulss   xmm1, xmm1
     addss   xmm0, xmm1
     comiss  xmm0, [c_pick_r2]
-    jae     .next
+    jae     .remote
     movss   xmm0, [rbx + DROP.y]
     subss   xmm0, [player + BODY.y]
     comiss  xmm0, [c_pick_lo]
-    jb      .next
+    jb      .remote
     comiss  xmm0, [c_pick_hi]
-    ja      .next
+    ja      .remote
     movzx   edi, byte [rbx + DROP.id]
     movzx   esi, byte [rbx + DROP.count]
     movzx   edx, word [rbx + DROP.dmg]
     call    inv_add_dmg
     cmp     al, [rbx + DROP.count]
-    je      .next                       ; inventory full: it stays on the ground
+    je      .remote                     ; inventory full: it stays on the ground (a remote player may take it)
     mov     [rbx + DROP.count], al
     mov     [rsp + 8], eax
     mov     edi, SND_POP
@@ -367,12 +385,71 @@ drops_step:
     jne     .next
 .remove:
     mov     byte [rbx + DROP.id], 0
+    jmp     .next
+.remote:                                ; the host: a remote player's pickup (net_give_out sends it to him)
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .next
+    mov     rdi, rbx
+    call    drop_remote
+    test    eax, eax
+    jz      .next
+    mov     byte [rbx + DROP.id], 0
 .next:
     add     rbx, DROP_size
     lea     rax, [drops_end]
     cmp     rbx, rax
     jb      .loop
     add     rsp, 24
+    pop     rbx
+    pop     rbp
+    ret
+
+; drop_remote(rdi drop) -> eax 1 when a remote player took it: the first READY, living peer (slot 1..7) inside the same reach
+; box as the local player's gets the stack (net_give_out); what fits his inventory is his (nx_on_give). 0 when nobody did.
+drop_remote:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12d, 1                     ; slot 0 is the host's own player
+.slot:
+    imul    eax, r12d, PEER_size
+    lea     rcx, [net_peers]
+    add     rcx, rax
+    cmp     dword [rcx + PEER.state], PEER_READY
+    jne     .next
+    test    word [rcx + PEER.ps + PSTATE.flags], PS_DEAD
+    jnz     .next
+    movss   xmm0, [rbx + DROP.x]
+    subss   xmm0, [rcx + PEER.body + BODY.x]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rbx + DROP.z]
+    subss   xmm1, [rcx + PEER.body + BODY.z]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [c_pick_r2]
+    jae     .next
+    movss   xmm0, [rbx + DROP.y]
+    subss   xmm0, [rcx + PEER.body + BODY.y]
+    comiss  xmm0, [c_pick_lo]
+    jb      .next
+    comiss  xmm0, [c_pick_hi]
+    ja      .next
+    mov     edi, r12d
+    movzx   esi, byte [rbx + DROP.id]
+    movzx   edx, byte [rbx + DROP.count]
+    movzx   ecx, word [rbx + DROP.dmg]
+    call    net_give_out                ; eax 1 when it was queued
+    test    eax, eax
+    jnz     .ret
+.next:
+    inc     r12d
+    cmp     r12d, NET_MAX_PEERS
+    jb      .slot
+    xor     eax, eax
+.ret:
+    pop     r12
     pop     rbx
     pop     rbp
     ret

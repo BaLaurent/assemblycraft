@@ -6,6 +6,7 @@
 default rel
 
 global fires, fire_clear, fire_place, fire_step, fire_render, fire_shift, fire_remove_box
+global fire_track, fire_untrack
 
 extern world_get, world_set, world_column_ready, rng_next, block_flammable
 extern survival_damage, mobs, mob_hurt, player
@@ -113,6 +114,65 @@ fire_place:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; fire_track(edi x, esi y, edx z) -> eax 1 when the (local) cell has a fire entry afterwards, 0 when
+; the table is full. The entry is added only when none exists for the cell; the block is not
+; touched. For a guest, whose world is edited by the host's BLOCK messages and whose fire_step does
+; not run: the entry only makes fire_render draw the flames.
+fire_track:
+    lea     rax, [fires]
+    mov     ecx, MAX_FIRES
+    xor     r8d, r8d                    ; the first free slot seen
+.scan:
+    cmp     dword [rax + FIREENT.y], -1
+    je      .free
+    cmp     [rax + FIREENT.y], esi
+    jne     .next
+    cmp     [rax + FIREENT.x], edi
+    jne     .next
+    cmp     [rax + FIREENT.z], edx
+    jne     .next
+    mov     eax, 1                      ; already burning here
+    ret
+.free:
+    test    r8, r8
+    jnz     .next
+    mov     r8, rax
+.next:
+    add     rax, FIREENT_size
+    dec     ecx
+    jnz     .scan
+    xor     eax, eax
+    test    r8, r8
+    jz      .ret                        ; every slot is in use
+    mov     [r8 + FIREENT.x], edi
+    mov     [r8 + FIREENT.y], esi
+    mov     [r8 + FIREENT.z], edx
+    mov     dword [r8 + FIREENT.age], 0
+    mov     dword [r8 + FIREENT.tick], 20
+    mov     eax, 1
+.ret:
+    ret
+
+; fire_untrack(edi x, esi y, edx z): the (local) cell's fire entry, if any, is forgotten; the block
+; is not touched
+fire_untrack:
+    lea     rax, [fires]
+    mov     ecx, MAX_FIRES
+.l:
+    cmp     [rax + FIREENT.y], esi
+    jne     .next
+    cmp     [rax + FIREENT.x], edi
+    jne     .next
+    cmp     [rax + FIREENT.z], edx
+    jne     .next
+    mov     dword [rax + FIREENT.y], -1
+    ret
+.next:
+    add     rax, FIREENT_size
+    dec     ecx
+    jnz     .l
     ret
 
 ; body_in_cell(rdi body, esi cx, edx cy, ecx cz, xmm0 half width, xmm1 height) -> eax 1 when

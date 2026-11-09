@@ -9,4 +9,5 @@ build: ; mkdir -p build
 test: build/assemblycraft ; ./build/assemblycraft --selftest
 run: build/assemblycraft ; ./build/assemblycraft
 clean: ; rm -rf build
-.PHONY: all test run clean
+relay: | build ; nasm $(NASMFLAGS) server/acrelay.asm -o build/acrelay.o && ld -static -o build/acrelay build/acrelay.o
+.PHONY: all test run clean relay

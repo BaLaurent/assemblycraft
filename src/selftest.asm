@@ -89,6 +89,14 @@ extern test_debug_f12_detector, test_debug_cheater_mark_roundtrip, test_debug_wo
 extern test_debug_give_items, test_debug_item_filter, test_debug_levels_and_points
 extern test_debug_spawn_and_kill, test_debug_time_and_teleport, test_debug_stat_bonus
 extern test_debug_vitals_and_toggles, test_debug_step_clock, test_debug_to_spawn_and_bed
+extern test_net_reliable_lossy, test_net_big_message, test_net_rid_wrap, test_net_timeout
+extern test_net_handshake_deny
+extern test_world_column_hash, test_stream_extra_centres, test_region_encode_roundtrip
+extern test_net_pos_roundtrip, test_net_player_image_roundtrip
+extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
+extern test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
+extern test_net_kill_credit, test_net_pvp_toggle
+extern test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -307,6 +315,27 @@ tests:
     TEST debug_vitals_and_toggles
     TEST debug_step_clock
     TEST debug_to_spawn_and_bed
+    TEST net_reliable_lossy
+    TEST net_big_message
+    TEST net_rid_wrap
+    TEST net_timeout
+    TEST net_handshake_deny
+    TEST world_column_hash
+    TEST stream_extra_centres
+    TEST region_encode_roundtrip
+    TEST net_pos_roundtrip
+    TEST net_player_image_roundtrip
+    TEST net_edit_queue_replay
+    TEST net_column_verdict
+    TEST net_container_put_seq
+    TEST net_mob_snapshot_apply
+    TEST net_mob_target_nearest
+    TEST net_guest_hit_forward
+    TEST net_kill_credit
+    TEST net_pvp_toggle
+    TEST net_quest_shared
+    TEST net_sleep_all
+    TEST net_ghost_projectile
     dq 0
 
 section .rodata
@@ -517,6 +546,27 @@ section .rodata
     TESTNAME debug_vitals_and_toggles
     TESTNAME debug_step_clock
     TESTNAME debug_to_spawn_and_bed
+    TESTNAME net_reliable_lossy
+    TESTNAME net_big_message
+    TESTNAME net_rid_wrap
+    TESTNAME net_timeout
+    TESTNAME net_handshake_deny
+    TESTNAME world_column_hash
+    TESTNAME stream_extra_centres
+    TESTNAME region_encode_roundtrip
+    TESTNAME net_pos_roundtrip
+    TESTNAME net_player_image_roundtrip
+    TESTNAME net_edit_queue_replay
+    TESTNAME net_column_verdict
+    TESTNAME net_container_put_seq
+    TESTNAME net_mob_snapshot_apply
+    TESTNAME net_mob_target_nearest
+    TESTNAME net_guest_hit_forward
+    TESTNAME net_kill_credit
+    TESTNAME net_pvp_toggle
+    TESTNAME net_quest_shared
+    TESTNAME net_sleep_all
+    TESTNAME net_ghost_projectile
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

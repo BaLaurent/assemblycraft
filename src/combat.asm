@@ -19,6 +19,7 @@ global combat_reset, combat_refill, combat_max_mana, combat_max_stamina, combat_
 global combat_spend, combat_pay, combat_set_guard, combat_dodge, combat_melee, combat_heavy
 global player_take_hit, combat_speed_mult, combat_crit_roll, combat_crit_mult, combat_heal
 global combat_hit_mob, combat_calc, combat_weapon_preview, combat_kb_mult, combat_player_status
+global combat_hit_player, combat_melee_player
 
 extern rpg_stats, rpg_keystones, rpg_rank, gear_powers, surv, surv_max_health, game_mode
 extern player, player_eye, player_forward, sincos_deg, rng_next
@@ -27,6 +28,10 @@ extern mobs, mob_strike, mob_hurt, mob_is_hostile, mob_resist, survival_damage, 
 extern status_apply, status_damage_mult, abilities_cd
 extern audio_play, fx_shake, fx_burst, dmgnum_text
 extern gun_shot_info
+extern mob_set_stun, mob_index, dmgnum_spawn
+extern net_role, net_self, net_pvp, net_out, net_send_to, net_peer_body, net_pos_out
+
+%define PVP_HIT_LEN    28               ; MT_PVP_HIT's payload
 
 %define SPEND_PAUSE    36               ; steps stamina regeneration waits after a spend
 %define PARRY_BASE     6                ; a hit within this many steps (+ PARRY_WINDOW) of raising the guard is parried
@@ -103,6 +108,8 @@ k_len2:      dd 0.0001                  ; 0.01 blocks, squared
 k_back_dot:  dd 0.0                     ; backstab: faces away if dot(forward, to player) < this (a flank counts)
 k_m1:        dd -1.0                    ; falling faster than this makes a strike crit
 k_regen:     dd 0.33333334              ; stamina regained per step: 20 per second
+k_6:         dd 6.0                     ; blocks/s of shove a blow on another player carries per unit of its direction
+k_1_8:       dd 1.8                     ; the height of a player: his damage number floats up from there
 
 section .data
 align 4
@@ -1457,7 +1464,7 @@ strike_crit:
     ret
 
 ; stun_alive(rdi MOB*, esi steps): a mob that still lives and is neither the boss nor a juggernaut
-; is stunned for at least that long
+; is stunned for at least that long (mob_set_stun: on a guest, the host is asked)
 stun_alive:
     mov     eax, [rdi + MOB.type]
     cmp     eax, MOB_NONE
@@ -1468,7 +1475,13 @@ stun_alive:
     jnz     .ret
     cmp     [rdi + MOB.stun], esi
     jge     .ret
-    mov     [rdi + MOB.stun], esi
+    push    rbx
+    mov     ebx, esi
+    call    mob_index                   ; eax = the slot of rdi
+    mov     edi, eax
+    mov     esi, ebx
+    pop     rbx
+    jmp     mob_set_stun
 .ret:
     ret
 
@@ -1507,48 +1520,9 @@ combat_melee:
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .no
     mov     r12d, edi
-    call    strike_held
-    mov     r13d, eax
-    mov     edi, eax
-    call    strike_cd
-    mov     [rsp + 20], eax
-    mov     edi, r13d
-    call    item_attack_damage
-    cvtsi2ss xmm0, eax                  ; the held attack, * 1.3 with a war cry
-    cmp     dword [combat_warcry_t], 0
-    jle     .base_set
-    mulss   xmm0, [k_1_3]
-.base_set:
-    movss   [rsp + 8], xmm0
-    mov     dword [rsp + 12], __float32__(1.0)
-    mov     eax, [combat_combo]         ; combo: this strike is the next of a running combo
-    inc     eax
-    cmp     dword [combat_combo_t], 0
-    jg      .combo_have
-    mov     eax, 1
-.combo_have:
-    cmp     eax, 3
-    jb      .combo_store
-    movss   xmm1, [k_1_5]               ; the third strike hits 1.5 times as hard (a warhammer: twice) ...
-    lea     rcx, [item_tool]
-    cmp     byte [rcx + r13], TOOL_HAMMER
-    jne     .third
-    movss   xmm1, [k_2]
-.third:
-    movss   xmm0, [rsp + 8]
-    mulss   xmm0, xmm1
-    movss   [rsp + 8], xmm0
-    mov     dword [rsp + 12], __float32__(1.8)  ; ... and throws 1.8 times as far
-    xor     eax, eax
-.combo_store:
-    mov     [rsp + 16], eax
-    lea     rcx, [item_tool]
-    cmp     byte [rcx + r13], TOOL_HAMMER
-    jne     .backstab
-    movss   xmm0, [rsp + 12]            ; a warhammer throws 1.5 times as far
-    mulss   xmm0, [k_1_5]
-    movss   [rsp + 12], xmm0
-.backstab:
+    lea     rdi, [rsp + 8]              ; base [rsp+8], knockback factor [rsp+12], combo [rsp+16], cooldown [rsp+20]
+    call    melee_prepare
+    mov     r13d, eax                   ; the held item
     mov     rdi, rbx
     call    strike_backstab
     mov     r15d, eax
@@ -1604,15 +1578,9 @@ combat_melee:
     call    combat_hit_mob
     test    eax, eax
     jz      .no
-    mov     eax, [rsp + 20]             ; the strike landed
-    mov     [combat_attack_cd], eax
-    mov     eax, [rsp + 16]
-    mov     [combat_combo], eax
-    mov     dword [combat_combo_t], COMBO_WINDOW
-    xor     eax, eax
-    mov     [combat_riposte_t], eax     ; the riposte, Shadowstep's crit and stealth are spent
-    mov     [combat_crit_next_t], eax
-    mov     [combat_stealth_t], eax
+    mov     edi, [rsp + 20]             ; the strike landed
+    mov     esi, [rsp + 16]
+    call    melee_landed
     lea     rcx, [item_tool]
     cmp     byte [rcx + r13], TOOL_HAMMER
     jne     .fang
@@ -1770,6 +1738,335 @@ combat_heavy:
 .out:
     add     rsp, 40
     pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; melee_prepare(rdi out) -> eax the held item (0 = bare hands): what a light melee strike starts from,
+; written to out: [0] the base damage (float: the held attack, x1.3 with a war cry, x1.5 on the third strike
+; of a combo, x2 with a warhammer), [4] the knockback factor (float: 1, 1.8 on the third strike, x1.5 with a
+; warhammer), [8] the combo after the strike (0 after the third), [12] the attack cooldown after it. Shared
+; by combat_melee (the foe is a mob) and combat_melee_player (the foe is another player).
+; rbx = out, r12d = the held item
+melee_prepare:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     rbx, rdi
+    call    strike_held
+    mov     r12d, eax
+    mov     edi, eax
+    call    strike_cd
+    mov     [rbx + 12], eax
+    mov     edi, r12d
+    call    item_attack_damage
+    cvtsi2ss xmm0, eax                  ; the held attack, * 1.3 with a war cry
+    cmp     dword [combat_warcry_t], 0
+    jle     .base_set
+    mulss   xmm0, [k_1_3]
+.base_set:
+    movss   [rbx], xmm0
+    mov     dword [rbx + 4], __float32__(1.0)
+    mov     eax, [combat_combo]         ; combo: this strike is the next of a running combo
+    inc     eax
+    cmp     dword [combat_combo_t], 0
+    jg      .combo_have
+    mov     eax, 1
+.combo_have:
+    cmp     eax, 3
+    jb      .combo_store
+    movss   xmm1, [k_1_5]               ; the third strike hits 1.5 times as hard (a warhammer: twice) ...
+    lea     rcx, [item_tool]
+    cmp     byte [rcx + r12], TOOL_HAMMER
+    jne     .third
+    movss   xmm1, [k_2]
+.third:
+    movss   xmm0, [rbx]
+    mulss   xmm0, xmm1
+    movss   [rbx], xmm0
+    mov     dword [rbx + 4], __float32__(1.8)  ; ... and throws 1.8 times as far
+    xor     eax, eax
+.combo_store:
+    mov     [rbx + 8], eax
+    lea     rcx, [item_tool]
+    cmp     byte [rcx + r12], TOOL_HAMMER
+    jne     .done
+    movss   xmm0, [rbx + 4]             ; a warhammer throws 1.5 times as far
+    mulss   xmm0, [k_1_5]
+    movss   [rbx + 4], xmm0
+.done:
+    mov     eax, r12d
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; melee_landed(edi cooldown, esi combo): a melee strike landed: the attack cooldown and the combo it leaves,
+; the combo window open again; the riposte, Shadowstep's crit and stealth are spent
+melee_landed:
+    mov     [combat_attack_cd], edi
+    mov     [combat_combo], esi
+    mov     dword [combat_combo_t], COMBO_WINDOW
+    xor     eax, eax
+    mov     [combat_riposte_t], eax
+    mov     [combat_crit_next_t], eax
+    mov     [combat_stealth_t], eax
+    ret
+
+; combat_hit_player(edi slot, esi src, edx flags, xmm0 base, xmm1 dirx, xmm2 dirz) -> eax the damage dealt
+; (0: PvP is off). Every hit the player lands on another player goes through here (melee and heavy
+; strikes, his arrows, bullets, bolts and knives): the damage is combat_calc's total for no particular mob,
+; rounded, at least 1; an element in the flags (HITF_ELEM_MASK) adds the status it causes (fire: burn, frost:
+; chill, poison: poison) at the magnitude of the damage. The blow goes to the victim's game as a PVP_HIT: a
+; host sends it straight to the victim, a guest to the host, who relays it. Its shove is the length of
+; (dirx, dirz) x 6 blocks/s and its source is where the attacker stands. The attacker sees the number over the
+; victim at once.
+; PVP_HIT: victim u8, attacker u8, sts u8 (255 none), pad u8, amount i32, sts_mag i32, src_ax i32, src_az i32,
+; src_fx u16, src_fz u16, kb f32.
+; rbx = the victim's slot, r12d = flags, r13d = the damage; frame: [rsp] the payload (28), [rsp+32] an NPOS,
+; [rsp+48] dirx, dirz
+combat_hit_player:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 72
+    xor     r13d, r13d                  ; nothing dealt yet
+    cmp     byte [net_pvp], 0
+    je      .out
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .out
+    mov     ebx, edi
+    mov     r12d, edx
+    movss   [rsp + 48], xmm1
+    movss   [rsp + 52], xmm2
+    mov     edi, -1                     ; (esi = src, edx = flags, xmm0 = base) for no particular mob
+    call    combat_calc
+    cvtss2si r13d, xmm0
+    mov     eax, 1
+    cmp     r13d, eax
+    cmovl   r13d, eax                   ; at least 1
+    mov     ecx, 255                    ; the status the element causes: none for physical and shock
+    mov     eax, r12d
+    and     eax, HITF_ELEM_MASK
+    cmp     eax, ELEM_FIRE
+    jne     .not_fire
+    mov     ecx, STS_BURN
+.not_fire:
+    cmp     eax, ELEM_FROST
+    jne     .not_frost
+    mov     ecx, STS_CHILL
+.not_frost:
+    cmp     eax, ELEM_POISON
+    jne     .sts_set
+    mov     ecx, STS_POISON
+.sts_set:
+    mov     [rsp], bl                   ; the victim
+    movzx   eax, byte [net_self]
+    mov     [rsp + 1], al               ; the attacker
+    mov     [rsp + 2], cl               ; the status
+    mov     byte [rsp + 3], 0
+    mov     [rsp + 4], r13d             ; the amount
+    mov     [rsp + 8], r13d             ; the status's magnitude: the damage
+    lea     rdi, [rsp + 32]             ; the source: where the attacker stands, in absolute coordinates
+    movss   xmm0, [player + BODY.x]
+    xorps   xmm1, xmm1
+    movss   xmm2, [player + BODY.z]
+    call    net_pos_out
+    mov     eax, [rsp + 32 + NPOS.ax]
+    mov     [rsp + 12], eax
+    mov     eax, [rsp + 32 + NPOS.az]
+    mov     [rsp + 16], eax
+    movzx   eax, word [rsp + 32 + NPOS.fx]
+    mov     [rsp + 20], ax
+    movzx   eax, word [rsp + 32 + NPOS.fz]
+    mov     [rsp + 22], ax
+    movss   xmm0, [rsp + 48]            ; the shove: |dir| x 6 blocks/s
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsp + 52]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0
+    mulss   xmm0, [k_6]
+    movss   [rsp + 24], xmm0
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .to_host
+    mov     edi, ebx                    ; a host hands it to the victim
+    mov     esi, MT_PVP_HIT
+    mov     rdx, rsp
+    mov     ecx, PVP_HIT_LEN
+    mov     r8d, 1
+    call    net_send_to
+    jmp     .number
+.to_host:                               ; a guest hands it to the host
+    mov     edi, MT_PVP_HIT
+    mov     rsi, rsp
+    mov     edx, PVP_HIT_LEN
+    mov     ecx, 1
+    call    net_out
+.number:                                ; the attacker's number over the victim's head
+    mov     edi, ebx
+    call    net_peer_body
+    test    rax, rax
+    jz      .out
+    xor     esi, esi
+    test    r12d, HITF_CRIT
+    jz      .elem
+    or      esi, HF_CRIT
+.elem:
+    mov     ecx, r12d
+    and     ecx, HITF_ELEM_MASK
+    shl     ecx, HF_ELEM_SHIFT
+    or      esi, ecx
+    mov     edi, r13d
+    movss   xmm0, [rax + BODY.x]
+    movss   xmm1, [rax + BODY.y]
+    addss   xmm1, [k_1_8]
+    movss   xmm2, [rax + BODY.z]
+    call    dmgnum_spawn
+.out:
+    mov     eax, r13d
+    add     rsp, 72
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; combat_melee_player(edi slot, esi heavy, xmm0 dirx, xmm1 dirz) -> eax 1 if the strike landed. The player
+; strikes the player in that slot (net_players_raycast found him in front of the crosshair); (dirx, dirz) is the
+; horizontal unit direction to him. 0 while the attack cooldown runs or PvP is off. The light strike is
+; combat_melee's (cooldown by tool, the held attack, x1.3 with a war cry, x1.5 on the third strike of a combo, x2
+; with a warhammer, the knockback factors), the heavy attack combat_heavy's (a held melee weapon, 20 stamina, the
+; held attack x 2.2, 2.5 x the knockback, a cooldown 3/2 of the light strike's; short of either, a dry click and 0).
+; Neither backstabs, executes, bleeds or stuns. The crit rules are strike_crit's; the blow itself is
+; combat_hit_player's. A landed strike spends what combat_melee's does and makes the same sounds.
+; rbx = the victim's slot, r12d = the held item, r13d = 1 for the heavy attack, r14d = 1 for a crit
+; Frame: [rsp] dirx, dirz; [rsp+8] the base damage; [rsp+12] the knockback factor; [rsp+16] the combo after
+; the strike; [rsp+20] the attack cooldown after it
+combat_melee_player:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 48
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    mov     ebx, edi
+    mov     r13d, esi
+    cmp     dword [combat_attack_cd], 0
+    jg      .no
+    cmp     byte [net_pvp], 0
+    je      .no
+    movzx   eax, byte [net_self]
+    cmp     ebx, eax
+    je      .no                         ; (not himself)
+    mov     edi, ebx
+    call    net_peer_body
+    test    rax, rax
+    jz      .no                         ; (a player who is not there)
+    test    r13d, r13d
+    jnz     .heavy
+    lea     rdi, [rsp + 8]
+    call    melee_prepare
+    mov     r12d, eax
+    jmp     .crit
+.heavy:
+    call    strike_held
+    mov     r12d, eax
+    lea     rcx, [item_gear]
+    cmp     byte [rcx + r12], GK_MELEE
+    jne     .dry                        ; only a melee weapon swings heavy...
+    mov     edi, RES_STAMINA
+    movss   xmm0, [k_20]
+    call    combat_pay
+    test    eax, eax
+    jnz     .paid
+.dry:                                   ; ...and not too tired: a dry click
+    mov     edi, SND_DRY_FIRE
+    movss   xmm0, [k_0_6]
+    call    audio_play
+    jmp     .no
+.paid:
+    mov     edi, r12d
+    call    strike_cd
+    lea     eax, [rax + rax*2]
+    shr     eax, 1
+    mov     [rsp + 20], eax             ; 3/2 of the light strike's cooldown
+    mov     edi, r12d
+    call    item_attack_damage
+    cvtsi2ss xmm0, eax
+    mulss   xmm0, [k_2_2]
+    movss   [rsp + 8], xmm0
+    mov     dword [rsp + 12], __float32__(2.5)
+.crit:
+    call    strike_crit
+    mov     r14d, eax
+    xor     edx, edx
+    test    eax, eax
+    jz      .hit
+    or      edx, HITF_CRIT
+.hit:
+    mov     edi, ebx
+    mov     esi, SRC_MELEE
+    movss   xmm0, [rsp + 8]
+    movss   xmm1, [rsp]
+    mulss   xmm1, [rsp + 12]
+    movss   xmm2, [rsp + 4]
+    mulss   xmm2, [rsp + 12]
+    call    combat_hit_player
+    test    eax, eax
+    jz      .no
+    test    r13d, r13d
+    jnz     .heavy_landed
+    mov     edi, [rsp + 20]             ; the light strike landed
+    mov     esi, [rsp + 16]
+    call    melee_landed
+    movss   xmm0, [k_0_05]              ; hit-stop
+    test    r14d, r14d
+    jz      .stop
+    movss   xmm0, [k_0_09]
+.stop:
+    movss   [combat_hitstop], xmm0
+    mov     edi, SND_SWING
+    movss   xmm0, [k_0_6]
+    call    audio_play
+    test    r14d, r14d
+    jz      .yes
+    mov     edi, SND_CRIT
+    movss   xmm0, [k_1]
+    call    audio_play
+    movss   xmm0, [fx_shake]
+    maxss   xmm0, [k_0_35]
+    movss   [fx_shake], xmm0
+    jmp     .yes
+.heavy_landed:
+    mov     eax, [rsp + 20]
+    mov     [combat_attack_cd], eax
+    xor     eax, eax
+    mov     [combat_riposte_t], eax
+    mov     [combat_crit_next_t], eax
+    mov     [combat_stealth_t], eax
+    mov     dword [combat_hitstop], __float32__(0.12)
+    movss   xmm0, [fx_shake]
+    maxss   xmm0, [k_0_5]
+    movss   [fx_shake], xmm0
+    mov     edi, SND_HEAVY
+    movss   xmm0, [k_1]
+    call    audio_play
+.yes:
+    mov     eax, 1
+    jmp     .out
+.no:
+    xor     eax, eax
+.out:
+    add     rsp, 48
     pop     r14
     pop     r13
     pop     r12

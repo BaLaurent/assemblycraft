@@ -3,6 +3,7 @@
 ; the next morning, when he gets up beside the bed); the respawn helpers that stand the player next to
 ; his bed again. All cell coordinates are local unless marked absolute; WORLDHDR.bed_x/y/z is the
 ; absolute foot cell of the bed.
+; In multiplayer the night is everybody's: see sleep_step.
 %include "common.inc"
 default rel
 
@@ -16,6 +17,7 @@ extern mobs, mob_is_hostile
 extern player, hud_banner
 extern dir_dx, dir_dz
 extern boats_dismount
+extern net_role, net_all_asleep
 
 %define SLEEP_STEPS    120              ; steps in bed until the morning
 %define BANNER_INFO    RGBA(255, 255, 255, 255)
@@ -36,6 +38,7 @@ s_mobs:     db "Respawn set. Monsters are nearby", 0
 s_sleep:    db "Respawn set. Sleeping...", 0
 s_gone:     db "Your bed was missing or obstructed", 0
 s_blocked:  db "Respawn set. The bed is obstructed", 0
+s_waiting:  db "Waiting for the others to sleep", 0
 
 section .bss
 alignb 4
@@ -310,6 +313,10 @@ sleep_use_bed:
 ; steps; at step 120 it is morning (game_time becomes the start of the next day, 06:00) and the
 ; player is awake, standing beside the bed (on it when there is no free place); the fade then falls
 ; by 1/30 per step back to 0.
+; Multiplayer: the night is everybody's. At step 120 a sleeper keeps lying (the timer holds at 120: that is what the others
+; see, PS_ASLEEP) until it is morning anyway, when he gets up and the time stays as it is. The host moves the time to the
+; next morning as soon as every other player lies in bed too (net_all_asleep), and says "Waiting for the others to sleep"
+; once while they do not; a guest only waits: the host's time reaches him with the snapshots.
 ; Frame: the bed (bed_frame), 24 bytes.
 sleep_step:
     sub     rsp, 24
@@ -323,6 +330,26 @@ sleep_step:
     movss   [sleep_fade], xmm0
     cmp     eax, SLEEP_STEPS
     jb      .ret
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .morning
+    mov     edi, [game_time]
+    call    sky_is_night
+    test    eax, eax
+    jz      .wake                       ; it is morning already: up, the time stays
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .hold
+    call    net_all_asleep
+    test    eax, eax
+    jnz     .morning
+    cmp     dword [sleep_timer], SLEEP_STEPS
+    jne     .hold                       ; the banner comes once, as the timer reaches 120
+    lea     rdi, [s_waiting]
+    mov     esi, BANNER_INFO
+    call    hud_banner
+.hold:
+    mov     dword [sleep_timer], SLEEP_STEPS
+    jmp     .ret
+.morning:
     mov     eax, [game_time]
     xor     edx, edx
     mov     ecx, DAY_LENGTH
@@ -330,6 +357,7 @@ sleep_step:
     inc     eax
     imul    eax, eax, DAY_LENGTH
     mov     [game_time], eax
+.wake:
     mov     dword [sleep_active], 0
     mov     dword [sleep_timer], 0
     mov     rdi, rsp

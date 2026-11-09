@@ -11,20 +11,22 @@ default rel
 
 global folk_spawn, folk_init, folk_make_champion, folk_ai, folk_interact, folk_hostile
 global folk_on_player_hit, folk_on_death, folk_drops, folk_hit_by, folk_name, folk_travel_tick
-global folk_weapon_affix, folk_class_health, folk_base_speed, folk_is_fighter, folk_scare
+global folk_weapon_affix, folk_class_health, folk_base_speed, folk_is_fighter, folk_scare, folk_free_captive
 
 extern mobs, mob_spawn, mob_scale, make_elite, mob_level_for, yaw_from
 extern mob_blow, mob_melee_hit, mob_arrow_flags, knock_player, mob_reel, mob_stunned_text
 extern mob_strike, folk_strike_mob, mob_coins, spawn_near_player
 extern gear_affixes, gear_roll, gear_tier_for_level, gear_drop_from_mob, item_attack
 extern drops_spawn, arrows_spawn, audio_play_at, fx_burst, status_apply
-extern player, player_eye, raycast, rng_next, sky_is_night
+extern player, raycast, rng_next, sky_is_night
 extern game_mode, game_time, settings, surv, combat_hit_flags, combat_stealth_t
 extern hud_banner, str_append
 extern faction_standing, faction_tier, faction_add, faction_on_kill, faction_enemies, faction_hostile
 extern faction_defeat_champion
 extern faction_names, faction_members, champion_names, screen_faction
 extern trade_open, structures_nearest, structures_mark_freed
+extern mob_index, mob_tgt_body, mob_tgt_slot
+extern net_role, net_self, net_hit_peer, net_peer_body, net_nearest_target, net_slot_ok, net_interact_out
 
 %define SEE_STEPS     20                ; a fighter looks for a new target this often
 %define PROVOKE_STEPS 600               ; a blow on a folk keeps its faction's fighters after the player this long
@@ -417,10 +419,9 @@ folk_base_d:
 
 ; ---- hostility --------------------------------------------------------------------------------
 
-; folk_wants_player(rdi mob) -> eax 1 when this fighter counts the player an enemy right now: the game
-; is in Survival above Peaceful, the player lives and is not hidden in smoke, and either the faction's
-; standing is below 0 or the folk is provoked
-folk_wants_player:
+; folk_wants_any(rdi mob) -> eax 1 when this fighter counts a player an enemy right now, whoever he is: the game
+; is in Survival above Peaceful, and either the faction's standing is below 0 or the folk is provoked
+folk_wants_any:
     push    rbx
     mov     rbx, rdi
     xor     eax, eax
@@ -428,10 +429,6 @@ folk_wants_player:
     jne     .ret
     cmp     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
     je      .ret
-    cmp     dword [surv + SURVIVAL.dead], 0
-    jne     .ret
-    cmp     dword [combat_stealth_t], 0
-    jg      .ret
     mov     eax, 1
     cmp     dword [rbx + MOB.provoked], 0
     jg      .ret
@@ -439,6 +436,76 @@ folk_wants_player:
     call    faction_hostile
 .ret:
     pop     rbx
+    ret
+
+; folk_wants_player(rdi mob) -> eax 1 when this fighter counts the local player an enemy right now: folk_wants_any,
+; and the player lives and is not hidden in smoke
+folk_wants_player:
+    sub     rsp, 8
+    call    folk_wants_any
+    test    eax, eax
+    jz      .ret
+    xor     eax, eax
+    cmp     dword [surv + SURVIVAL.dead], 0
+    jne     .ret
+    cmp     dword [combat_stealth_t], 0
+    jg      .ret
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    ret
+
+; folk_wants_slot(rdi mob, esi slot) -> eax 1 when this fighter counts the player in that peer slot an enemy right
+; now: folk_wants_any, and he lives and is not hidden in smoke (net_slot_ok)
+folk_wants_slot:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     r12d, esi
+    call    folk_wants_any
+    test    eax, eax
+    jz      .ret
+    mov     edi, r12d
+    mov     esi, 1
+    call    net_slot_ok
+.ret:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; folk_player_body(rdi mob) -> rax the BODY of the player this folk deals with, edx his peer slot: the local
+; player offline; online (a folk acts on a host) the player it is after (target 1: MOB.peer) while he is in
+; the game, else the nearest one who lives (net_nearest_target), the local player when nobody does. Clobbers
+; ecx and the SSE registers.
+folk_player_body:
+    lea     rax, [player]
+    xor     edx, edx
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret
+    push    rbx
+    mov     rbx, rdi
+    cmp     dword [rbx + MOB.target], 1
+    jne     .nearest
+    mov     edi, [rbx + MOB.peer]
+    call    net_peer_body               ; rax = his body, 0 when he has left
+    test    rax, rax
+    jz      .nearest
+    mov     edx, [rbx + MOB.peer]
+    pop     rbx
+    ret
+.nearest:
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    xor     edi, edi
+    call    net_nearest_target
+    test    rax, rax
+    jnz     .got
+    lea     rax, [player]
+    movzx   edx, byte [net_self]
+.got:
+    pop     rbx
+.ret:
     ret
 
 ; folk_hostile(rdi mob) -> eax 1 when that folk counts as hostile to the player: a fighter that is
@@ -525,6 +592,11 @@ folk_on_player_hit:
     push    r14
     mov     rbx, rdi
     and     byte [rbx + MOB.fflags], ~FF_FOLKDOT
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .peer_set
+    mov     eax, [net_hit_peer]         ; online: it goes for the player who hit it
+    mov     [rbx + MOB.peer], eax
+.peer_set:
     mov     dword [rbx + MOB.provoked], PROVOKE_STEPS
     movzx   r13d, byte [rbx + MOB.faction]
     mov     rdi, rbx
@@ -924,10 +996,12 @@ folk_npc:
     mov     rbx, rdi
     call    folk_base_speed
     movss   [rbx + BODY.speed], xmm0
-    movss   xmm0, [player + BODY.x]
+    mov     rdi, rbx
+    call    folk_player_body            ; the player it looks at: the nearest one online
+    movss   xmm0, [rax + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0
-    movss   xmm1, [player + BODY.z]
+    movss   xmm1, [rax + BODY.z]
     subss   xmm1, [rbx + BODY.z]
     movss   [rsp + 4], xmm1
     mulss   xmm0, xmm0
@@ -1027,6 +1101,36 @@ folk_find_target:
     mov     eax, [c_see2]
     mov     [rsp], eax                  ; only an enemy nearer than 16 blocks counts
     mov     dword [rsp + 4], 0
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .wants_local
+    mov     rdi, rbx
+    call    folk_wants_any              ; online: any player will do, the nearest one who lives and is not hidden
+    test    eax, eax
+    jz      .mobs
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    mov     edi, 1
+    call    net_nearest_target          ; rax = his body or 0, edx = his peer slot
+    test    rax, rax
+    jz      .mobs
+    mov     [mob_tgt_slot], edx         ; (folk_fight makes it the folk's peer when the player is the target)
+    movss   xmm0, [rax + BODY.x]
+    subss   xmm0, [rbx + BODY.x]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rax + BODY.y]
+    subss   xmm1, [rbx + BODY.y]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    movss   xmm1, [rax + BODY.z]
+    subss   xmm1, [rbx + BODY.z]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [rsp]
+    jae     .mobs
+    movss   [rsp], xmm0
+    mov     dword [rsp + 4], 1
+    jmp     .mobs
+.wants_local:
     call    folk_wants_player
     test    eax, eax
     jz      .mobs
@@ -1123,6 +1227,20 @@ folk_target_at:
     jz      .none
     jmp     .measure
 .player:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .player_local
+    mov     rdi, rbx
+    call    folk_player_body            ; online: the player it is after (or the nearest), while it still wants him
+    mov     r13, rax
+    mov     [mob_tgt_body], rax         ; a blow on him lands on this body and peer slot
+    mov     [mob_tgt_slot], edx
+    mov     rdi, rbx
+    mov     esi, edx
+    call    folk_wants_slot
+    test    eax, eax
+    jz      .none
+    jmp     .measure
+.player_local:
     mov     rdi, rbx
     call    folk_wants_player
     test    eax, eax
@@ -1250,10 +1368,12 @@ folk_idle:
     mov     eax, 1
     jmp     .ret
 .at_home:
-    movss   xmm0, [player + BODY.x]
+    mov     rdi, rbx
+    call    folk_player_body            ; the player it turns to: the nearest one online
+    movss   xmm0, [rax + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0
-    movss   xmm1, [player + BODY.z]
+    movss   xmm1, [rax + BODY.z]
     subss   xmm1, [rbx + BODY.z]
     movss   [rsp + 4], xmm1
     mulss   xmm0, xmm0
@@ -1331,8 +1451,15 @@ folk_shoot:
     jne     .centre
     cmp     byte [rbx + MOB.fclass], FCLASS_ARCHER
     jne     .centre
-    lea     rdi, [rsp + 12]
-    call    player_eye
+    mov     rdi, rbx
+    call    folk_player_body            ; the eye of the player it shoots at: feet + 1.62 up
+    mov     ecx, [rax + BODY.x]
+    mov     [rsp + 12], ecx
+    movss   xmm0, [rax + BODY.y]
+    addss   xmm0, [c_eye]
+    movss   [rsp + 16], xmm0
+    mov     ecx, [rax + BODY.z]
+    mov     [rsp + 20], ecx
     jmp     .aimed
 .centre:
     movss   xmm0, [r12]
@@ -1556,6 +1683,13 @@ folk_fight:
     call    folk_find_target
     test    eax, eax
     jz      .seen                       ; nobody within 16: the current target stays until it leaves 24
+    cmp     eax, 1
+    jne     .retarget
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .retarget
+    mov     ecx, [mob_tgt_slot]         ; the nearest player: his slot is the folk's peer from now on
+    mov     [rbx + MOB.peer], ecx
+.retarget:
     cmp     eax, [rbx + MOB.target]
     je      .seen
     mov     [rbx + MOB.target], eax
@@ -1684,6 +1818,9 @@ folk_fight:
     add     edx, CAUSE_FOLK
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.z]
+    movzx   ecx, byte [rbx + MOB.fclass]
+    movss   xmm2, [c_kb]
+    mulss   xmm2, [fc_kb + rcx*4]
     call    mob_melee_hit
     cmp     eax, HIT_PARRIED
     je      .parried
@@ -1849,16 +1986,18 @@ folk_interact:
     add     rdx, MOB_size
     dec     ecx
     jnz     .watch
-    mov     edi, r12d
-    mov     esi, 25
-    call    faction_add
-    movss   xmm0, [rbx + BODY.x]
-    roundss xmm0, xmm0, 9
-    cvttss2si edi, xmm0
-    movss   xmm0, [rbx + BODY.z]
-    roundss xmm0, xmm0, 9
-    cvttss2si esi, xmm0
-    call    structures_mark_freed
+    mov     rdi, rbx
+    call    mob_index
+    mov     edi, eax                    ; its slot
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .free_here
+    mov     esi, IA_FREE_CAPTIVE        ; a guest asks the host to free it ...
+    call    net_interact_out
+    mov     dword [rbx + MOB.type], MOB_NONE    ; ... and sees it leave at once
+    jmp     .freed
+.free_here:
+    call    folk_free_captive           ; +25 with its faction, its camp's record marked, the folk gone
+.freed:
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
     addss   xmm1, [c_aim_up]
@@ -1867,7 +2006,6 @@ folk_interact:
     mov     edi, FX_MAGIC
     mov     esi, 12
     call    fx_burst
-    mov     dword [rbx + MOB.type], MOB_NONE
     lea     r12, [rsp]
     APPEND  s_freed_a
     lea     rcx, [faction_members]
@@ -1890,6 +2028,40 @@ folk_interact:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; folk_free_captive(edi idx): the world half of freeing a captive: the folk in that slot (a captive, else
+; nothing happens) is freed: +25 with its faction, its camp's record marked (structures_mark_freed) and the
+; folk gone (MOB_NONE). A right-click on a captive does the rest at the player's end (the burst and the banner);
+; a guest's asks the host for this (IA_FREE_CAPTIVE).
+folk_free_captive:
+    push    rbx
+    sub     rsp, 16
+    cmp     edi, MAX_MOBS
+    jae     .ret
+    imul    eax, edi, MOB_size
+    lea     rbx, [mobs]
+    add     rbx, rax
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .ret
+    cmp     byte [rbx + MOB.role], ROLE_CAPTIVE
+    jne     .ret
+    movzx   edi, byte [rbx + MOB.faction]
+    cmp     edi, NUM_FACTIONS
+    jae     .ret
+    mov     esi, 25
+    call    faction_add
+    movss   xmm0, [rbx + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si edi, xmm0
+    movss   xmm0, [rbx + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si esi, xmm0
+    call    structures_mark_freed
+    mov     dword [rbx + MOB.type], MOB_NONE
+.ret:
+    add     rsp, 16
+    pop     rbx
     ret
 
 ; ---- the travelling trader --------------------------------------------------------------------

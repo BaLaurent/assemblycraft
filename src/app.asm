@@ -9,6 +9,7 @@ global app_state, app_entered, app_settings_parent, app_selected, app_in_world
 global app_fps, app_show_debug, app_window, app_message, app_message_timer
 global app_run, app_goto, app_play_world, app_create_world, app_quit_to_title
 global app_respawn, app_request_quit, app_wait_area
+global app_title_msg, app_join_world, app_leave_world, app_world_path, app_show_loading
 
 extern sys_print, str_append, str_copy, i32_to_str, floor_i
 extern input_poll, input_set_captured, input_captured, frame_input, ui_input
@@ -32,6 +33,12 @@ extern rpg_begin, rpg_reset, combat_reset, dmgnum_clear, light_update
 extern boats_clear
 extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
 extern dir_remove_tree
+extern screen_mp_join, screen_mp_host, screen_chat
+extern net_pump, net_flush, net_role, net_end_reason, net_join_ready, net_join_exit
+extern net_host_open, net_host_close, net_set_pvp, net_leave, net_join_begin, net_join_cancel
+extern net_ready_out, net_session_reset, net_player_save, net_died_out
+extern net_title_on, net_title_text, net_cfg_name, net_cfg_port, net_winfo, net_image, net_image_valid
+extern net_cli_host, net_cli_join, net_cli_relay, net_cli_pvp, net_join_failed, game_join
 
 section .rodata
 s_loading:    db "Loading world", 0
@@ -53,6 +60,12 @@ s_space:      db " ", 0
 s_sep:        db " | ", 0
 s_empty:      db "Empty", 0
 s_fly:        db " | fly", 0
+s_joining:    db "Joining world", 0
+s_leaving:    db "Leaving...", 0
+s_msg_closed: db "The host closed the world", 0
+s_msg_lost:   db "Lost connection to the host", 0
+s_msg_nohost: db "net: cannot open multiplayer (error ", 0
+s_msg_nohost2: db ")", 10, 0
 align 4
 f_half_w:     dd 0.3
 f_height:     dd 1.8
@@ -60,6 +73,7 @@ f_speed:      dd 4.317
 f_pano_rate:  dd 3.0
 f_360:        dd 360.0
 f_autosave:   dd 120.0
+f_autosave_guest: dd 60.0              ; a guest's character goes to the host this often
 f_msg_time:   dd 5.0
 f_half:       dd 0.5
 f_wait_budget: dd 0.030                ; seconds of streaming per frame behind a loading screen
@@ -74,7 +88,7 @@ screens:
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
     dq screen_trade, screen_dialog, screen_skills, screen_character
-    dq screen_shrine, screen_leader, debug_frame
+    dq screen_shrine, screen_leader, debug_frame, screen_mp_join, screen_mp_host, screen_chat
 
 section .data
 align 4
@@ -87,6 +101,7 @@ app_message_timer:   dd 0.0
 section .bss
 alignb 8
 app_window:     resq 1
+app_title_msg:  resq 1                  ; zstr drawn in red on the title screen (why a session ended), 0 none
 last_time:      resq 1
 title_time:     resq 1
 app_in_world:   resd 1
@@ -102,7 +117,7 @@ frame_dt:       resd 1
 alignb 16
 panorama_cam:   resb BODY_size
 app_message:    resb 128
-world_path:     resb 4096
+app_world_path: resb 4096               ; the directory of the world that is open
 title_buf:      resb 256
 wait_text:      resb 160               ; "<text> N%" of the loading screen
 pano_spawn:     resd 4                 ; the panorama world's spawn cell (absolute x, y, z)
@@ -120,6 +135,9 @@ app_goto:
     je      .same
     mov     dword [app_entered], 1
     mov     qword [ui_focus], 0
+    cmp     ebx, ST_MP_JOIN
+    je      .same
+    mov     byte [net_join_failed], 0   ; a failed join's reason belongs to the join screen
 .same:
     mov     [app_state], ebx
     xor     esi, esi
@@ -182,7 +200,13 @@ set_message:
 save_world:
     push    rbp
     mov     rbp, rsp
-    lea     rdi, [world_path]
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .own
+    call    net_player_save             ; a guest's character is kept by the host; it never writes files
+    xor     eax, eax
+    jmp     .ok
+.own:
+    lea     rdi, [app_world_path]
     call    game_save
     test    eax, eax
     jz      .ok
@@ -190,7 +214,7 @@ save_world:
     lea     rsi, [s_save_fail]
     call    sys_print
     mov     edi, 2
-    lea     rsi, [world_path]
+    lea     rsi, [app_world_path]
     call    sys_print
     mov     edi, 2
     lea     rsi, [s_nl]
@@ -203,8 +227,8 @@ save_world:
     pop     rbp
     ret
 
-; show_loading(rdi text): draw one frame with the loading screen
-show_loading:
+; app_show_loading(rdi text): draw one frame with the loading screen
+app_show_loading:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -301,7 +325,7 @@ show_wait:
     call    str_append
     mov     byte [rax], 0
     lea     rdi, [wait_text]
-    call    show_loading
+    call    app_show_loading
     add     rsp, 8
     pop     rbx
     pop     rbp
@@ -329,6 +353,7 @@ app_wait_area:
     call    glfwWindowShouldClose
     test    eax, eax
     jnz     .closed
+    call    net_pump                    ; the network goes on behind a loading screen too
     movss   xmm0, [r12 + BODY.x]
     call    floor_i
     mov     r13d, eax
@@ -354,6 +379,7 @@ app_wait_area:
     mov     esi, eax
     mov     rdi, rbx
     call    show_wait
+    call    net_flush
     jmp     .loop
 .ready:
     lea     rax, [player]
@@ -404,9 +430,9 @@ app_play_world:
     xor     esi, esi
     call    show_wait
     mov     edi, ebx
-    lea     rsi, [world_path]
+    lea     rsi, [app_world_path]
     call    saves_entry_path
-    lea     rdi, [world_path]
+    lea     rdi, [app_world_path]
     call    game_load
     test    eax, eax
     jz      .loaded
@@ -448,7 +474,7 @@ app_create_world:
     xor     esi, esi
     call    show_wait
     mov     rdi, rbx
-    lea     rsi, [world_path]
+    lea     rsi, [app_world_path]
     call    saves_new_world_dir
     test    eax, eax
     jz      .path_ok
@@ -461,18 +487,18 @@ app_create_world:
     mov     edi, r13d
     mov     esi, r12d
     mov     rdx, rbx
-    lea     rcx, [world_path]
+    lea     rcx, [app_world_path]
     call    game_new
     lea     rdi, [s_generating]
     lea     rsi, [player]
     call    app_wait_area
     test    eax, eax
     jnz     .abandon                    ; the window was closed: leave no empty world behind
-    lea     rdi, [world_path]
+    lea     rdi, [app_world_path]
     call    game_save
     test    eax, eax
     jz      .saved
-    lea     rdi, [world_path]           ; could not save: the half-made world goes, the title world returns
+    lea     rdi, [app_world_path]       ; could not save: the half-made world goes, the title world returns
     call    dir_remove_tree
     call    load_panorama
     lea     rdi, [s_cant_save]
@@ -485,7 +511,7 @@ app_create_world:
     call    app_goto
     jmp     .ret
 .abandon:
-    lea     rdi, [world_path]
+    lea     rdi, [app_world_path]
     call    dir_remove_tree
     jmp     .ret
 .saved:
@@ -558,9 +584,21 @@ load_panorama:
 app_quit_to_title:
     push    rbp
     mov     rbp, rsp
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .not_guest
+    call    net_leave                   ; a guest's character goes to the host first, then the world is left
+    xor     edi, edi
+    call    app_leave_world
+    pop     rbp
+    ret
+.not_guest:
     lea     rdi, [s_saving]
-    call    show_loading
+    call    app_show_loading
     call    inv_close_screen            ; cursor and grid items go back before the save
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .save
+    call    net_host_close              ; the guests are told and their characters are kept
+.save:
     call    save_world
     mov     edi, 1
     call    stream_end                  ; the modified columns are written, every column unloads
@@ -599,12 +637,121 @@ app_respawn:
     pop     rbp
     ret
 
+; app_join_world(): a guest's character has arrived (net_join_ready). The world is built from WORLDINFO and the
+; character (game_join), its area is waited for behind a loading screen, then the world is entered and the host
+; hears READY
+app_join_world:
+    push    rbp
+    mov     rbp, rsp
+    mov     dword [net_join_ready], 0
+    lea     rdi, [s_joining]
+    xor     esi, esi
+    call    show_wait
+    lea     rdi, [net_winfo]
+    lea     rsi, [net_image]
+    cmp     dword [net_image_valid], 0
+    jne     .image
+    xor     esi, esi                    ; no saved character: a fresh one
+.image:
+    call    game_join
+    lea     rdi, [s_joining]
+    lea     rsi, [player]
+    call    app_wait_area
+    test    eax, eax
+    jnz     .ret                        ; the window was closed: the main loop leaves
+    cmp     dword [net_end_reason], 0
+    jne     .ret                        ; the host went away meanwhile: the main loop leaves
+    call    enter_world
+    call    net_ready_out
+.ret:
+    pop     rbp
+    ret
+
+; app_leave_world(edi sys_code): a multiplayer session ends and the world with it: screen items go back, the
+; world unloads without saving (a guest keeps nothing; the host's world is left by app_quit_to_title), the
+; connection's remains are closed, the panorama returns and the title screen says why (SYS_HOST_CLOSED,
+; SYS_TIMEOUT; 0 for a leave the player chose)
+app_leave_world:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     dword [net_end_reason], 0
+    lea     rdi, [s_leaving]
+    call    app_show_loading
+    call    inv_close_screen
+    xor     edi, edi
+    call    stream_end                  ; nothing is saved
+    mov     dword [app_in_world], 0
+    call    net_session_reset           ; the socket, the role, the render cap, the peers, the window title
+    lea     rax, [s_msg_closed]
+    cmp     ebx, SYS_HOST_CLOSED
+    je      .msg
+    lea     rax, [s_msg_lost]
+    cmp     ebx, SYS_TIMEOUT
+    je      .msg
+    xor     eax, eax
+.msg:
+    mov     [app_title_msg], rax
+    call    load_panorama
+    call    saves_scan
+    mov     edi, ST_TITLE
+    call    app_goto
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; cli_host(): --host. The world that was just entered is opened to others (the port of --port or the
+; configuration), PvP on with --pvp
+cli_host:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     edi, [net_cfg_port]
+    call    net_host_open
+    test    eax, eax
+    jns     .opened
+    neg     eax
+    mov     ebx, eax
+    lea     rdi, [wait_text]
+    lea     rsi, [s_msg_nohost]
+    call    str_append
+    mov     rsi, rax
+    mov     edi, ebx
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_msg_nohost2]
+    call    str_append
+    mov     byte [rax], 0
+    mov     edi, 2
+    lea     rsi, [wait_text]
+    call    sys_print
+    jmp     .ret
+.opened:
+    movzx   edi, byte [net_cli_pvp]
+    call    net_set_pvp
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
 ; update_title(): window title with FPS, position, held item and fly state
 update_title:
     push    rbp
     mov     rbp, rsp
     push    rbx
     sub     rsp, 8
+    cmp     byte [net_title_on], 0      ; in a multiplayer session the title is "AssemblyCraft - <name>"
+    je      .normal
+    mov     rdi, [app_window]
+    lea     rsi, [net_title_text]
+    call    glfwSetWindowTitle
+    jmp     .ret
+.normal:
     cmp     dword [app_in_world], 0
     jne     .world
     mov     rdi, [app_window]
@@ -672,7 +819,12 @@ tick_autosave:
     movss   xmm0, [autosave_timer]
     addss   xmm0, [frame_dt]
     movss   [autosave_timer], xmm0
-    comiss  xmm0, [f_autosave]
+    movss   xmm1, [f_autosave]
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .limit
+    movss   xmm1, [f_autosave_guest]    ; a guest's character goes to the host every minute
+.limit:
+    comiss  xmm0, xmm1
     jb      .ret
     jmp     save_world
 .ret:
@@ -685,6 +837,11 @@ to_death:
     mov     edi, ST_DEATH
     call    app_goto
     call    save_world
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .out
+    mov     edi, [surv + SURVIVAL.death_cause]
+    call    net_died_out                ; the others read how he died
+.out:
     pop     rbp
     ret
 
@@ -721,7 +878,13 @@ update_state:
     je      .screen
     cmp     eax, ST_LEADER
     je      .screen
-    jmp     .ret                        ; paused, death, settings: nothing simulates
+    cmp     eax, ST_CHAT
+    je      .screen                     ; the chat line: the world keeps running
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret                        ; paused, death, settings, the debug menu: offline, nothing simulates
+    movss   xmm0, [frame_dt]            ; ... in a multiplayer world nothing freezes: the others play on
+    call    game_frame
+    jmp     .ret
 
 .playing:
     call    debug_poll                  ; the F12 detector: three presses open the debug menu
@@ -757,9 +920,17 @@ update_state:
     jmp     .ret
 .no_skills:
     cmp     dword [frame_input + FRAMEINPUT.inventory], 0
-    je      .simulate
+    je      .no_inventory
     mov     dword [craft_size], 2
     mov     edi, ST_INVENTORY
+    call    app_goto
+    jmp     .ret
+.no_inventory:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .simulate
+    cmp     dword [frame_input + FRAMEINPUT.chat], 0
+    je      .simulate
+    mov     edi, ST_CHAT
     call    app_goto
     jmp     .ret
 .simulate:
@@ -816,6 +987,11 @@ update_state:
     subss   xmm0, xmm1
 .yaw:
     movss   [panorama_cam + BODY.yaw], xmm0
+    cmp     dword [app_state], ST_MP_JOIN   ; the character arrived: enter the host's world
+    jne     .ret
+    cmp     dword [net_join_ready], 0
+    je      .ret
+    call    app_join_world
 .ret:
     pop     rbp
     ret
@@ -871,6 +1047,10 @@ draw_frame:
     cmp     eax, ST_LEADER
     je      .in_view
     cmp     eax, ST_DEBUG
+    je      .in_view
+    cmp     eax, ST_MP_HOST
+    je      .in_view
+    cmp     eax, ST_CHAT
     jne     .ui
 .in_view:
     mov     ebx, 1
@@ -887,7 +1067,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_DEBUG
+    cmp     eax, ST_CHAT
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax
@@ -909,7 +1089,7 @@ app_run:
     test    rdi, rdi
     jz      .title
     mov     rsi, rdi
-    lea     rdi, [world_path]
+    lea     rdi, [app_world_path]
     mov     edx, 4095
     call    str_copy
     lea     rdi, [s_loading]
@@ -918,12 +1098,29 @@ app_run:
     test    eax, eax
     jnz     .start                      ; the window was closed while loading: the loop leaves
     call    enter_world
+    cmp     byte [net_cli_host], 0      ; --host: the world is opened to others at once
+    je      .start
+    call    cli_host
     jmp     .start
 .title:
     call    load_panorama
     mov     dword [app_state], -1       ; force the transition bookkeeping
+    cmp     qword [net_cli_join], 0     ; --join: the title is skipped, the join starts at once
+    jne     .cli_join
     mov     edi, ST_TITLE
     call    app_goto
+    jmp     .start
+.cli_join:
+    mov     edi, ST_MP_JOIN
+    call    app_goto
+    mov     rdi, [net_cli_join]
+    lea     rsi, [net_cfg_name]
+    movzx   edx, byte [net_cli_relay]
+    call    net_join_begin
+    test    eax, eax
+    jz      .start
+    mov     dword [exit_code], 3        ; (net_join_begin said why on stderr)
+    jmp     .done
 .start:
     call    glfwGetTime
     movsd   [last_time], xmm0
@@ -956,6 +1153,17 @@ app_run:
     lea     rdi, [settings_path]
     call    settings_save
 .no_fs:
+    call    net_pump                    ; the network: what arrived, who joined or left, the session's flows
+    cmp     byte [net_join_exit], 0     ; --join: the join failed (the reason is on stderr)
+    je      .no_join_exit
+    mov     dword [exit_code], 3
+    jmp     .done
+.no_join_exit:
+    mov     edi, [net_end_reason]
+    test    edi, edi
+    jz      .no_end
+    call    app_leave_world             ; the host closed or the connection died: back to the title
+.no_end:
     mov     ebx, [app_state]
     call    update_state
     cmp     ebx, [app_state]
@@ -969,6 +1177,7 @@ app_run:
     mov     [ui_input + UIINPUT.double_click], eax
     mov     [frame_input + FRAMEINPUT.inventory], eax
     mov     [frame_input + FRAMEINPUT.skills], eax
+    mov     [ui_input + UIINPUT.typed_len], eax     ; (the T that opened the chat is not its first letter)
     mov     dword [ui_input + UIINPUT.key_pressed], -1
 .same_state:
     movss   xmm0, [frame_dt]
@@ -999,6 +1208,7 @@ app_run:
     call    draw_frame
     mov     rdi, [app_window]
     call    glfwSwapBuffers
+    call    net_flush
     inc     dword [frames]
     movsd   xmm1, [last_time]
     subsd   xmm1, [title_time]
@@ -1016,12 +1226,26 @@ app_run:
 
 .quit:
     cmp     dword [app_in_world], 0
-    je      .done
+    jne     .quit_world
+    call    net_join_cancel             ; the window closed while joining: leave the room
+    jmp     .done
+.quit_world:
     call    inv_close_screen            ; cursor and grid items go back before the save
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .quit_guest
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .quit_save
+    call    net_host_close              ; the guests are told and their characters are kept
+.quit_save:
     call    save_world
     mov     [exit_code], eax
     mov     edi, 1
     call    stream_end                  ; the modified columns are written, every column unloads
+    jmp     .done
+.quit_guest:
+    call    net_leave                   ; the character goes to the host, the connection says goodbye
+    xor     edi, edi
+    call    stream_end                  ; a guest saves nothing
 .done:
     mov     eax, [exit_code]
     add     rsp, 8

@@ -2,7 +2,9 @@
 ; levels, status pips and name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and
 ; level, ten hearts with the health number / armor / food, mana and stamina bars, player status pips,
 ; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, banner and
-; the F3 debug lines. GUI units; hud_draw runs after ui_begin. The hotbar sits at x0 = ui_w/2 - 91,
+; the F3 debug lines. In a multiplayer session (net_role != OFF) also the other players' name plates
+; (peerrender.asm), the chat log at the bottom left, the player list while Tab is held and a Net line
+; on F3. GUI units; hud_draw runs after ui_begin. The hotbar sits at x0 = ui_w/2 - 91,
 ; y0 = ui_h - 22. The grimoire look (theme.inc): a leather hotbar with parchment cells and a gold
 ; selection, framed bars, carved ability runes with paper key tabs, a ribbon for the boss name and the
 ; banner, a pinned paper note for the quest.
@@ -12,9 +14,15 @@
 default rel
 
 %define C_CHEAT         RGBA(255, 85, 85, 255)  ; the cheater mark: bright red on the dark world
+%define CHAT_LIFE_MS    10000           ; a chat line shows this long (ms) ...
+%define CHAT_FADE_MS    2000            ; ... and fades out over the last of it
+%define CHAT_BASE       72              ; the newest chat line is drawn this far over the bottom edge
+%define PL_W            240             ; the player list: panel width, top and row pitch
+%define PL_Y            28
+%define PL_ROW          11
 
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
-global hud_bubble_tiles, banner_text, hud_biome_name
+global hud_bubble_tiles, banner_text, hud_biome_name, bar_px
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
@@ -35,6 +43,9 @@ extern mob_affix_name
 extern folk_name, faction_tier_color, faction_standing, faction_names, faction_short
 extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
 extern debug_is_cheater
+extern frame_input, net_role, net_self, net_peers, net_cfg_name, net_room_code
+extern net_ep, net_ep_rtt_ms, net_ep_is_relay, net_chat_line
+extern net_stat_block_rx, net_stat_block_tx, peers_hud, peer_slot_rgba
 
 
 section .rodata
@@ -116,10 +127,25 @@ s_columns:  db "Columns: ", 0
 s_col_lit:  db " lit ", 0
 s_col_pend: db " pending ", 0
 s_col_pool: db " pool ", 0
-s_col_max:  db "/24576", 0
+%defstr POOL_CHUNKS_STR POOL_CHUNKS
+s_col_max:  db "/", POOL_CHUNKS_STR, 0
 s_camp:     db "Camp: ", 0
 s_asleep:   db " (asleep)", 0
 s_standing: db "Standing:", 0
+s_net_host: db "Net: host ", 0
+s_net_peers: db " peers ", 0
+s_net_rx:   db " rx ", 0
+s_net_tx:   db " tx ", 0
+s_net_guest: db "Net: guest slot ", 0
+s_net_rtt:  db " rtt ", 0
+s_net_ms:   db " ms ", 0
+s_net_direct: db "direct", 0
+s_net_relay: db "relay", 0
+s_players:  db "Players", 0
+s_host_tag: db "(host)", 0
+s_lvp:      db "Lv ", 0
+s_ms:       db " ms", 0
+s_dash:     db "-", 0
 s_b_ocean:  db "Ocean", 0
 s_b_plains: db "Plains", 0
 s_b_forest: db "Forest", 0
@@ -178,6 +204,7 @@ hud_draw:
     cmp     dword [app_state], ST_PLAYING ; health bars, name tags and numbers stay out of screens
     jne     .no_overlays
     call    hud_mobs
+    call    peers_hud
     call    dmgnum_draw
 .no_overlays:
     call    hud_sleep_fade
@@ -232,9 +259,17 @@ hud_draw:
     lea     ecx, [rdi + 10]
     test    eax, eax
     cmovnz  edi, ecx
+    lea     ecx, [rdi + 10]
+    cmp     byte [net_role], NET_ROLE_OFF
+    cmovne  edi, ecx                    ; and one more for the Net line
 .tracker:
     call    hud_quest
     call    hud_banner_draw
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .no_net
+    call    hud_chat
+    call    hud_players
+.no_net:
     cmp     dword [app_show_debug], 0
     je      .ret
     call    hud_debug
@@ -1665,6 +1700,274 @@ hud_boss:
     pop     rbp
     ret
 
+; hud_peer_rows() -> eax how many players the session lists: yourself and every other slot that is
+; not PEER_FREE (leaf)
+hud_peer_rows:
+    xor     eax, eax
+    xor     ecx, ecx
+    lea     rdx, [net_peers]
+.slot:
+    movzx   r8d, byte [net_self]
+    cmp     ecx, r8d
+    je      .count
+    cmp     dword [rdx + PEER.state], PEER_FREE
+    je      .next
+.count:
+    inc     eax
+.next:
+    add     rdx, PEER_size
+    inc     ecx
+    cmp     ecx, NET_MAX_PEERS
+    jb      .slot
+    ret
+
+; hud_chat(): the chat log at the bottom left, the newest line at the bottom: up to 6 lines in play,
+; 8 while the chat bar is open (ST_CHAT). A line is white on a faint backing, shows for 10 seconds
+; and fades out over the last 2; with the chat bar open every line shows at full strength.
+; rbx = line (0 = newest), r12d = its y, r13d = lines to show, r14d = alpha, r15 = its text
+hud_chat:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     r13d, 6
+    cmp     dword [app_state], ST_CHAT
+    jne     .lines
+    mov     r13d, 8
+.lines:
+    xor     ebx, ebx
+.line:
+    cmp     ebx, r13d
+    jge     .ret
+    mov     edi, ebx
+    call    net_chat_line               ; rax = the text or 0, edx = its age in ms
+    test    rax, rax
+    jz      .ret
+    mov     r15, rax
+    mov     r14d, 255
+    cmp     dword [app_state], ST_CHAT
+    je      .alpha_known
+    cmp     edx, CHAT_LIFE_MS
+    jae     .ret                        ; this line and every older one are gone
+    cmp     edx, CHAT_LIFE_MS - CHAT_FADE_MS
+    jbe     .alpha_known
+    mov     eax, CHAT_LIFE_MS
+    sub     eax, edx
+    imul    eax, eax, 255
+    xor     edx, edx
+    mov     ecx, CHAT_FADE_MS
+    div     ecx
+    mov     r14d, eax                   ; alpha = 255 * (life - age) / fade
+.alpha_known:
+    mov     r12d, [ui_h]
+    sub     r12d, CHAT_BASE
+    imul    eax, ebx, 10
+    sub     r12d, eax                   ; ten units a line, going up
+    mov     rdi, r15
+    mov     esi, 1
+    call    ui_text_width
+    lea     edx, [rax + 4]
+    mov     edi, 2
+    lea     esi, [r12 - 1]
+    mov     ecx, 10
+    imul    r8d, r14d, 100
+    shr     r8d, 8
+    shl     r8d, 24                     ; RGBA(0, 0, 0, alpha * 100 / 256)
+    call    ui_rect
+    mov     rdi, r15
+    mov     esi, 4
+    mov     edx, r12d
+    mov     ecx, r14d
+    shl     ecx, 24
+    or      ecx, 0x00FFFFFF
+    mov     r8d, 1
+    call    ui_text
+    inc     ebx
+    jmp     .line
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_players(): while the player-list binding is held in play, a leather panel centred under the
+; top edge with a row for every player of the session: the name in its slot colour ("(host)" after
+; the host's), "Lv N", and the round-trip time right aligned ("-" where nothing is measured:
+; yourself, and for a guest everyone but the host)
+; rbx = slot, r12 = PEER*, r13d = panel x, r14d = row y, r15d = rows
+; stack: [rsp] text (16), [rsp+24] name, [rsp+32] level (-1: unknown), [rsp+36] round-trip time
+hud_players:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 40
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret
+    cmp     dword [app_state], ST_PLAYING
+    jne     .ret
+    cmp     dword [frame_input + FRAMEINPUT.players], 0
+    je      .ret
+    call    hud_peer_rows
+    mov     r15d, eax
+    mov     r13d, [ui_w]
+    sub     r13d, PL_W
+    sar     r13d, 1
+    xor     eax, eax
+    test    r13d, r13d
+    cmovs   r13d, eax
+    mov     edi, NINE_LEATHER
+    mov     esi, r13d
+    mov     edx, PL_Y
+    mov     ecx, PL_W
+    imul    r8d, r15d, PL_ROW
+    add     r8d, 24
+    call    ui_nine
+    lea     rdi, [s_players]
+    lea     esi, [r13 + PL_W / 2]
+    mov     edx, PL_Y + 6
+    mov     ecx, C_GOLD_TEXT
+    mov     r8d, 1
+    call    ui_text_centered
+    lea     edi, [r13 + 8]
+    mov     esi, PL_Y + 17
+    mov     edx, PL_W - 16
+    mov     ecx, 1
+    mov     r8d, C_GOLD
+    call    ui_rect
+    mov     r14d, PL_Y + 21
+    xor     ebx, ebx
+    lea     r12, [net_peers]
+.row:
+    movzx   eax, byte [net_self]
+    cmp     ebx, eax
+    je      .listed
+    cmp     dword [r12 + PEER.state], PEER_FREE
+    je      .next
+.listed:
+    lea     rdi, [r12 + PEER.name]      ; your own row shows the name you chose
+    lea     rdx, [net_cfg_name]
+    cmp     ebx, eax
+    cmove   rdi, rdx
+    mov     [rsp + 24], rdi
+    mov     edi, ebx
+    call    peer_slot_rgba
+    mov     ecx, eax
+    mov     rdi, [rsp + 24]
+    lea     esi, [r13 + 8]
+    mov     edx, r14d
+    mov     r8d, 1
+    call    ui_text                     ; eax = the name's advance
+    test    ebx, ebx
+    jnz     .level
+    lea     esi, [r13 + rax + 12]
+    lea     rdi, [s_host_tag]
+    mov     edx, r14d
+    mov     ecx, C_CREAM
+    mov     r8d, 1
+    call    ui_text
+.level:
+    mov     dword [rsp + 32], -1
+    movzx   eax, byte [net_self]
+    cmp     ebx, eax
+    jne     .level_peer
+    call    rpg_level                   ; yourself
+    mov     [rsp + 32], eax
+    jmp     .level_text
+.level_peer:
+    cmp     dword [r12 + PEER.state], PEER_READY
+    jne     .level_text                 ; no PSTATE yet
+    movzx   eax, byte [r12 + PEER.ps + PSTATE.level]
+    mov     [rsp + 32], eax
+.level_text:
+    mov     rdi, rsp
+    lea     rsi, [s_lvp]
+    call    str_append
+    mov     edi, [rsp + 32]
+    test    edi, edi
+    js      .level_none
+    mov     rsi, rax
+    call    i32_to_str
+    jmp     .level_end
+.level_none:
+    mov     rdi, rax
+    lea     rsi, [s_dash]
+    call    str_append
+.level_end:
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    lea     esi, [r13 + 158]
+    mov     edx, r14d
+    mov     ecx, C_CREAM
+    mov     r8d, 1
+    call    ui_text
+    mov     dword [rsp + 36], 0
+    cmp     byte [net_role], NET_ROLE_HOST
+    sete    al
+    movzx   eax, al
+    test    ebx, ebx
+    setz    cl
+    movzx   ecx, cl
+    cmp     eax, ecx
+    je      .rtt_text                   ; the host's own row, or a guest's view of another guest
+    lea     rdi, [net_ep]
+    mov     esi, ebx
+    call    net_ep_rtt_ms
+    mov     [rsp + 36], eax
+.rtt_text:
+    mov     edi, [rsp + 36]
+    test    edi, edi
+    jz      .rtt_none
+    mov     rsi, rsp
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_ms]
+    call    str_append
+    jmp     .rtt_end
+.rtt_none:
+    mov     rdi, rsp
+    lea     rsi, [s_dash]
+    call    str_append
+.rtt_end:
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, PL_W - 8
+    sub     esi, eax
+    add     esi, r13d                   ; right aligned, 8 from the panel's edge
+    mov     rdi, rsp
+    mov     edx, r14d
+    mov     ecx, C_CREAM
+    mov     r8d, 1
+    call    ui_text
+    add     r14d, PL_ROW
+.next:
+    add     r12, PEER_size
+    inc     ebx
+    cmp     ebx, NET_MAX_PEERS
+    jb      .row
+.ret:
+    add     rsp, 40
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; hud_quest(edi y): the accepted quest on a pinned paper note at (4, y): "Quest: <title>" and under it
 ; "p/c"; for the dungeon and boss quests also the compass heading and distance to the nearest site left
 ; to clear, "p/c  NE 120m"
@@ -2290,6 +2593,51 @@ hud_debug:
     cmp     r13d, NUM_FACTIONS
     jb      .standing
     EMIT
+
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .no_net
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .net_guest
+    APPEND_STR s_net_host
+    lea     rsi, [net_room_code]
+    lea     rax, [s_dash]
+    cmp     byte [rsi], 0
+    cmove   rsi, rax                    ; "-" until the rendezvous server has given a code
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_net_peers
+    call    hud_peer_rows
+    dec     eax                         ; the guests: everyone but yourself
+    APPEND_EAX
+    APPEND_STR s_net_rx
+    APPEND_INT [net_stat_block_rx]
+    APPEND_STR s_net_tx
+    APPEND_INT [net_stat_block_tx]
+    jmp     .net_done
+.net_guest:
+    APPEND_STR s_net_guest
+    movzx   eax, byte [net_self]
+    APPEND_EAX
+    APPEND_STR s_net_rtt
+    lea     rdi, [net_ep]
+    xor     esi, esi
+    call    net_ep_rtt_ms               ; the link to the host
+    APPEND_EAX
+    APPEND_STR s_net_ms
+    lea     rdi, [net_ep]
+    xor     esi, esi
+    call    net_ep_is_relay
+    lea     rsi, [s_net_direct]
+    lea     rcx, [s_net_relay]
+    test    eax, eax
+    cmovnz  rsi, rcx
+    mov     rdi, rbx
+    call    str_append
+    mov     rbx, rax
+.net_done:
+    EMIT
+.no_net:
     add     rsp, 40
     pop     r13
     pop     r12

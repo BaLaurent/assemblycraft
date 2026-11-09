@@ -7,7 +7,7 @@
 default rel
 
 global explode_at, explode_magic, explode_dmg_mult, explode_mob_mult, primed, tnt_prime, tnt_clear, tnt_step, tnt_render
-global tnt_shift, tnt_remove_box
+global tnt_shift, tnt_remove_box, explode_pvp, explode_base_dmg
 
 extern world_get, world_set, cont_block_removed, block_drop, drops_spawn, rng_next
 extern block_removed, light_bind_at, light_bind_index
@@ -15,6 +15,7 @@ extern audio_play_at, player, settings, survival_damage, surv_max_health
 extern mobs, mob_hurt, item_model_draw, body_init, body_step
 extern combat_hit_mob, combat_kb_mult, rpg_stats, mob_is_hostile, block_hardness
 extern fx_explosion, fx_debris
+extern net_role, net_explosion_players, net_tnt_prime_out
 
 ; explode_at frame (rsp-relative)
 %define X_C     0                       ; float blast centre[3]
@@ -63,7 +64,7 @@ f_one:       dd 1.0
 c_magic_fx:  dd 0.7                     ; magic blast: fireball radius / blast radius
 c_magic_vol: dd 0.6
 c_magic_kb:  dd 1.5                     ; push on a mob: along unit(mob - centre).xz
-base_dmg:    dd 8, 12, 22, 33           ; player damage at full strength for r = 3, by difficulty
+explode_base_dmg: dd 8, 12, 22, 33     ; player damage at full strength for r = 3, by difficulty (netmisc.asm reads it too)
 c_twenty:    dd 20.0                    ; the player's damage scales with max health / 20
 
 section .data
@@ -72,6 +73,8 @@ explode_dmg_mult: dd 0.0                ; > 0: factor on the damage a blast does
                                         ; of a level sets it); 0: max health / 20
 explode_mob_mult: dd 1.0                ; factor on the damage explode_at does to mobs (a rocket sets it to
                                         ; its gun-family multiplier for the blast, then puts it back to 1.0)
+explode_pvp:      db 0                 ; 1 while a player's rocket or grenade blasts (arrows.asm sets it): the other players
+                                        ; feel it only when PvP is on. 0 (TNT, creepers): every player feels it
 
 section .bss
 alignb 16
@@ -91,8 +94,11 @@ tnt_clear:
 
 ; tnt_prime(edi x, esi y, edx z, ecx fuse): the block there becomes air and a primed TNT with
 ; that fuse (steps, at least 1) sits in its cell, hopping slightly. When every slot burns, the
-; one with the shortest fuse is replaced.
+; one with the shortest fuse is replaced. On a guest nothing happens here: the host primes it
+; (net_tnt_prime_out) and replicates the block edit and the TNT.
 tnt_prime:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      net_tnt_prime_out           ; the arguments are already in place; no local edit, no local entity
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -292,6 +298,8 @@ tnt_render:
 ;    their item, containers spill);
 ; 2. the player within 2r takes ceil(f * base * r / 3), f = 1 - d / 2r, d measured to his chest
 ;    (survival_damage decides whether it applies), and is thrown away from the blast;
+; 2b. multiplayer: every other player within 2r is hurt the same way on his own machine
+;    (net_explosion_players: TNT and creepers always, a player's rocket or grenade, explode_pvp, only with PvP on);
 ; 3. every mob within 2r takes ceil(f * 24 * r / 3 * explode_mob_mult) and is knocked away;
 ; 4. every primed TNT within 2r is thrown away (14 f, plus 5 f upwards).
 ; Effects: fx_explosion at the centre, fx_debris for every second destroyed block.
@@ -482,7 +490,7 @@ explode_at:
     addss   xmm0, xmm2
     sqrtss  xmm0, xmm0                  ; d
     comiss  xmm0, [rsp + X_TWOR]
-    jae     .mobs                       ; out of range
+    jae     .peers                      ; out of range
     divss   xmm0, [rsp + X_TWOR]
     movss   xmm1, [c_one]
     subss   xmm1, xmm0                  ; f
@@ -491,7 +499,7 @@ explode_at:
     mov     ecx, DIFF_HARD
     cmp     eax, ecx
     cmova   eax, ecx
-    cvtsi2ss xmm0, dword [base_dmg + rax*4]
+    cvtsi2ss xmm0, dword [explode_base_dmg + rax*4]
     mulss   xmm0, xmm1
     mulss   xmm0, [rsp + X_K]
     movss   xmm2, [explode_dmg_mult]    ; the creeper's factor, else max health / 20
@@ -507,7 +515,7 @@ explode_at:
     mov     esi, CAUSE_EXPLOSION
     call    survival_damage
     test    eax, eax
-    jz      .mobs                       ; invulnerable, creative or dead: no knockback either
+    jz      .peers                      ; invulnerable, creative or dead: no knockback either
     call    combat_kb_mult              ; Juggernaut: no knockback
     movss   [rsp + X_KBM], xmm0
     movss   xmm0, [rsp + X_DX]
@@ -530,11 +538,22 @@ explode_at:
     movss   [player + BODY.kbz], xmm1
 .hop:
     cmp     dword [player + BODY.on_ground], 0
-    je      .mobs
+    je      .peers
     movss   xmm0, [rsp + X_F]
     mulss   xmm0, [c_hop]
     mulss   xmm0, [rsp + X_KBM]         ; Juggernaut is not thrown up either
     movss   [player + BODY.vy], xmm0
+
+    ; ---- the other players (multiplayer): the same blast, sent to each one's own machine ------
+.peers:
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .mobs
+    movss   xmm0, [rsp + X_C]
+    movss   xmm1, [rsp + X_C + 4]
+    movss   xmm2, [rsp + X_C + 8]
+    movss   xmm3, [rsp + X_TWOR]
+    mulss   xmm3, [c_half]              ; r
+    call    net_explosion_players
 
     ; ---- the mobs -----------------------------------------------------------------
 .mobs:

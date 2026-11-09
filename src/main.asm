@@ -12,15 +12,26 @@ extern game_load, game_new, game_save
 extern render_init, ui_init, input_init, audio_init, audio_shutdown
 extern app_run, app_window
 extern stream_thread_start, stream_thread_stop, mkdir_p
+extern net_cfg_load, net_cfg_cli, net_valid_name, net_parse_addr
+extern net_cli_host, net_cli_join, net_cli_relay, net_cli_pvp
 
 section .rodata
 usage_text:
-    db "usage: assemblycraft [--data-dir DIR] [--play NAME [--creative] [--seed N]] [--selftest] [--help]", 10
+    db "usage: assemblycraft [--data-dir DIR] [--play NAME [--creative] [--seed N] [--host [--pvp]]]", 10
+    db "                     [--name NAME] [--port N] [--server IP:PORT] [--join CODE|IP:PORT [--force-relay]]", 10
+    db "                     [--selftest] [--help]", 10
     db "  --data-dir DIR  where worlds and settings live (default: $XDG_DATA_HOME/assemblycraft", 10
     db "                  or ~/.local/share/assemblycraft)", 10
     db "  --play NAME     skip the menus and play world NAME, creating it if it does not exist", 10
     db "  --creative      with --play, create the new world in Creative mode (default: Survival)", 10
     db "  --seed N        with --play, seed for a newly created world (default: random)", 10
+    db "  --name NAME     the multiplayer name for this run (1-16 letters, digits or _)", 10
+    db "  --host          with --play, open the world to multiplayer at once", 10
+    db "  --pvp           with --host, players can hurt each other", 10
+    db "  --port N        UDP port to host on (default 27615, then the next nine)", 10
+    db "  --server IP:PORT  rendezvous server for this run (default 93.127.163.226:27600)", 10
+    db "  --join TARGET   skip the title and join a world: a room code or IP[:PORT]; exit code 3 if it fails", 10
+    db "  --force-relay   with --join, go through the relay server without trying to punch through", 10
     db "  --selftest      run internal tests and exit", 10
     db "controls (rebindable in Settings > Controls): WASD move, Space jump / fly up,", 10
     db "  Left Shift sneak / fly down, Left Ctrl sprint, E inventory, F toggle fly (Creative),", 10
@@ -33,6 +44,13 @@ opt_data:     db "--data-dir", 0
 opt_play:     db "--play", 0
 opt_creative: db "--creative", 0
 opt_seed:     db "--seed", 0
+opt_name:     db "--name", 0
+opt_host:     db "--host", 0
+opt_port:     db "--port", 0
+opt_pvp:      db "--pvp", 0
+opt_server:   db "--server", 0
+opt_join:     db "--join", 0
+opt_relay:    db "--force-relay", 0
 s_prefix:     db "assemblycraft: ", 0
 s_no_dir:     db "assemblycraft: cannot create data directory ", 0
 s_bad_cfg:    db "assemblycraft: ignored invalid lines in ", 0
@@ -55,10 +73,14 @@ alignb 8
 envp:        resq 1
 data_arg:    resq 1                     ; --data-dir value or 0
 play_name:   resq 1                     ; --play value or 0
+cli_name:    resq 1                     ; --name value or 0
+cli_server:  resq 1                     ; --server value (a NADDR)
 window:      resq 1
 seed_value:  resd 1
 seed_given:  resd 1
 creative:    resd 1
+cli_port:    resd 1                     ; --port value or 0
+cli_server_set: resd 1
 want_help:   resd 1
 want_test:   resd 1
 play_path:   resb 4096
@@ -136,7 +158,7 @@ main:
 .not_data:
     IS_OPT  opt_play
     test    eax, eax
-    jz      .usage_err
+    jz      .not_play
     inc     ebx
     cmp     ebx, r12d
     jge     .usage_err
@@ -144,6 +166,89 @@ main:
     cmp     byte [rax], 0
     je      .usage_err
     mov     [play_name], rax
+    inc     ebx
+    jmp     .arg
+.not_play:
+    IS_OPT  opt_host
+    test    eax, eax
+    jz      .not_host
+    mov     byte [net_cli_host], 1
+    inc     ebx
+    jmp     .arg
+.not_host:
+    IS_OPT  opt_pvp
+    test    eax, eax
+    jz      .not_pvp
+    mov     byte [net_cli_pvp], 1
+    inc     ebx
+    jmp     .arg
+.not_pvp:
+    IS_OPT  opt_relay
+    test    eax, eax
+    jz      .not_relay
+    mov     byte [net_cli_relay], 1
+    inc     ebx
+    jmp     .arg
+.not_relay:
+    IS_OPT  opt_name
+    test    eax, eax
+    jz      .not_name
+    inc     ebx
+    cmp     ebx, r12d
+    jge     .usage_err
+    mov     rdi, [r13 + rbx*8]
+    call    net_valid_name
+    test    eax, eax
+    jz      .usage_err
+    mov     rax, [r13 + rbx*8]
+    mov     [cli_name], rax
+    inc     ebx
+    jmp     .arg
+.not_name:
+    IS_OPT  opt_port
+    test    eax, eax
+    jz      .not_port
+    inc     ebx
+    cmp     ebx, r12d
+    jge     .usage_err
+    mov     rdi, [r13 + rbx*8]
+    lea     rsi, [cli_port]
+    call    parse_u32
+    test    eax, eax
+    jz      .usage_err
+    mov     eax, [cli_port]
+    lea     ecx, [rax - 1]
+    cmp     ecx, 65534                  ; 1..65535
+    ja      .usage_err
+    inc     ebx
+    jmp     .arg
+.not_port:
+    IS_OPT  opt_server
+    test    eax, eax
+    jz      .not_server
+    inc     ebx
+    cmp     ebx, r12d
+    jge     .usage_err
+    mov     rdi, [r13 + rbx*8]
+    lea     rsi, [cli_server]
+    mov     edx, RV_PORT
+    call    net_parse_addr
+    test    eax, eax
+    jz      .usage_err
+    mov     dword [cli_server_set], 1
+    inc     ebx
+    jmp     .arg
+.not_server:
+    IS_OPT  opt_join
+    test    eax, eax
+    jz      .usage_err
+    inc     ebx
+    cmp     ebx, r12d
+    jge     .usage_err
+    mov     rax, [r13 + rbx*8]
+    cmp     byte [rax], 0
+    je      .usage_err
+    mov     [net_cli_join], rax
     inc     ebx
     jmp     .arg
 
@@ -158,10 +263,25 @@ main:
 .no_help:
     cmp     qword [play_name], 0
     jne     .play_ok
-    mov     eax, [creative]
+    movzx   eax, byte [net_cli_host]
+    or      eax, [creative]
     or      eax, [seed_given]
-    jnz     .usage_err                  ; --creative / --seed need --play
+    jnz     .usage_err                  ; --creative / --seed / --host need --play
 .play_ok:
+    cmp     byte [net_cli_host], 0
+    jne     .pvp_ok
+    cmp     byte [net_cli_pvp], 0
+    jne     .usage_err                  ; --pvp needs --host
+.pvp_ok:
+    cmp     qword [net_cli_join], 0
+    jne     .join_given
+    cmp     byte [net_cli_relay], 0
+    jne     .usage_err                  ; --force-relay needs --join
+    jmp     .join_ok
+.join_given:
+    cmp     qword [play_name], 0
+    jne     .usage_err                  ; --join and --play are two ways into a world
+.join_ok:
     cmp     dword [want_test], 0
     je      .game
     call    selftest_run
@@ -340,6 +460,15 @@ run_game:
     lea     rdx, [s_nl]
     call    err3
 .cfg_ok:
+    call    net_cfg_load                ; multiplayer.cfg, then the command line over it (for this run only)
+    mov     rdi, [cli_name]
+    xor     esi, esi
+    cmp     dword [cli_server_set], 0
+    je      .no_server
+    lea     rsi, [cli_server]
+.no_server:
+    mov     edx, [cli_port]
+    call    net_cfg_cli
     xor     r12d, r12d                  ; play path for app_run
     cmp     qword [play_name], 0
     je      .window

@@ -7,7 +7,7 @@
 %include "gl.inc"
 default rel
 
-global boats, boat_riding
+global boats, boat_riding, boat_rider
 global boats_clear, boats_step, boats_render, boats_place, boats_raycast, boats_mount
 global boats_dismount, boats_break, boats_save, boats_load, boats_shift
 
@@ -15,6 +15,8 @@ extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb
 extern block_tiles, render_box, light_bind_at, light_bind_index
+extern net_role, net_applying, net_send_to
+extern net_boat_place_out, net_boat_mount_out, net_boat_dismount_out, net_boat_break_out
 
 section .rodata
 align 4
@@ -65,6 +67,7 @@ section .bss
 alignb 16
 boats:       resb MAX_BOATS * BOATENT_size
 boat_riding: resd 1                     ; 0, or the index + 1 of the boat the player rides
+boat_rider:  resb MAX_BOATS            ; host: peer slot + 1 of the guest who rides the boat, 0 none
 plank_tiles: resb 8                     ; the PLANKS tile on all six faces
 
 section .text
@@ -74,6 +77,9 @@ boats_clear:
     lea     rdi, [boats]
     mov     ecx, MAX_BOATS * BOATENT_size
     xor     eax, eax
+    rep     stosb
+    lea     rdi, [boat_rider]           ; (eax is still 0)
+    mov     ecx, MAX_BOATS
     rep     stosb
     mov     dword [boat_riding], 0
     ret
@@ -107,7 +113,8 @@ seat:
 ; WATER cell whose cell above is not solid takes the boat: centred in the cell (but for the nudge of
 ; hull_nudge away from solid blocks beside it; with such blocks on both sides along x or z there is
 ; no room: 0), bottom 0.625 over the cell's floor, heading = the player's yaw. A full boat table
-; says "Too many boats" (0). The caller consumes the item in Survival.
+; says "Too many boats" (0). The caller consumes the item in Survival. A guest only sends the
+; request to the host (net_boat_place_out) and says 1: the boat shows with the host's next snapshot.
 ; r13 = eye, r14 = dir, r15d = cells left, rbx = the new boat, r12d = slot counter.
 ; Frame: cell[3] @0, step[3] @16, tmax[3] @32, tdelta[3] @48; once the cell is found the hull's
 ; nudge: x @32, z @36.
@@ -220,6 +227,16 @@ boats_place:
     jz      .none                       ; or leave no room for it
     movss   [rsp + 32], xmm0
     movss   [rsp + 36], xmm1
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .local
+    cmp     byte [net_applying], 0
+    jne     .local
+    mov     rdi, r13                    ; a guest: the host puts the boat on the water
+    mov     rsi, r14
+    call    net_boat_place_out
+    mov     eax, 1
+    jmp     .out
+.local:
     lea     rbx, [boats]
     xor     r12d, r12d
 .slot:
@@ -354,6 +371,8 @@ hull_nudge:
 ; 1.8) while the player rides it: a ceiling that his head would meet stops the boat. The height is
 ; derived from boat_riding every step, so no path that lets go of a boat has to restore it.
 ; rbx = boat, r12 = INPUT*, r13d = index, r14d = ridden, r15d = floating.
+; Multiplayer: a guest steps only the boat it rides (the others follow the host's snapshots); the
+; host leaves a boat a guest rides (boat_rider) to that guest's pose messages.
 ; Frame: cell x @0, z @4, floor(y) @8, scan offset @12, dx @20, dz @24.
 boats_step:
     push    rbp
@@ -404,6 +423,19 @@ boats_step:
     xor     r14d, r14d
     cmp     eax, [boat_riding]
     sete    r14b
+    movzx   eax, byte [net_role]
+    test    eax, eax
+    jz      .own                        ; offline: every boat steps
+    cmp     eax, NET_ROLE_GUEST
+    jne     .host_boat
+    test    r14d, r14d                  ; a guest steps only the boat it rides: the others follow the
+    jz      .next                       ; host's snapshots
+    jmp     .own
+.host_boat:
+    lea     rax, [boat_rider]
+    cmp     byte [rax + r13], 0         ; a boat a guest rides follows that guest's pose messages
+    jne     .next
+.own:
     movss   xmm0, [rbx + BODY.y]
     addss   xmm0, [c_probe]
     roundss xmm0, xmm0, 9
@@ -618,10 +650,27 @@ boats_raycast:
     pop     rbp
     ret
 
-; boats_mount(edi idx): the player rides boat idx (a used slot): he sits in it at once
+; boats_mount(edi idx): the player rides boat idx (a used slot): he sits in it at once. A guest asks
+; the host (net_boat_mount_out) and sits down when the answer comes (nw_on_boat_mount_ok runs this
+; again with net_applying set); the host refuses a boat a guest rides.
 boats_mount:
     cmp     edi, MAX_BOATS
     jae     .ret
+    movzx   eax, byte [net_role]
+    test    eax, eax
+    jz      .local                      ; offline
+    mov     ecx, edi
+    cmp     eax, NET_ROLE_GUEST
+    je      .guest
+    lea     rax, [boat_rider]           ; the host: a boat a guest rides is taken
+    cmp     byte [rax + rcx], 0
+    jne     .ret
+    jmp     .local
+.guest:
+    cmp     byte [net_applying], 0
+    jne     .local                      ; the host said yes (nw_on_boat_mount_ok): sit down
+    jmp     net_boat_mount_out          ; the host decides; the seat comes with its answer
+.local:
     sub     rsp, 8
     mov     [rsp], edi
     call    boat_at
@@ -638,7 +687,8 @@ boats_mount:
     ret
 
 ; boats_dismount(): the rider steps out: he stands 0.6 above the boat's bottom at its x and z, at
-; rest, and nobody rides. Nothing happens when nobody rides.
+; rest, and nobody rides. Nothing happens when nobody rides. A guest tells the host first, with
+; the boat's pose (net_boat_dismount_out).
 boats_dismount:
     sub     rsp, 8
     mov     eax, [boat_riding]
@@ -647,6 +697,15 @@ boats_dismount:
     dec     eax
     cmp     eax, MAX_BOATS
     jae     .clear
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .leave
+    cmp     byte [net_applying], 0
+    jne     .leave
+    mov     [rsp], eax
+    mov     edi, eax
+    call    net_boat_dismount_out       ; the host learns where the boat was left and that its rider is out
+    mov     eax, [rsp]
+.leave:
     mov     edi, eax
     call    boat_at
     cmp     dword [rax + BOATENT.used], 0
@@ -671,7 +730,8 @@ boats_dismount:
     ret
 
 ; boats_break(edi idx): boat idx is gone; in Survival it leaves a BOAT item. A rider is let go
-; where he sits.
+; where he sits. A guest asks the host to break it (net_boat_break_out); the host lets a guest who
+; rode it go (MT_BOAT_MOUNT_OK with ok = 0) and clears boat_rider.
 boats_break:
     push    rbp
     mov     rbp, rsp
@@ -685,6 +745,35 @@ boats_break:
     mov     rbx, rax
     cmp     dword [rbx + BOATENT.used], 0
     je      .out
+    movzx   eax, byte [net_role]
+    test    eax, eax
+    jz      .release                    ; offline
+    cmp     eax, NET_ROLE_GUEST
+    jne     .host
+    cmp     byte [net_applying], 0
+    jne     .release
+    mov     edi, r12d
+    call    net_boat_break_out          ; a guest: the host breaks the boat and drops the item
+    lea     eax, [r12 + 1]
+    cmp     eax, [boat_riding]
+    jne     .out
+    mov     dword [boat_riding], 0      ; a rider is let go where he sits
+    jmp     .out
+.host:
+    lea     rax, [boat_rider]           ; a guest who rode it is let go as well
+    movzx   edi, byte [rax + r12]
+    mov     byte [rax + r12], 0
+    test    edi, edi
+    jz      .release
+    dec     edi                         ; his slot
+    mov     byte [rsp], r12b
+    mov     byte [rsp + 1], 0
+    mov     esi, MT_BOAT_MOUNT_OK
+    mov     rdx, rsp
+    mov     ecx, 2
+    mov     r8d, 1
+    call    net_send_to                 ; "not yours any more"
+.release:
     lea     eax, [r12 + 1]
     cmp     eax, [boat_riding]
     jne     .drop

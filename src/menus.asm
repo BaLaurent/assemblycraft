@@ -1,7 +1,8 @@
 ; menus.asm - the non-gameplay screens built on the ui.asm toolkit, in the grimoire look: title
-; (a leather cover), world list, create / rename / delete world, pause, death and the loading
-; screen. Pages are parchment (ui_panel) with their title on a ribbon (ui_ribbon) hanging over
-; the top edge; text on parchment is ink (no shadow), text on a dark surface is cream or gold.
+; (a leather cover; its Multiplayer button leads to mpmenu.asm), world list, create / rename / delete
+; world, pause, death and the loading screen. Pages are parchment (ui_panel) with their title on a
+; ribbon (ui_ribbon) hanging over the top edge; text on parchment is ink (no shadow), text on a
+; dark surface is cream or gold.
 ; Every screen_*() runs once per frame after ui_begin and acts on ui_input. Coordinates are
 ; GUI units (ui_w x ui_h). A screen that changes state returns at once, so one click never
 ; reaches two widgets. screen_create and screen_rename reset their fields when app_entered
@@ -12,6 +13,7 @@ default rel
 
 global screen_title, screen_worlds, screen_create, screen_rename
 global screen_delete, screen_pause, screen_death, screen_loading, death_causes
+global form_page                        ; the page of the form screens, shared with mpmenu.asm
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_focus
 extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon
@@ -24,6 +26,7 @@ extern app_goto, app_play_world, app_create_world, app_quit_to_title
 extern app_respawn, app_request_quit
 extern saves_scan, saves_delete, saves_rename, fmt_ago
 extern str_append, str_copy, str_eq, parse_u32, fnv1a
+extern app_title_msg, app_leave_world, net_role, net_peers, net_host_info, net_leave
 
 %define C_DEATH         RGBA(80, 0, 0, 120)     ; the red veil over the world behind the death page
 %define C_LOADING       (C_UMBER | 0xFF000000)  ; C_UMBER made opaque: the frame cleared behind must not tint it
@@ -110,6 +113,7 @@ t_title:        db "ASSEMBLYCRAFT", 0
 t_subtitle:     db "x86-64 assembly edition", 0
 t_version:      db "AssemblyCraft 0.11.0", 0
 t_singleplayer: db "Singleplayer", 0
+t_multiplayer:  db "Multiplayer", 0
 t_settings:     db "Settings...", 0
 t_quit:         db "Quit Game", 0
 
@@ -148,6 +152,9 @@ t_lost:         db "will be lost forever! (A long time!)", 0
 t_game_menu:    db "Game Menu", 0
 t_back:         db "Back to Game", 0
 t_save_quit:    db "Save and Quit to Title", 0
+t_open_mp:      db "Open to Multiplayer", 0
+t_disconnect:   db "Disconnect", 0
+t_connected_to: db "Connected to ", 0
 
 t_died:         db "You died!", 0
 t_respawn:      db "Respawn", 0
@@ -422,22 +429,54 @@ screen_title:
     mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
+    mov     rax, [app_title_msg]        ; why the last session ended: a pinned note over the buttons
+    test    rax, rax
+    jz      .no_msg
+    mov     rdi, rax
+    mov     esi, 1
+    call    ui_text_width
+    lea     ecx, [rax + 7]              ; note width: the ink (advance - 1) plus 4 each side
+    mov     [rsp], ecx
+    shr     ecx, 1
+    mov     esi, r12d
+    sub     esi, ecx                    ; x = cx - w / 2
+    mov     edi, NINE_NOTE
+    lea     edx, [r15 - 26]
+    mov     ecx, [rsp]
+    mov     r8d, 14
+    call    ui_nine
+    mov     rdi, [app_title_msg]
+    mov     esi, r12d
+    lea     edx, [r15 - 23]
+    mov     ecx, C_RUBRIC
+    mov     r8d, 1
+    call    ui_text_ink_centered
+.no_msg:
     BTN     t_singleplayer, r12, -100, r15, 0, 200, 1
     test    eax, eax
     jz      .not_single
+    mov     qword [app_title_msg], 0
     call    saves_scan
     mov     dword [app_selected], -1
     GOTO    ST_WORLDS
     jmp     .ret
 .not_single:
-    BTN     t_settings, r12, -100, r15, 24, 200, 1
+    BTN     t_multiplayer, r12, -100, r15, 24, 200, 1
+    test    eax, eax
+    jz      .not_multi
+    mov     qword [app_title_msg], 0
+    GOTO    ST_MP_JOIN
+    jmp     .ret
+.not_multi:
+    BTN     t_settings, r12, -100, r15, 48, 200, 1
     test    eax, eax
     jz      .not_settings
+    mov     qword [app_title_msg], 0
     mov     dword [app_settings_parent], ST_TITLE
     GOTO    ST_SETTINGS
     jmp     .ret
 .not_settings:
-    BTN     t_quit, r12, -100, r15, 48, 200, 1
+    BTN     t_quit, r12, -100, r15, 72, 200, 1
     test    eax, eax
     jz      .ret
     call    app_request_quit
@@ -947,6 +986,11 @@ screen_delete:
 
 ; ---- pause ---------------------------------------------------------------------------------
 
+; screen_pause(): the game menu. Back and Settings, then by the session: offline "Open to
+; Multiplayer" (the host page) and Save and Quit; hosting "Multiplayer" (the same page), Save and
+; Quit and the host's info line (net_host_info) under the buttons; a guest "Disconnect" (net_leave,
+; then back to the title) and "Connected to <host>". The page grows with its rows.
+; r12d = cx, r13d = NET_ROLE_*, r14d = ui_h / 4, ebx = y of the info line over r14
 screen_pause:
     ENTER_FRAME 8
     mov     dword [app_entered], 0
@@ -956,11 +1000,18 @@ screen_pause:
     mov     eax, [ui_h]
     shr     eax, 2
     mov     r14d, eax                   ; ui_h / 4
+    movzx   r13d, byte [net_role]
     call    dim_screen
+    mov     ecx, 140                    ; four buttons ...
+    mov     eax, 154                    ; ... and the host's info line under them
+    cmp     r13d, NET_ROLE_HOST
+    cmove   ecx, eax
+    mov     eax, 130                    ; a guest: three buttons and its info line
+    cmp     r13d, NET_ROLE_GUEST
+    cmove   ecx, eax
     lea     edi, [r12 - 110]            ; the page; the ribbon hangs over its top edge
     lea     esi, [r14 - 20]
     mov     edx, 220
-    mov     ecx, 116
     call    ui_panel
     lea     rdi, [t_game_menu]
     mov     esi, r12d
@@ -976,12 +1027,60 @@ screen_pause:
     GOTO    ST_SETTINGS
     jmp     .ret
 .not_settings:
-    BTN     t_save_quit, r12, -100, r14, 72, 200, 1
+    cmp     r13d, NET_ROLE_GUEST
+    je      .guest
+    lea     rdi, [t_open_mp]            ; the third button leads to the multiplayer page
+    lea     rax, [t_multiplayer]
+    cmp     r13d, NET_ROLE_HOST
+    cmove   rdi, rax
+    lea     esi, [r12 - 100]
+    lea     edx, [r14 + 72]
+    mov     ecx, 200
+    mov     r8d, 1
+    call    ui_button
     test    eax, eax
-    jz      .not_quit
+    jz      .not_mp
+    GOTO    ST_MP_HOST
+    jmp     .ret
+.not_mp:
+    BTN     t_save_quit, r12, -100, r14, 96, 200, 1
+    test    eax, eax
+    jz      .infos
     call    app_quit_to_title
     jmp     .ret
-.not_quit:
+.guest:
+    BTN     t_disconnect, r12, -100, r14, 72, 200, 1
+    test    eax, eax
+    jz      .infos
+    call    net_leave                   ; saves the character on the host, then leaves
+    xor     edi, edi
+    call    app_leave_world
+    jmp     .ret
+.infos:
+    cmp     r13d, NET_ROLE_OFF
+    je      .no_info
+    lea     rdi, [line_buf]
+    mov     ebx, 122                    ; hosting: under the fourth button
+    cmp     r13d, NET_ROLE_HOST
+    jne     .info_guest
+    call    net_host_info               ; "Room ABC123 - 3 players"
+    jmp     .info_draw
+.info_guest:
+    mov     ebx, 98                     ; a guest: under the third
+    lea     rsi, [t_connected_to]
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [net_peers + PEER.name] ; slot 0 is the host
+    call    str_append
+    mov     byte [rax], 0
+.info_draw:
+    lea     rdi, [line_buf]
+    mov     esi, r12d
+    lea     edx, [r14 + rbx]
+    mov     ecx, C_INK_SOFT
+    mov     r8d, 1
+    call    ui_text_ink_centered
+.no_info:
     cmp     dword [ui_input + UIINPUT.escape], 0
     je      .ret
 .resume:

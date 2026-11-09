@@ -45,6 +45,7 @@ extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon
 extern ui_text_ink, ui_text_ink_centered, ui_text_width, ui_textfield, ui_item_icon
 extern item_names, item_max_stack, gun_index
 extern str_append, str_copy, str_len, i32_to_str
+extern net_role
 
 %define DEBUG_GAP_STEPS   60            ; F12 presses at most this many fixed steps apart (1.0 s)
 %define DEBUG_COORD_MAX   16000000      ; a teleport target stays within this on x and z
@@ -210,6 +211,8 @@ debug_press:
 ; debug_poll() -> eax 1 when the menu was opened by this frame's key press: the last key pressed this frame
 ; (ui_input.key_pressed) is F12 (debug_press) or any other key (debug_other_key)
 debug_poll:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    je      .none                       ; a guest has no debug menu: it would change what the host owns
     mov     eax, [ui_input + UIINPUT.key_pressed]
     cmp     eax, KEY_F12
     je      debug_press
@@ -2428,6 +2431,8 @@ tab_world:
 ; frame: [rsp] unused
 debug_frame:
     ENTER_FRAME 8
+    cmp     byte [net_role], NET_ROLE_OFF
+    jne     .poll                       ; a multiplayer world keeps stepping (sim_step runs debug_step): no clock here
     movss   xmm0, [hud_dt]
     addss   xmm0, [dbg_acc]
 .steps:
@@ -2440,6 +2445,7 @@ debug_frame:
     jmp     .steps
 .steps_done:
     movss   [dbg_acc], xmm0
+.poll:
     call    debug_poll
     cmp     dword [debug_open], 0
     je      .close
