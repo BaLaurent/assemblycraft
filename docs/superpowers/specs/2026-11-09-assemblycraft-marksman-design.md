@@ -447,3 +447,26 @@ Prerequisites: `cd /run/media/octopusman/Games/Experiences/assemblycraft`, NASM,
 - **Old saves:** 0.10.2/0.10.3 worlds keep level, XP, attributes, gear, kits and quests; skill points are refunded once. Plain guns load unchanged.
 - **omabox:** if `omabox up` dies, run `omabox down default` once and retry once; if it still dies, the live checks are reported blocked, the mockups stay the visual reference, and an issue is filed for them.
 
+
+---
+
+# As built (0.10.4)
+
+Shipped as designed (110 nodes, 130 edges, 20 abilities, 15 keystones, 46 stats, 231 items, 7 guns, 195 selftests, warning-free build). Commits: `0455298` contracts, `990f47f` art, `57dcf24` core, `5b882e9` combat, `d6eb892` guns, then tuning/sweep.
+
+Deviations from the plan above:
+- **Warrior label (user-approved at the mockup checkpoint):** the zoom-1 "Warrior" label sits centred under its path node, not right of it (the right placement covered the Mage's first node). `web_label_dy` stores one y offset per archetype (17, 17, -25, -25, -25) and all five labels are centred.
+- `LEGACY_CLASSES 4` stays a separate constant in `rpg.asm` (the v0/v1 migration reads old 4-class saves); `refund_banner` takes its text in `rdi`.
+- `gun_shot_info` and attachment fitting live in `guns.asm` / `craft_fit` (`items.asm`); the gun crit roll draws no random number when the chance is 0, which keeps older gun test sequences unchanged. The cooldown clamps `max(2, ...)` are unreachable with today's tables (lowest cooldown 6).
+- One extra test beyond the plan: `grenade_and_rocket_blasts`; `rpg` tests gained a table-driven check of all five bridges and a taint check of the sixth `arch_sums` slot.
+- `gear.asm` bounds its per-archetype tables with `ARCH_MARKSMAN`.
+- Mage trim measured live on the same build (staff + Runed Steel 3, level 30, INT 20): preview Hit 10 / Crit 15 on 0.10.3, Hit 8 / Crit 11 on 0.10.4. A staff-only build is unchanged (4 base damage, no flat adds), as designed.
+
+Live-verified in omabox (box `default`, AZERTY desktop layout: send `a` for the Q ability key): five-sector grimoire at both zooms next to the mockup, Path of the Marksman (pistol + 32 rounds, Powder Grenade on the bar, reload `8/8`), stat rows `+53% gun damage` / `+63% reload speed` for the level 30 build, bullets doing 8 damage (5 base x 1.53), Powder Grenade burst, Flashbang burst, Bullseye spending stamina, tooltips of a fitted pistol and an attachment, fitting a Rifled Barrel onto a Revolver in the 2x2 grid and taking it, Revolver model and firing, and a v2 save loading with the refund banner, empty bar, points back.
+
+Not driven live (covered by unit tests only): Deadshot aimed-versus-hip crit (needs the right mouse button held), Fan the Hammer HUD `N/12`, crafting the six new recipes from raw ingredients at a table, shift-click taking a fitted gun, Archer Volley/Arrow Rain landing several arrows on one mob (the arrows fan wider than a single mob at any range tried). Filed as BaLaurent/assemblycraft#9.
+
+# Deferred
+
+- Playtest the first-pass balance numbers (Rebalance table, Marksman row) with a real session per archetype and retune the pinned tests with them.
+- The live checks listed above as not driven.
