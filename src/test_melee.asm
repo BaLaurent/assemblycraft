@@ -86,6 +86,7 @@ f17_5:    dd 17.5
 f19_5:    dd 19.5
 f20_5:    dd 20.5
 f25:      dd 25.0
+f24:      dd 24.0
 f40_5:    dd 40.5
 f8_4:     dd 8.4
 f88:      dd 88.0
@@ -570,6 +571,21 @@ test_melee_combo_crit_backstab:
     call    strike
     cmp     eax, 7
     jne     .fail
+    ; a flank counts: here dot(forward, to player) = -cos(yaw). A mob turned 80 degrees (-0.17) has
+    ; half turned its back: a backstab now that the threshold is 0 (it was -0.3); at 100 degrees
+    ; (+0.17) it half faces the player: no backstab
+    mov     edi, ARCH_ROGUE
+    call    set_class                           ; no combo from the strikes before
+    mov     dword [rbx + BODY.yaw], __float32__(80.0)
+    call    strike
+    cmp     eax, 14
+    jne     .fail
+    mov     edi, 12
+    call    steps
+    mov     dword [rbx + BODY.yaw], __float32__(100.0)
+    call    strike
+    cmp     eax, 7
+    jne     .fail
     ; the dagger swings every 7 steps (iron dagger attack 5, from behind 10)
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], IRON_DAGGER
     mov     edi, ARCH_ROGUE
@@ -783,22 +799,22 @@ test_stamina_mana_regen_and_max_health:
     cmp     eax, 1
     jne     .fail
     FNEAR   [combat_mana], k_20
-    ; a Warrior has 24 half hearts, and a fresh survival state starts with all of them
+    ; a Warrior has 28 half hearts, and a fresh survival state starts with all of them
     mov     edi, ARCH_WARRIOR
     call    set_class
-    CHK     [surv_max_health], 24
+    CHK     [surv_max_health], 28
     call    survival_reset
-    CHK     [surv + SURVIVAL.health], 24
+    CHK     [surv + SURVIVAL.health], 28
     ; regeneration climbs to the raised maximum, not to 20: fed (a heart per 240 steps) ...
-    mov     dword [surv + SURVIVAL.health], 22
+    mov     dword [surv + SURVIVAL.health], 26
     mov     edi, 500
     call    surv_steps
-    CHK     [surv + SURVIVAL.health], 24
+    CHK     [surv + SURVIVAL.health], 28
     mov     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL   ; ... and peaceful (a heart per second)
-    mov     dword [surv + SURVIVAL.health], 22
+    mov     dword [surv + SURVIVAL.health], 26
     mov     edi, 200
     call    surv_steps
-    CHK     [surv + SURVIVAL.health], 24
+    CHK     [surv + SURVIVAL.health], 28
     mov     dword [settings + SETTINGS.difficulty], DIFF_NORMAL
     ; the RPG armor bonus counts like worn armor points: 10 of them turn a 10-point mob hit into
     ; (10 * 15 + 12) / 25 = 6, and a boss slam too, but not a fall
@@ -807,23 +823,23 @@ test_stamina_mana_regen_and_max_health:
     mov     edi, 10
     mov     esi, CAUSE_ZOMBIE
     call    survival_damage
-    CHK     [surv + SURVIVAL.health], 18
+    CHK     [surv + SURVIVAL.health], 22
     mov     dword [surv + SURVIVAL.invuln], 0
     mov     edi, 10
     mov     esi, CAUSE_BOSS
     call    survival_damage
-    CHK     [surv + SURVIVAL.health], 12
+    CHK     [surv + SURVIVAL.health], 16
     mov     dword [surv + SURVIVAL.invuln], 0
     mov     edi, 5
     mov     esi, CAUSE_FALL
     call    survival_damage
-    CHK     [surv + SURVIVAL.health], 6         ; a fall of 5 is 6 at 24 health, armor or not: 12 - 6
+    CHK     [surv + SURVIVAL.health], 9         ; a fall of 5 is 7 at 28 health, armor or not: 16 - 7
     mov     dword [rpg_stats + STAT_ARMOR_BONUS * 4], 30        ; capped at 20: (10 * 5 + 12) / 25 = 2
     call    survival_reset
     mov     edi, 10
     mov     esi, CAUSE_ZOMBIE
     call    survival_damage
-    CHK     [surv + SURVIVAL.health], 22
+    CHK     [surv + SURVIVAL.health], 26
     xor     ebx, ebx
     jmp     .ret
 .fail:
@@ -1004,7 +1020,9 @@ test_damage_pipeline:
     CALC    -1, SRC_MELEE, HITF_CRIT, f10, f15         ; 1.5
     CALC    -1, SRC_MELEE, 0, f10, f10
     mov     dword [rbx + MOB.shock], 2
-    CALC    0, SRC_MELEE, 0, f10, f12                  ; +10 % per shock stack
+    CALC    0, SRC_MELEE, 0, f10, k_11                 ; +5 % per shock stack
+    mov     dword [rbx + MOB.shock], 3
+    CALC    0, SRC_MELEE, 0, f10, f11_5                ; three stacks: +15 %
     mov     dword [rbx + MOB.shock], 0
     mov     dword [rbx + MOB.mark_t], 100
     CALC    0, SRC_MELEE, 0, f10, f13                  ; marked: +30 %
@@ -1025,6 +1043,8 @@ test_damage_pipeline:
     CALC    0, SRC_MELEE, 0, f10, k_16
     CALC    0, SRC_MELEE_SKILL, 0, f10, k_16
     CALC    0, SRC_BOW, 0, f10, f10
+    CALC    0, SRC_GUN, 0, f10, f10                    ; bullets and grenades are no melee either
+    CALC    0, SRC_GUN_SKILL, 0, f10, f10
     mov     dword [rbx + MOB.health], 6                ; 30 % exactly is not under
     CALC    0, SRC_MELEE, 0, f10, f10
     mov     dword [rpg_keystones], 0
@@ -1067,6 +1087,36 @@ test_damage_pipeline:
     CALC    -1, SRC_SPELL, 0, f10, f10                 ; spells add no element damage
     POKE    STAT_ADD_FROST, 0
     POKE    STAT_FROST_DMG, 0
+    POKE    STAT_ADD_FIRE, 4                           ; a staff bolt adds half of the flat damage
+    CALC    -1, SRC_BOLT, 0, k_4, f6                   ; 4 + 4 * 0.5
+    CALC    -1, SRC_MELEE, 0, k_4, f8                  ; melee adds all of it: 4 + 4
+    CALC    -1, SRC_BOW, 0, k_4, f8                    ; and so does a bow
+    POKE    STAT_ADD_FIRE, 0
+    POKE    STAT_WEAPON_DMG, 4
+    CALC    -1, SRC_BOLT, 0, k_4, f6                   ; the weapon's damage is halved the same way
+    CALC    -1, SRC_MELEE, 0, k_4, f8
+    POKE    STAT_WEAPON_DMG, 0
+    POKE    STAT_GUN_DMG, 60                           ; bullets and grenades take GUN_DMG...
+    CALC    -1, SRC_GUN, 0, f5, f8                     ; 5 * 1.6
+    CALC    -1, SRC_GUN_SKILL, 0, f5, f8
+    CALC    -1, SRC_GUN, HITF_CRIT, f10, f24           ; and crit like everything else: 16 * 1.5
+    CALC    -1, SRC_SPELL, 0, f5, f5                   ; ...which nothing else takes
+    CALC    -1, SRC_MELEE, 0, f5, f5
+    CALC    -1, SRC_BOW, 0, f5, f5
+    POKE    STAT_GUN_DMG, 0
+    POKE    STAT_SPELL_DMG, 100                        ; a bullet is no spell
+    CALC    -1, SRC_GUN, 0, f5, f5
+    POKE    STAT_SPELL_DMG, 0
+    POKE    STAT_ALL_DMG, 10                           ; ALL_DMG reaches them
+    CALC    -1, SRC_GUN, 0, f10, k_11
+    CALC    -1, SRC_GUN_SKILL, 0, f10, k_11
+    POKE    STAT_ALL_DMG, 0
+    POKE    STAT_ADD_FIRE, 4                           ; no flat damage on bullets and grenades
+    POKE    STAT_WEAPON_DMG, 2
+    CALC    -1, SRC_GUN, 0, f5, f5
+    CALC    -1, SRC_GUN_SKILL, 0, f5, f5
+    POKE    STAT_ADD_FIRE, 0
+    POKE    STAT_WEAPON_DMG, 0
     ; ---- 8. Bloodrage, Embers and Inferno ------------------------------------------------------------
     mov     dword [rpg_keystones], 1 << KS_BLOODRAGE
     mov     dword [surv + SURVIVAL.health], 10         ; half of 20 is missing: +25 %
@@ -1085,6 +1135,8 @@ test_damage_pipeline:
     CALC    0, SRC_SPELL, 0, f10, f12_5                ; Inferno: spells on a burning foe +25 %
     CALC    0, SRC_BOLT, 0, f10, f12_5
     CALC    0, SRC_MELEE, 0, f10, f10
+    CALC    0, SRC_GUN, 0, f10, f10                    ; no Inferno for bullets and grenades
+    CALC    0, SRC_GUN_SKILL, 0, f10, f10
     mov     dword [rbx + MOB.burn_t], 0
     CALC    0, SRC_SPELL, 0, f10, f10
     mov     dword [rpg_keystones], 0
@@ -1105,6 +1157,15 @@ test_damage_pipeline:
     FRESH   MOB_ZOMBIE
     PH      SRC_SPELL, 0, f5                           ; a spell never bleeds
     CHK     [rbx + MOB.bleed_t], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN, 0, f5                             ; nor does a bullet...
+    CHK     [rbx + MOB.bleed_t], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN_SKILL, 0, f5                       ; ...or a grenade
+    CHK     [rbx + MOB.bleed_t], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN, HITF_BLEED, f5                    ; unless the shot is flagged to
+    CHK     [rbx + MOB.bleed_t], 180
     POKE    STAT_BLEED_CHANCE, 0
     FRESH   MOB_ZOMBIE
     PH      SRC_MELEE, ELEM_FIRE | HITF_NOSTATUS, f5
@@ -1127,6 +1188,12 @@ test_damage_pipeline:
     FRESH   MOB_ZOMBIE
     PH      SRC_MELEE, 0, f6
     CHK     [rbx + MOB.burn_t], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN, 0, f6                             ; a bullet does not burn it
+    CHK     [rbx + MOB.burn_t], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN_SKILL, 0, f6                       ; nor does a grenade (without fire in it)
+    CHK     [rbx + MOB.burn_t], 0
     mov     dword [rpg_keystones], 1 << KS_VENOM_BLADES
     FRESH   MOB_ZOMBIE
     PH      SRC_MELEE, 0, f5                           ; Venom Blades: two poison stacks per melee hit
@@ -1137,6 +1204,9 @@ test_damage_pipeline:
     CHK     [rbx + MOB.poison], 4
     FRESH   MOB_ZOMBIE
     PH      SRC_MELEE_SKILL, 0, f5
+    CHK     [rbx + MOB.poison], 0
+    FRESH   MOB_ZOMBIE
+    PH      SRC_GUN, 0, f5                             ; nor a bullet
     CHK     [rbx + MOB.poison], 0
     mov     dword [rpg_keystones], 0
     mov     dword [gear_powers], 1 << LP_CELESTIAL
@@ -1488,15 +1558,30 @@ test_heavy_attack_and_speed:
     xor     edi, edi
     call    set_class
     HELD    BOW
-    PREVIEW 9, 14, 10                           ; a full draw: 9, 13.5, 60 steps
+    PREVIEW 11, 16, 10                          ; a full draw: 11, 16.5 rounds to even, 60 steps
     HELD    CELESTIAL_BOW
-    PREVIEW 14, 20, 10                          ; 9 * 1.5 = 13.5 -> 14; 20.25
+    PREVIEW 16, 25, 10                          ; 11 * 1.5 = 16.5 -> 16 (even); 24.75
     POKE    STAT_ATTACK_SPEED, 50
-    PREVIEW 14, 20, 15                          ; the draw takes 40 steps
+    PREVIEW 16, 25, 15                          ; the draw takes 40 steps
     mov     dword [rpg_keystones], 1 << KS_DEADEYE
-    PREVIEW 14, 20, 10                          ; Deadeye: attack speed no longer speeds it
+    PREVIEW 16, 25, 10                          ; Deadeye: attack speed no longer speeds it
     mov     dword [rpg_keystones], 0
     POKE    STAT_ATTACK_SPEED, 0
+    HELD    PISTOL                              ; a firearm: all pellets of one shot, its crit, shots per 10 s
+    PREVIEW 5, 8, 40                            ; 5, 7.5 rounds to even, 600 / 15
+    POKE    STAT_GUN_DMG, 60
+    PREVIEW 8, 12, 40                           ; 5 * 1.6, 12
+    POKE    STAT_ATTACK_SPEED, 50
+    PREVIEW 8, 12, 40                           ; attack speed never speeds a firearm
+    POKE    STAT_ATTACK_SPEED, 0
+    HELD    SHOTGUN
+    PREVIEW 29, 43, 12                          ; six pellets of 4.8 (28.8 rounded once), 43.2, 12.5 -> even
+    HELD    ROCKET_LAUNCHER
+    PREVIEW 38, 38, 60                          ; 24 * 1.6 = 38.4; a rocket never crits: the same twice
+    HELD    PISTOL
+    mov     word [inv + INVENTORY.slots + ITEMSTACK.dmg], 5 | ATT_RIFLED | ATT_COMP
+    PREVIEW 10, 14, 55                          ; rifled 6 * 1.6 = 9.6, 14.4, compensated: every 11 steps
+    POKE    STAT_GUN_DMG, 0
     mov     edi, ARCH_MAGE                     ; SPELL +10 %: shock bolts
     call    set_class
     HELD    STAFF
@@ -2072,7 +2157,7 @@ frame_setup:
 ; frame_checks() -> eax 0 when the game frame does what the combat rules say: a left button held on a
 ; mob for 0.5 s lands a heavy blow on release (a short click or another tool does not), the guard
 ; and a villager-free crosshair decide whether a charge starts, a spear reaches 4.5 blocks, a click on
-; a block digs instead of charging, the bow shoots 1 + round(8 power) (13 for the Celestial Bow) with
+; a block digs instead of charging, the bow shoots 1 + round(10 power) (16 for the Celestial Bow) with
 ; the attack flag, costs an arrow and never wears, and potions heal max(8, ...) / restore max(50, ...)
 frame_checks:
     push    rbp
@@ -2172,14 +2257,14 @@ frame_checks:
     jne     .fail
     RELEASE                                            ; a swing at the air
     CHK     [game_heavy_s], 0xBF800000
-    ; ---- F. the bow in Creative: damage 1 + round(8 power), 13 for the Celestial Bow ------------------
+    ; ---- F. the bow in Creative: damage 1 + round(10 power), 16 for the Celestial Bow -----------------
     HELD    BOW
     call    arrows_clear
     RPRESS
     RHOLD   60
     RELEASE                                            ; a full draw
     CHK     [arrows + ARROWENT.live], 1
-    CHK     [arrows + ARROWENT.damage], 9
+    CHK     [arrows + ARROWENT.damage], 11
     CHK     [arrows + ARROWENT.flags], AF_ATTACK
     CHK     [arrows + ARROWENT.owner], 0
     CHK     [arrows + ARROWENT.kind], PROJ_ARROW
@@ -2187,14 +2272,14 @@ frame_checks:
     call    arrows_clear
     RPRESS
     RHOLD   29
-    RELEASE                                            ; half a draw: power 0.40, 1 + round(3.2)
-    CHK     [arrows + ARROWENT.damage], 4
+    RELEASE                                            ; half a draw: power 0.40, 1 + round(4.0)
+    CHK     [arrows + ARROWENT.damage], 5
     HELD    CELESTIAL_BOW
     call    arrows_clear
     RPRESS
     RHOLD   60
     RELEASE
-    CHK     [arrows + ARROWENT.damage], 13             ; 9 * 3 / 2
+    CHK     [arrows + ARROWENT.damage], 16             ; 11 * 3 / 2
     CHK     [arrows + ARROWENT.flags], AF_ATTACK
     ; ---- G. the bow in Survival costs an arrow and never wears ------------------------------------------
     mov     dword [game_mode], MODE_SURVIVAL
@@ -2205,7 +2290,7 @@ frame_checks:
     RPRESS
     RHOLD   60
     RELEASE
-    CHK     [arrows + ARROWENT.damage], 9
+    CHK     [arrows + ARROWENT.damage], 11
     CHK     [arrows + ARROWENT.pickup], 1              ; a used-up arrow can be picked up again
     cmp     byte [inv + INVENTORY.slots + 4 + ITEMSTACK.count], 4
     jne     .fail

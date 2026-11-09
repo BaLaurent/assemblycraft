@@ -30,7 +30,7 @@ k_6:        dd 6.0
 k_100:      dd 100.0
 k_0_5:      dd 0.5
 k_0_08:     dd 0.08                     ; poison: a stack ticks for 8 % of the hit that applied it
-k_0_1:      dd 0.1                      ; shock: 10 % more damage per stack
+k_shock_step: dd 0.05                   ; shock: 5 % more damage per stack
 k_0_2:      dd 0.2                      ; chill: 20 % slower per stack
 k_0_7:      dd 0.7                      ; armored elites take 30 % less
 k_0_8:      dd 0.8                      ; volume of the freezing crack
@@ -280,11 +280,11 @@ status_speed_mult:
     movaps  xmm0, xmm1
     ret
 
-; status_damage_mult(rdi MOB*) -> xmm0 factor on the damage the mob takes: (1 + 0.1 per shock
+; status_damage_mult(rdi MOB*) -> xmm0 factor on the damage the mob takes: (1 + 0.05 per shock
 ; stack) * 1.3 while marked * 0.7 for an armored elite
 status_damage_mult:
     cvtsi2ss xmm0, dword [rdi + MOB.shock]
-    mulss   xmm0, [k_0_1]
+    mulss   xmm0, [k_shock_step]
     addss   xmm0, [k_1]
     cmp     dword [rdi + MOB.mark_t], 0
     jle     .unmarked

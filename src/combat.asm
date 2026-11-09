@@ -12,7 +12,7 @@ global combat_mana, combat_stamina
 global combat_guard_t, combat_guard_break_t, combat_dodge_t, combat_dodge_cd
 global combat_attack_cd, combat_combo, combat_combo_t, combat_riposte_t
 global combat_crit_next_t, combat_warcry_t, combat_blade_t, combat_stealth_t
-global combat_slow_t, combat_spend_t
+global combat_slow_t, combat_spend_t, combat_bullseye_t, combat_fanhammer_t
 global combat_burn_t, combat_chill_t, combat_poison_t, combat_poison, combat_phoenix_cd
 global combat_hitstop, combat_hit_flags, combat_life_carry, combat_attacker
 global combat_reset, combat_refill, combat_max_mana, combat_max_stamina, combat_step
@@ -26,6 +26,7 @@ extern inv_held, item_tool, item_gear, item_attack_damage
 extern mobs, mob_strike, mob_hurt, mob_is_hostile, mob_resist, survival_damage, survival_dot
 extern status_apply, status_damage_mult, abilities_cd
 extern audio_play, fx_shake, fx_burst, dmgnum_text
+extern gun_shot_info
 
 %define SPEND_PAUSE    36               ; steps stamina regeneration waits after a spend
 %define PARRY_BASE     6                ; a hit within this many steps (+ PARRY_WINDOW) of raising the guard is parried
@@ -75,7 +76,6 @@ k_2_5:       dd 2.5                     ; ...and its knockback
 k_4:         dd 4.0
 k_5:         dd 5.0
 k_7:         dd 7.0                     ; the Archmage staff's bolt
-k_9:         dd 9.0                     ; a fully drawn bow
 k_10:        dd 10.0
 k_16:        dd 16.0                    ; dodge roll speed, blocks/s
 k_20:        dd 20.0                    ; stamina of a heavy attack
@@ -100,7 +100,7 @@ k_1_3:       dd 1.3                     ; war cry damage; Embers on a burning fo
 k_1_5:       dd 1.5
 k_1_6:       dd 1.6                     ; Executioner
 k_len2:      dd 0.0001                  ; 0.01 blocks, squared
-k_m0_3:      dd -0.3                    ; backstab: the mob faces away if dot(forward, to player) is below this
+k_back_dot:  dd 0.0                     ; backstab: faces away if dot(forward, to player) < this (a flank counts)
 k_m1:        dd -1.0                    ; falling faster than this makes a strike crit
 k_regen:     dd 0.33333334              ; stamina regained per step: 20 per second
 
@@ -130,6 +130,8 @@ combat_burn_t:        resd 1            ; > 0: burning, the player takes a burn 
 combat_chill_t:       resd 1            ; > 0: chilled, walking is slower
 combat_poison_t:      resd 1            ; > 0: poisoned, the player takes a poison tick every 30 steps
 combat_phoenix_cd:    resd 1            ; > 0: the Phoenix ring is recovering
+combat_bullseye_t:    resd 1            ; > 0: Bullseye, firearms fly true and crit more (guns.asm reads it)
+combat_fanhammer_t:   resd 1            ; > 0: Fan the Hammer, firearms fire twice as fast, rounds free (guns.asm)
 combat_timers_end:
 combat_combo:         resd 1            ; strikes in the running combo (0..2)
 combat_hitstop:       resd 1            ; float seconds of freeze left (the game loop drains it)
@@ -822,16 +824,18 @@ elem_mult:
 ; The damage pipeline of combat_calc and combat_hit_mob, split by element (out[ELEM_*]; the total
 ; is their sum). The base lands in the element of flags & 7, multiplied by the family factor F of
 ; the source (melee and melee skills: 1 + (MELEE + ALL) / 100; bow and ranged skills: RANGED;
-; bolts and spells: SPELL, 25 % more with Inferno on a burning foe; thorns: 1) and by that element's
-; 1 + <element> DMG / 100. A weapon attack (melee, bow, bolt) adds WEAPON_DMG * F physical and
-; ADD_<element> * F * <element factor> of each element. A mob then resists each element by its
-; mob_resist percent. Finally every part is multiplied by: the crit factor with HITF_CRIT; 1 +
-; ELITE_DMG / 100 against an elite or the boss; status_damage_mult; Executioner (x1.6 for melee on a
-; foe under 30 % health); Embers (x1.3 on a burning foe); Bloodrage (1 % per 2 % of the player's
-; health missing, for all but thorns). Without a mob the resist, elite, status, Executioner, Embers,
-; and Inferno terms are skipped. Pure: no random numbers, no side effects.
+; bullets and grenades: GUN_DMG; bolts and spells: SPELL, 25 % more with Inferno on a burning foe;
+; thorns: 1) and by that element's 1 + <element> DMG / 100. A weapon attack (melee, bow, bolt) adds
+; WEAPON_DMG * F physical and ADD_<element> * F * <element factor> of each element, half of each
+; for a staff bolt (the Mage's flat damage is trimmed); bullets, grenades and skills add none. A
+; mob then resists each element by its mob_resist percent. Finally every part is multiplied by: the
+; crit factor with HITF_CRIT; 1 + ELITE_DMG / 100 against an elite or the boss; status_damage_mult;
+; Executioner (x1.6 for melee on a foe under 30 % health); Embers (x1.3 on a burning foe);
+; Bloodrage (1 % per 2 % of the player's health missing, for all but thorns). Without a mob the
+; resist, elite, status, Executioner, Embers, and Inferno terms are skipped. Pure: no random
+; numbers, no side effects.
 ; rbx = MOB*, r12d = src, r13d = flags, r14 = out, r15d = element / loop counter
-; Frame: [rsp] base, [rsp+4] F, [rsp+8] multiplier
+; Frame: [rsp] base, [rsp+4] F, [rsp+8] multiplier, [rsp+12] F of the flat parts (F, half for a bolt)
 calc_parts:
     push    rbp
     mov     rbp, rsp
@@ -858,6 +862,11 @@ calc_parts:
     cmp     r12d, SRC_BOW
     je      .family
     cmp     r12d, SRC_RANGED_SKILL
+    je      .family
+    mov     eax, STAT_GUN_DMG
+    cmp     r12d, SRC_GUN
+    je      .family
+    cmp     r12d, SRC_GUN_SKILL
     je      .family
     mov     eax, STAT_SPELL_DMG
 .family:
@@ -898,15 +907,21 @@ calc_parts:
     movss   [r14 + r15*4], xmm2
     cmp     r12d, SRC_BOLT
     ja      .resist                     ; only weapon attacks (melee, bow, bolt) add the weapon's own damage
+    movss   xmm0, [rsp + 4]             ; the flat parts' factor: F, half of it for a staff bolt
+    cmp     r12d, SRC_BOLT
+    jne     .flat_set
+    mulss   xmm0, [k_0_5]
+.flat_set:
+    movss   [rsp + 12], xmm0
     cvtsi2ss xmm0, dword [rpg_stats + STAT_WEAPON_DMG * 4]
-    mulss   xmm0, [rsp + 4]
+    mulss   xmm0, [rsp + 12]
     addss   xmm0, [r14]
     movss   [r14], xmm0
     mov     r15d, 1
 .add:
     lea     rax, [rpg_stats + (STAT_ADD_FIRE - 1) * 4]
     cvtsi2ss xmm2, dword [rax + r15*4]
-    mulss   xmm2, [rsp + 4]
+    mulss   xmm2, [rsp + 12]
     mov     edi, r15d
     call    elem_mult
     mulss   xmm2, xmm0
@@ -1043,12 +1058,12 @@ combat_calc:
     ret
 
 ; combat_hit_mob(edi mob, esi src, edx flags, xmm0 base, xmm1 dirx, xmm2 dirz) -> eax damage dealt
-; Every hit the player lands on a mob goes through here (guns, fire and blasts of TNT, creepers and
-; rockets excepted). The damage is calc_parts' total, rounded, at least 1. Nothing happens and 0
-; comes back for a free slot, a hit inside the hurt window (HITF_HURTWIN: mob_hurt
-; instead of mob_strike) and a total under 0.01 (every part resisted away: "IMMUNE"). HITF_EXECUTE
-; raises the damage to the mob's remaining health. The mob learns whose hit it is and its element
-; (combat_hit_flags). Then, unless it died or HITF_NOSTATUS:
+; Every hit the player lands on a mob goes through here (bullets and grenades too; fire and blasts
+; of TNT, creepers and rockets excepted). The damage is calc_parts' total, rounded, at least 1.
+; Nothing happens and 0 comes back for a free slot, a hit inside the hurt window (HITF_HURTWIN:
+; mob_hurt instead of mob_strike) and a total under 0.01 (every part resisted away: "IMMUNE").
+; HITF_EXECUTE raises the damage to the mob's remaining health. The mob learns whose hit it is and
+; its element (combat_hit_flags). Then, unless it died or HITF_NOSTATUS:
 ;   - every fire, frost, shock and poison part of at least 1 applies its status (frost three times
 ;     with HITF_CHILL3);
 ;   - a physical part of at least 1 bleeds: always with HITF_BLEED, else for melee, bow and melee
@@ -1386,7 +1401,7 @@ strike_cd:
     ret
 
 ; strike_backstab(rdi MOB*) -> eax 1 when the mob faces away from the player: its facing (sin, -cos)
-; has dot(forward, to player) below -0.3; 0 inside the mob
+; has dot(forward, to player) below 0 (a flank counts); 0 inside the mob
 strike_backstab:
     push    rbx
     mov     rbx, rdi
@@ -1409,7 +1424,7 @@ strike_backstab:
     subss   xmm2, xmm3                  ; dot(forward, d) = dx * sin - dz * cos
     sqrtss  xmm4, xmm4
     divss   xmm2, xmm4
-    ucomiss xmm2, [k_m0_3]
+    ucomiss xmm2, [k_back_dot]
     jae     .done
     mov     eax, 1
 .done:
@@ -1763,22 +1778,35 @@ combat_heavy:
     ret
 
 ; combat_weapon_preview(rdi out dword[3]): what the held weapon does, for the character sheet: a
-; normal hit, a critical hit, and attacks per 10 seconds. A bow is a full draw (9, x1.5 for the
-; Celestial Bow; 60 steps, shortened by ATTACK_SPEED unless Deadeye); a mage's staff shoots shock
-; bolts (4 every 24 steps; the Archmage staff 7 every 18, both shortened by ATTACK_SPEED); anything
-; else is a melee strike with the held item (bare hands included).
+; normal hit, a critical hit, and attacks per 10 seconds. A firearm (gun_shot_info) is one pull of
+; the trigger: round(combat_calc(SRC_GUN, base of a pellet) * pellets), every 600 / cooldown tenths
+; (attachments count, Fan the Hammer does not); a shot that cannot crit (the rocket) shows its
+; normal damage twice. A bow is a full draw (BOW_FULL, x1.5 for the Celestial Bow; 60 steps,
+; shortened by ATTACK_SPEED unless Deadeye); a mage's staff shoots shock bolts (4 every 24 steps;
+; the Archmage staff 7 every 18, both shortened by ATTACK_SPEED); anything else is a melee strike
+; with the held item (bare hands included).
 ; rbx = out, r12d = held item id, r13d = damage source. Frame: [rsp] base, [rsp+4] cooldown in
-; steps, [rsp+8] element flags
+; steps, [rsp+8] element flags, [rsp+16] gun_shot_info's out[4]: damage, pellets, cooldown, can crit
+; (the pellets and can crit of anything but a firearm are 1)
 combat_weapon_preview:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 24
+    sub     rsp, 40
     mov     rbx, rdi
     call    strike_held
     mov     r12d, eax
+    call    inv_held
+    movzx   esi, word [rax + ITEMSTACK.dmg]     ; what a firearm keeps there: rounds and attachments
+    mov     edi, r12d
+    lea     rdx, [rsp + 16]
+    call    gun_shot_info
+    test    eax, eax
+    jnz     .gun
+    mov     dword [rsp + 20], 1                 ; one projectile, and it can crit
+    mov     dword [rsp + 28], 1
     lea     rcx, [item_gear]
     movzx   eax, byte [rcx + r12]
     cmp     eax, GK_BOW
@@ -1804,7 +1832,8 @@ combat_weapon_preview:
 .bow:
     mov     r13d, SRC_BOW
     mov     dword [rsp + 8], 0
-    movss   xmm0, [k_9]
+    mov     eax, BOW_FULL
+    cvtsi2ss xmm0, eax
     cmp     r12d, CELESTIAL_BOW
     jne     .bow_base
     mulss   xmm0, [k_1_5]
@@ -1815,6 +1844,13 @@ combat_weapon_preview:
     jnz     .cd                         ; Deadeye: attack speed no longer speeds the draw
     mov     edi, 60
     call    scaled_cd
+    jmp     .cd
+.gun:
+    mov     r13d, SRC_GUN
+    mov     dword [rsp + 8], 0                  ; bullets are physical
+    cvtsi2ss xmm0, dword [rsp + 16]             ; the damage of a pellet
+    movss   [rsp], xmm0
+    mov     eax, [rsp + 24]                     ; steps between two shots
     jmp     .cd
 .melee:
     mov     r13d, SRC_MELEE
@@ -1832,22 +1868,29 @@ combat_weapon_preview:
     mov     edx, [rsp + 8]
     movss   xmm0, [rsp]
     call    combat_calc
+    cvtsi2ss xmm1, dword [rsp + 20]
+    mulss   xmm0, xmm1                          ; all the pellets of a shot
     cvtss2si eax, xmm0
-    mov     [rbx], eax                  ; a normal hit
+    mov     [rbx], eax                          ; a normal hit
+    cmp     dword [rsp + 28], 0
+    je      .crit_set                           ; it cannot crit: the same again
     mov     edi, -1
     mov     esi, r13d
     mov     edx, [rsp + 8]
     or      edx, HITF_CRIT
     movss   xmm0, [rsp]
     call    combat_calc
+    cvtsi2ss xmm1, dword [rsp + 20]
+    mulss   xmm0, xmm1
     cvtss2si eax, xmm0
-    mov     [rbx + 4], eax              ; a critical hit
+.crit_set:
+    mov     [rbx + 4], eax                      ; a critical hit
     movss   xmm0, [k_600]
     cvtsi2ss xmm1, dword [rsp + 4]
     divss   xmm0, xmm1
     cvtss2si eax, xmm0
-    mov     [rbx + 8], eax              ; attacks per 10 seconds
-    add     rsp, 24
+    mov     [rbx + 8], eax                      ; attacks per 10 seconds
+    add     rsp, 40
     pop     r13
     pop     r12
     pop     rbx

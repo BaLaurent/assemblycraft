@@ -26,9 +26,9 @@ k_0_8:    dd 0.8
 k_0_8333: dd 0.8333333                  ; 0.5 * 10 / 6
 k_1_2:    dd 1.2                        ; 0.08 * 10 * 1.5
 k_1_25:   dd 1.25                       ; 0.5 * 10 * 1.5 / 6
-k_1_3:    dd 1.3
-k_1_69:   dd 1.69
-k_1_183:  dd 1.183                      ; 1.3 * 1.3 * 0.7
+k_1_15:   dd 1.15
+k_1_495:  dd 1.495                      ; 1.15 * 1.3
+k_1_0465: dd 1.0465                     ; 1.15 * 1.3 * 0.7
 
 section .bss
 align 4
@@ -293,22 +293,22 @@ test_status_effects:
     mov     rdi, rbx
     call    status_damage_mult
     movss   [tmp], xmm0
-    FNEAR   [tmp], k_1_3                ; 1 + 0.1 * 3
+    FNEAR   [tmp], k_1_15               ; 1 + 0.05 * 3
     mov     dword [rbx + MOB.mark_t], 100
     mov     rdi, rbx
     call    status_damage_mult
     movss   [tmp], xmm0
-    FNEAR   [tmp], k_1_69               ; marked: 30 % more
+    FNEAR   [tmp], k_1_495              ; marked: 30 % more
     mov     dword [rbx + MOB.affix], AFX_ARMORED
     mov     rdi, rbx
     call    status_damage_mult
     movss   [tmp], xmm0
-    FNEAR   [tmp], k_1_183              ; armored: 30 % less
-    ; a tick is scaled too: burn 10 per tick * (1.3 * 1.3 * 0.7) rounds to 12
+    FNEAR   [tmp], k_1_0465             ; armored: 30 % less
+    ; a tick is scaled too: burn 20 per tick * (1.15 * 1.3 * 0.7) = 20.93 rounds to 21
     mov     dword [rbx + MOB.burn_t], 100
-    mov     dword [rbx + MOB.burn_dmg], __float32__(10.0)
+    mov     dword [rbx + MOB.burn_dmg], __float32__(20.0)
     call    status_step
-    CHK     [rbx + MOB.health], 88
+    CHK     [rbx + MOB.health], 79
     ; ---- 6. expiry: a timer that runs out takes its stacks and damage with it -----------------
     call    mobs_clear
     mov     edi, MOB_ZOMBIE

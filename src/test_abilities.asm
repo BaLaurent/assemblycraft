@@ -2,16 +2,17 @@
 ; and war cry), a fireball that explodes without breaking anything, blink stopping at walls, the
 ; volley and the arrow rain; then the slot 3 abilities (ground slam, frost nova, hunter's mark, fan
 ; of knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance), AREA,
-; the staff bolt and the binding of the ability bar.
+; the staff bolt and the binding of the ability bar; last the four Marksman abilities (the grenades
+; they lob, the two timers they set) and the burst of a flashbang.
 %include "common.inc"
 default rel
 
 global test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
 global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn, test_new_abilities
-global test_ability_bar_binding
+global test_ability_bar_binding, test_marksman_abilities
 
 extern abilities_cd, abilities_cd_total, abilities_bolt_cd, abilities_reset, abilities_step
-extern abilities_use, abilities_staff_bolt
+extern abilities_use, abilities_staff_bolt, ab_flash_at
 extern arrows, arrows_clear, arrows_step
 extern mobs, mobs_clear, mob_spawn
 extern fx_clear, fx_count, fx_step, fx_particles, fx_shake
@@ -23,7 +24,8 @@ extern rpg_state, rpg_stats, rpg_recompute, rpg_reset, rpg_ext, rpg_keystones
 extern rpg_spend, rpg_bar_set, rpg_bar_ability
 extern gear_powers
 extern combat_mana, combat_stamina, combat_reset
-extern combat_warcry_t, combat_stealth_t, combat_crit_next_t
+extern combat_warcry_t, combat_stealth_t, combat_crit_next_t, combat_bullseye_t, combat_fanhammer_t
+extern combat_step
 
 ; ability ids, (archetype - 1) * 4 + slot: what the ability bar holds and the index of abilities_cd
 %define AB_CHARGE       0
@@ -283,7 +285,7 @@ cleanup:
     add     rsp, 8
     ret
 
-; set_path(edi archetype 1..4, esi level): a character of that level who took the path of the
+; set_path(edi archetype 1..5, esi level): a character of that level who took the path of the
 ; archetype and nothing else: rpg_reset, the level poked, every kit marked as given (so the spend
 ; gives no kit and wears no chestplate), rpg_spend of the path node (its ability lands in bar slot 0;
 ; the stats are recomputed with the archetype's base row) and crits switched off so damage is exact
@@ -306,7 +308,7 @@ set_path:
     pop     rbp
     ret
 
-; learn(edi ability 1..15, one that is not a path's): the ability node that teaches it gets rank 1
+; learn(edi ability 1..19, one that is not a path's): the ability node that teaches it gets rank 1
 ; without the nodes before it (the stats stay as they are: an ability node adds none) and the
 ; ability goes to the bar slot of the same number, so abilities_use(slot) keeps its old meaning
 ; ebx = ability
@@ -369,11 +371,11 @@ count_live:
     ret
 
 ; Warrior: Charge costs 30 stamina, starts a 360 step cooldown, shoves the player along -z at
-; 22 b/s and strikes the zombie in its way once (6 * 1.1 = 6.6, so 7; stunned 30 steps); a recast
+; 22 b/s and strikes the zombie in its way once (10 * 1.1 = 11; stunned 30 steps); a recast
 ; during the cooldown and the locked war cry cost nothing; COOLDOWN_RED shortens the cooldown;
-; the unlocked war cry stuns hostile mobs within 6 blocks only (within 9 with AREA 50). Mage with
-; 10 mana: no Fireball (nothing paid, nothing fired); with 100 it fires one (75 mana left, 180
-; steps, the unscaled base damage 8).
+; the unlocked war cry stuns hostile mobs within 6 blocks only (within 9 with AREA 50) for 40 steps.
+; Mage with 10 mana: no Fireball (nothing paid, nothing fired); with 100 it fires one (75 mana
+; left, 180 steps, the unscaled base damage 8).
 ; rbx = the zombie; frame: eye[3] @0, dir[3] @12, the zombie's health before the charge @24
 test_ability_cost_cooldown_and_unlock:
     push    rbp
@@ -434,14 +436,14 @@ test_ability_cost_cooldown_and_unlock:
     call    abilities_step              ; the charge reaches the zombie
     mov     eax, [rsp + 24]
     sub     eax, [rbx + MOB.health]
-    cmp     eax, 7
+    cmp     eax, 11
     jne     .fail
     cmp     dword [rbx + MOB.stun], 30
     jne     .fail
     call    abilities_step              ; and strikes it once
     mov     eax, [rsp + 24]
     sub     eax, [rbx + MOB.health]
-    cmp     eax, 7
+    cmp     eax, 11
     jne     .fail
     cmp     dword [abilities_cd + AB_CHARGE * 4], 358
     jne     .fail
@@ -490,7 +492,7 @@ test_ability_cost_cooldown_and_unlock:
     jne     .fail
     cmp     dword [abilities_cd + AB_WARCRY * 4], 1200
     jne     .fail
-    cmp     dword [mobs + MOB.stun], 20
+    cmp     dword [mobs + MOB.stun], 40
     jne     .fail
     cmp     dword [mobs + MOB_size + MOB.stun], 0
     jne     .fail
@@ -503,7 +505,7 @@ test_ability_cost_cooldown_and_unlock:
     call    abilities_use
     cmp     eax, 1
     jne     .fail
-    cmp     dword [mobs + MOB_size + MOB.stun], 20
+    cmp     dword [mobs + MOB_size + MOB.stun], 40
     jne     .fail
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     call    mobs_clear                  ; ---- Mage: short of mana
@@ -902,7 +904,7 @@ test_volley_and_arrow_rain_spawn:
 ; in gear_powers, stats poked after the recompute) and cleans up after itself; it returns 0 when
 ; everything held.
 
-; tree_12_15(edi archetype 1..4): rank 1 in the archetype's nodes 12, 13, 14 and 15 (the third branch
+; tree_12_15(edi archetype 1..5): rank 1 in the archetype's nodes 12, 13, 14 and 15 (the third branch
 ; down to its slot 3 ability) on top of what it has, the stats recomputed (crit chance off again) and
 ; that slot 3 ability bound to bar slot 3
 ; ebx = archetype - 1
@@ -1285,7 +1287,7 @@ na_hunters_mark:
     ret
 
 ; Fan of Knives. Rogue L5 with rank 1 in node 15: it costs 35 stamina and starts a 540 step
-; cooldown; eight live PROJ_KNIFE of the player's (no pickup, damage 4, AF_BLEED) leave
+; cooldown; eight live PROJ_KNIFE of the player's (no pickup, damage 6, AF_BLEED) leave
 ; (16.5, eye y - 0.5, 16.5) level at 30 b/s, 45 degrees apart from the heading, -z: knife k flies
 ; along (sin 45k, -cos 45k). With CRIT_CHANCE 100 every knife also carries AF_CRIT; with 50 each
 ; rolls for itself (the eight are not all alike).
@@ -1315,7 +1317,7 @@ na_fan_of_knives:
     jne     .fail
     mov     edi, 8
     mov     esi, PROJ_KNIFE
-    mov     edx, 4
+    mov     edx, 6
     mov     ecx, AF_BLEED
     call    arrows_all
     test    eax, eax
@@ -1346,7 +1348,7 @@ na_fan_of_knives:
     jne     .fail
     mov     edi, 8
     mov     esi, PROJ_KNIFE
-    mov     edx, 4
+    mov     edx, 6
     mov     ecx, AF_BLEED | AF_CRIT
     call    arrows_all
     test    eax, eax
@@ -1887,7 +1889,7 @@ na_projectile_bases:
     ret
 
 ; War Cry and Charge stun rules. Warrior L15 with the war cry bought: the war cry stuns the plain
-; zombie 3 blocks ahead 20 steps, leaves the Juggernaut elite 3 blocks east unstunned and never
+; zombie 3 blocks ahead 40 steps, leaves the Juggernaut elite 3 blocks east unstunned and never
 ; shortens the 90 step freeze of the zombie 3 blocks west. A charge into a Juggernaut leaves its
 ; stun at 0 (the blow still lands), and into a frozen zombie leaves the freeze at 90.
 ; frame: eye[3] @0, dir[3] @12, the health of mob 0 @24, the result @40
@@ -1915,7 +1917,7 @@ na_stun_rules:
     CAST    1, 0
     cmp     eax, 1
     jne     .fail
-    cmp     dword MOBF(0, MOB.stun), 20
+    cmp     dword MOBF(0, MOB.stun), 40
     jne     .fail
     cmp     dword MOBF(1, MOB.stun), 0
     jne     .fail
@@ -2033,12 +2035,12 @@ test_ability_bar_binding:
     EXPECT_BAR 3, -1
     BAR_SET 1, AB_BLINK, 0              ; ---- not learned: it cannot be bound
     EXPECT_BAR 1, -1
-    mov     edi, 28                     ; Deep Mind: a stat node binds nothing
+    mov     edi, NUM_ARCHETYPES + 18 + 6        ; Deep Mind (the Mage's node 6): a stat node binds nothing
     call    rpg_spend
     cmp     eax, 1
     jne     .fail
     EXPECT_BAR 1, -1
-    mov     edi, 29                     ; Blink: the bar takes it into its first empty slot
+    mov     edi, NUM_ARCHETYPES + 18 + 7        ; Blink (node 7): the bar takes it into its first empty slot
     call    rpg_spend
     cmp     eax, 1
     jne     .fail
@@ -2094,7 +2096,7 @@ test_ability_bar_binding:
     jne     .fail
     BAR_SET 0, AB_METEOR, 0             ; ---- not learned
     BAR_SET 0, AB_VOLLEY, 0             ; another archetype's
-    BAR_SET 0, 16, 0                    ; no such ability
+    BAR_SET 0, NUM_ABILITIES, 0         ; no such ability
     BAR_SET 0, -2, 0
     BAR_SET 4, AB_FIREBALL, 0           ; no such slot
     EXPECT_BAR 0, -1
@@ -2117,6 +2119,290 @@ test_ability_bar_binding:
     pop     rbp
     ret
 
+; ---- the Marksman abilities ---------------------------------------------------------------------
+; test_marksman_abilities runs the scenes below in turn: 0 when everything held, else the number of
+; the first scene that failed (1 the four casts, 2 the flash's radius, 3 who a flash stuns). The bar
+; is filled by hand (it stores id + 1): what the web teaches ends up in the same place, and the casts
+; depend on nothing but what the bar holds. None of the four needs a gun in the hand.
+
+; BIND slot, ability: the ability sits in that bar slot
+%macro BIND 2
+    mov     byte [rpg_ext + RPGEXT.bar + %1], %2 + 1
+%endmacro
+
+; FLASH_AT x, y, z (float constants): ab_flash_at at that point
+%macro FLASH_AT 3
+    movss   xmm0, [%1]
+    movss   xmm1, [%2]
+    movss   xmm2, [%3]
+    call    ab_flash_at
+%endmacro
+
+; STUN_IS mob, steps: fail unless the mob's stun is that many steps
+%macro STUN_IS 2
+    cmp     dword MOBF(%1, MOB.stun), %2
+    jne     .fail
+%endmacro
+
+; UNSTUN mob: the mob is not stunned
+%macro UNSTUN 1
+    mov     dword MOBF(%1, MOB.stun), 0
+%endmacro
+
+; The four casts. Powder Grenade costs 30 stamina, starts an 8 s cooldown (480 steps) and lobs one
+; PROJ_GRENADE of the player's (no pickup, damage 12, no flag; AF_CRIT when the crit roll hits) from
+; half a block ahead of the eye at 20 b/s; a recast waits out the cooldown and costs nothing.
+; Bullseye (20 stamina, 900 steps) only sets the 300 step combat_bullseye_t, which ages with the
+; other timers (combat_step) and goes with combat_reset; Fan the Hammer (50 stamina, 1800 steps) the
+; 240 step combat_fanhammer_t. Flashbang (35 stamina, 720 steps) lobs a PROJ_GRENADE for 0 flagged
+; AF_FLASH, and never a crit.
+; frame: eye[3] @0, dir[3] @12, the result @40
+ma_casts:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
+    BIND    0, ABIL_GRENADE
+    BIND    1, ABIL_BULLSEYE
+    BIND    2, ABIL_FANHAMMER
+    BIND    3, ABIL_FLASHBANG
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0                  ; yaw 0: facing -z
+    xorps   xmm1, xmm1
+    call    view
+    CAST    0, 0                        ; ---- Powder Grenade
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 70.0
+    cmp     dword [abilities_cd + ABIL_GRENADE * 4], 480
+    jne     .fail
+    cmp     dword [abilities_cd_total + ABIL_GRENADE * 4], 480
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_GRENADE
+    mov     edx, 12
+    xor     ecx, ecx
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    count_live
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [arrows + ARROWENT.y], 12.62    ; level with the eye
+    EXPECT_NEAR [arrows + ARROWENT.z], 16.0     ; half a block ahead of it
+    EXPECT_NEAR [arrows + ARROWENT.vz], -20.0
+    CAST    0, 0                        ; a recast during the cooldown: nothing paid, nothing thrown
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_stamina], 70.0
+    call    count_live
+    cmp     eax, 1
+    jne     .fail
+    call    arrows_clear                ; ---- the grenade of a critical roll carries AF_CRIT
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    CAST    0, 0
+    cmp     eax, 1
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_GRENADE
+    mov     edx, 12
+    mov     ecx, AF_CRIT
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    call    arrows_clear                ; ---- Bullseye: a timer and nothing in the air
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 80.0
+    cmp     dword [abilities_cd + ABIL_BULLSEYE * 4], 900
+    jne     .fail
+    cmp     dword [combat_bullseye_t], 300
+    jne     .fail
+    cmp     dword [combat_fanhammer_t], 0
+    jne     .fail
+    call    count_live
+    test    eax, eax
+    jnz     .fail
+    xor     edi, edi
+    call    combat_step                 ; it ages with the other timers
+    cmp     dword [combat_bullseye_t], 299
+    jne     .fail
+    SETF    [combat_stamina], 100.0     ; ---- Fan the Hammer
+    CAST    2, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 50.0
+    cmp     dword [abilities_cd + ABIL_FANHAMMER * 4], 1800
+    jne     .fail
+    cmp     dword [combat_fanhammer_t], 240
+    jne     .fail
+    cmp     dword [combat_bullseye_t], 299      ; each has its own timer
+    jne     .fail
+    call    combat_reset                ; both go with the combat state
+    cmp     dword [combat_bullseye_t], 0
+    jne     .fail
+    cmp     dword [combat_fanhammer_t], 0
+    jne     .fail
+    call    abilities_reset             ; ---- Flashbang: never a crit
+    SETF    [combat_stamina], 100.0
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
+    CAST    3, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_stamina], 65.0
+    cmp     dword [abilities_cd + ABIL_FLASHBANG * 4], 720
+    jne     .fail
+    mov     edi, 1
+    mov     esi, PROJ_GRENADE
+    xor     edx, edx
+    mov     ecx, AF_FLASH
+    call    arrows_all
+    test    eax, eax
+    jz      .fail
+    EXPECT_NEAR [arrows + ARROWENT.z], 16.0
+    EXPECT_NEAR [arrows + ARROWENT.vz], -20.0
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; The radius of a flash at (16.5, 11.9, 14.5), the middle of a standing zombie's body. Zombies 4.5, 6
+; and 8 blocks south of it: the first is stunned 60 steps, the others are out of the 5 blocks - until
+; Powder Keg (x1.5: 7.5 blocks) or AREA 50 (x1.5) reaches the second, and both together (11.25 blocks)
+; the third.
+; frame: the result @40
+ma_flash_radius:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_19_0    ; mob 0: 4.5 blocks south
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_20_5    ; mob 1: 6 blocks
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_22_5    ; mob 2: 8 blocks
+    FLASH_AT k_16_5, k_11_9, k_14_5             ; ---- the plain radius of 5
+    STUN_IS 0, 60
+    STUN_IS 1, 0
+    STUN_IS 2, 0
+    UNSTUN  0                           ; ---- Powder Keg: 7.5
+    mov     dword [rpg_keystones], 1 << KS_POWDER_KEG
+    FLASH_AT k_16_5, k_11_9, k_14_5
+    STUN_IS 0, 60
+    STUN_IS 1, 60
+    STUN_IS 2, 0
+    UNSTUN  0                           ; ---- AREA 50 alone: 7.5 as well
+    UNSTUN  1
+    mov     dword [rpg_keystones], 0
+    mov     dword [rpg_stats + STAT_AREA * 4], 50
+    FLASH_AT k_16_5, k_11_9, k_14_5
+    STUN_IS 0, 60
+    STUN_IS 1, 60
+    STUN_IS 2, 0
+    UNSTUN  0                           ; ---- both: 11.25
+    UNSTUN  1
+    mov     dword [rpg_keystones], 1 << KS_POWDER_KEG
+    FLASH_AT k_16_5, k_11_9, k_14_5
+    STUN_IS 0, 60
+    STUN_IS 1, 60
+    STUN_IS 2, 60
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; Who a flash at (16.5, 11.9, 14.5) stuns: the zombie where it bursts 60 steps, the Fallen King 2
+; blocks east 20, never a Juggernaut elite (2 blocks west), nor a pig (3 blocks west: no foe), nor
+; the zombie 6 blocks south; a longer stun is kept (the frozen zombie 2 blocks north keeps its 90), a
+; shorter one lengthened to 60. Nobody loses health, 40 gold sparks fly. The distance is measured
+; from the middle of the body: a flash 4.1 blocks above a zombie's middle (5 above its feet) stuns
+; it, one 5.1 above does not.
+; frame: the health of mob 0 @24, the player's @28, the result @40
+ma_flash_rules:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 48
+    call    world_clear
+    call    fixture
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_14_5    ; mob 0: where it bursts
+    SPAWN   MOB_ZOMBIE, k_18_5, k_11, k_14_5    ; mob 1: 2 blocks east, the Fallen King
+    mov     dword MOBF(1, MOB.type), MOB_BOSS
+    SPAWN   MOB_ZOMBIE, k_14_5, k_11, k_14_5    ; mob 2: 2 blocks west, a Juggernaut
+    mov     dword MOBF(2, MOB.affix), AFX_JUGGERNAUT
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5    ; mob 3: 2 blocks north, frozen
+    mov     dword MOBF(3, MOB.stun), 90
+    SPAWN   MOB_ZOMBIE, k_18_5, k_11, k_12_5    ; mob 4: 2.8 blocks off, stunned 10 steps
+    mov     dword MOBF(4, MOB.stun), 10
+    SPAWN   MOB_PIG, k_13_5, k_11, k_14_5       ; mob 5: 3 blocks west
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_20_5    ; mob 6: 6 blocks south
+    SAVE_HEALTH 0, 24
+    mov     eax, [surv + SURVIVAL.health]
+    mov     [rsp + 28], eax
+    FLASH_AT k_16_5, k_11_9, k_14_5
+    STUN_IS 0, 60
+    STUN_IS 1, 20
+    STUN_IS 2, 0
+    STUN_IS 3, 90
+    STUN_IS 4, 60
+    STUN_IS 5, 0
+    STUN_IS 6, 0
+    EXPECT_LOST 0, 24, 0
+    mov     eax, [surv + SURVIVAL.health]
+    cmp     eax, [rsp + 28]
+    jne     .fail
+    call    fx_count
+    cmp     eax, 40
+    jne     .fail
+    call    mobs_clear                  ; ---- the middle of the body, not the feet
+    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_14_5
+    FLASH_AT k_16_5, k_16_0, k_14_5
+    STUN_IS 0, 60
+    UNSTUN  0
+    FLASH_AT k_16_5, k_17, k_14_5
+    STUN_IS 0, 0
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 40], eax
+    call    cleanup
+    mov     eax, [rsp + 40]
+    leave
+    ret
+
+; test_marksman_abilities: the casts of Powder Grenade, Bullseye, Fan the Hammer and Flashbang, and
+; the flashbang's burst (ab_flash_at); 0 when everything held, else the number of the first scene that failed
+test_marksman_abilities:
+    push    rbp
+    mov     rbp, rsp
+    SCENE   ma_casts, 1
+    SCENE   ma_flash_radius, 2
+    SCENE   ma_flash_rules, 3
+    xor     eax, eax
+.ret:
+    pop     rbp
+    ret
+
 section .rodata
 align 4
 k_14_5:   dd 14.5
@@ -2135,6 +2421,10 @@ k_12:     dd 12.0
 k_0_12:   dd 0.12
 k_0_2:    dd 0.2
 k_0_9:    dd 0.9
+k_11_9:   dd 11.9                       ; the middle of a standing zombie's body
+k_16_0:   dd 16.0
+k_19_0:   dd 19.0
+k_22_5:   dd 22.5
 knife_exp:                              ; x y z vx vy vz of knife k, facing -z from (16.5, 11, 16.5)
     dd 16.5, 12.12, 16.5,    0.0,     0.0, -30.0
     dd 16.5, 12.12, 16.5,   21.2132,  0.0, -21.2132

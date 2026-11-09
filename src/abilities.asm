@@ -1,4 +1,4 @@
-; abilities.asm - the sixteen abilities (four per archetype, taught by the skill web), the staff
+; abilities.asm - the twenty abilities (four per archetype, taught by the skill web), the staff
 ; bolt of the Path of the Mage and the timers behind them.
 ;
 ; abilities_use(slot, eye, dir) casts what the ability bar holds in that slot (rpg_bar_ability; an
@@ -9,7 +9,9 @@
 ; mana in health), start the cooldown and fire, so a failed cast costs nothing and plays the
 ; dry-fire click. Resource, cost and base cooldown come from rpg_ability_info; the COOLDOWN_RED
 ; stat shortens the cooldown. The abilities that last (charge, whirlwind, meteor storm, arrow
-; rain) keep their state in this file and abilities_step advances it once per fixed step. Nothing
+; rain) keep their state in this file and abilities_step advances it once per fixed step; Bullseye
+; and Fan the Hammer only start a timer in combat.asm that guns.asm reads, and the Powder Grenade
+; and the Flashbang lob a PROJ_GRENADE that arrows.asm bursts (a flash is ab_flash_at). Nothing
 ; here scales a damage: a strike is a combat_hit_mob call and a projectile (a plain arrows.asm
 ; entity) carries an unscaled base; a critical roll is only a flag, and the pipeline applies the
 ; stats, the element, the resistances and the crit multiplier.
@@ -19,6 +21,7 @@ default rel
 global abilities_cd, abilities_cd_total, abilities_bolt_cd
 global abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
 global meteor_tgt, rain_tgt                 ; read by test_mobs (entities_rebase)
+global ab_flash_at                          ; the flashbang burst at a point (arrows.asm calls it)
 
 extern player, mobs
 extern mobs_raycast, mob_is_hostile, yaw_from, ray_aabb
@@ -32,6 +35,7 @@ extern gear_has_power
 extern combat_pay, combat_crit_roll, combat_hit_mob
 extern combat_stealth_t, combat_warcry_t, combat_slow_t
 extern combat_blade_t, combat_crit_next_t
+extern combat_bullseye_t, combat_fanhammer_t
 
 ; ab_crit hands combat_crit_roll's 0/1 on as the flag value
 %if AF_CRIT != 1 || HITF_CRIT != AF_CRIT << 8
@@ -48,13 +52,18 @@ extern combat_blade_t, combat_crit_next_t
 %define WHIRL_STEPS     90
 %define WHIRL_PERIOD    30              ; a pulse every 30 steps: at 90, 60 and 30 steps left
 %define WARCRY_STEPS    480
+%define WARCRY_STUN     40              ; steps a war cry stuns
 %define STEALTH_STEPS   300
 %define DANCE_STEPS     1800            ; the smoke bomb's stealth under Shadow Dance
 %define BLADE_STEPS     360
 %define CRIT_NEXT_STEPS 120
 %define MARK_STEPS      600
+%define BULLSEYE_STEPS  300
+%define FANHAMMER_STEPS 240
 %define SLAM_STUN       40
 %define SLAM_STUN_BOSS  15
+%define FLASH_STUN      60              ; a flashbang's stun; the Fallen King's is shorter
+%define FLASH_STUN_BOSS 20
 %define METEORS         8
 %define METEOR_GAP      22
 %define RAIN_ARROWS     24
@@ -67,7 +76,8 @@ extern combat_blade_t, combat_crit_next_t
 %define VOLLEY_DMG      6
 %define EXPLOSIVE_DMG   10
 %define RAIN_DMG        6
-%define KNIFE_DMG       4
+%define KNIFE_DMG       6
+%define GRENADE_DMG     12
 
 ; abilities_use frame (rsp-relative)
 %define U_EYE           0               ; qword eye*
@@ -137,6 +147,12 @@ k_nova_base:  dd 6.0                    ; ...6 points of frost
 k_nova_push:  dd 0.5
 k_knife_v:    dd 30.0                   ; fan of knives: speed, b/s
 k_knife_drop: dd 0.5                    ; ...thrown from this far below the eye
+k_charge_dmg: dd 10.0                   ; charge: the base damage of its strike
+k_grenade_o:  dd 0.5                    ; powder grenade and flashbang: spawn distance from the eye...
+k_grenade_v:  dd 20.0                   ; ...and speed, b/s
+k_flash_r:    dd 5.0                    ; the flashbang's radius, times 1 + AREA / 100
+k_keg:        dd 1.5                    ; Powder Keg: a blast 50 % wider
+k_flash_vol:  dd 0.6                    ; volume of the flash's bang
 
 align 8
 ab_effects:                             ; by effect index; each (rdi eye*, rsi dir*, rdx plan*)
@@ -144,6 +160,7 @@ ab_effects:                             ; by effect index; each (rdi eye*, rsi d
     dq ab_fireball, ab_blink, ab_meteor, ab_nova
     dq ab_volley, ab_explosive, ab_rain, ab_mark
     dq ab_shadowstep, ab_smoke, ab_blade, ab_knives
+    dq ab_grenade, ab_bullseye, ab_fanhammer, ab_flashbang
 
 section .bss
 alignb 4
@@ -954,7 +971,7 @@ ab_shadow_plan:
     pop     rbp
     ret
 
-; ---- the sixteen effects: each (rdi eye float[3], rsi dir float[3], rdx plan float[4]) ---------
+; ---- the twenty effects: each (rdi eye float[3], rsi dir float[3], rdx plan float[4]) ---------
 
 ; Charge: the player is shoved forward at 22 b/s (abilities_step does the striking)
 ab_charge:
@@ -981,7 +998,7 @@ ab_charge:
     ret
 
 ; War Cry: the war cry's bonus lasts 480 steps, every hostile mob within 6 blocks (times 1 + AREA /
-; 100) is stunned 20 steps (never shortening a longer stun)
+; 100) is stunned 40 steps (never shortening a longer stun)
 ; rbx = mob, r12d = index; frame: the player's chest float[3], the radius squared @12
 ab_warcry:
     push    rbp
@@ -1024,13 +1041,13 @@ ab_warcry:
     jae     .next
     test    dword [rbx + MOB.affix], AFX_JUGGERNAUT
     jnz     .next                       ; juggernauts ignore stuns
-    cmp     dword [rbx + MOB.stun], 20
+    cmp     dword [rbx + MOB.stun], WARCRY_STUN
     jge     .next                       ; never shortening a longer stun
     mov     edi, r12d
     call    mob_is_hostile
     test    eax, eax
     jz      .next
-    mov     dword [rbx + MOB.stun], 20
+    mov     dword [rbx + MOB.stun], WARCRY_STUN
 .next:
     add     rbx, MOB_size
     inc     r12d
@@ -1450,7 +1467,7 @@ ab_blade:
     ret
 
 ; Fan of Knives: eight PROJ_KNIFE thrown level from half a block below the eye, 45 degrees apart
-; starting along the player's heading, 30 b/s, 4 each, bleeding, each rolling its own crit; nobody
+; starting along the player's heading, 30 b/s, 6 each, bleeding, each rolling its own crit; nobody
 ; picks them up again
 ; rbx = eye, r12d = knife; frame: sin and cos of the knife's heading
 ab_knives:
@@ -1500,11 +1517,168 @@ ab_knives:
     pop     rbp
     ret
 
+; Powder Grenade: a PROJ_GRENADE for 12, crit as rolled, lobbed at 20 b/s from half a block ahead;
+; it bursts into flame where it lands (arrows.asm)
+; rbx = eye, r12 = dir
+ab_grenade:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12, rsi
+    call    ab_crit
+    mov     r8d, eax
+    mov     edx, GRENADE_DMG
+    mov     rdi, rbx
+    mov     rsi, r12
+    movss   xmm0, [k_grenade_o]
+    movss   xmm1, [k_grenade_v]
+    mov     ecx, PROJ_GRENADE
+    call    ab_shoot
+    mov     edi, SND_BOW
+    movss   xmm0, [k_vol]
+    call    audio_play
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Bullseye: 300 steps of firearm shots that fly true and crit more (guns.asm reads the timer)
+ab_bullseye:
+    push    rbp
+    mov     rbp, rsp
+    mov     dword [combat_bullseye_t], BULLSEYE_STEPS
+    movss   xmm0, [k_3]
+    mov     edi, FX_GOLD
+    mov     esi, 16
+    call    ab_burst
+    mov     edi, SND_SPELL
+    movss   xmm0, [k_vol]
+    call    audio_play
+    pop     rbp
+    ret
+
+; Fan the Hammer: 240 steps of firearms that fire twice as fast and keep their rounds (guns.asm
+; reads the timer)
+ab_fanhammer:
+    push    rbp
+    mov     rbp, rsp
+    mov     dword [combat_fanhammer_t], FANHAMMER_STEPS
+    movss   xmm0, [k_3]
+    mov     edi, FX_SPARK
+    mov     esi, 20
+    call    ab_burst
+    mov     edi, SND_WARCRY
+    movss   xmm0, [k_vol]
+    call    audio_play
+    pop     rbp
+    ret
+
+; Flashbang: a PROJ_GRENADE for no damage, flagged AF_FLASH, lobbed like the powder grenade; where
+; it lands arrows.asm calls ab_flash_at instead of exploding
+ab_flashbang:
+    push    rbp
+    mov     rbp, rsp
+    xor     edx, edx
+    mov     ecx, PROJ_GRENADE
+    mov     r8d, AF_FLASH
+    movss   xmm0, [k_grenade_o]
+    movss   xmm1, [k_grenade_v]
+    call    ab_shoot                    ; rdi, rsi: eye, dir
+    mov     edi, SND_BOW
+    movss   xmm0, [k_vol]
+    call    audio_play
+    pop     rbp
+    ret
+
+; ab_flash_at(xmm0 x, xmm1 y, xmm2 z): a flashbang bursts at that point. Every hostile mob whose body
+; middle is within 5 blocks of it (times 1 + AREA / 100, times 1.5 with Powder Keg) is stunned 60
+; steps (the Fallen King 20, a Juggernaut elite not at all), never shortening a longer stun; gold
+; sparks and a bang. No damage.
+; rbx = mob, r12d = index; frame: the point float[3], the radius squared @12
+ab_flash_at:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    mov     edi, STAT_AREA
+    call    ab_mult
+    mulss   xmm0, [k_flash_r]
+    movss   [rsp + 12], xmm0            ; the radius
+    mov     edi, KS_POWDER_KEG
+    call    rpg_keystone
+    movss   xmm0, [rsp + 12]
+    test    eax, eax
+    jz      .radius
+    mulss   xmm0, [k_keg]               ; Powder Keg: 50 % wider
+.radius:
+    mulss   xmm0, xmm0
+    movss   [rsp + 12], xmm0
+    lea     rbx, [mobs]
+    xor     r12d, r12d
+.mob:
+    cmp     dword [rbx + MOB.type], MOB_NONE
+    je      .next
+    movss   xmm0, [rbx + BODY.x]
+    subss   xmm0, [rsp]
+    movss   xmm1, [rbx + BODY.height]
+    mulss   xmm1, [k_half]
+    addss   xmm1, [rbx + BODY.y]
+    subss   xmm1, [rsp + 4]             ; from the middle of the body
+    movss   xmm2, [rbx + BODY.z]
+    subss   xmm2, [rsp + 8]
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    mulss   xmm2, xmm2
+    addss   xmm0, xmm1
+    addss   xmm0, xmm2
+    comiss  xmm0, [rsp + 12]
+    jae     .next
+    test    dword [rbx + MOB.affix], AFX_JUGGERNAUT
+    jnz     .next                       ; juggernauts ignore stuns
+    mov     edi, r12d
+    call    mob_is_hostile
+    test    eax, eax
+    jz      .next
+    mov     ecx, FLASH_STUN
+    cmp     dword [rbx + MOB.type], MOB_BOSS
+    jne     .stun
+    mov     ecx, FLASH_STUN_BOSS
+.stun:
+    cmp     [rbx + MOB.stun], ecx
+    jge     .next                       ; never shortening a longer stun
+    mov     [rbx + MOB.stun], ecx
+.next:
+    add     rbx, MOB_size
+    inc     r12d
+    cmp     r12d, MAX_MOBS
+    jb      .mob
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [k_6]
+    mov     edi, FX_GOLD
+    mov     esi, 40
+    call    fx_burst
+    mov     edi, SND_EXPLODE
+    movss   xmm0, [k_flash_vol]
+    call    audio_play
+    add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
 ; ---- the lasting abilities, once per step -------------------------------------------------------
 
 ; ab_charge_step(): while the charge lasts, every hostile mob the player touches (horizontal
 ; distance < its half width + 0.9, within 1.5 blocks in height) and has not struck yet takes a
-; 6 point physical melee-skill hit along the charge and is stunned 30 steps
+; 10 point physical melee-skill hit along the charge and is stunned 30 steps
 ; rbx = mob, r12d = index, r13 = mask of the struck
 ab_charge_step:
     push    rbp
@@ -1549,7 +1723,7 @@ ab_charge_step:
     mov     edi, r12d
     mov     esi, SRC_MELEE_SKILL
     xor     edx, edx                    ; physical
-    movss   xmm0, [k_6]
+    movss   xmm0, [k_charge_dmg]
     movss   xmm1, [charge_dx]
     mulss   xmm1, [k_charge_hit]
     movss   xmm2, [charge_dz]
