@@ -44,6 +44,7 @@ extern tier_names, champion_names
 
 ; ---- colours: the palette is theme.inc's; these are what this file adds ----------------------
 %define TINT_FAINT  RGBA(255, 255, 255, 205)    ; a web node nothing links to: its frame and icon
+%define ICON_BACK_FAINT RGBA(46, 30, 20, 190)   ; C_UMBER, fainter: the backing of an icon nothing links to
 %define TIP_RANK    RGBA(170, 255, 170, 255)    ; tooltip: "Rank r/m" of a node that has a rank
 %define TIP_HINT    RGBA(255, 210, 120, 255)    ; tooltip: what is missing, or how to bind it
 
@@ -1257,10 +1258,10 @@ web_draw_node:
     sub     esi, 8
     mov     edx, 16
     mov     ecx, 16
-    mov     r8d, RGBA(46, 30, 20, 240)
+    mov     r8d, C_UMBER
     cmp     dword [rsp + 4], WHITE
     je      .back
-    mov     r8d, RGBA(46, 30, 20, 190)
+    mov     r8d, ICON_BACK_FAINT
 .back:
     call    ui_rect
     mov     edi, [rsp + 32]
