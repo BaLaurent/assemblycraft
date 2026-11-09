@@ -43,7 +43,7 @@ extern faction_rivals, faction_champion_defeated, faction_tribute, faction_wante
 extern tier_names, champion_names
 
 ; ---- colours: the palette is theme.inc's; these are what this file adds ----------------------
-%define TINT_FAINT  RGBA(255, 255, 255, 110)    ; a web node nothing links to: its frame and icon
+%define TINT_FAINT  RGBA(255, 255, 255, 205)    ; a web node nothing links to: its frame and icon
 %define TIP_RANK    RGBA(170, 255, 170, 255)    ; tooltip: "Rank r/m" of a node that has a rank
 %define TIP_HINT    RGBA(255, 210, 120, 255)    ; tooltip: what is missing, or how to bind it
 
@@ -1244,6 +1244,20 @@ web_draw_node:
     movzx   edi, byte [r12 + WEBNODE.stat]
     add     edi, TILE_CLASS0 - 1
 .draw_icon:
+    mov     [rsp + 32], edi
+    mov     edi, [rsp + 20]             ; umber backing: light icons (bolts, flames) vanish on parchment
+    sub     edi, 8
+    mov     esi, [rsp + 24]
+    sub     esi, 8
+    mov     edx, 16
+    mov     ecx, 16
+    mov     r8d, RGBA(46, 30, 20, 240)
+    cmp     dword [rsp + 4], WHITE
+    je      .back
+    mov     r8d, RGBA(46, 30, 20, 190)
+.back:
+    call    ui_rect
+    mov     edi, [rsp + 32]
     mov     esi, [rsp + 20]
     sub     esi, 8
     mov     edx, [rsp + 24]

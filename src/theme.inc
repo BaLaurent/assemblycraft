@@ -12,7 +12,7 @@
 %define C_UMBER         RGBA(46, 30, 20, 235)       ; flat dark surface
 %define C_DIM           RGBA(20, 12, 6, 140)        ; dimmer behind books and pages
 %define C_HOVER         RGBA(255, 236, 170, 70)     ; hover wash on cells and rows
-%define C_LOCKED        RGBA(110, 84, 58, 110)      ; locked web edges
+%define C_LOCKED        RGBA(110, 84, 58, 200)      ; locked web edges
 %define C_MANA          RGBA(70, 110, 230, 255)
 %define C_STAMINA       RGBA(226, 184, 60, 255)
 %define C_STAMINA_LOW   RGBA(200, 60, 40, 255)      ; stamina below 25
