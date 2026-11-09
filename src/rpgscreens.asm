@@ -92,7 +92,7 @@ attr_tiles:     db TILE_ATTR_STR, TILE_ATTR_DEX, TILE_ATTR_INT, TILE_ATTR_VIT
 web_dims_tab:   db 3, 7, 5, 10, 11, 22, 14, 28  ; web_dims: pick half, frame size by zoom * 2 + path
 ability_binds:  db BIND_ABILITY1, BIND_ABILITY2, BIND_ABILITY3, BIND_ABILITY4   ; bind of bar slot 0..3
 align 4
-web_edge_cols:  dd C_LOCKED, C_INK, C_GOLD      ; edges: no end ranked, one end, both ends
+web_edge_cols:  dd C_EDGE_LOCKED, C_INK, C_GOLD_DEEP      ; edges: no end ranked, one end, both ends
 
 ; the stat list in display order: group header markers and stat ids
 sheet_order:
@@ -1208,7 +1208,7 @@ web_draw_node:
     mov     edx, [rsp + 8]
     add     edx, 2
     mov     ecx, edx
-    mov     r8d, C_GOLD
+    mov     r8d, C_GOLD_DEEP
     call    ui_frame
 .frame:
     movzx   edi, byte [r12 + WEBNODE.kind]
