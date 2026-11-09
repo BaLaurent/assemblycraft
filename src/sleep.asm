@@ -19,7 +19,6 @@ extern dir_dx, dir_dz
 extern boats_dismount
 extern net_role, net_all_asleep
 
-%define SLEEP_STEPS    120              ; steps in bed until the morning
 %define BANNER_INFO    RGBA(255, 255, 255, 255)
 %define BANNER_WARN    RGBA(255, 150, 90, 255)
 

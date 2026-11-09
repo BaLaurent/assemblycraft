@@ -61,7 +61,6 @@ extern file_read, file_write_atomic, mkdir_p, time_mono_ns, usleep
 
 %define CHAT_LEN        96                      ; bytes per chat line
 %define CHAT_LINES      8                       ; the log keeps the 8 newest
-%define SLEEP_STEPS     120                     ; sleep.asm's SLEEP_STEPS: in bed this long = ready for morning
 %define SAVE_WAIT_NS    3000000000              ; a leaving guest / closing host waits this long for the saves
 %define HCLOSE_WAIT_NS  2500000000              ; a guest told "host closing" waits this long for its save ack
 %define CFG_MAX         1023
@@ -72,29 +71,6 @@ extern file_read, file_write_atomic, mkdir_p, time_mono_ns, usleep
 %define HOST_QUIET_NS   10000000000             ; ... while the host said nothing for this long has lost the host
 %define RV_PORT_BE      (((RV_PORT & 0xFF) << 8) | (RV_PORT >> 8))
 
-; the WORLDINFO message (84 bytes, host to guest); game.asm's WINFO is the same layout
-struc WINFO
-    .seed:        resd 1
-    .mode:        resd 1
-    .time:        resd 1
-    .name:        resb 33
-    .pvp:         resb 1
-    .your_slot:   resb 1
-    .cheater:     resb 1
-    .spawn_x:     resd 1
-    .spawn_y:     resd 1
-    .spawn_z:     resd 1
-    .standing:    resw 8
-    .champions:   resb 1
-    .quest:       resb 1
-    .quest_state: resb 1
-    .pad:         resb 1
-    .quest_progress: resw 1
-    .pad2:        resw 1
-endstruc
-%if WINFO_size != 84
-%error "WORLDINFO is 84 bytes"
-%endif
 %if (PEER_size * NET_MAX_PEERS) % 8 != 0
 %error "peers_clear clears quadwords"
 %endif

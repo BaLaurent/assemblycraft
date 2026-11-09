@@ -19,7 +19,6 @@ extern mobs, mobs_clear, mob_spawn, world_clear, world_set, world_get
 extern player, game_mode, surv, survival_reset
 extern nx_on_sound, nx_on_fx, nx_on_give, nx_clock_ns, fx_clear, dmgnum_clear
 
-%define SLEEP_STEPS 120                 ; sleep.asm's: steps in bed until the morning
 %define CAP_SIZE    4096
 
 section .rodata

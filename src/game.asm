@@ -54,30 +54,6 @@ extern debug_reset, debug_step
 extern net_role, net_pvp, net_in_world, net_swing_t, net_shift, net_tick, net_drop_flush
 extern nm_guest_step, net_cont_open_out, net_players_raycast, combat_melee_player, rpg_state
 
-; the WORLDINFO message a guest joins a world with (netsync.asm builds and sends it; the same 84 bytes)
-struc WINFO
-    .seed:        resd 1
-    .mode:        resd 1
-    .time:        resd 1
-    .name:        resb 33
-    .pvp:         resb 1
-    .your_slot:   resb 1
-    .cheater:     resb 1
-    .spawn_x:     resd 1
-    .spawn_y:     resd 1
-    .spawn_z:     resd 1
-    .standing:    resw 8
-    .champions:   resb 1
-    .quest:       resb 1
-    .quest_state: resb 1
-    .pad:         resb 1
-    .quest_progress: resw 1
-    .pad2:        resw 1
-endstruc
-%if WINFO_size != 84
-%error "WORLDINFO is 84 bytes"
-%endif
-
 section .rodata
 align 4
 step_dt:      dd 0.016666668

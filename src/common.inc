@@ -1856,3 +1856,29 @@ struc PEER
     .put_seq: resd 1                      ; host: last CONT_PUT seq applied from this peer
     .saved: resd 1                        ; host: a PLAYER_SAVE arrived since HOST_CLOSING
 endstruc
+
+; the WORLDINFO message a guest joins a world with (netsync.asm builds and sends it, game.asm's game_join reads it)
+struc WINFO
+    .seed:        resd 1
+    .mode:        resd 1
+    .time:        resd 1
+    .name:        resb 33
+    .pvp:         resb 1
+    .your_slot:   resb 1
+    .cheater:     resb 1
+    .spawn_x:     resd 1
+    .spawn_y:     resd 1
+    .spawn_z:     resd 1
+    .standing:    resw 8
+    .champions:   resb 1
+    .quest:       resb 1
+    .quest_state: resb 1
+    .pad:         resb 1
+    .quest_progress: resw 1
+    .pad2:        resw 1
+endstruc
+%if WINFO_size != 84
+%error "WORLDINFO is 84 bytes"
+%endif
+
+%define SLEEP_STEPS      120              ; steps in bed until the morning (sleep.asm; PS_ASLEEP in netsync is the same threshold)
