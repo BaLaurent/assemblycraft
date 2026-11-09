@@ -2,7 +2,7 @@
 %include "common.inc"
 default rel
 
-global sincos_deg, atan2_deg, floor_i, ceil_i, rng_seed, rng_next
+global sincos_deg, atan2_deg, floor_i, ceil_i, rng_seed, rng_next, exp2_ss
 
 section .rodata
 deg2rad: dq 0.017453292519943295
@@ -25,6 +25,26 @@ sincos_deg:
     fstp    dword [rsp + 4]
     movss   xmm1, [rsp]
     movss   xmm0, [rsp + 4]
+    add     rsp, 8
+    ret
+
+; exp2_ss(xmm0 x) -> xmm0 2^x, for any finite x. Clobbers only xmm0 and the x87 stack, which it
+; leaves empty (sfx.asm's renderer keeps its state in xmm1..xmm15 across this call).
+exp2_ss:
+    sub     rsp, 8
+    movss   [rsp], xmm0
+    fld     dword [rsp]                 ; x
+    fld     st0                         ; x, x
+    frndint                             ; r = round(x), x
+    fsub    st1, st0                    ; r, f = x - r in [-0.5, 0.5]
+    fxch                                ; f, r
+    f2xm1                               ; 2^f - 1, r
+    fld1
+    faddp   st1, st0                    ; 2^f, r
+    fscale                              ; 2^x, r
+    fstp    st1                         ; 2^x
+    fstp    dword [rsp]
+    movss   xmm0, [rsp]
     add     rsp, 8
     ret
 

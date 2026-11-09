@@ -869,6 +869,13 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_LOOT_RARE   58
 %define SND_LEGENDARY   59
 %define NUM_SOUNDS      60
+%define W_PULSE   0                     ; SFXLAYER.wave
+%define W_TRI     1                     ; 2A03 32-step triangle
+%define W_SAW     2
+%define W_NOISE   3                     ; 15-bit LFSR, long mode
+%define W_NOISE93 4                     ; 15-bit LFSR, short (metallic) mode
+%define SOUND_MAX_SAMPLES 88200         ; 2.0 s, longest sound
+%define POOL_SAMPLES 1572864            ; 35.6 s, every sound back to back
 
 ; ---- colours: packed for glColor4ub as four bytes r,g,b,a -----------------
 %define RGBA(r,g,b,a) ((r)|((g)<<8)|((b)<<16)|((a)<<24))
@@ -1407,22 +1414,54 @@ struc WORLDENTRY
     .pad2:  resd 1
 endstruc                                ; 128 bytes
 
+; one layer of a procedural sound (sfx.asm); field order is load-bearing for sfx.asm's LEND macro
 struc SFXLAYER
-    .sound:  resd 1
-    .wave:   resd 1                     ; 0 noise, 1 square, 2 saw
-    .f0:     resd 1                     ; floats
-    .f1:     resd 1
-    .lp:     resd 1
-    .hp:     resd 1                     ; int32
-    .env:    resd 1                     ; int32: 0 exp, 1 linear
-    .half:   resd 1                     ; floats
-    .attack: resd 1
-    .start:  resd 1
-    .dur:    resd 1
-    .amp:    resd 1
-    .vdepth: resd 1
-    .vrate:  resd 1
-endstruc
+    .sound:     resd 1                  ; int32 SND_*
+    .wave:      resd 1                  ; int32 W_*
+    .start:     resd 1                  ; floats from here on: seconds
+    .dur:       resd 1
+    .amp:       resd 1                  ; relative within the sound (normalised to SFXINFO.peak)
+    .note0:     resd 1                  ; MIDI note numbers (noise: clock = 16 x the note's Hz)
+    .note1:     resd 1
+    .glide:     resd 1                  ; seconds from note0 to note1, 0 = hold note0
+    .arp1:      resd 1                  ; semitones; tracker arpeggio 0, arp1[, arp2]
+    .arp2:      resd 1
+    .arp_hz:    resd 1                  ; arpeggio steps per second, 0 = off
+    .vib_depth: resd 1                  ; semitones
+    .vib_hz:    resd 1
+    .vib_delay: resd 1                  ; seconds
+    .duty0:     resd 1                  ; pulse duty at the start and end of the layer
+    .duty1:     resd 1
+    .attack:    resd 1                  ; seconds
+    .decay:     resd 1                  ; time constant, seconds; 0 = none
+    .sustain:   resd 1                  ; level the decay settles to
+    .release:   resd 1                  ; seconds before dur
+    .lp_hz:     resd 1                  ; one-pole low-pass, 0 = off
+    .hp_hz:     resd 1                  ; one-pole high-pass, 0 = off
+endstruc                                ; 88 bytes
+
+; per-sound mixing info (sfx_info[NUM_SOUNDS], sfx.asm)
+struc SFXINFO
+    .peak:   resw 1                     ; target peak, int16 units
+    .jitter: resw 1                     ; +- cents of random pitch per play
+    .cap:    resb 1                     ; most simultaneous voices of this sound
+    .send:   resb 1                     ; echo send 0..255
+    .pad:    resw 1
+endstruc                                ; 8 bytes
+
+; one mixer voice (audio.asm)
+struc VOICE
+    .pos:    resq 1                     ; 32.32 position from the sound's start, samples
+    .step:   resq 1                     ; 32.32 rate, 1 << 32 = as rendered
+    .ptr:    resq 1                     ; first int16 of the sound in sfx_pool
+    .len:    resd 1                     ; samples, 0 = free
+    .snd:    resd 1
+    .gl:     resd 1                     ; floats: left, right and echo-send gains
+    .gr:     resd 1
+    .send:   resd 1
+    .serial: resd 1                     ; start order, for stealing the oldest of a capped sound
+endstruc                                ; 48 bytes
+%define VOICES 16                       ; audio.asm's voices[VOICES]
 
 ; an item entity lying in the world (not saved with the world)
 struc DROP
