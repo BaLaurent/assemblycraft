@@ -32,6 +32,8 @@
 ; 0 = exact colour). The silhouette is drawn by NFUNC (px_sil), one draw per pixel of each of its 18
 ; sub-tiles in row-major order. The HUD icons 48..56 keep their draw-free 9x9 layout; only their
 ; palettes and a few shade ('d') pixels are redrawn.
+; The 0.10.4 art (the Marksman emblem 352, abilities 353..356, items 357..362 and the stat icons 230, 231) follows
+; the silhouette block and precedes the font: draw-free bitmaps (BMP), so no later draw shifts.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -1178,6 +1180,24 @@ texgen_build:
 %endrep
 %assign sil_r sil_r + 1
 %endrep
+
+    ; ---- 0.10.4 Marksman art (draw-free bitmaps: no rng draw, so nothing after them shifts): 352 path
+    ;      emblem, 353..356 Powder Grenade / Bullseye / Fan the Hammer / Flashbang, 357..362 Revolver /
+    ;      Hunting Rifle / Scope / Extended Magazine / Rifled Barrel / Compensator, 230 and 231 the gun
+    ;      damage and reload speed stat icons ----
+    BMP     352, mk_emblem_bmp, pal_mk_emblem
+    BMP     353, mk_grenade_bmp, pal_mk_grenade
+    BMP     354, mk_bullseye_bmp, pal_mk_bullseye
+    BMP     355, mk_fanhammer_bmp, pal_mk_fanhammer
+    BMP     356, mk_flashbang_bmp, pal_mk_flashbang
+    BMP     357, mk_revolver_bmp, pal_mk_revolver
+    BMP     358, mk_hrifle_bmp, pal_mk_hrifle
+    BMP     359, mk_scope_bmp, pal_mk_scope
+    BMP     360, mk_extmag_bmp, pal_mk_extmag
+    BMP     361, mk_rifled_bmp, pal_mk_rifled
+    BMP     362, mk_comp_bmp, pal_mk_comp
+    BMP     230, mk_st_gun_bmp, pal_mk_st_gun
+    BMP     231, mk_st_reload_bmp, pal_mk_st_reload
 
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
@@ -6491,5 +6511,366 @@ gr_quill_bmp:
     db ".KK............."
     db ".KK............."
     db "K..............."
+
+; ---- 0.10.4 Marksman art: 352 emblem, 353..356 abilities, 357..362 items, 230/231 stat icons ----
+; 352 path emblem: two crossed flintlock pistols over a gold ring
+mk_emblem_bmp:
+    db "....KKKGGKKK...."
+    db ".K.KGGGGGGGGK.K."
+    db ".sSsGGnnnnGGsSs."
+    db ".KsSsnnnnnnsSsK."
+    db "KGGsSsnnnnsSsggK"
+    db "KGGnsSsnnsSsnggK"
+    db "KGnnnsSssSsnnngK"
+    db "GGnnnnsYYsnnnngg"
+    db "GGnnnnsYYsnnnngg"
+    db "KGnnVWwYYVWwnngK"
+    db "KGGnVWwnnVWwnggK"
+    db "KGGnVWwnnVWwnggK"
+    db ".KGgVWwnnVWwggK."
+    db "..KgYYYnnYYYgK.."
+    db "...KggggggggK..."
+    db "....KKKggKKK...."
+pal_mk_emblem:
+    PAL 'K', 30, 20, 16
+    PAL 'G', 240, 196, 52
+    PAL 'g', 176, 124, 24
+    PAL 'n', 52, 40, 66
+    PAL 'S', 222, 222, 230
+    PAL 's', 140, 140, 154
+    PAL 'W', 190, 126, 60
+    PAL 'w', 112, 68, 30
+    PAL 'Y', 255, 236, 140
+    PAL 'V', 214, 160, 96
+    dq 0
+; 353 Powder Grenade
+mk_grenade_bmp:
+    db ".........FFFOYO."
+    db "......KKFF..WWO."
+    db ".....KcccK...YO."
+    db ".....KCCCK......"
+    db "....KKBBBKK....."
+    db "...KBBBBBBBK...."
+    db "..KBBLBBBBBBK..."
+    db ".KBBLlBBBBBBbK.."
+    db ".KBBLBBBBBBbbK.."
+    db ".KBBBBBBBBBbbK.."
+    db ".KBBBBBBBBBbbK.."
+    db ".KBBBBBBBBbbbK.."
+    db ".KBBBBBBBbbbbK.."
+    db "..KBBBBbbbbbK..."
+    db "...KBbbbbbbK...."
+    db "....KKbbbKK....."
+pal_mk_grenade:
+    PAL 'K', 10, 10, 14
+    PAL 'B', 52, 52, 62
+    PAL 'b', 30, 30, 38
+    PAL 'L', 160, 162, 182
+    PAL 'l', 104, 106, 124
+    PAL 'c', 120, 120, 132
+    PAL 'C', 168, 168, 180
+    PAL 'F', 172, 120, 62
+    PAL 'Y', 255, 226, 100
+    PAL 'O', 255, 140, 40
+    PAL 'W', 255, 255, 230
+    dq 0
+; 354 Bullseye
+mk_bullseye_bmp:
+    db "....KKKKKKKK...."
+    db "...KRRRRRRRRK..."
+    db "..KRRRRCCRRRRK.."
+    db ".KRRRCCCCCCRRrK."
+    db "KRRRCCRRRRCCRrrK"
+    db "KRRCCRRRRRRCCRrK"
+    db "KRRCRRDDDDRRCRrK"
+    db "KRCCRRDDDDRRCCrK"
+    db "KRCCRRDDDDRRCCrK"
+    db "KRRCRRDDDDRRCRrK"
+    db "KRRCCRRRRRRCCRrK"
+    db "KRRRCCRRRRCCRrrK"
+    db ".KRRRCCCCCCRRrK."
+    db "..KrrRRCCRRrrK.."
+    db "...KrrrrrrrrK..."
+    db "....KKKKKKKK...."
+pal_mk_bullseye:
+    PAL 'K', 54, 20, 16
+    PAL 'R', 212, 44, 40
+    PAL 'r', 146, 26, 28
+    PAL 'C', 250, 236, 200
+    PAL 'D', 52, 22, 22
+    dq 0
+; 355 Fan the Hammer
+mk_fanhammer_bmp:
+    db "................"
+    db "..KK............"
+    db ".KYYK.KKKK......"
+    db "..KYKKssssKKKKKK"
+    db "..KSSSSdddSSSSSS"
+    db "YYKssssKKdSSSSSS"
+    db "..Kssssdddssssss"
+    db "..KssssdddKKKKKK"
+    db "YYKssssKKKK....."
+    db "..KwWWWsKKK....."
+    db "..KwWWwK.K......"
+    db "YYKwWWwK........"
+    db "..KwWWwK........"
+    db "..KwWWwK........"
+    db "..KwWWwK........"
+    db "...KKKK........."
+pal_mk_fanhammer:
+    PAL 'K', 26, 22, 22
+    PAL 'S', 210, 210, 218
+    PAL 's', 140, 140, 152
+    PAL 'd', 76, 78, 90
+    PAL 'W', 176, 116, 54
+    PAL 'w', 110, 68, 28
+    PAL 'Y', 255, 214, 70
+    dq 0
+; 356 Flashbang
+mk_flashbang_bmp:
+    db ".......oo......."
+    db "......oWWo......"
+    db "......oWWo......"
+    db "....oooWWooo...."
+    db "...oWWoWWoWWo..."
+    db "...oWWWyyWWWo..."
+    db ".ooooWyyyyWoooo."
+    db "oWWWWyyWWyyWWWWo"
+    db "oWWWWyyWWyyWWWWo"
+    db ".ooooWyyyyWoooo."
+    db "...oWWWyyWWWo..."
+    db "...oWWoWWoWWo..."
+    db "....oooWWooo...."
+    db "......oWWo......"
+    db "......oWWo......"
+    db ".......oo......."
+pal_mk_flashbang:
+    PAL 'o', 214, 132, 24
+    PAL 'W', 255, 252, 236
+    PAL 'y', 255, 206, 56
+    dq 0
+; 357 Revolver
+mk_revolver_bmp:
+    db "................"
+    db ".KK..KKKKK......"
+    db "KddKKsssssKKKKKK"
+    db ".KSSSSsdsdSSSSSS"
+    db ".KsssssdsdSSSSSS"
+    db ".Ksssssdsdssssss"
+    db ".KssssddddKKKKKK"
+    db ".KsssssKKK......"
+    db ".KssssKKKKK....."
+    db ".KwWWWKKKKK....."
+    db ".KwVWwK..K......"
+    db ".KwVWwK........."
+    db ".KwVWwK........."
+    db ".KwWWwK........."
+    db ".KwWWwK........."
+    db "..KKKK.........."
+pal_mk_revolver:
+    PAL 'K', 24, 22, 22
+    PAL 'S', 214, 214, 222
+    PAL 's', 150, 150, 162
+    PAL 'd', 74, 76, 88
+    PAL 'W', 184, 122, 56
+    PAL 'w', 112, 68, 30
+    PAL 'V', 214, 160, 96
+    dq 0
+; 358 Hunting Rifle
+mk_hrifle_bmp:
+    db ".........KK..KII"
+    db "........KPPK.KIi"
+    db ".......KPTTTKIii"
+    db "......KPTttKIiiK"
+    db ".....KPTttKIiiK."
+    db "....KPTttKIiiK.."
+    db "...KPTttKIdiK..."
+    db "..KBBttKIiiK...."
+    db "..KBttKIiiK....."
+    db "...KKddddK......"
+    db "KKKKVWWwWK......"
+    db "VWWWWWwWdK......"
+    db "VWWWWwWKK......."
+    db "VWWWwWK........."
+    db "VWWWKK.........."
+    db "wWWWK..........."
+pal_mk_hrifle:
+    PAL 'K', 34, 24, 16
+    PAL 'I', 214, 214, 222
+    PAL 'i', 140, 140, 152
+    PAL 'W', 176, 112, 48
+    PAL 'V', 206, 150, 88
+    PAL 'w', 110, 66, 26
+    PAL 'd', 70, 72, 84
+    PAL 'T', 52, 54, 70
+    PAL 'P', 98, 100, 124
+    PAL 'B', 110, 190, 255
+    PAL 't', 32, 34, 46
+    dq 0
+; 359 Scope
+mk_scope_bmp:
+    db "................"
+    db ".......KK......."
+    db ".KKK..KmmK......"
+    db "KPPPK.KddK..KKK."
+    db "KRRRKKKKKKKKPPPK"
+    db "KWWRPPPPPPPPRRRK"
+    db "KWLRppppppppRRRK"
+    db "KLLRTTTTTTTTRRRK"
+    db "KLLRTTTTTTTTRRRK"
+    db "KLLRTTTTTTTTRRRK"
+    db "KLLRttttttttRRRK"
+    db "KRRRKKmmmmKKtttK"
+    db "KtttKKddddK.KKK."
+    db ".KKK.KddddK....."
+    db "......KKKK......"
+    db "................"
+pal_mk_scope:
+    PAL 'K', 18, 18, 26
+    PAL 'T', 52, 54, 68
+    PAL 'P', 110, 114, 140
+    PAL 'p', 78, 82, 102
+    PAL 't', 30, 30, 40
+    PAL 'R', 34, 36, 48
+    PAL 'd', 72, 74, 86
+    PAL 'm', 132, 134, 148
+    PAL 'L', 70, 160, 240
+    PAL 'W', 235, 248, 255
+    dq 0
+; 360 Extended Magazine
+mk_extmag_bmp:
+    db "....KCBKCBK....."
+    db "...KmBBmBBmK...."
+    db "...KmmmmmmmK...."
+    db "...KUUTTTuuK...."
+    db "...KUUTTTuuK...."
+    db "...KuuuuuuuK...."
+    db "...KUUTTTuuK...."
+    db "...KUUTTTuuK...."
+    db "....KuuuuuuuK..."
+    db "....KUUTTTuuK..."
+    db "....KUUTTTuuK..."
+    db "....KuuuuuuuK..."
+    db "....KUUTTTuuK..."
+    db "....KUUTTTuuK..."
+    db "...KddddddddK..."
+    db "....KKKKKKKK...."
+pal_mk_extmag:
+    PAL 'K', 40, 24, 12
+    PAL 'T', 168, 102, 50
+    PAL 'U', 210, 158, 98
+    PAL 'u', 104, 62, 28
+    PAL 'd', 70, 70, 80
+    PAL 'm', 150, 150, 162
+    PAL 'B', 240, 200, 90
+    PAL 'C', 255, 236, 150
+    dq 0
+; 361 Rifled Barrel
+mk_rifled_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db ".............KK."
+    db ".KKKKKKKKKKKKmmK"
+    db "KSSSSSSSSSSSSddK"
+    db "KSSSWSSWSSWSSWKK"
+    db "KssWssWssWssWdKK"
+    db "KssWssWssWssWdKK"
+    db "KmWmmWmmWmmWmdKK"
+    db "KddddddddddddddK"
+    db ".KKKKKKKKKKKKddK"
+    db ".............KK."
+    db "................"
+    db "................"
+    db "................"
+pal_mk_rifled:
+    PAL 'K', 26, 26, 32
+    PAL 'S', 228, 228, 236
+    PAL 's', 160, 160, 172
+    PAL 'm', 120, 120, 132
+    PAL 'd', 76, 78, 90
+    PAL 'W', 255, 255, 255
+    dq 0
+; 362 Compensator
+mk_comp_bmp:
+    db "................"
+    db "................"
+    db "............KKK."
+    db "...KKKKKKKKKMMMK"
+    db "..KMMMMMMMMMDDDK"
+    db ".KKMMKMKMKMMDDDK"
+    db "KddBBKBKBKBBDDDK"
+    db "KddBBKBKBKBBDKDK"
+    db "KddBBKBKBKBBDKDK"
+    db "KddBBKBKBKBBDDDK"
+    db ".KKDDDDDDDDDDDDK"
+    db "..KDDDDDDDDDDDDK"
+    db "...KKKKKKKKKDDDK"
+    db "............KKK."
+    db "................"
+    db "................"
+pal_mk_comp:
+    PAL 'K', 10, 10, 14
+    PAL 'B', 70, 72, 86
+    PAL 'M', 130, 132, 150
+    PAL 'D', 40, 42, 54
+    PAL 'd', 104, 106, 120
+    dq 0
+; 230 gun damage stat icon (a brass bullet)
+mk_st_gun_bmp:
+    db ".......KK......."
+    db "......KccK......"
+    db ".....KccccK....."
+    db "....KcCccccK...."
+    db "....KcCccccK...."
+    db "....KCCCCCCK...."
+    db "....KBBbbDDK...."
+    db "....KBBbbDDK...."
+    db "....KBBbbDDK...."
+    db "....KDDDDDDK...."
+    db "....KBBbbDDK...."
+    db "....KBBbbDDK...."
+    db "....KBBbbDDK...."
+    db "...KbbbbbbbbK..."
+    db "...KDDDDDDDDK..."
+    db "....KKKKKKKK...."
+pal_mk_st_gun:
+    PAL 'K', 54, 36, 10
+    PAL 'b', 224, 176, 62
+    PAL 'B', 255, 226, 130
+    PAL 'D', 150, 108, 28
+    PAL 'c', 204, 104, 56
+    PAL 'Y', 255, 226, 100
+    PAL 'O', 236, 120, 36
+    PAL 'C', 240, 150, 100
+    dq 0
+; 231 reload speed stat icon (a brass round in a circular arrow)
+mk_st_reload_bmp:
+    db ".........HH....."
+    db "......VVVHHH...."
+    db "....VVVVVHHHH..."
+    db "...VVV...HHHHH.."
+    db "..VV...ccHHHH..."
+    db ".VVV..cccc....V."
+    db ".VV...cccc...VV."
+    db ".vV...Bbbb...VV."
+    db ".vv...Bbbb...VV."
+    db ".vv...Bbbb...VV."
+    db ".vv...Bbbb...VV."
+    db ".vvv..DDDD..VVV."
+    db "..vv........VV.."
+    db "...vvv....VVV..."
+    db "....vvvvvVVV...."
+    db "......vvvv......"
+pal_mk_st_reload:
+    PAL 'K', 54, 36, 10
+    PAL 'V', 160, 208, 236
+    PAL 'v', 88, 140, 190
+    PAL 'b', 224, 176, 62
+    PAL 'B', 255, 226, 130
+    PAL 'D', 150, 108, 28
+    PAL 'c', 204, 104, 56
+    PAL 'H', 236, 248, 255
+    dq 0
 
 section .text
