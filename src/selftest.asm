@@ -81,6 +81,7 @@ extern test_grimoire_tiles
 extern test_ui_nine_layout
 extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
 extern test_sheet_sections
+extern test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -276,6 +277,9 @@ tests:
     TEST archetype_titles
     TEST web_view_mapping
     TEST sheet_sections
+    TEST sfx_clean_edges
+    TEST audio_pan
+    TEST audio_caps_jitter_limiter
     dq 0
 
 section .rodata
@@ -463,6 +467,9 @@ section .rodata
     TESTNAME archetype_titles
     TESTNAME web_view_mapping
     TESTNAME sheet_sections
+    TESTNAME sfx_clean_edges
+    TESTNAME audio_pan
+    TESTNAME audio_caps_jitter_limiter
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0
