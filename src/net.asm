@@ -2882,14 +2882,18 @@ handle_datagram:
 
 ; net_ep_poll(rdi ep, rsi deliver_fn): receive until the socket is empty (at most POLL_BUDGET datagrams) and
 ; run everything they trigger. deliver_fn(edi slot, esi type, rdx payload, ecx len) is called for each
-; in-order message; NETEVENTs are queued. Then silent connections time out and the timed state machines run.
+; in-order message; NETEVENTs are queued. The ACCEPT that completes a join ends the loop: the caller has to see
+; NE_ACCEPTED, and set its session up, before the first message of the host is delivered (a message delivered
+; earlier is acknowledged and so never sent again, but nobody was ready for it), so what else is in the socket
+; waits for the next poll. Then silent connections time out and the timed state machines run.
 net_ep_poll:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 40                             ; [rsp] sockaddr_in, [rsp+16] its length, [rsp+24] src NADDR
+    sub     rsp, 40                             ; [rsp] sockaddr_in, [rsp+16] its length, [rsp+24] src NADDR,
+                                                ; [rsp+32] the join state before a datagram
     mov     rbx, rdi
     mov     [rbx + NETEP.deliver], rsi
     cmp     dword [rbx + NETEP.open], 0
@@ -2920,11 +2924,17 @@ net_ep_poll:
     mov     [rsp + 24], eax
     movzx   eax, word [rsp + 2]
     mov     [rsp + 28], eax
+    mov     eax, [rbx + NETEP.join_state]
+    mov     [rsp + 32], eax
     mov     rdi, rbx
     lea     rsi, [rbx + NETEP.rxbuf]
     mov     edx, r13d
     lea     rcx, [rsp + 24]
     call    handle_datagram
+    cmp     dword [rbx + NETEP.join_state], NJ_CONNECTED
+    jne     .next
+    cmp     dword [rsp + 32], NJ_CONNECTED
+    jne     .timers                             ; this datagram was the ACCEPT: NE_ACCEPTED is queued, stop reading
 .next:
     dec     r12d
     jnz     .recv

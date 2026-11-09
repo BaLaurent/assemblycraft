@@ -5,14 +5,16 @@
 ; DENY_NAME, DENY_CLOSED), one request arriving by several candidate addresses, hostile packets from an
 ; accepted guest, and the join target parser; a 0.6 s round trip through a delay line made of two forwarding
 ; sockets (three 200000-byte blobs, then a sender that must stop at its sent-packet ring), and a full event
-; queue (a CONNECT flood, goodbyes and timeouts that find no room). Endpoints are mmap'd per test (net_ep_size
-; bytes); the game's own net_ep is never touched.
+; queue (a CONNECT flood, goodbyes and timeouts that find no room), and a join whose ACCEPT and the host's first
+; message are read by one poll (the caller must get NE_ACCEPTED first). Endpoints are mmap'd per test
+; (net_ep_size bytes); the game's own net_ep is never touched.
 %include "common.inc"
 default rel
 
 global test_net_reliable_lossy, test_net_big_message, test_net_rid_wrap, test_net_timeout
 global test_net_handshake_deny
 global test_net_long_rtt, test_net_event_queue_full
+global test_net_accept_then_data_one_poll
 
 extern net_ep_size, net_ep_open, net_ep_close, net_ep_poll, net_ep_next_event, net_ep_flush
 extern net_ep_send, net_ep_send_big, net_ep_room, net_ep_accept, net_ep_deny
@@ -111,6 +113,9 @@ ec_d1:      resd 1                      ; DISCONNECTED of slot 1 with reason DEN
 ec_last_kind: resd 1                    ; the last event taken
 ec_last_slot: resd 1
 ec_last_reason: resd 1
+t_greet:    resd 1                      ; A queues message 0 of the pattern for a guest it accepts (as netsync does with WORLDINFO)
+t_acc_seen: resd 1                      ; NE_ACCEPTED events fetched on B
+t_acc_n:    resd 1                      ; what B's callback had been given when the first of them was fetched
 
 section .text
 
@@ -324,6 +329,9 @@ setup_eps:
     mov     dword [t_a_tmo], 0
     mov     dword [t_b_tmo], 0
     mov     dword [t_a_reqs], 0
+    mov     dword [t_greet], 0
+    mov     dword [t_acc_seen], 0
+    mov     dword [t_acc_n], 0
     call    ep_new
     mov     [t_a], rax
     test    rax, rax
@@ -395,6 +403,10 @@ drain_a:
     mov     esi, 1
     lea     rdx, [t_ev]
     call    net_ep_accept
+    cmp     dword [t_greet], 0
+    je      .next
+    mov     edi, 1
+    call    greet
     jmp     .next
 .notacc:
     cmp     eax, 2
@@ -408,7 +420,8 @@ drain_a:
     pop     rbx
     ret
 
-; drain_b(): B's events (only NE_TIMEOUT matters)
+; drain_b(): B's events: an NE_ACCEPTED is counted, with the number of messages B's callback had been given by then;
+; an NE_TIMEOUT is noted
 drain_b:
     push    rbx
 .next:
@@ -417,6 +430,15 @@ drain_b:
     call    net_ep_next_event
     test    eax, eax
     jz      .out
+    cmp     byte [t_ev + NETEVENT.kind], NE_ACCEPTED
+    jne     .not_acc
+    inc     dword [t_acc_seen]
+    cmp     dword [t_acc_seen], 1
+    jne     .next
+    mov     eax, [st_b + ST_N]
+    mov     [t_acc_n], eax
+    jmp     .next
+.not_acc:
     cmp     byte [t_ev + NETEVENT.kind], NE_TIMEOUT
     jne     .next
     movzx   eax, byte [t_ev + NETEVENT.slot]
@@ -2341,5 +2363,232 @@ test_net_event_queue_full:
     pop     r14
     pop     r13
     pop     r12
+    pop     rbx
+    ret
+
+; ---- a join's ACCEPT and the host's first message in one poll ------------------------------------------------
+
+; greet(edi slot): A's first message to a guest it has just accepted, queued reliably (netsync does the same with
+; WORLDINFO): message 0 of the pattern
+greet:
+    push    rbx
+    push    r12
+    push    r13
+    mov     ebx, edi
+    xor     edi, edi
+    call    pat_len
+    mov     r12d, eax
+    lea     rdi, [t_buf]
+    xor     esi, esi
+    mov     edx, r12d
+    call    pat_fill
+    mov     rdi, [t_a]
+    mov     esi, ebx
+    mov     edx, MT_BLOCK
+    lea     rcx, [t_buf]
+    mov     r8d, r12d
+    mov     r9d, 1
+    call    net_ep_send
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; accept_burst_round() -> eax 0 on pass. B joins A through the delay line with no delay: A's ACCEPT and its first message
+; (queued at the accept, flushed in the same loop) reach B's socket together, so one poll of B finds both. The caller of
+; the transport sets up its session when it fetches NE_ACCEPTED, and a message delivered before that is lost for good (it
+; is acknowledged, so it is never sent again). So the callback must have been given nothing when the event is fetched
+; (right after that poll), the next poll must deliver the message, once and intact, and A must hear the ack.
+accept_burst_round:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, 1
+    mov     dword [fw_fa], -1
+    mov     dword [fw_fb], -1
+    mov     qword [fw_ring], 0
+    xor     edi, edi
+    call    setup_eps
+    test    eax, eax
+    jnz     .end
+    call    fw_open
+    test    eax, eax
+    jnz     .end
+    mov     dword [fw_delay], 0
+    mov     dword [t_mode], 1
+    mov     dword [t_greet], 1
+    lea     rdi, [st_b]
+    xor     esi, esi
+    xor     edx, edx
+    xor     ecx, ecx
+    xor     r8d, r8d
+    call    st_reset
+    mov     rdi, [t_b]
+    lea     rsi, [fw_addr]
+    xor     edx, edx
+    lea     rcx, [s_bob]
+    xor     r8d, r8d
+    call    net_ep_join
+    mov     ebx, 600
+.join:
+    call    step_fw
+    cmp     dword [t_acc_seen], 0
+    jne     .accepted
+    dec     ebx
+    jnz     .join
+    jmp     .end
+.accepted:
+    cmp     dword [t_acc_n], 0
+    jne     .end                        ; a message was delivered before the event could be fetched
+    call    step_fw                     ; the next poll: the message that waited in the socket
+    cmp     dword [st_b + ST_N], 1
+    jne     .end
+    mov     ebx, 40
+.after:
+    call    step_fw
+    dec     ebx
+    jnz     .after
+    cmp     dword [st_b + ST_N], 1      ; still exactly one, and it was the right one
+    jne     .end
+    cmp     dword [st_b + ST_BAD], 0
+    jne     .end
+    cmp     dword [t_acc_seen], 1
+    jne     .end
+    mov     rdi, [t_b]
+    call    net_ep_join_state
+    cmp     eax, NJ_CONNECTED
+    jne     .end
+    mov     rdi, [t_a]
+    mov     esi, 1
+    call    net_ep_room
+    cmp     eax, NET_RQ                 ; A's queue is empty again: B acknowledged the message
+    jne     .end
+    xor     r12d, r12d
+.end:
+    call    fw_close
+    call    teardown
+    mov     eax, r12d
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; data_pkt() -> eax its length: t_pkt = a DATA packet of the first raw socket (token t_tok, its next packet number)
+; with one reliable message, MT_BLOCK "hello" with rid 0
+data_pkt:
+    sub     rsp, 8
+    call    h_begin
+    mov     byte [t_pkt + 16], MT_BLOCK
+    mov     byte [t_pkt + 17], 1
+    mov     word [t_pkt + 18], 5
+    mov     word [t_pkt + 20], 0
+    mov     dword [t_pkt + 22], 'hell'
+    mov     byte [t_pkt + 26], 'o'
+    mov     eax, 27
+    add     rsp, 8
+    ret
+
+; data_before_accept_round() -> eax 0 on pass. The host's side of the same ordering: a joiner's CONNECT and a DATA
+; packet right behind it (with a token the host never issued) are in A's socket together. One poll of A raises the
+; NE_CONNECT_REQ and delivers nothing: a connection exists only once net_ep_accept has made it. After the accept, the
+; same packet with the token of the ACCEPT is delivered.
+data_before_accept_round:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, 1
+    mov     dword [t_r1fd], -1
+    xor     edi, edi
+    call    setup_eps
+    test    eax, eax
+    jnz     .end
+    call    raw_open
+    test    eax, eax
+    js      .end
+    mov     [t_r1fd], eax
+    lea     rdi, [st_a]
+    mov     esi, 2
+    xor     edx, edx
+    xor     ecx, ecx
+    xor     r8d, r8d
+    call    st_reset
+    lea     rdi, [t_raw]
+    mov     esi, 0x600D
+    mov     edx, 'Gus'
+    call    build_connect
+    mov     edi, [t_r1fd]
+    call    send_to_a
+    mov     dword [t_tok], 0x13572468   ; a token nobody issued
+    mov     dword [t_seq], 0
+    call    data_pkt
+    mov     edi, eax
+    call    h_send
+    call    poll_a
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev]
+    call    net_ep_next_event
+    cmp     eax, 1
+    jne     .end
+    cmp     byte [t_ev + NETEVENT.kind], NE_CONNECT_REQ
+    jne     .end
+    cmp     dword [t_ev + NETEVENT.nonce], 0x600D
+    jne     .end
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev2]
+    call    net_ep_next_event
+    test    eax, eax
+    jnz     .end                        ; the request, and nothing else
+    cmp     dword [st_a + ST_N], 0
+    jne     .end                        ; the DATA of a connection nobody accepted was not delivered
+    mov     rdi, [t_a]
+    mov     esi, 1
+    lea     rdx, [t_ev]
+    call    net_ep_accept
+    mov     edi, [t_r1fd]
+    lea     rsi, [t_raw + 64]
+    mov     edx, 64
+    lea     rcx, [t_sa]
+    call    raw_wait
+    cmp     rax, 22
+    jne     .end
+    mov     eax, [t_raw + 64 + 4]
+    mov     [t_tok], eax                ; the token of the ACCEPT
+    call    data_pkt
+    mov     edi, eax
+    call    h_send
+    call    poll_a
+    cmp     dword [st_a + ST_N], 1      ; now it is delivered
+    jne     .end
+    xor     r12d, r12d
+.end:
+    mov     edi, [t_r1fd]
+    test    edi, edi
+    js      .noclose
+    call    raw_close
+.noclose:
+    call    teardown
+    mov     eax, r12d
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; test_net_accept_then_data_one_poll() -> eax 0 on pass. A joiner is given NE_ACCEPTED before any message of the host,
+; even when the ACCEPT and the host's first message are read by the same poll (accept_burst_round); the host delivers
+; nothing for a connection it has not accepted (data_before_accept_round).
+test_net_accept_then_data_one_poll:
+    push    rbx
+    call    accept_burst_round
+    mov     ebx, eax
+    test    eax, eax
+    jnz     .out
+    call    data_before_accept_round
+    mov     ebx, eax
+.out:
+    mov     eax, ebx
     pop     rbx
     ret

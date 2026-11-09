@@ -1499,3 +1499,46 @@ Test definitions. Each must also fail on a negative control: the worker breaks t
 - **Pool or table pressure:** if check 3j prints `pool full` or a claim failure, lower `MP_HOST_RDIST` to 10. If it still fails, lower `MP_SIM_R` to 3.
 - **VPS:** if SSH access cannot be obtained, hand the user the exact wave-3 commands and the built `build/acrelay`. The game still works by direct address and LAN; the code path is unchanged.
 - **Hand swing symbol:** if `hand.asm` has no readable swing timer, `PS_SWING` is set for 10 steps after every `hand_swing` call, through a counter in `netsync`.
+
+## As built (deviations from this plan)
+
+What shipped differs from the text above in these ways. The code is authoritative where it disagrees with the plan.
+
+### Transport (`net.asm`) and relay (`server/acrelay.asm`)
+- `net_ep` is ~28 MB of BSS (2048-entry reliable queues x 8 connections plus a 4096-entry sent-packet ring per connection); pages are touched only as connections are used. The ring was 256 in the first cut; a round-trip longer than 256 packets' send time livelocked the reliable channel (review finding), so it is 4096 entries and a packet is never built into a slot that still holds an unacked packet younger than 2 s.
+- Up to 4 of the 8 packets of a flush are reserved for unreliable data when any is pending, so a long reliable backlog (column downloads) cannot starve snapshots.
+- CONNECT duplicates are de-duplicated by the joiner's nonce only (a joiner CONNECTs to public, LAN and relay candidates at once). A CONNECT is refused when fewer than `NET_MAX_PEERS` event slots are free; a goodbye or timeout that finds the 64-entry event queue full is kept and posted by the next poll (the connection is freed only after its event is posted).
+- `net_ep_poll` stops reading datagrams once it has queued `NE_ACCEPTED`, so the host's first DATA is never delivered before netsync has set the guest role (live-found join stall).
+- `net_ep_join` with a code takes the rendezvous server NADDR in `rsi` (0 = default). New exports: `net_ep_size`, `net_ep_test_rid`.
+- acrelay: an endpoint owns at most one room (a new nonce replaces it), at most 4 rooms per source IP, an RV_JOIN never evicts a guest active in the last 5 s, and the `lan` address in RV_PEER is zeroed unless private/loopback/link-local or equal to the sender's public IP. Extra selftests: `join`, `relay_budget`, `room_per_endpoint`, `room_per_ip`, `guest_no_evict`, `lan_filter`. A full lobby gives the 8th guest `RV_NOROOM` (shown as "No world with code ...").
+
+### Session and persistence (`netsync.asm`, `game.asm`, `app.asm`)
+- READY needs both the READY message and a first PSTATE; "NAME joined the world" is broadcast then. PEER_JOIN goes to every non-FREE guest, not only READY ones. On READY the host re-sends STANDING, QUEST_SYNC and PVP (changes made during the download used to be lost).
+- The guest's `app_wait_area` exits when the session ends (`net_end_reason`), so a host that leaves during "Joining world" no longer softlocks the guest. A guest that is not yet in the host's world (`net_in_world == 0`) streams locally: before this fix the title panorama sent hundreds of COL_REQs whose replies were dropped.
+- A CONNECT whose name is already taken replaces the old peer when it comes from the same ip:port or the old peer has been silent for more than 3 s (a killed guest can rejoin quickly). `net_ep_idle_ms` would be a cleaner signal than "no message delivered".
+- `PS_SWING` uses the contingency counter `net_swing_t` (set by `swing_hand` in game.asm and by the cast swing in abilities.asm).
+- Extra stderr lines: `net: chat <line>`, `net: lost connection to the host`, `net: room CODE` on each change. `--name/--server/--port` overrides are kept out of `multiplayer.cfg`. `world_path` and `show_loading` are exported as `app_world_path` / `app_show_loading`. `WINFO` (84 bytes) is duplicated in game.asm and netsync.asm with size assertions.
+- Deleting a world also removes `<world>/players/`.
+
+### World (`networld.asm`, `world.asm`, `stream.asm`)
+- Free column records come from a bump pointer plus a free stack, so an all-zero table is valid at init. `world_column_claim` resets an existing record for the same key; a full table gives `world_install_err = 3`.
+- The host's render fallback scan skips columns beyond `stream_rdist()+1` measured from `stream_ccx/ccz` (set by `stream_update`), not from `rc_acx/rc_acz`, which are stale during `app_wait_area`.
+- The host also loads, lights and keeps the columns of edits waiting in the edit queue (`net_edit_columns`, at most 32 per update, served after the host's and the remote players' own areas).
+- Guest edit rules: an edit is never TTL-expired while the guest holds the column or any answer/request for it; answers nobody asks about for 600 frames are forgotten; when all 32 blob buffers are taken the least recently used answer is evicted. The host sends BLOCK to each guest with `net_send_to`; when a guest has no room the column is remembered (128 per guest) and a `COL_REQ{acx,acz}` host->guest means "this column is stale, drop and re-request it". BLOCKs that cannot be queued overflow into a 4096-entry outbox.
+- Burning fires are re-sent as BLOCK(FIRE) after a COL_DATA (the region format never stores fire). Guests take fire damage through `fire_guest_step`.
+- Boats: a repeat mount by the rider is acknowledged; a failed placement on the host gives the item back (GIVE) and shows no banner; `boat_rider` is cleared when multiplayer is closed.
+- Containers: a guest's final CONT_PUT is retried until queued before CONT_CLOSE is sent.
+
+### Entities, combat, progression
+- Snapshot mob records are 44 bytes (a local `MREC` with a `.mag` dword; 24 mobs per SNAP_MOBS message) because mobrender/hud read magnitudes (burn steps, windup, mark, bleed, affix, shock, captor); two extra bits carry "a folk is after a player / is provoked". `MOBREC` in common.inc is unused. SNAP_DROPS/SNAP_MISC are always sent at least once so emptied tables clear.
+- Drop slot 63 (the guest's staging slot) is never mirrored in snapshots and ignored on apply.
+- MT_KILL is `type u8, elite u8, mob slot+1 u16, level i32`; `nm_on_kill` is guest-only and only from slot 0. `net_kill_credit` takes the mob slot in `r8d`. A guest's Shadow Fang Shadowstep reset follows that KILL.
+- A guest's own explosion reaches the host as MT_PVP_HIT (victim = peer); the host uses HURT/HM_DIRECT for its own. Powder grenades call `net_explosion_players` too.
+- Fireballs and explosive arrows hurt players when PvP is on. PROJ/PROJ_END owners are verified against the sender on the host; SOUND (60/s) and FX (30/s) are limited per sender on the host. A refused Q_BRING hand-in refunds the items (GIVE). Guest `quests_complete` sets quest_state 2 locally until QUEST_SYNC arrives.
+- Folk keep the last hitter (`MOB.peer`) while provoked. `mob_parts_draw` takes an extra part-count argument (models have 6, 7 or 11 parts). The F3 `Columns:` line shows `/32768`. `MOB_size` is 264.
+- Hostile spawning is per centre (each player gets the offline density; a global cap of 48 bounds the total).
+
+### Known limits (tracked as issues)
+- Cross-NAT hole punching between two real networks, and relay through the VPS from another network, are not verifiable from one machine (loopback/LAN and the VPS relay path were verified).
+- A modified client can still flood PROJ relays, farm the quest refund, and place any block id anywhere in a loaded column; there is no authentication beyond the room code. Containers are last-writer-wins.
+- Positions beyond ~200k blocks from the host lose float precision on the host's simulation around that guest.

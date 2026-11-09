@@ -92,6 +92,7 @@ extern test_debug_vitals_and_toggles, test_debug_step_clock, test_debug_to_spawn
 extern test_net_reliable_lossy, test_net_big_message, test_net_rid_wrap, test_net_timeout
 extern test_net_handshake_deny
 extern test_net_long_rtt, test_net_event_queue_full
+extern test_net_accept_then_data_one_poll
 extern test_world_column_hash, test_stream_extra_centres, test_region_encode_roundtrip
 extern test_stream_guest_local_until_joined
 extern test_stream_pending_edit_columns
@@ -332,6 +333,7 @@ tests:
     TEST net_handshake_deny
     TEST net_long_rtt
     TEST net_event_queue_full
+    TEST net_accept_then_data_one_poll
     TEST world_column_hash
     TEST stream_extra_centres
     TEST region_encode_roundtrip
@@ -590,6 +592,7 @@ section .rodata
     TESTNAME net_handshake_deny
     TESTNAME net_long_rtt
     TESTNAME net_event_queue_full
+    TESTNAME net_accept_then_data_one_poll
     TESTNAME world_column_hash
     TESTNAME stream_extra_centres
     TESTNAME region_encode_roundtrip
