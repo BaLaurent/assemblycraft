@@ -5,6 +5,7 @@
 ; units, so ui_begin (re)establishes the 1/4096 texture matrix render_init uses.
 %include "common.inc"
 %include "gl.inc"
+%include "theme.inc"
 default rel
 
 global ui_w, ui_h, ui_scale, ui_mx, ui_my, ui_focus
@@ -12,12 +13,13 @@ global ui_init, ui_begin, ui_rect, ui_frame, ui_panel
 global ui_text, ui_text_width, ui_text_centered
 global ui_button, ui_slider, ui_textfield, ui_slot
 global ui_item_icon, ui_icon9, ui_tooltip, ui_tooltip_lines, ui_tile_icon
+global ui_text_ink, ui_text_ink_centered, ui_nine, ui_nine_tint, ui_nine_layout
+global ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 
 extern settings, ui_input, audio_play, tex_id
 extern font8x8, item_icon, item_max_stack, item_durability
 extern str_append, i32_to_str
 
-%define WHITE   0xFFFFFFFF
 %define BTN_H   20
 
 section .rodata
@@ -31,6 +33,29 @@ f_texscale_v: dd 0.0001220703125        ; 1/8192: v over the 512 px atlas height
 f_one:       dd 1.0
 f_click_vol: dd 0.6
 s_caret:     db "_", 0
+f_half:      dd 0.5
+; nine_tab: one record per NINE_* kind (index = kind): dw atlas tile, db border in texels, db 0
+%macro NINE_ROW 2
+    dw TILE_NINE0 + %1
+    db %2, 0
+%endmacro
+nine_tab:
+    NINE_ROW NINE_PAGE, 4
+    NINE_ROW NINE_LEATHER, 4
+    NINE_ROW NINE_SLOT, 2
+    NINE_ROW NINE_BUTTON, 3
+    NINE_ROW NINE_BUTTON_HOT, 3
+    NINE_ROW NINE_BUTTON_OFF, 3
+    NINE_ROW NINE_TOOLTIP, 3
+    NINE_ROW NINE_RIBBON, 4
+    NINE_ROW NINE_BAR, 2
+    NINE_ROW NINE_RUNE, 3
+    NINE_ROW NINE_SELECT, 3
+    NINE_ROW NINE_NOTE, 3
+    NINE_ROW NINE_NODE_STAT, 5
+    NINE_ROW NINE_NODE_ABIL, 5
+    NINE_ROW NINE_NODE_KEY, 5
+    NINE_ROW NINE_NODE_PATH, 5
 
 section .bss
 alignb 8
@@ -43,6 +68,10 @@ ui_mx:       resd 1                     ; mouse position in GUI units
 ui_my:       resd 1
 glyph_w:     resb 96                    ; ink width of glyph c-32 (3 for blank glyphs)
 glyph_left:  resb 96                    ; first ink column of glyph c-32, 0xFF = blank
+ui_fb_h:     resd 1                     ; framebuffer height in pixels (ui_clip)
+nine_xs:     resb 4096                  ; ui_nine_layout axis segments {p0, p1, t0, t1}, 256 per axis
+nine_ys:     resb 4096
+nine_buf:    resb NINE_MAX_QUADS * 32   ; ui_nine_tint's layout records
 
 section .text
 
@@ -113,6 +142,7 @@ ui_begin:
     cmp     ebx, eax
     cmovg   ebx, eax
     mov     [ui_scale], ebx
+    mov     [ui_fb_h], r13d
     mov     eax, r12d
     cdq
     idiv    ebx
@@ -161,6 +191,8 @@ ui_begin:
     call    glMatrixMode
     call    glLoadIdentity
 
+    mov     edi, GL_SCISSOR_TEST        ; a leftover ui_clip must not cut this frame
+    call    glDisable
     mov     edi, GL_DEPTH_TEST
     call    glDisable
     mov     edi, GL_CULL_FACE
@@ -380,10 +412,23 @@ ui_frame:
     pop     rbp
     ret
 
-; ui_panel(edi x, esi y, edx w, ecx h): translucent black backing
+; ui_panel(edi x, esi y, edx w, ecx h): parchment page
 ui_panel:
-    mov     r8d, RGBA(0, 0, 0, 140)
-    jmp     ui_rect
+    mov     r8d, ecx
+    mov     ecx, edx
+    mov     edx, esi
+    mov     esi, edi
+    mov     edi, NINE_PAGE
+    jmp     ui_nine
+
+; tooltip_panel(edi x, esi y, edx w, ecx h): dark umber page behind tooltip text
+tooltip_panel:
+    mov     r8d, ecx
+    mov     ecx, edx
+    mov     edx, esi
+    mov     esi, edi
+    mov     edi, NINE_TOOLTIP
+    jmp     ui_nine
 
 ; ---- text ------------------------------------------------------------------
 
@@ -473,9 +518,9 @@ text_quads:
     pop     rbp
     ret
 
-; ui_text(rdi s, esi x, edx y, ecx rgba, r8d scale) -> eax pen advance
-; drawn twice: a shadow at (+scale, +scale) in rgb/4 with the same alpha, then the text
-ui_text:
+; ui_text_ink(rdi s, esi x, edx y, ecx rgba, r8d scale) -> eax pen advance
+; one pass, no shadow: text on parchment
+ui_text_ink:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -496,21 +541,6 @@ ui_text:
     jz      .ret
     mov     edi, GL_TEXTURE_2D
     call    glEnable
-    mov     edi, r14d                   ; shadow colour
-    shr     edi, 2
-    and     edi, 0x003F3F3F
-    mov     eax, r14d
-    and     eax, 0xFF000000
-    or      edi, eax
-    call    set_color
-    mov     edi, GL_QUADS
-    call    glBegin
-    mov     rdi, rbx
-    lea     esi, [r12 + r15]
-    lea     edx, [r13 + r15]
-    mov     ecx, r15d
-    call    text_quads
-    call    glEnd
     mov     edi, r14d
     call    set_color
     mov     edi, GL_QUADS
@@ -532,8 +562,9 @@ ui_text:
     pop     rbp
     ret
 
-; ui_text_centered(rdi s, esi cx, edx y, ecx rgba, r8d scale): ink centred on cx
-ui_text_centered:
+; ui_text(rdi s, esi x, edx y, ecx rgba, r8d scale) -> eax pen advance
+; a shadow at (+scale, +scale) in rgb/4 with the same alpha, then the text
+ui_text:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -542,6 +573,59 @@ ui_text_centered:
     push    r14
     push    r15
     sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    mov     r15d, r8d
+    mov     ecx, r14d                   ; shadow colour
+    shr     ecx, 2
+    and     ecx, 0x003F3F3F
+    mov     eax, r14d
+    and     eax, 0xFF000000
+    or      ecx, eax
+    mov     rdi, rbx
+    lea     esi, [r12 + r15]
+    lea     edx, [r13 + r15]
+    mov     r8d, r15d
+    call    ui_text_ink
+    mov     rdi, rbx
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    mov     r8d, r15d
+    call    ui_text_ink
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_text_centered(rdi s, esi cx, edx y, ecx rgba, r8d scale): ink centred on cx
+ui_text_centered:
+    lea     r9, [ui_text]
+    jmp     text_centered
+
+; ui_text_ink_centered(rdi s, esi cx, edx y, ecx rgba, r8d scale): ui_text_centered without shadow
+ui_text_ink_centered:
+    lea     r9, [ui_text_ink]
+    jmp     text_centered
+
+; text_centered(rdi s, esi cx, edx y, ecx rgba, r8d scale, r9 draw): draw(s, left, y, rgba, scale)
+; with the ink centred on cx
+text_centered:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     [rsp], r9
     mov     rbx, rdi
     mov     r12d, esi
     mov     r13d, edx
@@ -559,7 +643,7 @@ ui_text_centered:
     mov     edx, r13d
     mov     ecx, r14d
     mov     r8d, r15d
-    call    ui_text
+    call    qword [rsp]
 .ret:
     add     rsp, 8
     pop     r15
@@ -581,7 +665,7 @@ ui_button:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 24                     ; [rsp] = hover
+    sub     rsp, 24                     ; [rsp] hover, +4 half the ink width
     mov     rbx, rdi
     mov     r12d, esi
     mov     r13d, edx
@@ -597,30 +681,40 @@ ui_button:
     call    hit_test
 .hover_known:
     mov     [rsp], eax
-    mov     r8d, RGBA(255, 255, 255, 16)
+    mov     edi, NINE_BUTTON_OFF
     test    r15d, r15d
-    jz      .bg
-    mov     r8d, RGBA(255, 255, 255, 38)
+    jz      .plate
+    mov     edi, NINE_BUTTON
     test    eax, eax
-    jz      .bg
-    mov     r8d, RGBA(255, 255, 255, 77)
-.bg:
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
-    call    ui_rect
+    jz      .plate
+    mov     edi, NINE_BUTTON_HOT
+.plate:
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    mov     r8d, BTN_H
+    call    ui_nine
+    mov     rdi, rbx                    ; half the ink width: the label starts at x + w/2 - half
+    mov     esi, 1
+    call    ui_text_width
+    dec     eax
+    sar     eax, 1
+    mov     [rsp + 4], eax
     cmp     dword [rsp], 0
     je      .label
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
-    mov     r8d, RGBA(255, 255, 255, 128)
-    call    ui_frame
+    mov     esi, r14d                   ; quill at (label x - 14, y + 4)
+    shr     esi, 1
+    add     esi, r12d
+    sub     esi, [rsp + 4]
+    sub     esi, 14
+    mov     edi, TILE_QUILL
+    lea     edx, [r13 + 4]
+    mov     ecx, 12
+    mov     r8d, WHITE
+    call    ui_tile_icon
 .label:
-    mov     ecx, WHITE
-    mov     eax, RGBA(128, 128, 128, 255)
+    mov     ecx, C_INK
+    mov     eax, C_INK_SOFT
     test    r15d, r15d
     cmovz   ecx, eax
     mov     eax, r14d
@@ -629,7 +723,7 @@ ui_button:
     lea     edx, [r13 + 6]
     mov     rdi, rbx
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
     xor     eax, eax
     cmp     dword [rsp], 0
     je      .ret
@@ -713,24 +807,20 @@ ui_slider:
     mov     rdx, [rbx + SLIDERDEF.value]
     mov     [rdx], eax
 .draw:
-    mov     r8d, RGBA(255, 255, 255, 38)
-    cmp     dword [rsp + 128], 0
-    je      .bg
-    mov     r8d, RGBA(255, 255, 255, 77)
-.bg:
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
-    call    ui_rect
+    mov     edi, NINE_BAR               ; track
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    mov     r8d, BTN_H
+    call    ui_nine
     cmp     dword [rsp + 128], 0
     je      .knob
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
-    mov     r8d, RGBA(255, 255, 255, 128)
-    call    ui_frame
+    lea     edi, [r12 + 2]              ; hover wash inside the frame
+    lea     esi, [r13 + 2]
+    lea     edx, [r14 - 4]
+    mov     ecx, BTN_H - 4
+    mov     r8d, C_HOVER
+    call    ui_rect
 .knob:
     mov     rax, [rbx + SLIDERDEF.value]
     mov     eax, [rax]
@@ -752,12 +842,12 @@ ui_slider:
 .k_zero:
     xor     eax, eax
 .k_have:
-    lea     edi, [r12 + rax]
-    mov     esi, r13d
-    mov     edx, 8
-    mov     ecx, BTN_H
-    mov     r8d, RGBA(255, 255, 255, 170)
-    call    ui_rect
+    lea     esi, [r12 + rax]
+    mov     edi, NINE_BUTTON_HOT
+    mov     edx, r13d
+    mov     ecx, 8
+    mov     r8d, BTN_H
+    call    ui_nine
     ; label = prefix + value + suffix
     mov     r15, rsp
     mov     rsi, [rbx + SLIDERDEF.prefix]
@@ -785,9 +875,9 @@ ui_slider:
     lea     esi, [r12 + rax]
     lea     edx, [r13 + 6]
     mov     rdi, rsp
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text_centered
+    call    ui_text_ink_centered
     mov     rax, [rbx + SLIDERDEF.value]
     mov     eax, [rax]
     xor     edx, edx
@@ -884,22 +974,21 @@ ui_textfield:
     setne   al
     mov     [rsp + 4], eax
 .draw:
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
-    mov     r8d, RGBA(0, 0, 0, 192)
-    call    ui_rect
-    mov     r8d, RGBA(160, 160, 160, 255)
+    mov     edi, NINE_SLOT
+    mov     esi, r12d
+    mov     edx, r13d
+    mov     ecx, r14d
+    mov     r8d, BTN_H
+    call    ui_nine
     cmp     dword [rsp], 0
-    je      .frame
-    mov     r8d, WHITE
-.frame:
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, r14d
-    mov     ecx, BTN_H
+    je      .framed
+    lea     edi, [r12 + 1]              ; focused: gold rule inside the rim
+    lea     esi, [r13 + 1]
+    lea     edx, [r14 - 2]
+    mov     ecx, BTN_H - 2
+    mov     r8d, C_GOLD
     call    ui_frame
+.framed:
     ; room for text = w - 8 (minus the caret while focused); a longer text shows its tail
     mov     eax, r14d
     sub     eax, 8
@@ -929,9 +1018,9 @@ ui_textfield:
     mov     rdi, r15
     lea     esi, [r12 + 4]
     lea     edx, [r13 + 6]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
     cmp     dword [rsp], 0
     je      .ret
     mov     [rsp + 12], eax
@@ -944,9 +1033,9 @@ ui_textfield:
     lea     esi, [r12 + 4]
     add     esi, [rsp + 12]
     lea     edx, [r13 + 6]
-    mov     ecx, WHITE
+    mov     ecx, C_INK
     mov     r8d, 1
-    call    ui_text
+    call    ui_text_ink
 .ret:
     mov     eax, [rsp + 4]
     add     rsp, 24
@@ -1070,12 +1159,12 @@ ui_slot:
     mov     ecx, 18
     call    hit_test
     mov     r15d, eax                   ; hover
-    mov     edi, r12d
-    mov     esi, r13d
-    mov     edx, 18
+    mov     edi, NINE_SLOT
+    mov     esi, r12d
+    mov     edx, r13d
     mov     ecx, 18
-    mov     r8d, RGBA(0, 0, 0, 90)
-    call    ui_rect
+    mov     r8d, 18
+    call    ui_nine
     movzx   eax, byte [rbx + ITEMSTACK.id]
     cmp     eax, NUM_ITEMS
     jae     .hover
@@ -1147,7 +1236,7 @@ ui_slot:
     sub     esi, eax                    ; right edge at x + 17
     lea     rdi, [rsp + 16]
     lea     edx, [r13 + 10]
-    mov     ecx, WHITE
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
 .hover:
@@ -1157,7 +1246,7 @@ ui_slot:
     lea     esi, [r13 + 1]
     mov     edx, 16
     mov     ecx, 16
-    mov     r8d, RGBA(255, 255, 255, 96)
+    mov     r8d, C_HOVER
     call    ui_rect
 .ret:
     mov     eax, r15d
@@ -1172,7 +1261,7 @@ ui_slot:
 
 ; ui_tooltip(rdi s): panel with the text at the mouse, kept inside the screen. Text wider than
 ; the screen breaks at the last space that lets the first line fit, onto a second line.
-; Frame: [rsp] copy of the text (192 bytes) when it is split, [rsp+192] panel height.
+; Frame: [rsp] copy of the text (192 bytes) when it is split, [rsp+192] panel height (4-unit pad).
 ui_tooltip:
     push    rbp
     mov     rbp, rsp
@@ -1184,7 +1273,7 @@ ui_tooltip:
     sub     rsp, 200
     mov     rbx, rdi
     xor     r15d, r15d                  ; offset of the second line in the copy, 0 = one line
-    mov     dword [rsp + 192], 14
+    mov     dword [rsp + 192], 16
     test    rbx, rbx
     jz      .ret
     cmp     byte [rbx], 0
@@ -1192,7 +1281,7 @@ ui_tooltip:
     mov     rdi, rbx
     mov     esi, 1
     call    ui_text_width
-    lea     r12d, [rax + 6]             ; panel width: text + 3 padding each side
+    lea     r12d, [rax + 8]             ; panel width: text + 4 padding each side
     cmp     r12d, [ui_w]
     jle     .place
     ; copy (at most 191 chars), then try the spaces from the end: first only those before
@@ -1226,7 +1315,7 @@ ui_tooltip:
     mov     rdi, rsp
     mov     esi, 1
     call    ui_text_width
-    add     eax, 6
+    add     eax, 8
     cmp     eax, [ui_w]
     jle     .two_lines
     mov     byte [rsp + r13], ' '
@@ -1241,11 +1330,11 @@ ui_tooltip:
     lea     rdi, [rsp + r15]
     mov     esi, 1
     call    ui_text_width
-    add     eax, 6
+    add     eax, 8
     cmp     eax, r12d
     cmovg   r12d, eax
     mov     rbx, rsp
-    mov     dword [rsp + 192], 25
+    mov     dword [rsp + 192], 27
 .place:
     mov     r13d, [ui_mx]
     add     r13d, 12
@@ -1269,19 +1358,19 @@ ui_tooltip:
     mov     esi, r14d
     mov     edx, r12d
     mov     ecx, [rsp + 192]
-    call    ui_panel
+    call    tooltip_panel
     mov     rdi, rbx
-    lea     esi, [r13 + 3]
-    lea     edx, [r14 + 3]
-    mov     ecx, WHITE
+    lea     esi, [r13 + 4]
+    lea     edx, [r14 + 4]
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
     test    r15d, r15d
     jz      .ret
     lea     rdi, [rsp + r15]
-    lea     esi, [r13 + 3]
-    lea     edx, [r14 + 14]
-    mov     ecx, WHITE
+    lea     esi, [r13 + 4]
+    lea     edx, [r14 + 15]
+    mov     ecx, C_CREAM
     mov     r8d, 1
     call    ui_text
 .ret:
@@ -1295,7 +1384,7 @@ ui_tooltip:
     ret
 
 ; ui_tooltip_lines(rdi lines qword[n], esi n, rdx colours dword[n], ecx side): a panel of n
-; one-line texts, each in its own colour. The panel is the widest line + 6 wide and 11 * n + 3
+; one-line texts, each in its own colour. The panel is the widest line + 8 wide and 11 * n + 5
 ; high and sits at y = my - 12; side 0 puts it right of the mouse (x = mx + 12), side 1 left of
 ; it (its right edge at mx - 12). It stays inside the screen. Nothing is drawn for n = 0.
 ; Frame: [rsp] panel x, +4 y, +8 width, +12 height, +16 line index.
@@ -1327,10 +1416,10 @@ ui_tooltip_lines:
     mov     eax, [rsp + 16]
     cmp     eax, r12d
     jb      .measure
-    add     r15d, 6                     ; text + 3 padding each side
+    add     r15d, 8                     ; text + 4 padding each side
     mov     [rsp + 8], r15d
     imul    eax, r12d, 11
-    add     eax, 3
+    add     eax, 5
     mov     [rsp + 12], eax
     mov     eax, [ui_mx]
     sub     eax, 12
@@ -1360,7 +1449,7 @@ ui_tooltip_lines:
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     mov     ecx, [rsp + 12]
-    call    ui_panel
+    call    tooltip_panel
     mov     dword [rsp + 16], 0
 .line:
     mov     eax, [rsp + 16]
@@ -1368,9 +1457,9 @@ ui_tooltip_lines:
     mov     ecx, [r13 + rax*4]
     imul    edx, eax, 11
     add     edx, [rsp + 4]
-    add     edx, 3
+    add     edx, 4
     mov     esi, [rsp]
-    add     esi, 3
+    add     esi, 4
     mov     r8d, 1
     call    ui_text
     inc     dword [rsp + 16]
@@ -1379,6 +1468,454 @@ ui_tooltip_lines:
     jb      .line
 .ret:
     add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- nine-slice frames, lines, clipping, books ---------------------------------
+
+; nine_axis(rdi out, esi len, edx b) -> eax segment count
+; Cuts a length into the corner b, the tile's middle strip (16 - 2b texels) repeated, the last
+; repeat cut short, and the far corner. out[i] = int32 {p0, p1, t0, t1}: the span in units and
+; the texel span of the tile it samples. At most 256 segments (the far corner is always kept).
+nine_axis:
+    mov     dword [rdi], 0              ; near corner
+    mov     [rdi + 4], edx
+    mov     dword [rdi + 8], 0
+    mov     [rdi + 12], edx
+    mov     ecx, 1                      ; segments written
+    mov     r8d, edx                    ; pen = b
+    mov     r9d, esi
+    sub     r9d, edx                    ; far corner starts at len - b
+    mov     r10d, 16
+    sub     r10d, edx
+    sub     r10d, edx                   ; strip width 16 - 2b
+    test    r10d, r10d
+    jle     .far
+.mid:
+    cmp     r8d, r9d
+    jge     .far
+    cmp     ecx, 255
+    jae     .far
+    mov     eax, r9d
+    sub     eax, r8d                    ; room left
+    cmp     eax, r10d
+    cmovg   eax, r10d                   ; piece = min(room, strip)
+    mov     r11d, ecx
+    shl     r11d, 4
+    mov     [rdi + r11], r8d            ; p0
+    add     r8d, eax
+    mov     [rdi + r11 + 4], r8d        ; p1
+    mov     [rdi + r11 + 8], edx        ; t0 = b
+    add     eax, edx
+    mov     [rdi + r11 + 12], eax       ; t1 = b + piece
+    inc     ecx
+    jmp     .mid
+.far:
+    mov     r11d, ecx
+    shl     r11d, 4
+    mov     [rdi + r11], r9d
+    mov     [rdi + r11 + 4], esi
+    mov     eax, 16
+    sub     eax, edx
+    mov     [rdi + r11 + 8], eax        ; t0 = 16 - b
+    mov     dword [rdi + r11 + 12], 16
+    lea     eax, [rcx + 1]
+    ret
+
+; ui_nine_layout(rdi out, esi w, edx h, ecx b) -> eax n
+; The geometry of a nine-slice of a w x h rectangle: n records of 8 int32 {x0, y0, x1, y1, u0,
+; v0, u1, v1}, x/y as unit offsets in the rectangle, u/v as texel offsets in the 16x16 tile.
+; Corners are b x b at 1:1, edges and the centre repeat the tile's middle (16 - 2b) texels and
+; the last repeat is cut short. When w or h < 2b, b becomes min(w, h) / 2. Rows run top to
+; bottom, left to right. Stops at NINE_MAX_QUADS records. Nothing for w <= 0 or h <= 0.
+ui_nine_layout:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 24                     ; [rsp] x segments, +4 y segments, +8 records written
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    xor     eax, eax
+    test    r12d, r12d
+    jle     .ret
+    test    r13d, r13d
+    jle     .ret
+    mov     eax, 7                      ; b <= 7 keeps the middle strip non-empty
+    cmp     ecx, eax
+    cmovg   ecx, eax
+    lea     eax, [rcx + rcx]
+    mov     edx, r12d
+    cmp     r13d, edx
+    cmovl   edx, r13d                   ; min(w, h)
+    cmp     eax, edx
+    jle     .b_ok
+    mov     ecx, edx
+    shr     ecx, 1
+.b_ok:
+    mov     r14d, ecx
+    lea     rdi, [nine_xs]
+    mov     esi, r12d
+    mov     edx, r14d
+    call    nine_axis
+    mov     [rsp], eax
+    lea     rdi, [nine_ys]
+    mov     esi, r13d
+    mov     edx, r14d
+    call    nine_axis
+    mov     [rsp + 4], eax
+    mov     dword [rsp + 8], 0
+    xor     r15d, r15d                  ; y segment
+.row:
+    cmp     r15d, [rsp + 4]
+    jae     .done
+    xor     r14d, r14d                  ; x segment
+.col:
+    cmp     r14d, [rsp]
+    jae     .next_row
+    cmp     dword [rsp + 8], NINE_MAX_QUADS
+    jae     .done
+    mov     rax, r14
+    shl     rax, 4
+    lea     rcx, [nine_xs]
+    add     rcx, rax
+    mov     rax, r15
+    shl     rax, 4
+    lea     rdx, [nine_ys]
+    add     rdx, rax
+    mov     eax, [rcx]
+    mov     [rbx], eax                  ; x0
+    mov     eax, [rdx]
+    mov     [rbx + 4], eax              ; y0
+    mov     eax, [rcx + 4]
+    mov     [rbx + 8], eax              ; x1
+    mov     eax, [rdx + 4]
+    mov     [rbx + 12], eax             ; y1
+    mov     eax, [rcx + 8]
+    mov     [rbx + 16], eax             ; u0
+    mov     eax, [rdx + 8]
+    mov     [rbx + 20], eax             ; v0
+    mov     eax, [rcx + 12]
+    mov     [rbx + 24], eax             ; u1
+    mov     eax, [rdx + 12]
+    mov     [rbx + 28], eax             ; v1
+    add     rbx, 32
+    inc     dword [rsp + 8]
+    inc     r14d
+    jmp     .col
+.next_row:
+    inc     r15d
+    jmp     .row
+.done:
+    mov     eax, [rsp + 8]
+.ret:
+    add     rsp, 24
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_nine_tint(edi kind, esi x, edx y, ecx w, r8d h, r9d rgba)
+; draws NINE_* kind's tile as a nine-slice over (x, y, w, h), 1 texel = 1 unit, times the colour
+; (all of it one GL_QUADS batch)
+ui_nine_tint:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 56                     ; [rsp] quad record, +32 quads left, +40 record cursor
+    mov     ebx, esi                    ; x
+    mov     r12d, edx                   ; y
+    mov     r15d, r9d                   ; colour
+    cmp     edi, NINE_NODE_PATH
+    ja      .ret
+    mov     eax, edi
+    lea     r10, [nine_tab]
+    movzx   r13d, word [r10 + rax*4]    ; tile
+    movzx   r11d, byte [r10 + rax*4 + 2] ; border
+    mov     r14d, r13d
+    and     r13d, 15
+    shl     r13d, 8                     ; atlas u origin, 1/16 texel units
+    shr     r14d, 4
+    shl     r14d, 8                     ; atlas v origin
+    mov     esi, ecx                    ; w
+    mov     edx, r8d                    ; h
+    mov     ecx, r11d
+    lea     rdi, [nine_buf]
+    call    ui_nine_layout
+    mov     [rsp + 32], eax
+    test    eax, eax
+    jz      .ret
+    lea     rax, [nine_buf]
+    mov     [rsp + 40], rax
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+    mov     edi, r15d
+    call    set_color
+    mov     edi, GL_QUADS
+    call    glBegin
+.quad:
+    mov     rsi, [rsp + 40]
+    mov     eax, [rsi]
+    add     eax, ebx
+    mov     [rsp], eax
+    mov     eax, [rsi + 4]
+    add     eax, r12d
+    mov     [rsp + 4], eax
+    mov     eax, [rsi + 8]
+    add     eax, ebx
+    mov     [rsp + 8], eax
+    mov     eax, [rsi + 12]
+    add     eax, r12d
+    mov     [rsp + 12], eax
+    mov     eax, [rsi + 16]
+    shl     eax, 4
+    add     eax, r13d
+    mov     [rsp + 16], eax
+    mov     eax, [rsi + 20]
+    shl     eax, 4
+    add     eax, r14d
+    mov     [rsp + 20], eax
+    mov     eax, [rsi + 24]
+    shl     eax, 4
+    add     eax, r13d
+    mov     [rsp + 24], eax
+    mov     eax, [rsi + 28]
+    shl     eax, 4
+    add     eax, r14d
+    mov     [rsp + 28], eax
+    mov     rdi, rsp
+    call    quad_uv
+    add     qword [rsp + 40], 32
+    dec     dword [rsp + 32]
+    jnz     .quad
+    call    glEnd
+.ret:
+    add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_nine(edi kind, esi x, edx y, ecx w, r8d h): ui_nine_tint in white
+ui_nine:
+    mov     r9d, WHITE
+    jmp     ui_nine_tint
+
+; LINE_VERT xslot, yslot, xop, yop: one corner of the ui_line quad, (x, y) +- (nx, ny)
+%macro LINE_VERT 4
+    cvtsi2ss xmm0, dword [rsp + %1]
+    cvtsi2ss xmm1, dword [rsp + %2]
+    %3      xmm0, [rsp + 16]
+    %4      xmm1, [rsp + 20]
+    call    glVertex2f
+%endmacro
+
+; ui_line(edi x0, esi y0, edx x1, ecx y1, r8d rgba, r9d width)
+; an untextured quad of that width along the segment (nothing for a zero-length one)
+ui_line:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32                     ; [rsp] x0, y0, x1, y1, +16 nx, +20 ny
+    mov     [rsp], edi
+    mov     [rsp + 4], esi
+    mov     [rsp + 8], edx
+    mov     [rsp + 12], ecx
+    sub     edx, edi
+    sub     ecx, esi
+    cvtsi2ss xmm0, edx                  ; dx
+    cvtsi2ss xmm1, ecx                  ; dy
+    movaps  xmm2, xmm0
+    mulss   xmm2, xmm0
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm1
+    addss   xmm2, xmm3
+    sqrtss  xmm2, xmm2                  ; length
+    xorps   xmm3, xmm3
+    ucomiss xmm2, xmm3
+    je      .ret
+    cvtsi2ss xmm3, r9d
+    mulss   xmm3, [f_half]
+    divss   xmm3, xmm2                  ; half width / length
+    mulss   xmm0, xmm3                  ; dx * h
+    mulss   xmm1, xmm3                  ; dy * h
+    xorps   xmm4, xmm4
+    subss   xmm4, xmm1
+    movss   [rsp + 16], xmm4            ; nx = -dy * h
+    movss   [rsp + 20], xmm0            ; ny = dx * h
+    mov     edi, r8d
+    call    set_color
+    mov     edi, GL_TEXTURE_2D
+    call    glDisable
+    mov     edi, GL_QUADS
+    call    glBegin
+    LINE_VERT 0, 4, addss, addss
+    LINE_VERT 8, 12, addss, addss
+    LINE_VERT 8, 12, subss, subss
+    LINE_VERT 0, 4, subss, subss
+    call    glEnd
+    mov     edi, GL_TEXTURE_2D
+    call    glEnable
+.ret:
+    add     rsp, 32
+    pop     rbp
+    ret
+
+; ui_clip(edi x, esi y, edx w, ecx h): clip drawing to a rectangle in GUI units (glScissor in
+; framebuffer pixels); ui_unclip ends it. ui_begin also clears it.
+ui_clip:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, [ui_scale]
+    imul    edi, ebx                    ; x * s
+    add     esi, ecx
+    imul    esi, ebx                    ; (y + h) * s
+    mov     eax, [ui_fb_h]
+    sub     eax, esi
+    mov     esi, eax                    ; GL y runs from the bottom
+    imul    edx, ebx
+    imul    ecx, ebx
+    call    glScissor
+    mov     edi, GL_SCISSOR_TEST
+    call    glEnable
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_unclip(): back to the whole framebuffer
+ui_unclip:
+    sub     rsp, 8
+    mov     edi, GL_SCISSOR_TEST
+    call    glDisable
+    add     rsp, 8
+    ret
+
+; ui_ribbon(rdi s, esi cx, edx y): a crimson ribbon (text width + 24) x 14 centred on cx, top y,
+; the text on it in cream
+ui_ribbon:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     esi, 1
+    call    ui_text_width
+    lea     ecx, [rax + 24]             ; ribbon width
+    mov     esi, ecx
+    shr     esi, 1
+    neg     esi
+    add     esi, r12d                   ; cx - w / 2
+    mov     edi, NINE_RIBBON
+    mov     edx, r13d
+    mov     r8d, 14
+    call    ui_nine
+    mov     rdi, rbx
+    mov     esi, r12d
+    lea     edx, [r13 + 3]
+    mov     ecx, C_CREAM
+    mov     r8d, 1
+    call    ui_text_centered
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ui_book(edi x, esi y, edx left_w, ecx right_w, r8d h): an open book. A leather cover
+; (x - 6, y - 6, left_w + 4 + right_w + 12, h + 12) under a left page (x, y, left_w, h), a 4-wide
+; umber spine at x + left_w with a gold stitch every 6 units, and the right page at
+; x + left_w + 4. With left_w 0 there is no left page and no spine: the right page is at x and
+; the cover is right_w + 12 wide.
+ui_book:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8                      ; [rsp] stitch offset
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r13d, edx
+    mov     r14d, ecx
+    mov     r15d, r8d
+    lea     ecx, [r14 + 12]             ; cover width
+    test    r13d, r13d
+    jz      .cover
+    lea     ecx, [r14 + r13 + 16]
+.cover:
+    mov     edi, NINE_LEATHER
+    lea     esi, [rbx - 6]
+    lea     edx, [r12 - 6]
+    lea     r8d, [r15 + 12]
+    call    ui_nine
+    test    r13d, r13d
+    jz      .right
+    mov     edi, NINE_PAGE
+    mov     esi, ebx
+    mov     edx, r12d
+    mov     ecx, r13d
+    mov     r8d, r15d
+    call    ui_nine
+    lea     edi, [rbx + r13]            ; spine
+    mov     esi, r12d
+    mov     edx, 4
+    mov     ecx, r15d
+    mov     r8d, C_UMBER
+    call    ui_rect
+    mov     dword [rsp], 3
+.stitch:
+    mov     eax, [rsp]
+    lea     ecx, [rax + 5]
+    cmp     ecx, r15d
+    ja      .right
+    lea     edi, [rbx + r13 + 2]
+    lea     esi, [r12 + rax]
+    mov     edx, 1
+    mov     ecx, 2
+    mov     r8d, C_GOLD
+    call    ui_rect
+    add     dword [rsp], 6
+    jmp     .stitch
+.right:
+    mov     esi, ebx
+    test    r13d, r13d
+    jz      .page
+    lea     esi, [rbx + r13 + 4]
+.page:
+    mov     edi, NINE_PAGE
+    mov     edx, r12d
+    mov     ecx, r14d
+    mov     r8d, r15d
+    call    ui_nine
+    add     rsp, 8
     pop     r15
     pop     r14
     pop     r13

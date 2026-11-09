@@ -24,6 +24,7 @@ extern glColor4f, glLineWidth, glBegin, glEnd, glVertex3f, glVertex2i, glTexCoor
 extern glActiveTexture, glTexEnvi, glTexEnvfv, glPushMatrix, glPopMatrix
 extern glColor3f, glColor4ub, glDepthMask
 extern glMultiTexCoord2f, glClientActiveTexture
+extern glScissor, glVertex2f
 
 ; ---- GLFW enums -----------------------------------------------------------
 %define GLFW_TRUE              1
@@ -83,6 +84,7 @@ extern glMultiTexCoord2f, glClientActiveTexture
 %define GL_DEPTH_TEST            0x0B71
 %define GL_ALPHA_TEST            0x0BC0
 %define GL_BLEND                 0x0BE2
+%define GL_SCISSOR_TEST          0x0C11
 %define GL_FOG                   0x0B60
 %define GL_TEXTURE_2D            0x0DE1
 %define GL_GREATER               0x0204

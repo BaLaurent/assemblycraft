@@ -516,3 +516,16 @@ Every worker replaces flat `ui_rect` / `ui_frame` panels with the kinds below, s
 - **omabox:** if `omabox up` dies again (Hyprland exit status 1, as on 2026-11-08), run `omabox down default` once and retry once. If it still dies, the live checks are reported as blocked, the mockup PNGs stay the visual reference, and a GitHub issue is filed for the missing live checks.
 - **GUI width:** if `ui_w` < 316 (only with a forced GUI scale on a small window), the inventory book drops its left page (as with `left` 0) and the tabs are hidden.
 - **Wave 1 CORE slip:** if CORE is not finished when the user validates the mockup, U0 still starts (it only needs `ui.asm`), and the four Wave 2 workers start from the merged CORE.
+
+## Mockup-approved adjustments (supersede the numbers above where they differ)
+
+Approved by the user on 2026-11-09 from `docs/superpowers/specs/grimoire-mockup/`. The exact coordinates live in the mockup compositor (`/tmp/ac102-mock/mock.py`).
+
+- Inventory left-page tabs: "Character" 70 wide at lx + 2, "Recipes" 52 wide at lx + 74. Title line is two lines (title, then "Level N").
+- Grimoire footer button reads "Respec: N coins" (124 wide); hint "Wheel: zoom  Drag: move" right-aligned at ui_w - 20.
+- Archetype labels: pinwheel (Warrior right of its node, Mage below, Archer left, Rogue above).
+- Zoom 0 uses pitch 9 with 7/10-unit nodes so the whole web fits (`grimoire_overview_fit.png`); zoom 1 stays pitch 28.
+- Rank "r/m" only on ranked multi-rank nodes.
+- `TILE_COMPASS` is one 16x16 tile drawn at 32x32 units. Slot glyph tiles are white/grey, tinted `C_INK_SOFT`. `NINE_BAR` ring is translucent. `TILE_QUILL` is drawn by `ui_tile_icon` at size 12.
+- Title screen gets a full-screen `NINE_LEATHER` backdrop (menus mockup).
+- `ui_book(x, y, 0, right_w, h)` puts the right page at x (no spine); `ui_text_ink_centered` is an extra ui API.

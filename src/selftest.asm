@@ -78,6 +78,7 @@ extern test_biome_ladder
 extern test_lava_burns, test_new_biome_consumers
 extern test_caves_reworked
 extern test_grimoire_tiles
+extern test_ui_nine_layout
 extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
 
 %macro TEST 1
@@ -269,6 +270,7 @@ tests:
     TEST new_biome_consumers
     TEST caves_reworked
     TEST grimoire_tiles
+    TEST ui_nine_layout
     TEST ability_bar_binding
     TEST archetype_titles
     TEST web_view_mapping
@@ -454,6 +456,7 @@ section .rodata
     TESTNAME new_biome_consumers
     TESTNAME caves_reworked
     TESTNAME grimoire_tiles
+    TESTNAME ui_nine_layout
     TESTNAME ability_bar_binding
     TESTNAME archetype_titles
     TESTNAME web_view_mapping
