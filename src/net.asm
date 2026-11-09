@@ -7,7 +7,10 @@
 ; the host), a queue of NETEVENTs and the join / rendezvous state machines. The game uses the global
 ; net_ep; tests allocate their own (net_ep_size bytes). A connection (CONN):
 ;   - reliable messages wait in a 2048-entry queue, each with a u16 rid, until a DATA packet that carried
-;     them is acked (ack + 32 ack bits in every packet header); they are due again every RTO;
+;     them is acked (ack + 32 ack bits in every packet header); they are due again every RTO. Which packet
+;     carried which rids is kept in a ring of SPK_COUNT sent packets, and a packet that is still unacked and
+;     younger than SPK_KEEP_MS is never overwritten (the flush stops instead), so every ack that comes back
+;     within SPK_KEEP_MS finds its packet whatever the send rate, and within SPK_COUNT packets otherwise;
 ;   - the receiver delivers them in rid order from a 512-entry window, drops duplicates, and reassembles
 ;     MT_BLOB_PART runs into one big message;
 ;   - unreliable messages are delivered at once and queued per frame in a 16 KiB buffer.
@@ -68,7 +71,8 @@ extern time_mono_ns, i32_to_str
 %define CONN_ACTIVE       1
 %define QE_SENT           1
 %define QE_ACKED          2
-%define SPK_COUNT         256
+%define SPK_COUNT         4096              ; sent-packet ring: 4 s of packets at 1000 per second (was 256)
+%define SPK_KEEP_MS       2000              ; a packet still unacked and younger than this is never overwritten
 %define SPK_RIDS          40
 %define UR_SIZE           16384
 %define EV_COUNT          64
@@ -137,7 +141,7 @@ struc CONN
     .blob_parts: resd 1
     .blob_total: resd 1
     .blob_type:  resd 1
-    .pad:        resd 1
+    .bye:        resd 1                     ; reason + 1 of a goodbye that waits for room in the event queue
     .ring:       resb SPK_COUNT * SPK_size
     .rw_valid:   resb NET_RWIN
     .zero_end:   resb 0                     ; conn_init clears everything before this
@@ -1032,7 +1036,10 @@ net_ep_send_big:
 ; Packet by packet: the due reliable messages oldest first (never one more than NET_RWIN past the oldest
 ; unacked), then the unreliable records that fit. When unreliable data is pending, up to half the packets are
 ; kept for it, so a long reliable backlog (a big download) cannot starve the snapshots. An empty packet goes
-; out when nothing else did for NET_KEEPALIVE_MS, so acks keep flowing. The unreliable buffer is emptied.
+; out when nothing else did for NET_KEEPALIVE_MS, so acks keep flowing. A packet whose ring slot still holds an
+; unacked packet younger than SPK_KEEP_MS is not built at all: the ring is full of packets in flight, and
+; sending more would make their acks useless (with a 600 ms round trip and 8 packets per frame the acks of a
+; 256-entry ring all came back too late and the channel stalled for good). The unreliable buffer is emptied.
 conn_flush:
     push    rbp
     mov     rbp, rsp
@@ -1075,9 +1082,17 @@ conn_flush:
     xor     r14d, r14d                          ; scan position in the reliable queue
 .packet:
     mov     eax, [r12 + CONN.tx_seq]
-    movzx   edx, al
+    mov     edx, eax
+    and     edx, SPK_COUNT - 1
     imul    edx, edx, SPK_size
     lea     rcx, [r12 + rdx + CONN.ring]
+    cmp     byte [rcx + SPK.state], 1
+    jne     .slot_free
+    mov     edx, r13d
+    sub     edx, [rcx + SPK.t]
+    cmp     edx, SPK_KEEP_MS
+    jb      .done                               ; the packet in this slot is in flight and young: its ack must still find
+.slot_free:                                     ; it, so nothing more goes out until an ack (or its age) frees the slot
     mov     [rsp + FL_SP], rcx
     mov     [rcx + SPK.seq], ax
     mov     byte [rcx + SPK.nrids], 0
@@ -1269,7 +1284,8 @@ conn_find:
 ; pkt_acked(rdi ep, rsi conn, edx seq): the peer received our packet `seq`. Marks the reliable messages it
 ; carried as acked and feeds the round trip estimate (srtt = 7/8 srtt + 1/8 sample, kept times 8).
 pkt_acked:
-    movzx   eax, dl
+    mov     eax, edx
+    and     eax, SPK_COUNT - 1
     imul    eax, eax, SPK_size
     lea     r8, [rsi + rax + CONN.ring]
     cmp     [r8 + SPK.seq], dx
@@ -1687,7 +1703,9 @@ conn_rx:
     pop     rbp
     ret
 
-; conn_timeouts(rdi ep): a connection silent for NET_TIMEOUT_MS is freed and reported as NE_TIMEOUT
+; conn_timeouts(rdi ep): a connection silent for NET_TIMEOUT_MS is reported as NE_TIMEOUT, and one whose peer said
+; goodbye while the event queue was full (CONN.bye) as NE_DISCONNECTED. The connection is freed only when its event
+; is queued, so a full queue delays the report to a later poll and never loses it.
 conn_timeouts:
     push    rbx
     push    r12
@@ -1700,19 +1718,24 @@ conn_timeouts:
     lea     r13, [rbx + rax + NETEP.conn]
     cmp     dword [r13 + CONN.state], CONN_ACTIVE
     jne     .next
+    mov     esi, NE_DISCONNECTED
+    mov     ecx, [r13 + CONN.bye]
+    dec     ecx                                 ; the goodbye's reason, or -1 when none is waiting
+    jns     .report
     mov     eax, [rbx + NETEP.now]
     sub     eax, [r13 + CONN.last_rx]
     cmp     eax, NET_TIMEOUT_MS
     jb      .next
-    mov     dword [r13 + CONN.state], CONN_FREE
-    mov     rdi, rbx
     mov     esi, NE_TIMEOUT
-    mov     edx, r12d
     xor     ecx, ecx
+.report:
+    mov     rdi, rbx
+    mov     edx, r12d
     mov     r8d, [r13 + CONN.relay]
     call    ev_post
     test    rax, rax
-    jz      .next
+    jz      .next                               ; the queue is full: the connection stays, the next poll tries again
+    mov     dword [r13 + CONN.state], CONN_FREE
     lea     rsi, [r13 + CONN.addr]
     call    ev_set_addr
 .next:
@@ -1833,6 +1856,11 @@ handle_connect:
     call    send_deny
     jmp     .out
 .new:
+    mov     eax, [rbx + NETEP.ev_tail]
+    sub     eax, [rbx + NETEP.ev_head]
+    cmp     eax, EV_COUNT - NET_MAX_PEERS
+    jae     .out                                ; the last NET_MAX_PEERS places are for goodbyes: a flood of CONNECTs
+                                                ; cannot take them (the joiner asks again)
     mov     rdi, rbx
     mov     esi, NE_CONNECT_REQ
     xor     edx, edx
@@ -2003,7 +2031,8 @@ net_ep_drop:
     pop     rbx
     ret
 
-; handle_disconnect(rdi ep, rsi pkt, edx len, rcx src, r8d relay): the peer leaves (NE_DISCONNECTED)
+; handle_disconnect(rdi ep, rsi pkt, edx len, rcx src, r8d relay): the peer leaves (NE_DISCONNECTED). When the event
+; queue is full the goodbye waits in CONN.bye and conn_timeouts reports it later; a repeated DISCONNECT changes nothing.
 handle_disconnect:
     push    rbx
     push    r12
@@ -2013,7 +2042,6 @@ handle_disconnect:
     mov     rbx, rdi
     mov     r12, rsi
     mov     r13d, edx
-    mov     r14, rcx
     mov     rsi, rcx
     mov     edx, r8d
     mov     ecx, [r12 + 4]
@@ -2021,19 +2049,26 @@ handle_disconnect:
     test    rax, rax
     jz      .out
     mov     r15, rax
-    xor     ecx, ecx
+    cmp     dword [r15 + CONN.bye], 0
+    jne     .out
+    xor     r14d, r14d                          ; the reason
     cmp     r13d, NET_PKT_HDR + 1
-    jb      .reason
-    movzx   ecx, byte [r12 + 16]
-.reason:
-    mov     dword [r15 + CONN.state], CONN_FREE
+    jb      .have_reason
+    movzx   r14d, byte [r12 + 16]
+.have_reason:
     mov     rdi, rbx
     mov     esi, NE_DISCONNECTED
     mov     edx, [r15 + CONN.slot]
+    mov     ecx, r14d
     mov     r8d, [r15 + CONN.relay]
     call    ev_post
     test    rax, rax
-    jz      .out
+    jnz     .posted
+    lea     eax, [r14 + 1]
+    mov     [r15 + CONN.bye], eax               ; no room: conn_timeouts delivers it when there is
+    jmp     .out
+.posted:
+    mov     dword [r15 + CONN.state], CONN_FREE
     lea     rsi, [r15 + CONN.addr]
     call    ev_set_addr
 .out:

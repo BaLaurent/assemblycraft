@@ -3,13 +3,16 @@
 ; message through 20 % loss (with unreliable snapshots getting through the backlog), the u16 wrap of reliable
 ; ids, the 10 s connection timeout, and the join handshake: refused joins (a version byte of 2, DENY_FULL,
 ; DENY_NAME, DENY_CLOSED), one request arriving by several candidate addresses, hostile packets from an
-; accepted guest, and the join target parser. Endpoints are mmap'd per test (net_ep_size bytes); the game's
-; own net_ep is never touched.
+; accepted guest, and the join target parser; a 0.6 s round trip through a delay line made of two forwarding
+; sockets (three 200000-byte blobs, then a sender that must stop at its sent-packet ring), and a full event
+; queue (a CONNECT flood, goodbyes and timeouts that find no room). Endpoints are mmap'd per test (net_ep_size
+; bytes); the game's own net_ep is never touched.
 %include "common.inc"
 default rel
 
 global test_net_reliable_lossy, test_net_big_message, test_net_rid_wrap, test_net_timeout
 global test_net_handshake_deny
+global test_net_long_rtt, test_net_event_queue_full
 
 extern net_ep_size, net_ep_open, net_ep_close, net_ep_poll, net_ep_next_event, net_ep_flush
 extern net_ep_send, net_ep_send_big, net_ep_room, net_ep_accept, net_ep_deny
@@ -26,12 +29,18 @@ extern net_parse_addr, net_format_addr, net_local_ip
 %define STEP_NS          16000000       ; one loop = 16 ms
 %define ST_N             0              ; delivery state: messages delivered
 %define ST_BAD           4              ; ... of them wrong
-%define ST_MODE          8              ; 0: message i has the pattern of seed i; 1: one blob
+%define ST_MODE          8              ; 0: message i has the pattern of seed i; 1: one blob; 2: only count them
 %define ST_WLEN          12             ; mode 1: expected length, type and pattern seed
 %define ST_WTYPE         16
 %define ST_WSEED         20
 %define ST_UN            24             ; unreliable MT_PSTATE messages delivered
 %define ST_LASTSEQ       28             ; the number of the newest of them
+%define FW_ENTRIES       1024           ; the delay line: datagrams in flight
+%define FW_ESIZE         1248           ; release ms u32, dest u32 (0 = A, 1 = B), len u32, pad u32, data[1232]
+%define LONG_LOOPS       300            ; net_long_rtt: loops allowed for the three blobs (219 are needed)
+%define RING_PKTS        4096           ; net_long_rtt: the sent-packet ring of net.asm (SPK_COUNT)
+%define EVQ_CONNECTS     56             ; net_event_queue_full: the queue holds 64 events, the last NET_MAX_PEERS (8)
+                                        ; places are not for CONNECT requests
 
 section .rodata
 s_bob:      db "Bob", 0
@@ -83,6 +92,25 @@ t_tok:      resd 1                      ; the token of an ACCEPT seen
 t_ev2:      resb 48
 t_pkt:      resb 1200                   ; a DATA packet of the first raw socket
 t_seq:      resd 1                      ; its packet number
+alignb 8
+fw_ring:    resq 1                      ; the delay line (mmap'd FW_ENTRIES * FW_ESIZE)
+fw_fa:      resd 1                      ; socket: the address A sees as "B"
+fw_fb:      resd 1                      ; socket: the address B joins as "the host"
+fw_bport:   resd 1                      ; B's real port (network order), learned from its first datagram
+fw_delay:   resd 1                      ; one-way delay, ms of the injected clock
+fw_head:    resd 1
+fw_tail:    resd 1
+fw_addr:    resb 8                      ; NADDR of FB, what B joins
+t_nonce:    resd 1                      ; the next nonce of a synthetic CONNECT_REQ
+t_sev:      resb 48                     ; a synthetic NE_CONNECT_REQ
+ec_req:     resd 1                      ; what ev_drain counted: CONNECT_REQ, DISCONNECTED, TIMEOUT, others
+ec_disc:    resd 1
+ec_tmo:     resd 1
+ec_other:   resd 1
+ec_d1:      resd 1                      ; DISCONNECTED of slot 1 with reason DENY_CLOSED
+ec_last_kind: resd 1                    ; the last event taken
+ec_last_slot: resd 1
+ec_last_reason: resd 1
 
 section .text
 
@@ -156,7 +184,8 @@ st_reset:
     ret
 
 ; deliver_chk(edi slot, esi type, rdx payload, ecx len, r8 state): the deliver callback. Mode 0: the n-th message
-; must have type MT_BLOCK + n % 5, length pat_len(n) and the pattern of seed n. Mode 1: the expected blob.
+; must have type MT_BLOCK + n % 5, length pat_len(n) and the pattern of seed n. Mode 1: the expected blob. Mode 2:
+; any message is just counted.
 deliver_chk:
     push    rbx
     push    r12
@@ -171,6 +200,8 @@ deliver_chk:
     je      .unrel
     mov     ebx, [r12 + ST_N]
     inc     dword [r12 + ST_N]
+    cmp     dword [r12 + ST_MODE], 2
+    je      .out
     cmp     dword [r12 + ST_MODE], 1
     je      .big
     mov     edi, ebx
@@ -1582,6 +1613,729 @@ hostile_round:
     jnz     .out
     xor     r12d, r12d
 .out:
+    mov     eax, r12d
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; ---- a network with a delay: two sockets in the middle -------------------------------------------------
+; B joins fw_addr (the socket FB). The test forwards what B sends to A, from the socket FA (so A sees "B" as FA's
+; address), and what A sends to FA to B, from FB (B sees "the host" as FB's address, which is where it joined).
+; Every datagram waits fw_delay ms of the injected clock in a ring before it is forwarded, in both directions.
+
+; fw_ms() -> eax the injected clock in ms
+fw_ms:
+    mov     rax, [t_clock]
+    xor     edx, edx
+    mov     ecx, 1000000
+    div     rcx
+    ret
+
+; fw_open() -> eax 0 when the ring and both sockets exist
+fw_open:
+    push    rbx
+    mov     dword [fw_head], 0
+    mov     dword [fw_tail], 0
+    mov     dword [fw_bport], 0
+    mov     eax, NSYS_MMAP
+    xor     edi, edi
+    mov     esi, FW_ENTRIES * FW_ESIZE
+    mov     edx, 3
+    mov     r10d, 0x22
+    mov     r8, -1
+    xor     r9d, r9d
+    syscall
+    cmp     rax, -4096
+    ja      .fail
+    mov     [fw_ring], rax
+    call    raw_open
+    test    eax, eax
+    js      .fail
+    mov     [fw_fa], eax
+    call    raw_open
+    test    eax, eax
+    js      .fail
+    mov     [fw_fb], eax
+    mov     dword [fw_addr], 0x0100007F
+    movzx   eax, word [t_sa + 2]            ; raw_open left the port of the socket it made last in t_sa
+    mov     [fw_addr + 4], ax
+    mov     word [fw_addr + 6], 0
+    xor     eax, eax
+    pop     rbx
+    ret
+.fail:
+    mov     eax, 1
+    pop     rbx
+    ret
+
+; fw_close(): the sockets and the ring go (whatever fw_open got that far); safe to call twice
+fw_close:
+    push    rbx
+    mov     edi, [fw_fa]
+    test    edi, edi
+    js      .b
+    call    raw_close
+    mov     dword [fw_fa], -1
+.b:
+    mov     edi, [fw_fb]
+    test    edi, edi
+    js      .ring
+    call    raw_close
+    mov     dword [fw_fb], -1
+.ring:
+    mov     rdi, [fw_ring]
+    test    rdi, rdi
+    jz      .out
+    mov     esi, FW_ENTRIES * FW_ESIZE
+    mov     eax, NSYS_MUNMAP
+    syscall
+    mov     qword [fw_ring], 0
+.out:
+    pop     rbx
+    ret
+
+; fw_collect(): every datagram waiting on FA (A sent it to "B") and on FB (B sent it to "the host") enters the delay
+; line, to leave fw_delay ms from now for the other side. B's real port is learned from FB's datagrams.
+fw_collect:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 32                         ; [rsp]: the sender's sockaddr
+    call    fw_ms
+    mov     r12d, eax
+    xor     r13d, r13d                      ; 0: FA (A's datagrams, for B), 1: FB (B's datagrams, for A)
+.sock:
+    mov     ebx, [fw_fa]
+    test    r13d, r13d
+    jz      .recv
+    mov     ebx, [fw_fb]
+.recv:
+    mov     eax, [fw_tail]
+    sub     eax, [fw_head]
+    cmp     eax, FW_ENTRIES
+    jae     .next_sock                      ; the line is full: the rest stays in the socket
+    mov     eax, [fw_tail]
+    and     eax, FW_ENTRIES - 1
+    imul    eax, eax, FW_ESIZE
+    mov     r14, [fw_ring]
+    add     r14, rax
+    mov     edi, ebx
+    lea     rsi, [r14 + 16]
+    mov     edx, 1232
+    mov     rcx, rsp
+    call    raw_recv
+    test    rax, rax
+    js      .next_sock
+    mov     [r14 + 8], eax
+    mov     eax, r12d
+    add     eax, [fw_delay]
+    mov     [r14], eax
+    mov     eax, 1
+    sub     eax, r13d
+    mov     [r14 + 4], eax                  ; FA's datagrams go to B (1), FB's to A (0)
+    test    r13d, r13d
+    jz      .queued
+    movzx   eax, word [rsp + 2]
+    mov     [fw_bport], eax
+.queued:
+    inc     dword [fw_tail]
+    jmp     .recv
+.next_sock:
+    inc     r13d
+    cmp     r13d, 2
+    jb      .sock
+    add     rsp, 32
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; fw_release(): every queued datagram whose time has come is sent on to its side
+fw_release:
+    push    rbx
+    push    r12
+    push    r13
+    call    fw_ms
+    mov     r12d, eax
+.loop:
+    mov     eax, [fw_head]
+    cmp     eax, [fw_tail]
+    je      .out
+    and     eax, FW_ENTRIES - 1
+    imul    eax, eax, FW_ESIZE
+    mov     rbx, [fw_ring]
+    add     rbx, rax
+    mov     eax, r12d
+    sub     eax, [rbx]
+    js      .out                            ; not yet
+    cmp     dword [rbx + 4], 0
+    jne     .to_b
+    mov     edi, [fw_fa]                    ; to A, from FA
+    lea     rsi, [rbx + 16]
+    mov     edx, [rbx + 8]
+    mov     ecx, [t_pa]
+    rol     cx, 8
+    movzx   ecx, cx
+    call    raw_send
+    jmp     .next
+.to_b:
+    mov     ecx, [fw_bport]
+    test    ecx, ecx
+    jz      .next                           ; B has not spoken yet: nowhere to send it
+    mov     edi, [fw_fb]                    ; to B, from FB
+    lea     rsi, [rbx + 16]
+    mov     edx, [rbx + 8]
+    call    raw_send
+.next:
+    inc     dword [fw_head]
+    jmp     .loop
+.out:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; step_fw(): step() with the delay line in the middle: the clock +16 ms, what is due leaves the line, both ends
+; poll, drain and flush, and what they sent enters the line
+step_fw:
+    sub     rsp, 8
+    add     qword [t_clock], STEP_NS
+    call    fw_release
+    call    poll_both
+    mov     rdi, [t_a]
+    call    net_ep_flush
+    mov     rdi, [t_b]
+    call    net_ep_flush
+    call    fw_collect
+    add     rsp, 8
+    ret
+
+; test_net_long_rtt() -> eax 0 on pass.
+;   1. A 300 ms one-way delay in both directions (a 0.6 s round trip) and 5 % loss, with a 16 ms loop: B joins through
+;      the delay line, then three 200000-byte blobs A -> B (552 parts) must all arrive intact within LONG_LOOPS loops
+;      (219 are needed; with a 256-entry ring that is kept from overwriting packets in flight it takes 352, and with
+;      the original ring of 256 entries, which overwrote them, the acks came back after their slots had been reused,
+;      no ack ever matched and the transfer stalled after the first blob), and nothing is delivered twice in the 50
+;      loops after.
+;   2. ring_full_round: the sender stops at the ring capacity and goes on after the age limit.
+test_net_long_rtt:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, 1
+    mov     dword [fw_fa], -1
+    mov     dword [fw_fb], -1
+    mov     qword [fw_ring], 0
+    mov     edi, 5
+    call    setup_eps
+    test    eax, eax
+    jnz     .end
+    call    fw_open
+    test    eax, eax
+    jnz     .end
+    mov     dword [fw_delay], 300
+    mov     dword [t_mode], 1
+    mov     rdi, [t_b]
+    lea     rsi, [fw_addr]
+    xor     edx, edx
+    lea     rcx, [s_bob]
+    xor     r8d, r8d
+    call    net_ep_join
+    mov     ebx, 600
+.join:
+    call    step_fw
+    mov     rdi, [t_b]
+    call    net_ep_join_state
+    cmp     eax, NJ_CONNECTED
+    jne     .jmore
+    mov     rdi, [t_a]
+    mov     esi, 1
+    call    net_ep_room
+    test    eax, eax
+    jnz     .joined
+.jmore:
+    dec     ebx
+    jnz     .join
+    jmp     .end
+.joined:
+    lea     rdi, [st_b]
+    mov     esi, 1
+    mov     edx, 200000
+    mov     ecx, MT_COL_DATA
+    mov     r8d, 255
+    call    st_reset
+    lea     rdi, [st_a]
+    xor     esi, esi
+    xor     edx, edx
+    xor     ecx, ecx
+    xor     r8d, r8d
+    call    st_reset
+    lea     rdi, [t_big]
+    mov     esi, 255
+    mov     edx, 200000
+    call    pat_fill
+    mov     r13d, 3
+.queue:
+    mov     rdi, [t_a]
+    mov     esi, 1
+    mov     edx, MT_COL_DATA
+    lea     rcx, [t_big]
+    mov     r8d, 200000
+    call    net_ep_send_big
+    test    eax, eax
+    jz      .end
+    dec     r13d
+    jnz     .queue
+    mov     ebx, LONG_LOOPS
+.xfer:
+    call    step_fw
+    cmp     dword [st_b + ST_N], 3
+    jae     .arrived
+    dec     ebx
+    jnz     .xfer
+    jmp     .end
+.arrived:
+    mov     ebx, 50
+.after:
+    call    step_fw
+    dec     ebx
+    jnz     .after
+    cmp     dword [st_b + ST_N], 3
+    jne     .end
+    cmp     dword [st_b + ST_BAD], 0
+    jne     .end
+    cmp     dword [st_a + ST_BAD], 0
+    jne     .end
+    call    fw_close
+    call    teardown
+    call    ring_full_round
+    mov     r12d, eax
+.end:
+    call    fw_close
+    call    teardown
+    mov     eax, r12d
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; ring_full_round() -> eax 0 on pass. A and B are connected, B only polls (it never acknowledges anything), and the
+; clock stands still. A queues 8 unreliable messages of 1100 bytes (one per packet) and flushes, 560 times: 4480
+; packets wanted. Only RING_PKTS reach B: the 4097th would overwrite the first, which is in flight and not yet
+; 2 s old, so the flush sends nothing more. Once the clock has moved 2.1 s the old packets may be overwritten and
+; the next flush sends again.
+ring_full_round:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, 1
+    xor     edi, edi
+    call    pair_up
+    test    eax, eax
+    jnz     .end
+    lea     rdi, [st_b]
+    mov     esi, 2
+    xor     edx, edx
+    xor     ecx, ecx
+    xor     r8d, r8d
+    call    st_reset
+    lea     rdi, [t_buf]
+    mov     esi, 9
+    mov     edx, 1100
+    call    pat_fill
+    xor     ebx, ebx
+.burst:
+    call    burst8
+    test    eax, eax
+    jnz     .end
+    inc     ebx
+    cmp     ebx, 560
+    jb      .burst
+    cmp     dword [st_b + ST_N], RING_PKTS
+    jne     .end
+    mov     rax, 2100000000
+    add     [t_clock], rax
+    call    burst8
+    test    eax, eax
+    jnz     .end
+    cmp     dword [st_b + ST_N], RING_PKTS
+    jbe     .end
+    xor     r12d, r12d
+.end:
+    call    teardown
+    mov     eax, r12d
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; burst8() -> eax 0: A queues 8 unreliable 1100-byte messages for slot 1 and flushes; B polls
+burst8:
+    push    rbx
+    mov     ebx, 8
+.queue:
+    mov     rdi, [t_a]
+    mov     esi, 1
+    mov     edx, MT_SYS
+    lea     rcx, [t_buf]
+    mov     r8d, 1100
+    xor     r9d, r9d
+    call    net_ep_send
+    test    eax, eax
+    jz      .fail
+    dec     ebx
+    jnz     .queue
+    mov     rdi, [t_a]
+    call    net_ep_flush
+    mov     rdi, [t_b]
+    lea     rsi, [deliver_b]
+    call    net_ep_poll
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    pop     rbx
+    ret
+
+; ---- the event queue -----------------------------------------------------------------------------------
+
+; mk_sev(): t_sev = a synthetic NE_CONNECT_REQ from the first raw socket's address, with the next nonce
+mk_sev:
+    pxor    xmm0, xmm0
+    movups  [t_sev], xmm0
+    movups  [t_sev + 16], xmm0
+    mov     dword [t_sev + 32], 0
+    mov     byte [t_sev + NETEVENT.kind], NE_CONNECT_REQ
+    mov     dword [t_sev + NETEVENT.addr + NADDR.ip], 0x0100007F
+    mov     eax, [t_r1port]
+    mov     [t_sev + NETEVENT.addr + NADDR.port], ax
+    mov     eax, [t_nonce]
+    inc     dword [t_nonce]
+    mov     [t_sev + NETEVENT.nonce], eax
+    ret
+
+; send_bye(edi token): a DISCONNECT (reason DENY_CLOSED) of the first raw socket's guest to the host A
+send_bye:
+    sub     rsp, 8
+    lea     rax, [t_pkt]
+    mov     word [rax], NET_MAGIC
+    mov     byte [rax + 2], NET_VERSION
+    mov     byte [rax + 3], PK_DISCONNECT
+    mov     [rax + 4], edi
+    mov     qword [rax + 8], 0
+    mov     byte [rax + 16], DENY_CLOSED
+    mov     edi, [t_r1fd]
+    lea     rsi, [t_pkt]
+    mov     edx, 17
+    mov     ecx, [t_pa]
+    rol     cx, 8
+    movzx   ecx, cx
+    call    raw_send
+    add     rsp, 8
+    ret
+
+; guest_in(edi slot) -> eax the token of the connection, 0 on failure: the first raw socket is accepted into that slot
+; of A (a synthetic request, so no CONNECT datagram and no event are needed) and its ACCEPT is read
+guest_in:
+    push    rbx
+    mov     ebx, edi
+    call    mk_sev
+    mov     rdi, [t_a]
+    mov     esi, ebx
+    lea     rdx, [t_sev]
+    call    net_ep_accept
+    mov     edi, [t_r1fd]
+    lea     rsi, [t_raw + 64]
+    mov     edx, 64
+    lea     rcx, [t_sa]
+    call    raw_wait
+    xor     edx, edx
+    cmp     rax, 22
+    jne     .out
+    mov     edx, [t_raw + 64 + 4]
+.out:
+    mov     eax, edx
+    pop     rbx
+    ret
+
+; fill_goodbyes(edi count, esi first_slot, edx span) -> eax 0 ok: `count` times the first raw socket is accepted into slot
+; first + i % span and says goodbye; every goodbye leaves one NE_DISCONNECTED in the queue and nobody takes them out
+fill_goodbyes:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    xor     ebx, ebx
+.cycle:
+    cmp     ebx, r12d
+    jae     .ok
+    mov     eax, ebx
+    xor     edx, edx
+    div     r14d
+    lea     edi, [r13 + rdx]
+    call    guest_in
+    test    eax, eax
+    jz      .fail
+    mov     edi, eax
+    call    send_bye
+    call    poll_a
+    inc     ebx
+    jmp     .cycle
+.ok:
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; ev_reset(): clear what ev_drain counts
+ev_reset:
+    mov     dword [ec_req], 0
+    mov     dword [ec_disc], 0
+    mov     dword [ec_tmo], 0
+    mov     dword [ec_other], 0
+    mov     dword [ec_d1], 0
+    mov     dword [ec_last_kind], 0
+    mov     dword [ec_last_slot], 0
+    mov     dword [ec_last_reason], 0
+    ret
+
+; ev_drain(): take every event of A out of the queue, counting the kinds and keeping the last one
+ev_drain:
+    push    rbx
+.n:
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev2]
+    call    net_ep_next_event
+    test    eax, eax
+    jz      .out
+    movzx   eax, byte [t_ev2 + NETEVENT.kind]
+    movzx   ecx, byte [t_ev2 + NETEVENT.slot]
+    movzx   edx, byte [t_ev2 + NETEVENT.reason]
+    mov     [ec_last_kind], eax
+    mov     [ec_last_slot], ecx
+    mov     [ec_last_reason], edx
+    cmp     eax, NE_CONNECT_REQ
+    jne     .d
+    inc     dword [ec_req]
+    jmp     .n
+.d:
+    cmp     eax, NE_DISCONNECTED
+    jne     .t
+    inc     dword [ec_disc]
+    cmp     ecx, 1
+    jne     .n
+    cmp     edx, DENY_CLOSED
+    jne     .n
+    inc     dword [ec_d1]
+    jmp     .n
+.t:
+    cmp     eax, NE_TIMEOUT
+    jne     .o
+    inc     dword [ec_tmo]
+    jmp     .n
+.o:
+    inc     dword [ec_other]
+    jmp     .n
+.out:
+    pop     rbx
+    ret
+
+; test_net_event_queue_full() -> eax 0 on pass. The host's event queue holds 64 events and nothing takes them out:
+;   1. A guest joins (slot 1). 70 CONNECTs from another socket then fill the queue only up to EVQ_CONNECTS (the rest
+;      is refused, and not remembered: the same CONNECT asked again with room is a request); when the guest says
+;      goodbye, its NE_DISCONNECTED gets through at once and the connection is gone.
+;   2. 64 goodbyes fill the queue. A 65th finds no room: its connection stays, and is reported (as the newest event)
+;      by the next poll after one place has been freed. Nothing is lost, nothing is reported twice.
+;   3. A silent connection past the timeout, with the queue full, stays too and is reported as NE_TIMEOUT the same way.
+test_net_event_queue_full:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, 1
+    mov     dword [t_r1fd], -1
+    mov     dword [t_r2fd], -1
+    xor     edi, edi
+    call    setup_eps
+    test    eax, eax
+    jnz     .end
+    call    raw_open
+    test    eax, eax
+    js      .end
+    mov     [t_r1fd], eax
+    movzx   ecx, word [t_sa + 2]
+    mov     [t_r1port], ecx
+    call    raw_open
+    test    eax, eax
+    js      .end
+    mov     [t_r2fd], eax
+    mov     dword [t_nonce], 0x4000
+    lea     rdi, [t_raw]                            ; the guest joins for real: CONNECT, event, accept into slot 1
+    mov     esi, 0x1111
+    mov     edx, 'Dan'
+    call    build_connect
+    mov     edi, [t_r1fd]
+    call    send_to_a
+    call    poll_a
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev]
+    call    net_ep_next_event
+    test    eax, eax
+    jz      .end
+    cmp     byte [t_ev + NETEVENT.kind], NE_CONNECT_REQ
+    jne     .end
+    mov     rdi, [t_a]
+    mov     esi, 1
+    lea     rdx, [t_ev]
+    call    net_ep_accept
+    mov     edi, [t_r1fd]
+    lea     rsi, [t_raw + 64]
+    mov     edx, 64
+    lea     rcx, [t_sa]
+    call    raw_wait
+    cmp     rax, 22
+    jne     .end
+    mov     r15d, [t_raw + 64 + 4]                  ; its token
+    xor     ebx, ebx                                ; 1. the flood
+.flood:
+    lea     rdi, [t_raw]
+    lea     esi, [rbx + 100]
+    mov     edx, 'Fld'
+    call    build_connect
+    mov     edi, [t_r2fd]
+    call    send_to_a
+    inc     ebx
+    cmp     ebx, 70
+    jb      .flood
+    call    poll_a
+    mov     edi, r15d
+    call    send_bye
+    call    poll_a
+    call    ev_reset
+    call    ev_drain
+    cmp     dword [ec_req], EVQ_CONNECTS
+    jne     .end                                    ; the flood stopped at the reserve
+    cmp     dword [ec_d1], 1
+    jne     .end                                    ; the goodbye got through at once
+    mov     rdi, [t_a]
+    mov     esi, 1
+    call    net_ep_room
+    test    eax, eax
+    jnz     .end                                    ; and the connection is gone
+    lea     rdi, [t_raw]                            ; a refused CONNECT is not remembered
+    mov     esi, 169
+    mov     edx, 'Fld'
+    call    build_connect
+    mov     edi, [t_r2fd]
+    call    send_to_a
+    call    poll_a
+    call    ev_reset
+    call    ev_drain
+    cmp     dword [ec_req], 1
+    jne     .end
+    mov     edi, 64                                 ; 2. 64 goodbyes: the queue is full
+    mov     esi, 1
+    mov     edx, 7
+    call    fill_goodbyes
+    test    eax, eax
+    jnz     .end
+    mov     edi, 2
+    call    guest_in
+    test    eax, eax
+    jz      .end
+    mov     edi, eax
+    call    send_bye                                ; the 65th, from slot 2
+    call    poll_a
+    mov     rdi, [t_a]
+    mov     esi, 2
+    call    net_ep_room
+    test    eax, eax
+    jz      .end                                    ; no room for it: the connection waits
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev2]
+    call    net_ep_next_event                       ; one place frees up ...
+    call    poll_a                                  ; ... and the next poll reports the waiting goodbye
+    mov     rdi, [t_a]
+    mov     esi, 2
+    call    net_ep_room
+    test    eax, eax
+    jnz     .end
+    call    ev_reset
+    call    ev_drain
+    cmp     dword [ec_disc], 64
+    jne     .end
+    cmp     dword [ec_last_kind], NE_DISCONNECTED
+    jne     .end
+    cmp     dword [ec_last_slot], 2
+    jne     .end                                    ; the late goodbye is the newest event
+    mov     edi, 1                                  ; 3. a connection that goes silent, with the queue full again
+    call    guest_in
+    test    eax, eax
+    jz      .end
+    mov     edi, 64
+    mov     esi, 2
+    mov     edx, 6
+    call    fill_goodbyes
+    test    eax, eax
+    jnz     .end
+    mov     rax, 10100000000
+    add     [t_clock], rax
+    call    poll_a
+    mov     rdi, [t_a]
+    mov     esi, 1
+    call    net_ep_room
+    test    eax, eax
+    jz      .end                                    ; no room for its NE_TIMEOUT: it stays
+    mov     rdi, [t_a]
+    lea     rsi, [t_ev2]
+    call    net_ep_next_event
+    call    poll_a
+    mov     rdi, [t_a]
+    mov     esi, 1
+    call    net_ep_room
+    test    eax, eax
+    jnz     .end
+    call    ev_reset
+    call    ev_drain
+    cmp     dword [ec_tmo], 1
+    jne     .end
+    cmp     dword [ec_last_kind], NE_TIMEOUT
+    jne     .end
+    cmp     dword [ec_last_slot], 1
+    jne     .end
+    xor     r12d, r12d
+.end:
+    mov     edi, [t_r1fd]
+    test    edi, edi
+    js      .no1
+    call    raw_close
+.no1:
+    mov     edi, [t_r2fd]
+    test    edi, edi
+    js      .no2
+    call    raw_close
+.no2:
+    call    teardown
     mov     eax, r12d
     pop     r15
     pop     r14
