@@ -529,3 +529,15 @@ Approved by the user on 2026-11-09 from `docs/superpowers/specs/grimoire-mockup/
 - `TILE_COMPASS` is one 16x16 tile drawn at 32x32 units. Slot glyph tiles are white/grey, tinted `C_INK_SOFT`. `NINE_BAR` ring is translucent. `TILE_QUILL` is drawn by `ui_tile_icon` at size 12.
 - Title screen gets a full-screen `NINE_LEATHER` backdrop (menus mockup).
 - `ui_book(x, y, 0, right_w, h)` puts the right page at x (no spine); `ui_text_ink_centered` is an extra ui API.
+
+## As built (0.10.2)
+
+- Classes are gone: one 88-node web (4 paths, 72 former class nodes, 12 bridges), a 4-slot bindable ability bar, titles derived from points per archetype, respec for 10 x level coins. v0/v1 worlds migrate with points refunded and the old class kit never re-given. `rpg_reachable` and `rpg_archetype_name` are two extra exports.
+- UI: `ui_nine` / `ui_nine_tint` draw straight from per-axis segments (no record buffer, no cap on frame size; `ui_nine_layout` stays as the pure geometry used by `test_ui_nine_layout`, capped at `NINE_MAX_QUADS` records). Extra API: `ui_text_ink_centered`. `armor_effective` lives in `survival.asm`.
+- Tests: 183 (178 + `grimoire_tiles`, `ability_bar_binding`, `archetype_titles`, `web_view_mapping`, `ui_nine_layout`).
+- Review fixes: nine-slice record cap and 256-segment cap removed (large windows at 1440p/4K left grimoire pages half drawn); the title screen leather is one nine-slice.
+- Live-verified on the merged binary in omabox: new world HUD, survival inventory book (silhouette, tabs), grimoire at zoom 1 and 0, path learn, bridge crossing, rebind to V, pan, wheel zoom, respec with coins, kit not re-given, 0.10.1 Mage world migration, crafting table, furnace, chest, pause, death. Title and hover quill were checked on the U0 build; trade, dialog, leader, shrine, worlds list, settings and controls were checked by their workers in scratch trees only.
+
+## Deferred
+
+Filed as GitHub issues #5 (live-verify trade/dialog/leader/shrine on the merged build), #6 (mock gaps: tooltip lines, quest objective text, book centring, compass crispness, extra Tab hint), #7 (inventory book narrower than 316 units cannot equip armor), #8 (test gaps: `gear_pick_base` archetype argument, respec guard, GL-only `ui_line`/`ui_clip`).
