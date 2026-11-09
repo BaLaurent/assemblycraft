@@ -25,6 +25,13 @@
 ; The 0.10.1 art (dry grass top and side 324, 325, lava 326, past the font) follows the 0.10 art and
 ; precedes the font: 324 and 326 are plain noise, 325 is the grass-side generator (16 column depths,
 ; then one draw per pixel) in dry colours.
+; The 0.10.2 art (the grimoire UI: the 16 9-slice kinds 327..342, the compass 343, the empty-slot glyphs
+; 344..349, the quill 351 and the silhouette block 365..447, past the font) follows the 0.10.1 art and
+; precedes the font, in tile order. The UI tiles are 16x16 bitmaps (GBMP): one draw per pixel, the
+; transparent ones included, and a palette entry carries its own noise mask (m = 256 - (draw & mask),
+; 0 = exact colour). The silhouette is drawn by NFUNC (px_sil), one draw per pixel of each of its 18
+; sub-tiles in row-major order. The HUD icons 48..56 keep their draw-free 9x9 layout; only their
+; palettes and a few shade ('d') pixels are redrawn.
 ;
 ; Register use inside texgen_build (leaf function, no external calls):
 ;   r12  = out base          r13d = rng state
@@ -176,6 +183,33 @@ shade:
     mov     esi, eax
     mov     edx, r8d
     call    shade
+    TILE_END
+%endmacro
+
+; noise-shaded 16x16 bitmap with transparency: tile, bitmap, palette (PALN records). One rng draw per
+; pixel ('.' and any char missing from the palette are transparent); m = 256 - (draw & the entry's
+; noise mask), so a mask of 0 keeps the colour exact; the pixel's alpha is the entry's.
+%macro GBMP 3
+    TILE_BEGIN %1
+    call    rng
+    mov     r11d, eax                   ; this pixel's draw
+    lea     r9, [%2]
+    lea     r10, [%3]
+    call    gbmp_px
+    test    eax, eax
+    jz      %$clear
+    mov     esi, eax
+    mov     r8d, eax
+    shr     r8d, 24                     ; the entry's alpha
+    and     r11d, ecx
+    mov     edx, 256
+    sub     edx, r11d
+    call    shade
+    mov     [rdi + 3], r8b
+    jmp     %$next
+%$clear:
+    mov     dword [rdi], 0
+%$next:
     TILE_END
 %endmacro
 
@@ -1107,6 +1141,44 @@ texgen_build:
     NOISE_PIXEL RGB(214,96,26), 160, 95
     TILE_END
 
+    ; ---- 0.10.2 grimoire art (after the 0.10.1 art, before the font; the atlas outside these tiles
+    ;      is untouched, the HUD icons 48..56 are redrawn in place by their palettes). 327..342 the
+    ;      NINE_* kinds, 343 compass, 344..349 empty-slot glyphs, 351 quill: GBMP bitmaps in tile
+    ;      order; then the 18 silhouette sub-tiles 365.. in row-major order ----
+    GBMP    327, gr_page_bmp, pal_gr_page
+    GBMP    328, gr_leather_bmp, pal_gr_leather
+    GBMP    329, gr_slot_bmp, pal_gr_slot
+    GBMP    330, gr_button_bmp, pal_gr_button
+    GBMP    331, gr_button_hot_bmp, pal_gr_button_hot
+    GBMP    332, gr_button_off_bmp, pal_gr_button_off
+    GBMP    333, gr_tooltip_bmp, pal_gr_tooltip
+    GBMP    334, gr_ribbon_bmp, pal_gr_ribbon
+    GBMP    335, gr_bar_bmp, pal_gr_bar
+    GBMP    336, gr_rune_bmp, pal_gr_rune
+    GBMP    337, gr_select_bmp, pal_gr_select
+    GBMP    338, gr_note_bmp, pal_gr_note
+    GBMP    339, gr_node_stat_bmp, pal_gr_node_stat
+    GBMP    340, gr_node_abil_bmp, pal_gr_node_abil
+    GBMP    341, gr_node_key_bmp, pal_gr_node_key
+    GBMP    342, gr_node_path_bmp, pal_gr_node_path
+    GBMP    343, gr_compass_bmp, pal_gr_compass
+    GBMP    344, gr_slot_head_bmp, pal_gr_slot_head
+    GBMP    345, gr_slot_chest_bmp, pal_gr_slot_chest
+    GBMP    346, gr_slot_legs_bmp, pal_gr_slot_legs
+    GBMP    347, gr_slot_feet_bmp, pal_gr_slot_feet
+    GBMP    348, gr_slot_ring_bmp, pal_gr_slot_ring
+    GBMP    349, gr_slot_amulet_bmp, pal_gr_slot_amulet
+    GBMP    351, gr_quill_bmp, pal_gr_quill
+%assign sil_r 0
+%rep 6
+%assign sil_c 0
+%rep 3
+    NFUNC   TILE_SIL0 + 16 * sil_r + sil_c, 224, 31, 0, px_sil, 16 * sil_c, 16 * sil_r
+%assign sil_c sil_c + 1
+%endrep
+%assign sil_r sil_r + 1
+%endrep
+
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
 .font_glyph:
@@ -1442,6 +1514,179 @@ bmp_px:
     xor     eax, eax
     ret
 
+; 16x16 bitmap pixel with noise: bmp_px for PALN records. Out: eax = packed RGBA (0 = the char is not
+; in the palette: transparent), ecx = the entry's noise mask.
+gbmp_px:
+    mov     eax, r14d
+    shl     eax, 4
+    add     eax, r15d
+    movzx   ecx, byte [r9 + rax]
+    mov     rdx, r10
+.entry:
+    movzx   esi, byte [rdx]
+    test    esi, esi
+    jz      .none
+    cmp     esi, ecx
+    je      .found
+    add     rdx, 8
+    jmp     .entry
+.found:
+    movzx   ecx, byte [rdx + 1]
+    mov     eax, [rdx + 4]
+    ret
+.none:
+    xor     eax, eax
+    ret
+
+; silhouette pixel (NFUNC func). The 3 x 6 tile block TILE_SIL0 is one 48 x 96 figure in local
+; coordinates x = r10d + px, y = r11d + py (r10d = 16 * the sub-tile's column, r11d = 16 * its row).
+; Out: esi = base colour, 0 = outside the figure. A figure pixel with a 4-neighbour outside the
+; figure is exactly C_INK (r8d = 256, no noise); the rest is parchment RGB(214, 190, 146) with the
+; multiplier NFUNC left in r8d. Clobbers eax, ecx, edx.
+px_sil:
+    lea     ecx, [r10 + r15]
+    lea     edx, [r11 + r14]
+    call    sil_in
+    test    eax, eax
+    jz      .none
+    dec     ecx
+    call    sil_in                      ; left neighbour
+    inc     ecx
+    test    eax, eax
+    jz      .edge
+    inc     ecx
+    call    sil_in                      ; right
+    dec     ecx
+    test    eax, eax
+    jz      .edge
+    dec     edx
+    call    sil_in                      ; up
+    inc     edx
+    test    eax, eax
+    jz      .edge
+    inc     edx
+    call    sil_in                      ; down
+    dec     edx
+    test    eax, eax
+    jz      .edge
+    mov     esi, RGB(214,190,146)
+    ret
+.edge:
+    mov     esi, RGB(58,38,24)
+    mov     r8d, 256
+    ret
+.none:
+    xor     esi, esi
+    ret
+
+; sil_in(ecx x, edx y) -> eax 1 inside the figure, 0 outside (also outside the 48 x 96 block). Keeps
+; ecx and edx, clobbers esi. The figure is the union of:
+;   head ellipse centre (24, 12), rx 8, ry 9; neck x 21..26, y 20..23;
+;   torso y 23..52, x 13..34 narrowing linearly to 16..31 (inset (3 (y - 23) + 14) / 29 per side);
+;   arms: the quad (12,24)-(16,24)-(11,56)-(7,56) sampled at pixel centres, and its mirror x -> 47 - x;
+;   hands: circles r 3 at (9, 58) and (38, 58); legs x 16..22 and 25..31, y 52..88;
+;   feet x 14..22 and 25..33, y 88..93.
+sil_in:
+    cmp     ecx, 47
+    ja      .out                        ; unsigned: also x < 0
+    cmp     edx, 95
+    ja      .out
+    lea     eax, [rcx - 24]             ; head: 81 dx^2 + 64 dy^2 <= 64 * 81
+    imul    eax, eax
+    imul    eax, 81
+    lea     esi, [rdx - 12]
+    imul    esi, esi
+    imul    esi, 64
+    add     eax, esi
+    cmp     eax, 64 * 81
+    jbe     .in
+    lea     eax, [rcx - 21]             ; neck
+    cmp     eax, 5
+    ja      .torso
+    lea     eax, [rdx - 20]
+    cmp     eax, 3
+    jbe     .in
+.torso:
+    lea     eax, [rdx - 23]
+    cmp     eax, 29
+    ja      .arms
+    lea     rsi, [sil_inset]
+    movzx   esi, byte [rsi + rax]
+    lea     eax, [rsi + 13]
+    cmp     ecx, eax
+    jl      .arms
+    neg     esi
+    add     esi, 34
+    cmp     ecx, esi
+    jle     .in
+.arms:
+    lea     eax, [rdx - 24]             ; y 24..55: 64 x within [736 - s, 992 - s], s = 10 (y - 24) + 5
+    cmp     eax, 31
+    ja      .hands
+    lea     eax, [rax + rax*4]
+    add     eax, eax
+    add     eax, 5
+    mov     esi, 736
+    sub     esi, eax                    ; lo
+    neg     eax
+    add     eax, 992                    ; hi
+    push    rcx
+    shl     ecx, 6
+    cmp     ecx, esi
+    jl      .arm_mirror
+    cmp     ecx, eax
+    jle     .arm_hit
+.arm_mirror:
+    neg     ecx
+    add     ecx, 47 * 64                ; 64 (47 - x)
+    cmp     ecx, esi
+    jl      .arm_miss
+    cmp     ecx, eax
+    jg      .arm_miss
+.arm_hit:
+    pop     rcx
+    jmp     .in
+.arm_miss:
+    pop     rcx
+.hands:
+    lea     eax, [rdx - 58]
+    imul    eax, eax
+    lea     esi, [rcx - 9]
+    imul    esi, esi
+    add     esi, eax
+    cmp     esi, 9
+    jbe     .in
+    lea     esi, [rcx - 38]
+    imul    esi, esi
+    add     esi, eax
+    cmp     esi, 9
+    jbe     .in
+    lea     eax, [rdx - 52]             ; legs
+    cmp     eax, 36
+    ja      .feet
+    lea     eax, [rcx - 16]
+    cmp     eax, 6
+    jbe     .in
+    lea     eax, [rcx - 25]
+    cmp     eax, 6
+    jbe     .in
+.feet:
+    lea     eax, [rdx - 88]
+    cmp     eax, 5
+    ja      .out
+    lea     eax, [rcx - 14]
+    cmp     eax, 8
+    jbe     .in
+    lea     eax, [rcx - 25]
+    cmp     eax, 8
+    jbe     .in
+.out:
+    xor     eax, eax
+    ret
+.in:
+    mov     eax, 1
+    ret
+
 ; ---------------------------------------------------------------------------
 ; Base-colour routines for the rng tiles. In: r15d = px, r14d = py, r9d = the pixel's
 ; rng draw, r10d (and r11d for the ores) = variant parameters. Out: esi = base colour
@@ -1764,67 +2009,81 @@ apple_pts:
     db %1, 0, 0, 0
     dd RGBO(%2, %3, %4)
 %endmacro
+; GBMP palette entry: PALN char, r, g, b, noise mask [, alpha 255]; db char, mask, 0, 0 ; dd RGBA;
+; char 0 ends the palette
+%macro PALN 5-6 255
+    db %1, %5, 0, 0
+    dd (%2) | ((%3) << 8) | ((%4) << 16) | ((%6) << 24)
+%endmacro
+; 0.10.2: the 9x9 HUD icons keep their layout; the palette is the grimoire's (ink outline RGB(58,38,24),
+; the 'd' shade on the lower right is new)
 heart_pal_full:
-    PAL 'K', 24, 24, 24
-    PAL 'r', 214, 28, 28
-    PAL 'w', 255, 150, 150
+    PAL 'K', 58, 38, 24
+    PAL 'r', 204, 40, 44
+    PAL 'd', 150, 24, 32
+    PAL 'w', 255, 196, 180
     dq 0
 heart_pal_empty:
-    PAL 'K', 24, 24, 24
-    PAL 'r', 52, 20, 20
-    PAL 'w', 52, 20, 20
+    PAL 'K', 58, 38, 24
+    PAL 'r', 92, 48, 44
+    PAL 'd', 74, 38, 36
+    PAL 'w', 92, 48, 44
     dq 0
 food_pal_full:
-    PAL 'K', 40, 26, 14
-    PAL 'm', 186, 108, 48
-    PAL 'w', 226, 168, 108
-    PAL 'b', 236, 232, 220
+    PAL 'K', 58, 38, 24
+    PAL 'm', 200, 120, 50
+    PAL 'd', 150, 86, 38
+    PAL 'w', 240, 184, 112
+    PAL 'b', 244, 232, 200
     dq 0
 food_pal_empty:
-    PAL 'K', 40, 26, 14
-    PAL 'm', 58, 40, 28
-    PAL 'w', 58, 40, 28
-    PAL 'b', 96, 96, 96
+    PAL 'K', 58, 38, 24
+    PAL 'm', 80, 56, 40
+    PAL 'd', 64, 44, 32
+    PAL 'w', 80, 56, 40
+    PAL 'b', 130, 116, 96
     dq 0
 
 heart_bmp:
     db ".KKK.KKK."
     db "KrrrKrrrK"
-    db "KrwrrrrrK"
-    db "KrrrrrrrK"
-    db ".KrrrrrK."
-    db "..KrrrK.."
-    db "...KrK..."
+    db "KrwrrrrdK"
+    db "KrrrrrrdK"
+    db ".KrrrrdK."
+    db "..KrrdK.."
+    db "...KdK..."
     db "....K...."
     db "........."
 food_bmp:
     db "....KKK.."
     db "...KmmmK."
     db "..KmmwmmK"
-    db "..KmmmmmK"
-    db "...KmmmK."
+    db "..KmmmmdK"
+    db "...KmmdK."
     db "..KbKKK.."
     db ".KbK....."
     db "KbbK....."
     db ".KK......"
 
 armor_pal_full:
-    PAL 'K', 30, 30, 30
-    PAL 'm', 190, 190, 200
-    PAL 'L', 255, 255, 255
+    PAL 'K', 58, 38, 24
+    PAL 'm', 178, 186, 200
+    PAL 'd', 120, 128, 144
+    PAL 'L', 244, 238, 222
     dq 0
 armor_pal_empty:
-    PAL 'K', 30, 30, 30
-    PAL 'm', 60, 60, 60
-    PAL 'L', 60, 60, 60
+    PAL 'K', 58, 38, 24
+    PAL 'm', 84, 76, 70
+    PAL 'd', 66, 60, 56
+    PAL 'L', 84, 76, 70
     dq 0
 armor_bmp:
     db ".KK...KK."
-    db "KmLK.KmmK"
-    db "KmmmKmmmK"
-    db ".KmmmmmK."
-    db ".KmmmmmK."
-    db ".KmmmmmK."
+    db "KmLK.KmdK"
+    db "KmmmKmmdK"
+    db ".KmmmmdK."
+    db ".KmmmmdK."
+    db ".KmmmmdK."
     db ".KKKKKKK."
     db "........."
     db "........."
@@ -5658,5 +5917,579 @@ fk_stk_pants_bmp:
     db "kkkkkkkkkkkkkkkk"
     db "kkkkkkkkkkkkkkkk"
     db "kkkkkkkkkkkkkkkk"
+
+; ---- 0.10.2 grimoire art data: sil_inset = (3 t + 14) / 29 for the torso row t = y - 23 (0..29) ----
+sil_inset:
+%assign sil_t 0
+%rep 30
+    db (3 * sil_t + 14) / 29
+%assign sil_t sil_t + 1
+%endrep
+; 327 NINE_PAGE (b 4): ink rim, gold rule, 2 px darker margin, gold dot in each corner, 8x8 parchment noise centre
+pal_gr_page:
+    PALN    'd', 212, 186, 140, 15
+    PALN    'g', 214, 170, 70, 0
+    PALN    'p', 240, 222, 178, 31
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    dq 0
+gr_page_bmp:
+    db ".KKKKKKKKKKKKKK."
+    db "KKggggggggggggKK"
+    db "KgddddddddddddgK"
+    db "KgdGddddddddGdgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgddppppppppddgK"
+    db "KgdGddddddddGdgK"
+    db "KgddddddddddddgK"
+    db "KKggggggggggggKK"
+    db ".KKKKKKKKKKKKKK."
+; 328 NINE_LEATHER (b 4): brown leather, rim, dashed cream stitch (every other texel) 2 px inside the rim
+pal_gr_leather:
+    PALN    'l', 104, 66, 38, 23
+    PALN    'D', 50, 30, 18, 0
+    PALN    'L', 138, 92, 54, 0
+    PALN    'S', 236, 220, 176, 0
+    dq 0
+gr_leather_bmp:
+    db ".DDDDDDDDDDDDDD."
+    db "DLLLLLLLLLLLLLLD"
+    db "DLSlSlSlSlSllSLD"
+    db "DLllllllllllllLD"
+    db "DLSllllllllllSLD"
+    db "DLllllllllllllLD"
+    db "DLSllllllllllSLD"
+    db "DLllllllllllllLD"
+    db "DLSllllllllllSLD"
+    db "DLllllllllllllLD"
+    db "DLSllllllllllSLD"
+    db "DLllllllllllllLD"
+    db "DLllllllllllllLD"
+    db "DLSlSlSlSlSllSLD"
+    db "DLLLLLLLLLLLLLLD"
+    db ".DDDDDDDDDDDDDD."
+; 329 NINE_SLOT (b 2): recessed parchment cell, ink rim, 1 px top-left inner shadow, light bottom-right edge
+pal_gr_slot:
+    PALN    'e', 234, 216, 174, 0
+    PALN    'q', 218, 194, 150, 15
+    PALN    's', 176, 148, 106, 0
+    PALN    'K', 58, 38, 24, 0
+    dq 0
+gr_slot_bmp:
+    db "KKKKKKKKKKKKKKKK"
+    db "KssssssssssssssK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KsqqqqqqqqqqqqeK"
+    db "KseeeeeeeeeeeeeK"
+    db "KKKKKKKKKKKKKKKK"
+; 330 NINE_BUTTON (b 3): light parchment plate, gold rim inside the ink rim
+pal_gr_button:
+    PALN    'd', 212, 186, 140, 15
+    PALN    'g', 214, 170, 70, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_button_bmp:
+    db ".KKKKKKKKKKKKKK."
+    db "KggggggggggggggK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgPPPPPPPPPPPPgK"
+    db "KgddddddddddddgK"
+    db "KggggggggggggggK"
+    db ".KKKKKKKKKKKKKK."
+; 331 NINE_BUTTON_HOT (b 3): brighter plate, 2 px gold rim
+pal_gr_button_hot:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_button_hot_bmp:
+    db ".KKKKKKKKKKKKKK."
+    db "KggggggggggggggK"
+    db "KgGGGGGGGGGGGGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGGGGGGGGGGGGgK"
+    db "KggggggggggggggK"
+    db ".KKKKKKKKKKKKKK."
+; 332 NINE_BUTTON_OFF (b 3): greyed parchment, ink-soft rim
+pal_gr_button_off:
+    PALN    'd', 212, 186, 140, 15
+    PALN    'k', 110, 84, 58, 0
+    PALN    'q', 218, 194, 150, 15
+    dq 0
+gr_button_off_bmp:
+    db ".kkkkkkkkkkkkkk."
+    db "kddddddddddddddk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kdqqqqqqqqqqqqdk"
+    db "kddddddddddddddk"
+    db ".kkkkkkkkkkkkkk."
+; 333 NINE_TOOLTIP (b 3): dark umber page with a 1 px gold rim
+pal_gr_tooltip:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'u', 46, 30, 20, 7
+    PALN    'Z', 28, 18, 10, 0
+    dq 0
+gr_tooltip_bmp:
+    db ".ZZZZZZZZZZZZZZ."
+    db "ZggggggggggggggZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZguuuuuuuuuuuugZ"
+    db "ZggggggggggggggZ"
+    db ".ZZZZZZZZZZZZZZ."
+; 334 NINE_RIBBON (b 4): crimson ribbon, gold trim lines, swallowtail notch (x 0..2, rows 4..11, chamfered) on both ends
+pal_gr_ribbon:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'h', 214, 76, 62, 0
+    PALN    'x', 122, 22, 24, 0
+    PALN    'C', 176, 38, 34, 0
+    PALN    'O', 78, 14, 16, 0
+    dq 0
+gr_ribbon_bmp:
+    db ".OOOOOOOOOOOOOO."
+    db "OggggggggggggggO"
+    db "OhhhhhhhhhhhhhhO"
+    db ".OOCCCCCCCCCCOO."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db "...OCCCCCCCCO..."
+    db ".OOCCCCCCCCCCOO."
+    db "OxxxxxxxxxxxxxxO"
+    db "OggggggggggggggO"
+    db ".OOOOOOOOOOOOOO."
+; 335 NINE_BAR (b 2): bar frame, 1 px ink and 1 px translucent gold (alpha 150), transparent centre
+pal_gr_bar:
+    PALN    'j', 214, 170, 70, 0, 150
+    PALN    'K', 58, 38, 24, 0
+    dq 0
+gr_bar_bmp:
+    db "KKKKKKKKKKKKKKKK"
+    db "KjjjjjjjjjjjjjjK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "Kj............jK"
+    db "KjjjjjjjjjjjjjjK"
+    db "KKKKKKKKKKKKKKKK"
+; 336 NINE_RUNE (b 3): blue-grey carved stone, light top-left and dark bottom-right bevel
+pal_gr_rune:
+    PALN    'a', 94, 108, 130, 15
+    PALN    'A', 150, 164, 186, 0
+    PALN    'B', 56, 64, 82, 0
+    PALN    'Y', 30, 36, 50, 0
+    dq 0
+gr_rune_bmp:
+    db ".YYYYYYYYYYYYYY."
+    db "YAAAAAAAAAAAAAAY"
+    db "YAAaaaaaaaaaaBBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YAaaaaaaaaaaaaBY"
+    db "YABaaaaaaaaaaBBY"
+    db "YABBBBBBBBBBBBBY"
+    db ".YYYYYYYYYYYYYY."
+; 337 NINE_SELECT (b 3): ornate gold frame, cream corner studs, transparent centre
+pal_gr_select:
+    PALN    'c', 244, 232, 200, 0
+    PALN    'g', 214, 170, 70, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    dq 0
+gr_select_bmp:
+    db ".KKKKKKKKKKKKKK."
+    db "KggggggggggggggK"
+    db "KgcGGGGGGGGGGcgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgG..........GgK"
+    db "KgcGGGGGGGGGGcgK"
+    db "KggggggggggggggK"
+    db ".KKKKKKKKKKKKKK."
+; 338 NINE_NOTE (b 3): small pinned paper note, rubric pin in the top-left corner
+pal_gr_note:
+    PALN    'd', 212, 186, 140, 15
+    PALN    'k', 110, 84, 58, 0
+    PALN    'r', 150, 32, 28, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_note_bmp:
+    db ".kkkkkkkkkkkkkk."
+    db "krPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kPPPPPPPPPPPPPdk"
+    db "kddddddddddddddk"
+    db ".kkkkkkkkkkkkkk."
+; 339 NINE_NODE_STAT (b 5): round ink medallion on parchment
+pal_gr_node_stat:
+    PALN    'e', 234, 216, 174, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_node_stat_bmp:
+    db ".....KKKKKK....."
+    db "...KKKKKKKKKK..."
+    db "..KKKeeeeeeKKK.."
+    db ".KKeePPPPPPeeKK."
+    db ".KKePPPPPPPPeKK."
+    db "KKePPPPPPPPPPeKK"
+    db "KKePPPPPPPPPPeKK"
+    db "KKePPPPPPPPPPeKK"
+    db "KKePPPPPPPPPPeKK"
+    db "KKePPPPPPPPPPeKK"
+    db "KKePPPPPPPPPPeKK"
+    db ".KKePPPPPPPPeKK."
+    db ".KKeePPPPPPeeKK."
+    db "..KKKeeeeeeKKK.."
+    db "...KKKKKKKKKK..."
+    db ".....KKKKKK....."
+; 340 NINE_NODE_ABIL (b 5): gold-rimmed shield
+pal_gr_node_abil:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_node_abil_bmp:
+    db "..KKKKKKKKKKKK.."
+    db ".KggggggggggggK."
+    db "KgGGGGGGGGGGGGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db "KgGPPPPPPPPPPGgK"
+    db ".KgGPPPPPPPPGgK."
+    db "..KgGPPPPPPGgK.."
+    db "...KgGGGGGGgK..."
+    db "....KggggggK...."
+    db ".....KKKKKK....."
+; 341 NINE_NODE_KEY (b 5): crimson frame with gold star corners
+pal_gr_node_key:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'x', 122, 22, 24, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    PALN    'R', 186, 44, 38, 0
+    dq 0
+gr_node_key_bmp:
+    db ".gKKKKKKKKKKKKg."
+    db "gGgKRRRRRRRRKgGg"
+    db "KgKxxxxxxxxxxKgK"
+    db "KKxPPPPPPPPPPxKK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KRxPPPPPPPPPPxRK"
+    db "KKxPPPPPPPPPPxKK"
+    db "KgKxxxxxxxxxxKgK"
+    db "gGgKRRRRRRRRKgGg"
+    db ".gKKKKKKKKKKKKg."
+; 342 NINE_NODE_PATH (b 5): double gold ring (archetype path)
+pal_gr_node_path:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'n', 70, 48, 32, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'P', 250, 238, 206, 15
+    dq 0
+gr_node_path_bmp:
+    db ".....KKKKKK....."
+    db "...KKggggggKK..."
+    db "..KggnnnnnnggK.."
+    db ".KgnnGGGGGGnngK."
+    db ".KgnGKKKKKKGngK."
+    db "KgnGKPPPPPPKGngK"
+    db "KgnGKPPPPPPKGngK"
+    db "KgnGKPPPPPPKGngK"
+    db "KgnGKPPPPPPKGngK"
+    db "KgnGKPPPPPPKGngK"
+    db "KgnGKPPPPPPKGngK"
+    db ".KgnGKKKKKKGngK."
+    db ".KgnnGGGGGGnngK."
+    db "..KggnnnnnnggK.."
+    db "...KKggggggKK..."
+    db ".....KKKKKK....."
+; 343 TILE_COMPASS: gold compass rose, drawn 2:1 at 32 x 32 GUI units
+pal_gr_compass:
+    PALN    'g', 214, 170, 70, 0
+    PALN    'r', 150, 32, 28, 0
+    PALN    'G', 255, 214, 110, 0
+    PALN    'K', 58, 38, 24, 0
+    PALN    'M', 188, 148, 56, 0
+    dq 0
+gr_compass_bmp:
+    db "................"
+    db ".......KK......."
+    db ".....MMKKMM....."
+    db "....MMKGgKMM...."
+    db "...MK.KGgK.KM..."
+    db "..MM.KGGggK.MM.."
+    db "..MKKGGGggGKKM.."
+    db ".KKGGGGrrGGGGKK."
+    db ".KKggggrrggggKK."
+    db "..MKKggGgggKKM.."
+    db "..MM.KGGggK.MM.."
+    db "...MK.KGgK.KM..."
+    db "....MMKGgKMM...."
+    db ".....MMKKMM....."
+    db ".......KK......."
+    db "................"
+; 344 TILE_SLOT_HEAD: empty-slot glyph, white (the UI tints it C_INK_SOFT) with a light-grey shade
+pal_gr_slot_head:
+    PALN    'v', 204, 204, 204, 0
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_head_bmp:
+    db "................"
+    db ".......ww......."
+    db ".....wwwwww....."
+    db "....wwwwwwww...."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wvvvvvvvvw..."
+    db "...wvvvvvvvvw..."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wwww..wwww..."
+    db "...www....www..."
+    db "................"
+    db "................"
+    db "................"
+; 345 TILE_SLOT_CHEST: empty-slot glyph
+pal_gr_slot_chest:
+    PALN    'v', 204, 204, 204, 0
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_chest_bmp:
+    db "................"
+    db "..www......www.."
+    db ".wwwww....wwwww."
+    db ".wwwwwwwwwwwwww."
+    db ".wwwwwwwwwwwwww."
+    db "..wwwwwvvwwwww.."
+    db "..wwwwwvvwwwww.."
+    db "..wwwwwvvwwwww.."
+    db "..wwwwwvvwwwww.."
+    db "..wwwwwwwwwwww.."
+    db "..wwwwwwwwwwww.."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "................"
+    db "................"
+; 346 TILE_SLOT_LEGS: empty-slot glyph
+pal_gr_slot_legs:
+    PALN    'v', 204, 204, 204, 0
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_legs_bmp:
+    db "................"
+    db "...wwwwwwwwww..."
+    db "...vvvvvvvvvv..."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wwwwwwwwww..."
+    db "...wwwww.wwww..."
+    db "...wwww..wwww..."
+    db "...wwww..wwww..."
+    db "...wwww..wwww..."
+    db "...wwww..wwww..."
+    db "...wwww..wwww..."
+    db "...wwww..wwww..."
+    db "................"
+    db "................"
+    db "................"
+; 347 TILE_SLOT_FEET: empty-slot glyph
+pal_gr_slot_feet:
+    PALN    'v', 204, 204, 204, 0
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_feet_bmp:
+    db "................"
+    db "................"
+    db "..www....www...."
+    db "..www....www...."
+    db "..www....www...."
+    db "..www....www...."
+    db "..www....www...."
+    db "..wwww...wwww..."
+    db "..wwwww..wwwww.."
+    db ".wwwwwww.wwwwwww"
+    db ".wwwwwww.wwwwwww"
+    db ".vvvvvvv.vvvvvvv"
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+; 348 TILE_SLOT_RING: empty-slot glyph
+pal_gr_slot_ring:
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_ring_bmp:
+    db "................"
+    db ".......ww......."
+    db "......wwww......"
+    db ".......ww......."
+    db "......wwww......"
+    db ".....ww..ww....."
+    db "....ww....ww...."
+    db "...ww......ww..."
+    db "...ww......ww..."
+    db "...ww......ww..."
+    db "....ww....ww...."
+    db ".....wwwwww....."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+; 349 TILE_SLOT_AMULET: empty-slot glyph
+pal_gr_slot_amulet:
+    PALN    'v', 204, 204, 204, 0
+    PALN    'w', 255, 255, 255, 0
+    dq 0
+gr_slot_amulet_bmp:
+    db "................"
+    db "..w..........w.."
+    db "..w..........w.."
+    db "...w........w..."
+    db "...w........w..."
+    db "....w......w...."
+    db ".....w....w....."
+    db ".....w....w....."
+    db "......wwww......"
+    db ".....wwwwww....."
+    db ".....wwvvww....."
+    db ".....wwvvww....."
+    db "......wwww......"
+    db ".......ww......."
+    db "................"
+    db "................"
+; 351 TILE_QUILL: crimson quill, a 12 x 12 sprite spread over the tile so that ui_tile_icon at size 12
+; (nearest, uv inset 1/16 texel) samples texels 0,2,3,4,6,7,8,9,11,12,13,15 of each axis and shows it
+; exactly; texels 1, 5, 10, 14 copy a neighbour
+pal_gr_quill:
+    PALN    'h', 214, 76, 62, 0
+    PALN    'x', 122, 22, 24, 0
+    PALN    'C', 176, 38, 34, 0
+    PALN    'K', 58, 38, 24, 0
+    dq 0
+gr_quill_bmp:
+    db "...........xxxxK"
+    db ".........xxhhKK."
+    db ".........xxhhKK."
+    db "........xhhCKxx."
+    db ".......xhCCKx..."
+    db ".....xxhCKKCx..."
+    db ".....xxhCKKCx..."
+    db ".....xxhKCCx...."
+    db "....xhhKCxx....."
+    db "....xKKCCxx....."
+    db "....xKKCCxx....."
+    db "...xKCCCx......."
+    db "...Kxxxx........"
+    db ".KK............."
+    db ".KK............."
+    db "K..............."
 
 section .text

@@ -1,5 +1,6 @@
 ; test_items.asm - inventory, crafting and tool-rule tests.
 %include "common.inc"
+%include "theme.inc"
 default rel
 
 global test_inv_add_merges, test_inv_right_click_split, test_craft_planks_from_log
@@ -7,6 +8,7 @@ global test_craft_tool_shapes, test_craft_shift_click_all, test_break_time_rules
 global test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 global test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 global test_new_blocks_tables, test_shrine_block_tables, test_terrain_blocks_tables
+global test_grimoire_tiles
 
 extern inv, inv_sel, craft_size, inv_container, game_mode
 extern inv_count, inv_remove_one, armor_points, inv_damage_held
@@ -1539,6 +1541,74 @@ test_terrain_blocks_tables:
     mov     eax, 1
 .out:
     pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; gt_pixel(eax tile, ecx x, edx y) -> eax the RGBA dword of texel (x, y) of that tile in art_atlas.
+; Clobbers ecx, edx, esi.
+gt_pixel:
+    mov     esi, eax
+    shr     eax, 4
+    shl     eax, 4
+    add     eax, edx                    ; atlas row = (tile >> 4) * 16 + y
+    shl     eax, 8                      ; * ATLAS_W
+    and     esi, 15
+    shl     esi, 4
+    add     eax, esi
+    add     eax, ecx                    ; + atlas column = (tile & 15) * 16 + x
+    lea     rsi, [art_atlas]
+    mov     eax, [rsi + rax*4]
+    ret
+
+; test_grimoire_tiles() -> eax 0 pass
+;   The 0.10.2 art in the atlas texgen_build draws: each of the 16 9-slice tiles TILE_NINE0 + 0..15
+;   (NINE_PAGE .. NINE_NODE_PATH) has an opaque rim pixel at texel (0, 7) (the left edge, half way
+;   down), except NINE_RIBBON, whose left end is a swallowtail notch: there (0, 7) is transparent and
+;   the opaque rim pixel is (7, 0) on the top edge instead. The silhouette block TILE_SIL0 has a
+;   C_INK pixel at local (24, 3), the top of the head outline: sub-tile row 0, column 1, texel (8, 3).
+test_grimoire_tiles:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    lea     rdi, [art_atlas]
+    call    texgen_build
+    xor     ebx, ebx                    ; NINE_* kind
+.kind:
+    lea     eax, [rbx + TILE_NINE0]
+    xor     ecx, ecx                    ; texel (0, 7)
+    mov     edx, 7
+    cmp     ebx, NINE_RIBBON
+    jne     .have_xy
+    mov     ecx, 7                      ; the ribbon: texel (7, 0)
+    xor     edx, edx
+.have_xy:
+    call    gt_pixel
+    shr     eax, 24                     ; alpha
+    cmp     eax, 255
+    jne     .fail
+    inc     ebx
+    cmp     ebx, 16
+    jb      .kind
+    mov     eax, TILE_NINE0 + NINE_RIBBON ; the swallowtail notch: transparent at (0, 7)
+    xor     ecx, ecx
+    mov     edx, 7
+    call    gt_pixel
+    test    eax, 0xFF000000
+    jnz     .fail
+    mov     eax, TILE_SIL0 + 1          ; the head outline: local (24, 3) = sub-tile column 1, texel (8, 3)
+    mov     ecx, 8
+    mov     edx, 3
+    call    gt_pixel
+    cmp     eax, C_INK
+    jne     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
