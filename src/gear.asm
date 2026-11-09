@@ -19,7 +19,7 @@ global gear_drop_from_mob, gear_fill_chest, item_tooltip, gear_equipped_for, gea
 extern item_gear, item_legendary, item_names, item_attack, item_armor_points
 extern item_durability, item_tool
 extern inv, inv_sel
-extern rng_next, rpg_stats, rpg_class, rpg_format_stat
+extern rng_next, rpg_stats, rpg_archetype, rpg_format_stat
 extern drops_spawn, audio_play_at
 extern str_append, i32_to_str
 
@@ -160,10 +160,10 @@ loot_weights:
     dw 300, 450, 220,  30               ; LOOT_CHEST
     dw   0, 700, 270,  30               ; LOOT_SHOP
 
-; the Fallen King's legendary by class (none, warrior, mage, archer, rogue)
+; the Fallen King's legendary by archetype (none, warrior, mage, archer, rogue)
 t_legendary: db KINGS_BLADE, KINGS_BLADE, ARCHMAGE_STAFF, CELESTIAL_BOW, SHADOW_FANG
-; the family of a class's own weapons (the warrior picks among sword, hammer and spear)
-class_family: db FAM_SWORD, FAM_SWORD, FAM_STAFF, FAM_BOW, FAM_DAGGER
+; the family of an archetype's own weapons (the warrior picks among sword, hammer and spear)
+arch_family: db FAM_SWORD, FAM_SWORD, FAM_STAFF, FAM_BOW, FAM_DAGGER
 ; the iron item of a hammer / spear / dagger family (the diamond one follows it)
 melee_pair: db 0, IRON_HAMMER, IRON_SPEAR, IRON_DAGGER
 
@@ -800,9 +800,9 @@ gear_tier_for_level:
     cmova   eax, ecx
     ret
 
-; gear_pick_base(edi tier, esi class) -> eax item id
+; gear_pick_base(edi tier, esi archetype 0..4) -> eax item id
 ; The base item of a roll. c = r % 100: below 35 a weapon, below 75 a piece of armor, below 88 a
-; ring, else an amulet. A weapon is of the class's own family 60 % of the time (warrior: sword,
+; ring, else an amulet. A weapon is of the archetype's own family 60 % of the time (warrior: sword,
 ; hammer or spear equally; mage staff; archer bow; rogue dagger; none sword), else any of sword,
 ; hammer, spear, dagger, bow, staff. Swords are wood at tier 0, stone at 1, iron 2..5, diamond from
 ; 6, golden 10 % of the time; hammers, spears and daggers iron below tier 6, else diamond. Armor
@@ -813,7 +813,7 @@ gear_pick_base:
     push    rbx
     push    r12
     mov     ebx, edi                    ; tier
-    mov     r12d, esi                   ; class
+    mov     r12d, esi                   ; archetype
     call    gr_next
     xor     edx, edx
     mov     ecx, 100
@@ -834,12 +834,12 @@ gear_pick_base:
     div     ecx
     cmp     edx, 60
     jae     .any
-    cmp     r12d, CLASS_WARRIOR
+    cmp     r12d, ARCH_WARRIOR
     je      .warrior
     xor     eax, eax
-    cmp     r12d, NUM_CLASSES
+    cmp     r12d, NUM_ARCHETYPES
     ja      .family
-    lea     rcx, [class_family]
+    lea     rcx, [arch_family]
     movzx   eax, byte [rcx + r12]
     jmp     .family
 .warrior:
@@ -949,8 +949,8 @@ spawn_drop:
     pop     rbp
     ret
 
-; drop_roll(edi table, esi tier, edx class, rcx pos float[3]) -> eax sound rank
-; One roll from a LOOT_* table: a base item for the tier and class, its rolled dmg, popped out.
+; drop_roll(edi table, esi tier, edx archetype, rcx pos float[3]) -> eax sound rank
+; One roll from a LOOT_* table: a base item for the tier and archetype, its rolled dmg, popped out.
 drop_roll:
     push    rbp
     mov     rbp, rsp
@@ -1038,7 +1038,7 @@ percent:
 ; The gear a dead hostile mob drops, popped out at mid-body height; its tier follows the mob's
 ; level. A plain mob drops one LOOT_MOB roll 6 % of the time. An elite always drops one LOOT_ELITE
 ; roll and, 30 % of the time, a second. The Fallen King, and a faction's champion (a MOB_FOLK with role
-; ROLE_CHAMPION), drop their class's legendary (made RAR_RARE), 3 LOOT_BOSS rolls and, 25 % of the
+; ROLE_CHAMPION), drop the legendary of the player's archetype (made RAR_RARE), 3 LOOT_BOSS rolls and, 25 % of the
 ; time, one of the four legendary jewels. A rare or epic find plays SND_LOOT_RARE, a legendary one
 ; SND_LEGENDARY (one sound per death, the loudest).
 ; Frame: [rsp] x, +4 y, +8 z, +12 loudest rank so far.
@@ -1064,8 +1064,8 @@ gear_drop_from_mob:
     mov     edi, [rbx + MOB.level]
     call    gear_tier_for_level
     mov     r12d, eax                   ; tier
-    call    rpg_class
-    mov     r13d, eax                   ; class
+    call    rpg_archetype
+    mov     r13d, eax                   ; archetype (0: nothing spent yet)
     cmp     dword [rbx + MOB.type], MOB_BOSS
     je      .boss
     cmp     dword [rbx + MOB.type], MOB_FOLK
@@ -1102,10 +1102,10 @@ gear_drop_from_mob:
     jmp     .sound
 .boss:
     mov     eax, r13d
-    cmp     eax, NUM_CLASSES
-    jbe     .class
-    xor     eax, eax                    ; a garbage class: the warrior's blade
-.class:
+    cmp     eax, NUM_ARCHETYPES
+    jbe     .arch
+    xor     eax, eax                    ; a garbage archetype: the warrior's blade
+.arch:
     lea     rcx, [t_legendary]
     movzx   edi, byte [rcx + rax]
     mov     esi, r12d
@@ -1160,7 +1160,7 @@ gear_drop_from_mob:
 ; gear_fill_chest(rdi CONTAINER*, esi table, edx tier, ecx count, r8d seed)
 ; Writes count gear stacks (count 1, base item and roll from the LOOT_* table at that tier) into
 ; the lowest free cells of the chest. The rolls come from a private mix32 stream started at seed,
-; with no magic find and no class, so the same arguments always fill the same chest.
+; with no magic find and no archetype, so the same arguments always fill the same chest.
 gear_fill_chest:
     push    rbp
     mov     rbp, rsp

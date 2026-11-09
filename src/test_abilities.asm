@@ -1,13 +1,14 @@
-; test_abilities.asm - the class abilities: cost, cooldown and unlock rules (and the charge and war
-; cry), a fireball that explodes without breaking anything, blink stopping at walls, the volley
-; and the arrow rain; then the slot 3 abilities (ground slam, frost nova, hunter's mark, fan of
-; knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance), AREA and
-; the staff bolt.
+; test_abilities.asm - the abilities of the skill web: cost, cooldown and bar rules (and the charge
+; and war cry), a fireball that explodes without breaking anything, blink stopping at walls, the
+; volley and the arrow rain; then the slot 3 abilities (ground slam, frost nova, hunter's mark, fan
+; of knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance), AREA,
+; the staff bolt and the binding of the ability bar.
 %include "common.inc"
 default rel
 
 global test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
 global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn, test_new_abilities
+global test_ability_bar_binding
 
 extern abilities_cd, abilities_cd_total, abilities_bolt_cd, abilities_reset, abilities_step
 extern abilities_use, abilities_staff_bolt
@@ -19,9 +20,26 @@ extern player, body_init, player_eye, player_forward, rng_seed
 extern world_clear, world_set, world_get, world_is_solid
 extern game_mode, game_time, settings, surv, survival_reset
 extern rpg_state, rpg_stats, rpg_recompute, rpg_reset, rpg_ext, rpg_keystones
+extern rpg_spend, rpg_bar_set, rpg_bar_ability
 extern gear_powers
 extern combat_mana, combat_stamina, combat_reset
 extern combat_warcry_t, combat_stealth_t, combat_crit_next_t
+
+; ability ids, (archetype - 1) * 4 + slot: what the ability bar holds and the index of abilities_cd
+%define AB_CHARGE       0
+%define AB_WARCRY       1
+%define AB_WHIRL        2
+%define AB_SLAM         3
+%define AB_FIREBALL     4
+%define AB_BLINK        5
+%define AB_METEOR       6
+%define AB_NOVA         7
+%define AB_VOLLEY       8
+%define AB_EXPLARROW    9
+%define AB_RAIN         10
+%define AB_MARK         11
+%define AB_SMOKE        13
+%define AB_KNIVES       15
 
 section .rodata
 align 4
@@ -191,7 +209,7 @@ fill_box:
     ret
 
 ; fixture(): the state every test here starts from (after world_clear): rng seed 1234, no mobs,
-; arrows, TNT, drops, particles or inventory, no class, no cooldowns, Survival at Normal difficulty,
+; arrows, TNT, drops, particles or inventory, no skills, no cooldowns, Survival at Normal difficulty,
 ; early morning, a fresh survival state, STONE floor at y = 10 for x, z in 0..31, the player
 ; standing on it at (16.5, 11, 16.5)
 fixture:
@@ -248,7 +266,7 @@ fixture:
     ret
 
 ; cleanup(): leave nothing behind: no mobs, arrows, TNT, drops, particles, inventory, cooldowns,
-; class or combat state
+; skills or combat state
 cleanup:
     sub     rsp, 8
     call    mobs_clear
@@ -265,16 +283,55 @@ cleanup:
     add     rsp, 8
     ret
 
-; set_class(edi class, esi level): the class and level in rpg_state, the stats recomputed, and
-; crits switched off so damage is exact
-set_class:
-    lea     rax, [rpg_state]
-    mov     [rax + RPGSAVE.class], dil
-    mov     [rax + RPGSAVE.level], sil
-    sub     rsp, 8
-    call    rpg_recompute
+; set_path(edi archetype 1..4, esi level): a character of that level who took the path of the
+; archetype and nothing else: rpg_reset, the level poked, every kit marked as given (so the spend
+; gives no kit and wears no chestplate), rpg_spend of the path node (its ability lands in bar slot 0;
+; the stats are recomputed with the archetype's base row) and crits switched off so damage is exact
+; ebx = the path node (archetype - 1), r12d = level
+set_path:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    lea     ebx, [rdi - 1]
+    mov     r12d, esi
+    call    rpg_reset
+    mov     [rpg_state + RPGSAVE.level], r12b
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    mov     edi, ebx
+    call    rpg_spend
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; learn(edi ability 1..15, one that is not a path's): the ability node that teaches it gets rank 1
+; without the nodes before it (the stats stay as they are: an ability node adds none) and the
+; ability goes to the bar slot of the same number, so abilities_use(slot) keeps its old meaning
+; ebx = ability
+learn:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, edi
+    shr     edi, 2                      ; archetype - 1
+    imul    edi, edi, 18
+    mov     eax, ebx
+    and     eax, 3                      ; its slot, 1..3
+    lea     rdx, [abil_off - 1]
+    movzx   eax, byte [rdx + rax]       ; its node within the archetype: 7, 9 or 15
+    lea     eax, [rax + rdi + NUM_ARCHETYPES]
+    lea     rdx, [rpg_ext + RPGEXT.web]
+    mov     byte [rdx + rax], 1
+    mov     edi, ebx
+    and     edi, 3
+    mov     esi, ebx
+    call    rpg_bar_set
     add     rsp, 8
+    pop     rbx
+    pop     rbp
     ret
 
 ; view(rdi buf float[6], xmm0 yaw, xmm1 pitch): aims the player; buf = eye[3], dir[3] as the game
@@ -325,9 +382,9 @@ test_ability_cost_cooldown_and_unlock:
     sub     rsp, 40
     call    world_clear
     call    fixture
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     mov     esi, 5
-    call    set_class
+    call    set_path
     SETF    [combat_stamina], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0                  ; yaw 0: facing -z
@@ -352,9 +409,9 @@ test_ability_cost_cooldown_and_unlock:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 70.0
-    cmp     dword [abilities_cd], 360
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 360
     jne     .fail
-    cmp     dword [abilities_cd_total], 360
+    cmp     dword [abilities_cd_total + AB_CHARGE * 4], 360
     jne     .fail
     EXPECT_NEAR [player + BODY.kbx], 0.0
     EXPECT_NEAR [player + BODY.kbz], -22.0
@@ -372,7 +429,7 @@ test_ability_cost_cooldown_and_unlock:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_stamina], 70.0
-    cmp     dword [abilities_cd + 4], 0
+    cmp     dword [abilities_cd + AB_WARCRY * 4], 0
     jne     .fail
     call    abilities_step              ; the charge reaches the zombie
     mov     eax, [rsp + 24]
@@ -386,7 +443,7 @@ test_ability_cost_cooldown_and_unlock:
     sub     eax, [rbx + MOB.health]
     cmp     eax, 7
     jne     .fail
-    cmp     dword [abilities_cd], 358
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 358
     jne     .fail
     call    mobs_clear                  ; ---- COOLDOWN_RED 10 %: 6 s * 60 * 90 / 100 = 324
     call    abilities_reset
@@ -398,14 +455,15 @@ test_ability_cost_cooldown_and_unlock:
     call    abilities_use
     cmp     eax, 1
     jne     .fail
-    cmp     dword [abilities_cd], 324
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 324
     jne     .fail
-    cmp     dword [abilities_cd_total], 324
+    cmp     dword [abilities_cd_total + AB_CHARGE * 4], 324
     jne     .fail
     call    abilities_reset             ; ---- War Cry, bought: stuns within 6 blocks, not beyond
     call    rpg_recompute
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
-    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
+    mov     edi, AB_WARCRY
+    call    learn
     SETF    [combat_stamina], 100.0
     mov     edi, MOB_ZOMBIE
     movss   xmm0, [k_16_5]
@@ -430,7 +488,7 @@ test_ability_cost_cooldown_and_unlock:
     EXPECT_NEAR [combat_stamina], 60.0
     cmp     dword [combat_warcry_t], 480
     jne     .fail
-    cmp     dword [abilities_cd + 4], 1200
+    cmp     dword [abilities_cd + AB_WARCRY * 4], 1200
     jne     .fail
     cmp     dword [mobs + MOB.stun], 20
     jne     .fail
@@ -450,9 +508,9 @@ test_ability_cost_cooldown_and_unlock:
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     call    mobs_clear                  ; ---- Mage: short of mana
     call    abilities_reset
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
+    call    set_path
     SETF    [combat_mana], 10.0
     xor     edi, edi
     lea     rsi, [rsp]
@@ -461,7 +519,7 @@ test_ability_cost_cooldown_and_unlock:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_mana], 10.0
-    cmp     dword [abilities_cd], 0
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 0
     jne     .fail
     cmp     dword [arrows + ARROWENT.live], 0
     jne     .fail
@@ -473,7 +531,7 @@ test_ability_cost_cooldown_and_unlock:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 75.0
-    cmp     dword [abilities_cd], 180
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
     jne     .fail
     cmp     dword [arrows + ARROWENT.live], 1
     jne     .fail
@@ -515,9 +573,9 @@ test_fireball_explodes_without_breaking:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
+    call    set_path
     SETF    [combat_mana], 100.0
     mov     eax, [surv + SURVIVAL.health]       ; whatever the class leaves him with (the real
     mov     [rsp + 24], eax                     ; rpg_recompute clamps it to the Mage's 18)
@@ -593,10 +651,11 @@ test_blink_stops_before_wall:
     sub     rsp, 32
     call    world_clear
     call    fixture
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
-    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
+    call    set_path
+    mov     edi, AB_BLINK
+    call    learn
     SETF    [combat_mana], 100.0
     lea     rdi, [rsp]
     movss   xmm0, [k_90]                ; facing +x
@@ -610,7 +669,7 @@ test_blink_stops_before_wall:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [abilities_cd + 4], 0
+    cmp     dword [abilities_cd + AB_BLINK * 4], 0
     jne     .fail
     EXPECT_NEAR [player + BODY.x], 16.5
     call    fx_count
@@ -639,7 +698,7 @@ test_blink_stops_before_wall:
     EXPECT_NEAR [player + BODY.kbx], 0.0
     EXPECT_NEAR [player + BODY.fall], 0.0
     EXPECT_NEAR [combat_mana], 80.0
-    cmp     dword [abilities_cd + 4], 300
+    cmp     dword [abilities_cd + AB_BLINK * 4], 300
     jne     .fail
     mov     edi, 19                     ; his box is in free air and the wall still stands
     mov     esi, 11
@@ -688,10 +747,11 @@ test_volley_and_arrow_rain_spawn:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
     mov     esi, 5
-    call    set_class
-    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
+    call    set_path
+    mov     edi, AB_RAIN
+    call    learn
     SETF    [combat_stamina], 100.0
     mov     edi, ARROW
     mov     esi, 10
@@ -752,7 +812,7 @@ test_volley_and_arrow_rain_spawn:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 10.0
-    cmp     dword [abilities_cd + 8], 1800
+    cmp     dword [abilities_cd + AB_RAIN * 4], 1800
     jne     .fail
     mov     r12d, 120
 .rain:
@@ -762,9 +822,9 @@ test_volley_and_arrow_rain_spawn:
     call    count_live
     cmp     eax, 29
     jne     .fail                       ; 5 + 24, none more
-    cmp     dword [abilities_cd], 240
+    cmp     dword [abilities_cd + AB_VOLLEY * 4], 240
     jne     .fail
-    cmp     dword [abilities_cd + 8], 1680
+    cmp     dword [abilities_cd + AB_RAIN * 4], 1680
     jne     .fail
     mov     ebx, 5
 .drop:
@@ -842,10 +902,27 @@ test_volley_and_arrow_rain_spawn:
 ; in gear_powers, stats poked after the recompute) and cleans up after itself; it returns 0 when
 ; everything held.
 
-; tree_12_15(): rank 1 in nodes 12, 13, 14 and 15 and nowhere else: the third branch down to its
-; slot 3 ability
+; tree_12_15(edi archetype 1..4): rank 1 in the archetype's nodes 12, 13, 14 and 15 (the third branch
+; down to its slot 3 ability) on top of what it has, the stats recomputed (crit chance off again) and
+; that slot 3 ability bound to bar slot 3
+; ebx = archetype - 1
 tree_12_15:
-    mov     dword [rpg_ext + RPGEXT.ranks + 12], 0x01010101
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    lea     ebx, [rdi - 1]
+    imul    eax, ebx, 18
+    lea     rdx, [rpg_ext + RPGEXT.web]
+    mov     dword [rdx + rax + NUM_ARCHETYPES + 12], 0x01010101
+    call    rpg_recompute
+    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
+    mov     edi, 3
+    lea     esi, [rbx*4 + 3]
+    call    rpg_bar_set
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
     ret
 
 ; hold(edi id): the item alone in hotbar slot 0, selected
@@ -962,10 +1039,11 @@ na_ground_slam:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    call    tree_12_15
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     mov     esi, 15
-    call    set_class
+    call    set_path
+    mov     edi, ARCH_WARRIOR
+    call    tree_12_15
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     mov     edi, IRON_SWORD
     call    hold
@@ -986,9 +1064,9 @@ na_ground_slam:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 55.0
-    cmp     dword [abilities_cd + 12], 720
+    cmp     dword [abilities_cd + AB_SLAM * 4], 720
     jne     .fail
-    cmp     dword [abilities_cd_total + 12], 720
+    cmp     dword [abilities_cd_total + AB_SLAM * 4], 720
     jne     .fail
     EXPECT_LOST 0, 24, 12
     cmp     dword MOBF(0, MOB.stun), 40
@@ -1058,10 +1136,11 @@ na_frost_nova:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    call    tree_12_15
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 15
-    call    set_class
+    call    set_path
+    mov     edi, ARCH_MAGE
+    call    tree_12_15
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     SETF    [combat_mana], 100.0
     lea     rdi, [rsp]
@@ -1080,9 +1159,9 @@ na_frost_nova:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 65.0
-    cmp     dword [abilities_cd + 12], 600
+    cmp     dword [abilities_cd + AB_NOVA * 4], 600
     jne     .fail
-    cmp     dword [abilities_cd_total + 12], 600
+    cmp     dword [abilities_cd_total + AB_NOVA * 4], 600
     jne     .fail
     EXPECT_LOST 0, 24, 7
     cmp     dword MOBF(0, MOB.stun), 90
@@ -1152,10 +1231,11 @@ na_hunters_mark:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     byte [rpg_ext + RPGEXT.ranks + 15], 1
-    mov     edi, CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_MARK
+    call    learn
     SETF    [combat_stamina], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0
@@ -1167,7 +1247,7 @@ na_hunters_mark:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_stamina], 100.0
-    cmp     dword [abilities_cd + 12], 0
+    cmp     dword [abilities_cd + AB_MARK * 4], 0
     jne     .fail
     cmp     dword MOBF(0, MOB.mark_t), 0
     jne     .fail
@@ -1176,7 +1256,7 @@ na_hunters_mark:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 80.0
-    cmp     dword [abilities_cd + 12], 480
+    cmp     dword [abilities_cd + AB_MARK * 4], 480
     jne     .fail
     cmp     dword MOBF(0, MOB.mark_t), 600
     jne     .fail
@@ -1217,10 +1297,11 @@ na_fan_of_knives:
     sub     rsp, 56
     call    world_clear
     call    fixture
-    mov     byte [rpg_ext + RPGEXT.ranks + 15], 1
-    mov     edi, CLASS_ROGUE
+    mov     edi, ARCH_ROGUE
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_KNIVES
+    call    learn
     SETF    [combat_stamina], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0
@@ -1230,7 +1311,7 @@ na_fan_of_knives:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 65.0
-    cmp     dword [abilities_cd + 12], 540
+    cmp     dword [abilities_cd + AB_KNIVES * 4], 540
     jne     .fail
     mov     edi, 8
     mov     esi, PROJ_KNIFE
@@ -1307,9 +1388,9 @@ na_blood_magic:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
+    call    set_path
     or      dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
     SETF    [combat_mana], 100.0
     mov     dword [surv + SURVIVAL.health], 12
@@ -1325,7 +1406,7 @@ na_blood_magic:
     EXPECT_NEAR [combat_mana], 100.0
     cmp     dword [surv + SURVIVAL.hurt_flash], 6
     jne     .fail
-    cmp     dword [abilities_cd], 180
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
     jne     .fail
     mov     edi, 1
     mov     esi, PROJ_FIREBALL
@@ -1343,7 +1424,7 @@ na_blood_magic:
     cmp     dword [surv + SURVIVAL.health], 5
     jne     .fail
     EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [abilities_cd], 0
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 0
     jne     .fail
     call    count_live
     test    eax, eax
@@ -1369,9 +1450,9 @@ na_barrage:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
     mov     esi, 5
-    call    set_class
+    call    set_path
     or      dword [rpg_keystones], 1 << KS_BARRAGE
     SETF    [combat_stamina], 100.0
     mov     edi, ARROW
@@ -1442,9 +1523,9 @@ na_staff_bolt:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
+    call    set_path
     mov     edi, STAFF
     call    hold
     SETF    [combat_mana], 100.0
@@ -1543,9 +1624,9 @@ na_staff_bolt:
     EXPECT_NEAR [arrows + ARROWENT_size * 3 + ARROWENT.vz], -28.0
     BOLT_KIND 4, PROJ_BOLT              ; the count starts over
     call    arrows_clear                ; ---- a Warrior swings the staff
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     mov     esi, 5
-    call    set_class
+    call    set_path
     mov     dword [abilities_bolt_cd], 0
     SETF    [combat_mana], 100.0
     BOLT    0
@@ -1578,10 +1659,11 @@ na_whirl_and_smoke:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_WHIRL
+    call    learn
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     mov     edi, IRON_SWORD
     call    hold
@@ -1602,7 +1684,7 @@ na_whirl_and_smoke:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 40.0
-    cmp     dword [abilities_cd + 8], 1800
+    cmp     dword [abilities_cd + AB_WHIRL * 4], 1800
     jne     .fail
     call    abilities_step             ; the first pulse
     EXPECT_LOST 0, 24, 8
@@ -1620,10 +1702,11 @@ na_whirl_and_smoke:
     call    abilities_step
     EXPECT_LOST 0, 24, 10               ; round(7 * 1.3 * 1.1) = round(10.01)
     call    abilities_reset             ; ---- the smoke bomb
-    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
-    mov     edi, CLASS_ROGUE
+    mov     edi, ARCH_ROGUE
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_SMOKE
+    call    learn
     SETF    [combat_stamina], 100.0
     CAST    1, 0
     cmp     eax, 1
@@ -1661,9 +1744,9 @@ na_shadowstep:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, CLASS_ROGUE
+    mov     edi, ARCH_ROGUE
     mov     esi, 5
-    call    set_class
+    call    set_path
     SETF    [combat_stamina], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0                  ; yaw 0: facing -z
@@ -1677,14 +1760,14 @@ na_shadowstep:
     jnz     .fail
     EXPECT_NEAR [combat_stamina], 100.0
     EXPECT_NEAR [player + BODY.z], 16.5
-    cmp     dword [abilities_cd], 0
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 0
     jne     .fail
     FILL    16, 11, 13, 16, 13, 13, AIR         ; the wall gone
     CAST    0, 0
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 75.0
-    cmp     dword [abilities_cd], 480
+    cmp     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 480
     jne     .fail
     EXPECT_NEAR [player + BODY.x], 16.5
     EXPECT_NEAR [player + BODY.y], 11.0
@@ -1716,10 +1799,11 @@ na_projectile_bases:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     byte [rpg_ext + RPGEXT.ranks + 9], 1
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_METEOR
+    call    learn
     SETF    [combat_mana], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0
@@ -1729,7 +1813,7 @@ na_projectile_bases:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 30.0
-    cmp     dword [abilities_cd + 8], 2400
+    cmp     dword [abilities_cd + AB_METEOR * 4], 2400
     jne     .fail
     call    abilities_step              ; the first meteor
     mov     edi, 1
@@ -1758,16 +1842,17 @@ na_projectile_bases:
     jz      .fail
     call    arrows_clear                ; ---- the Explosive Arrow
     call    abilities_reset
-    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
-    mov     edi, CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
     mov     esi, 5
-    call    set_class
+    call    set_path
+    mov     edi, AB_EXPLARROW
+    call    learn
     SETF    [combat_stamina], 100.0
     CAST    1, 0
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_stamina], 65.0
-    cmp     dword [abilities_cd + 4], 600
+    cmp     dword [abilities_cd + AB_EXPLARROW * 4], 600
     jne     .fail
     mov     edi, 1
     mov     esi, PROJ_ARROW
@@ -1812,10 +1897,11 @@ na_stun_rules:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     byte [rpg_ext + RPGEXT.ranks + 7], 1
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     mov     esi, 15
-    call    set_class
+    call    set_path
+    mov     edi, AB_WARCRY
+    call    learn
     SETF    [combat_stamina], 100.0
     lea     rdi, [rsp]
     xorps   xmm0, xmm0                  ; yaw 0: facing -z
@@ -1904,6 +1990,133 @@ test_new_abilities:
     pop     rbp
     ret
 
+; EXPECT_BAR slot, ability: fail unless the bar's slot holds that ability id (-1: empty)
+%macro EXPECT_BAR 2
+    mov     edi, %1
+    call    rpg_bar_ability
+    cmp     eax, %2
+    jne     .fail
+%endmacro
+
+; BAR_SET slot, ability, answer: rpg_bar_set(slot, ability) must answer 0 or 1
+%macro BAR_SET 3
+    mov     edi, %1
+    mov     esi, %2
+    call    rpg_bar_set
+    cmp     eax, %3
+    jne     .fail
+%endmacro
+
+; The ability bar. Level 5, the Path of the Mage taken by spending a point: Fireball goes into slot 0
+; (the other slots are empty); Blink cannot be bound before it is learned; Deep Mind binds nothing,
+; Blink (the next node, bought with the next point) goes into the first empty slot. Binding Fireball to
+; the empty slot 2 moves it (slot 0 empties); binding it to slot 1 swaps it with Blink. A cast from
+; slot 1 is the Fireball: 25 mana, a 180 step cooldown kept in the Fireball's own cell, not in a slot's;
+; rebound to slot 3 the cooldown is still running and a recast from slot 3 costs nothing; an empty slot
+; dry-fires at no cost; Blink from slot 2 runs its own cooldown beside it. Meteor Storm (not learned), a
+; stray ability id and a slot out of range cannot be bound; ability -1 empties a slot.
+; frame: eye[3] @0, dir[3] @12, the result @24
+test_ability_bar_binding:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32
+    call    world_clear
+    call    fixture
+    mov     byte [rpg_state + RPGSAVE.level], 5
+    mov     edi, ARCH_MAGE - 1          ; ---- the Path of the Mage: Fireball into slot 0
+    call    rpg_spend
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_BAR 0, AB_FIREBALL
+    EXPECT_BAR 1, -1
+    EXPECT_BAR 2, -1
+    EXPECT_BAR 3, -1
+    BAR_SET 1, AB_BLINK, 0              ; ---- not learned: it cannot be bound
+    EXPECT_BAR 1, -1
+    mov     edi, 28                     ; Deep Mind: a stat node binds nothing
+    call    rpg_spend
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_BAR 1, -1
+    mov     edi, 29                     ; Blink: the bar takes it into its first empty slot
+    call    rpg_spend
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_BAR 0, AB_FIREBALL
+    EXPECT_BAR 1, AB_BLINK
+    BAR_SET 2, AB_FIREBALL, 1           ; ---- onto the empty slot 2: slot 0 empties
+    EXPECT_BAR 0, -1
+    EXPECT_BAR 1, AB_BLINK
+    EXPECT_BAR 2, AB_FIREBALL
+    BAR_SET 1, AB_FIREBALL, 1           ; ---- onto slot 1: the two swap
+    EXPECT_BAR 1, AB_FIREBALL
+    EXPECT_BAR 2, AB_BLINK
+    SETF    [combat_mana], 100.0        ; ---- a cast from slot 1 is the Fireball
+    lea     rdi, [rsp]
+    xorps   xmm0, xmm0                  ; facing -z
+    xorps   xmm1, xmm1
+    call    view
+    CAST    1, 0
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 75.0
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    jne     .fail
+    cmp     dword [abilities_cd + 1 * 4], 0     ; not the cell of "slot 1"
+    jne     .fail
+    cmp     dword [abilities_cd + AB_BLINK * 4], 0
+    jne     .fail
+    BAR_SET 3, AB_FIREBALL, 1           ; ---- rebound to slot 3: the cooldown stays with the ability
+    EXPECT_BAR 1, -1
+    EXPECT_BAR 3, AB_FIREBALL
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    jne     .fail
+    CAST    3, 0
+    test    eax, eax
+    jnz     .fail                       ; it still cools down: nothing is paid
+    EXPECT_NEAR [combat_mana], 75.0
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    jne     .fail
+    CAST    1, 0                        ; ---- an empty slot: no cast, no cost
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_mana], 75.0
+    call    count_live
+    cmp     eax, 1                      ; only the first Fireball flew
+    jne     .fail
+    CAST    2, 0                        ; ---- Blink from slot 2: its own cooldown
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 55.0
+    cmp     dword [abilities_cd + AB_BLINK * 4], 300
+    jne     .fail
+    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    jne     .fail
+    BAR_SET 0, AB_METEOR, 0             ; ---- not learned
+    BAR_SET 0, AB_VOLLEY, 0             ; another archetype's
+    BAR_SET 0, 16, 0                    ; no such ability
+    BAR_SET 0, -2, 0
+    BAR_SET 4, AB_FIREBALL, 0           ; no such slot
+    EXPECT_BAR 0, -1
+    EXPECT_BAR 3, AB_FIREBALL
+    EXPECT_BAR 4, -1
+    BAR_SET 0, AB_FIREBALL, 1           ; ---- slot 0 again: slot 3 empties
+    EXPECT_BAR 0, AB_FIREBALL
+    EXPECT_BAR 3, -1
+    BAR_SET 0, -1, 1                    ; ---- -1 empties a slot
+    EXPECT_BAR 0, -1
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     [rsp + 24], eax
+    call    cleanup
+    mov     eax, [rsp + 24]
+    add     rsp, 32
+    pop     rbp
+    ret
+
 section .rodata
 align 4
 k_14_5:   dd 14.5
@@ -1931,3 +2144,4 @@ knife_exp:                              ; x y z vx vy vz of knife k, facing -z f
     dd 16.5, 12.12, 16.5,  -21.2132,  0.0,  21.2132
     dd 16.5, 12.12, 16.5,  -30.0,     0.0,   0.0
     dd 16.5, 12.12, 16.5,  -21.2132,  0.0, -21.2132
+abil_off: db 7, 9, 15                   ; the node of ability slot 1, 2, 3 within an archetype's 18

@@ -25,9 +25,9 @@ extern audio_update, player, body_init, world_origin_x, world_origin_z, world_he
 extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim, game_heavy_s
-extern screen_trade, screen_dialog, screen_class, screen_skills, screen_character
+extern screen_trade, screen_dialog, screen_skills, screen_character
 extern screen_shrine, screen_leader
-extern rpg_class, rpg_reset, combat_reset, dmgnum_clear, light_update
+extern rpg_begin, rpg_reset, combat_reset, dmgnum_clear, light_update
 extern boats_clear
 extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
 extern dir_remove_tree
@@ -72,7 +72,7 @@ screens:
     dq screen_title, screen_worlds, screen_create, screen_rename, screen_delete
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
-    dq screen_trade, screen_dialog, screen_class, screen_skills, screen_character
+    dq screen_trade, screen_dialog, screen_skills, screen_character
     dq screen_shrine, screen_leader
 
 section .data
@@ -374,19 +374,15 @@ app_wait_area:
     pop     rbp
     ret
 
-; enter_world(): start playing the loaded/created world; a character without a class picks
-; one first
+; enter_world(): start playing the loaded/created world; the character gets the common kit once and,
+; while it has no skill, a banner that points at the grimoire (rpg_begin)
 enter_world:
     push    rbp
     mov     rbp, rsp
     mov     dword [app_in_world], 1
     mov     dword [autosave_timer], 0
-    call    rpg_class
+    call    rpg_begin
     mov     edi, ST_PLAYING
-    test    eax, eax
-    jnz     .go
-    mov     edi, ST_CLASS
-.go:
     call    app_goto
     pop     rbp
     ret
@@ -724,7 +720,7 @@ update_state:
     je      .screen
     cmp     eax, ST_LEADER
     je      .screen
-    jmp     .ret                        ; paused, death, settings, class choice: nothing simulates
+    jmp     .ret                        ; paused, death, settings: nothing simulates
 
 .playing:
     mov     rdi, [app_window]           ; pause when focus is lost (not before it arrives)

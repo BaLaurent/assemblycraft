@@ -309,8 +309,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_CHICKEN_LEG   79
 %define TILE_ITEM0         80           ; icon of item id i >= COAL is TILE_ITEM0 + i - COAL (80..138);
                                         ; STICK..PORKCHOP use tiles 32 + i - STICK
-%define TILE_ABILITY0      139          ; 139 + (class-1)*3 + slot
-%define TILE_CLASS0        151          ; 151..154, class-1
+%define TILE_ABILITY0      139          ; 139 + (archetype-1)*3 + slot, slots 0..2
+%define TILE_CLASS0        151          ; 151..154, archetype-1 (the path node icons)
 %define TILE_STAT0         155          ; 155 + stat id
 %define TILE_VILLAGER_SKIN 173
 %define TILE_VILLAGER_FACE 174
@@ -351,7 +351,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define TILE_DIAMOND_HAMMER 206
 %define TILE_IRON_SPEAR    207
 %define TILE_DIAMOND_SPEAR 216
-%define TILE_ABILITY3_0    217          ; 217..220: slot-3 icon, class-1
+%define TILE_ABILITY3_0    217          ; 217..220: slot-3 icon, archetype-1
 %define TILE_ATTR_STR      221
 %define TILE_ATTR_DEX      222
 %define TILE_ATTR_INT      223
@@ -552,27 +552,25 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FX_FROST        7
 
 ; ---- RPG ------------------------------------------------------------------
-%define CLASS_NONE      0
-%define CLASS_WARRIOR   1
-%define CLASS_MAGE      2
-%define CLASS_ARCHER    3
-%define CLASS_ROGUE     4
-%define NUM_CLASSES     4
+%define ARCH_NONE       0               ; archetypes (the four quarters of the skill web)
+%define ARCH_WARRIOR    1
+%define ARCH_MAGE       2
+%define ARCH_ARCHER     3
+%define ARCH_ROGUE      4
+%define NUM_ARCHETYPES  4
 %define MAX_LEVEL       50
-%define NUM_NODES       18              ; node = branch*6 + tier
-%define NODES_PER_BRANCH 6
-%define NUM_ABILITY_SLOTS 4
-%define RPGX_VERSION    1
-%define NODE_STAT       0               ; NODEINFO.kind
+%define NUM_ABILITY_SLOTS 4             ; slots of the ability bar
+%define RPGX_VERSION    2
+%define NODE_STAT       0               ; WEBNODE.kind
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
-%define NODE_PATH       3               ; archetype path node (WEBNODE.kind)
+%define NODE_PATH       3               ; archetype path node
 %define NUM_ABILITIES   16              ; ability id = (archetype-1)*4 + slot
 %define ABIL_SHADOWSTEP 12
 %define NUM_KEYSTONES   12
-%define NUM_WEB_NODES   88
-%define WEB_MAX         128
-%define KIT_COMMON_BIT  0x80
+%define NUM_WEB_NODES   88              ; 4 paths, 4 * 18 archetype nodes, 12 bridges
+%define WEB_MAX         128             ; RPGEXT.web capacity
+%define KIT_COMMON_BIT  0x80            ; RPGEXT.kits: bit a-1 = archetype a's kit was given
 
 %define ATTR_STR        0
 %define ATTR_DEX        1
@@ -581,7 +579,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define NUM_ATTRS       4
 %define ATTR_PER_LEVEL  3
 
-%define KS_EXECUTIONER  0               ; keystone id = (class-1)*3 + branch
+%define KS_EXECUTIONER  0               ; keystone id = (archetype-1)*3 + branch
 %define KS_JUGGERNAUT   1
 %define KS_BLOODRAGE    2
 %define KS_INFERNO      3
@@ -785,11 +783,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_CHEST        14
 %define ST_TRADE        15
 %define ST_DIALOG       16
-%define ST_CLASS        17
-%define ST_SKILLS       18
-%define ST_CHARACTER    19
-%define ST_SHRINE       20
-%define ST_LEADER       21
+%define ST_SKILLS       17              ; the grimoire
+%define ST_CHARACTER    18
+%define ST_SHRINE       19
+%define ST_LEADER       20
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -1095,43 +1092,18 @@ endstruc                                ; 136 bytes
 
 ; RPG progression, stored in WORLDHDR.rpg; skill points are derived (level - sum of ranks)
 struc RPGSAVE
-    .class:          resb 1
-    .level:          resb 1             ; 1..30
+    .legacy_class:   resb 1             ; the 0.10.1 class, read only by the v1 migration (rpg_load), written 0
+    .level:          resb 1             ; 1..MAX_LEVEL
     .quest:          resb 1             ; next quest index 0..8 (8 = chain finished)
     .quest_state:    resb 1             ; 0 not accepted, 1 accepted
     .xp:             resd 1             ; into the current level
-    .ranks_v4:       resb 12            ; 0.7 ranks, unused since 0.8 (RPGEXT.ranks)
+    .ranks_v4:       resb 12            ; 0.7 ranks, unused since 0.8 (RPGEXT.legacy)
     .retired:        resb 2             ; 0.8 dungeon/boss flags, unused since 0.9 (WORLDHDR.sites)
     .quest_progress: resw 1
     .pad:            resb 40
 endstruc
 %if RPGSAVE_size != 64
 %error "RPGSAVE must be 64 bytes"
-%endif
-
-; rpg_class_info record: class card texts (dq zstr)
-struc CLASSINFO
-    .name:  resq 1
-    .line1: resq 1
-    .line2: resq 1
-    .line3: resq 1
-endstruc
-%if CLASSINFO_size != 32
-%error "CLASSINFO must be 32 bytes"
-%endif
-
-; rpg_node_info record: one skill-tree node
-struc NODEINFO
-    .name:  resq 1
-    .desc:  resq 1
-    .kind:  resb 1                      ; NODE_STAT, NODE_ABILITY, NODE_KEYSTONE
-    .stat:  resb 1                      ; stat id; ability slot (ability); KS_* id (keystone)
-    .max:   resb 1                      ; max rank
-    .pad:   resb 1
-    .value: resd 1                      ; per rank, 0 for abilities
-endstruc
-%if NODEINFO_size != 24
-%error "NODEINFO must be 24 bytes"
 %endif
 
 ; one node of the shared skill web (rpg_web_node)
@@ -1152,7 +1124,7 @@ endstruc
 %error "WEBNODE must be 32 bytes"
 %endif
 
-; rpg_ability_info record: one class ability
+; rpg_ability_info record: one ability (ability id = (archetype-1)*4 + slot)
 struc ABILINFO
     .name:     resq 1
     .desc:     resq 1
@@ -1165,12 +1137,16 @@ endstruc
 %error "ABILINFO must be 32 bytes"
 %endif
 
-; RPG extension, stored in WORLDHDR.rpgx (v5)
+; RPG extension, stored in WORLDHDR.rpgx (version 2: the shared skill web)
 struc RPGEXT
-    .ranks:   resb 32                   ; rank of node branch*6 + tier (0..17)
+    .legacy:  resb 32                   ; the 0.8..0.10.1 class ranks; always 0 now
     .attr:    resw NUM_ATTRS            ; attribute points spent
-    .version: resb 1                    ; RPGX_VERSION; 0 = refund on load
-    .pad:     resb 215
+    .version: resb 1                    ; RPGX_VERSION; 0 and 1 are migrated on load
+    .kits:    resb 1                    ; bit a-1: archetype a's starting kit was given; KIT_COMMON_BIT: the common one
+    .bar:     resb NUM_ABILITY_SLOTS    ; ability id + 1 per bar slot, 0 = empty
+    .pad1:    resb 2
+    .web:     resb WEB_MAX              ; rank of web node i (0..NUM_WEB_NODES-1)
+    .pad2:    resb 80
 endstruc
 %if RPGEXT_size != 256
 %error "RPGEXT must be 256 bytes"

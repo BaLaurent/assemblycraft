@@ -12,6 +12,7 @@ global test_crypt_spawns_boss_once, test_sitestate_eviction, test_region_plan_ca
 global test_camp_built_with_slots, test_camp_npcs_recreated, test_roads_stamped
 global test_patrol_spawns_on_road
 
+extern rpg_spend, rpg_ext, rpg_recompute
 extern world_clear, world_header, worldgen_set_seed, world_set, world_column_claim
 extern region_plan, camp_plan, structures_fill_chest, structures_refresh, structures_shift
 extern sites, site_count, site_state, structures_reset, structures_step, structures_nearest
@@ -160,6 +161,31 @@ mask_a:  resb 22 * 22                           ; a copy of road_mask
 road_buf: resb 3 * ROADEDGE_size               ; roads_edges' output
 
 section .text
+; take_path(edi arch 0..4): the character takes that archetype's path (0: none, a fresh character)
+; at its current level, with the stats recomputed. Kits are poked given so the spend wears nothing;
+; the spend refills mana and stamina. Clobbers the usual caller-saved registers.
+take_path:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    movzx   r12d, byte [rpg_state + RPGSAVE.level]
+    call    rpg_reset
+    test    ebx, ebx
+    jz      .done
+    mov     byte [rpg_state + RPGSAVE.level], 50
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    lea     edi, [rbx - 1]
+    call    rpg_spend
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+.done:
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+    call    rpg_recompute
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 
 ; zero_sites(): empties the persistent site table in the world header
 zero_sites:
@@ -2101,7 +2127,8 @@ test_dungeon_clears_after_kills:
     call    zero_sites
     call    structures_reset
     call    rpg_reset
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
+    call    take_path
     lea     rdi, [fsite]                ; dungeon slot 1 and 2 of region (0, 0), a village slot 0
     mov     esi, SITE_DUNGEON
     mov     edx, 30

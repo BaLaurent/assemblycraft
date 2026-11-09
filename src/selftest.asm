@@ -34,7 +34,7 @@ extern test_aimed_shotgun_has_no_spread, test_tnt_thrown_by_blast, test_tnt_fall
 extern test_fire_spreads_and_burns_wood, test_fire_ignites_tnt
 extern test_fire_dies_on_stone, test_fire_hurts_player
 extern test_fx_explosion_spawns_and_expires, test_fx_debris_falls_and_bounces
-extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_class_and_ranks
+extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_paths_and_ranks
 extern test_rpg_save_load_validates, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
 extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
 extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
@@ -77,6 +77,7 @@ extern test_terrain_blocks_tables, test_mesher_lava
 extern test_biome_ladder
 extern test_lava_burns, test_new_biome_consumers
 extern test_caves_reworked
+extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -163,7 +164,7 @@ tests:
     TEST drops_fall_and_pickup
     TEST rpg_levels_and_points
     TEST rpg_skill_spend_rules
-    TEST rpg_stats_from_class_and_ranks
+    TEST rpg_stats_from_paths_and_ranks
     TEST rpg_save_load_validates
     TEST quest_chain_progress_and_rewards
     TEST trade_exchanges_items
@@ -266,6 +267,9 @@ tests:
     TEST lava_burns
     TEST new_biome_consumers
     TEST caves_reworked
+    TEST ability_bar_binding
+    TEST archetype_titles
+    TEST web_view_mapping
     dq 0
 
 section .rodata
@@ -344,7 +348,7 @@ section .rodata
     TESTNAME drops_fall_and_pickup
     TESTNAME rpg_levels_and_points
     TESTNAME rpg_skill_spend_rules
-    TESTNAME rpg_stats_from_class_and_ranks
+    TESTNAME rpg_stats_from_paths_and_ranks
     TESTNAME rpg_save_load_validates
     TESTNAME quest_chain_progress_and_rewards
     TESTNAME trade_exchanges_items
@@ -447,6 +451,9 @@ section .rodata
     TESTNAME lava_burns
     TESTNAME new_biome_consumers
     TESTNAME caves_reworked
+    TESTNAME ability_bar_binding
+    TESTNAME archetype_titles
+    TESTNAME web_view_mapping
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

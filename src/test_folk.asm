@@ -16,7 +16,7 @@ extern drops, drops_clear
 extern player, body_init, rng_seed, world_clear, world_set
 extern game_mode, game_time, settings, surv, survival_reset, inv_clear, rpg_reset
 extern combat_reset, combat_hit_mob, combat_hit_flags, combat_burn_t, combat_guard_t
-extern world_header, banner_text, screen_faction, sites, site_count
+extern world_header, banner_text, screen_faction, sites, site_count, rpg_stats
 extern faction_reset
 extern gear_make, gear_affixes, item_legendary
 
@@ -1167,6 +1167,7 @@ test_folk_kill_reputation_and_drops:
     sub     rsp, 8
     call    world_clear
     call    fixture
+    mov     dword [rpg_stats + STAT_XP_BONUS * 4], -100     ; kills give no XP: no level-up banner over the champion's
     FOLK    FAC_BANDITS, ROLE_GUARD, FCLASS_BRUTE, 104.5, 100.5
     test    eax, eax
     js      .fail

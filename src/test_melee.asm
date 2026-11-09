@@ -23,6 +23,7 @@ extern combat_hit_mob, combat_calc, combat_heavy, combat_pay, combat_weapon_prev
 extern combat_attacker, combat_player_status
 extern combat_burn_t, combat_chill_t, combat_poison_t, combat_poison, combat_phoenix_cd
 extern combat_hit_flags
+extern rpg_spend, rpg_ext
 extern survival_dot, survival_land, rpg_keystones, gear_powers, abilities_cd
 extern arrows, arrows_clear, arrows_spawn, arrows_step, explode_at, explode_magic, explode_dmg_mult
 extern world_set
@@ -106,6 +107,31 @@ tmp: resd 1
 pv:  resd 4                              ; combat_weapon_preview's answer
 
 section .text
+; take_path(edi arch 0..4): the character takes that archetype's path (0: none, a fresh character)
+; at its current level, with the stats recomputed. Kits are poked given so the spend wears nothing;
+; the spend refills mana and stamina. Clobbers the usual caller-saved registers.
+take_path:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    movzx   r12d, byte [rpg_state + RPGSAVE.level]
+    call    rpg_reset
+    test    ebx, ebx
+    jz      .done
+    mov     byte [rpg_state + RPGSAVE.level], 50
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    lea     edi, [rbx - 1]
+    call    rpg_spend
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+.done:
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+    call    rpg_recompute
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 
 ; fail unless |float at %1 - float constant %2| < 0.005 (NaN fails)
 %macro FNEAR 2
@@ -285,12 +311,11 @@ swing:
     add     rsp, 8
     ret
 
-; set_class(edi class): the class byte and the stats it implies, crit chance 0 so the numbers
+; set_class(edi arch 0..4): the archetype's path taken (0: none) and the stats it implies, crit chance 0 so the numbers
 ; are exact, then a fresh combat state (full pools, no timers)
 set_class:
     sub     rsp, 8
-    mov     [rpg_state + RPGSAVE.class], dil
-    call    rpg_recompute
+    call    take_path
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
     call    combat_reset
     add     rsp, 8
@@ -494,7 +519,7 @@ test_melee_combo_crit_backstab:
     call    fixture
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], IRON_SWORD    ; attack 7, cooldown 12
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.count], 1
-    mov     edi, CLASS_WARRIOR          ; MELEE +10%
+    mov     edi, ARCH_WARRIOR          ; MELEE +10%
     call    set_class
     movss   xmm0, [k_180]               ; a zombie facing the player
     call    spawn_zombie
@@ -534,7 +559,7 @@ test_melee_combo_crit_backstab:
     cmp     eax, 8
     jne     .fail
     ; Rogue (no MELEE, BACKSTAB +100%): 7 * 2 = 14 from behind, 7 from the front
-    mov     edi, CLASS_ROGUE
+    mov     edi, ARCH_ROGUE
     call    set_class
     call    strike
     cmp     eax, 14
@@ -547,7 +572,7 @@ test_melee_combo_crit_backstab:
     jne     .fail
     ; the dagger swings every 7 steps (iron dagger attack 5, from behind 10)
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], IRON_DAGGER
-    mov     edi, CLASS_ROGUE
+    mov     edi, ARCH_ROGUE
     call    set_class
     mov     dword [rbx + BODY.yaw], 0
     call    strike
@@ -557,7 +582,7 @@ test_melee_combo_crit_backstab:
     ; back to the Warrior with the sword: every forced crit is 7 * 1.1 * 1.5 = 11.55 -> 12
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.id], IRON_SWORD
     mov     dword [rbx + BODY.yaw], __float32__(180.0)
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [combat_riposte_t], 60            ; after a parry
     call    strike
@@ -565,21 +590,21 @@ test_melee_combo_crit_backstab:
     jne     .fail
     CHK     [combat_riposte_t], 0                   ; spent
     FNEAR   [combat_hitstop], k_0_09                ; a crit freezes longer
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [combat_crit_next_t], 120         ; after Shadowstep
     call    strike
     cmp     eax, 12
     jne     .fail
     CHK     [combat_crit_next_t], 0
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [combat_stealth_t], 300           ; from the shadows, which it ends
     call    strike
     cmp     eax, 12
     jne     .fail
     CHK     [combat_stealth_t], 0
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [combat_blade_t], 100             ; Blade Dance: always crit, half the cooldown
     call    strike
@@ -587,7 +612,7 @@ test_melee_combo_crit_backstab:
     jne     .fail
     CHK     [combat_attack_cd], 6
     CHK     [combat_blade_t], 100
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [player + BODY.on_ground], 0      ; plunging onto it
     mov     dword [player + BODY.vy], __float32__(-5.0)
@@ -597,7 +622,7 @@ test_melee_combo_crit_backstab:
     mov     dword [player + BODY.on_ground], 1
     mov     dword [player + BODY.vy], 0
     ; lifesteal: 25% of 8 = 2 half hearts
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     mov     dword [rpg_stats + STAT_LIFESTEAL * 4], 25
     mov     dword [surv + SURVIVAL.health], 10
@@ -647,31 +672,31 @@ test_melee_combo_crit_backstab:
     call    combat_reset
     mov     dword [rpg_keystones], 0
     mov     dword [gear_powers], 1 << LP_SHADOW_FANG
-    mov     dword [abilities_cd], 100
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
     movss   xmm0, [k_0]
     call    mobs_clear
     call    spawn_zombie
     mov     dword [rbx + MOB.health], 5
     call    swing                               ; a backstab that kills
     CHK     [rbx + MOB.type], MOB_NONE
-    CHK     [abilities_cd], 0
+    CHK     [abilities_cd + ABIL_SHADOWSTEP * 4], 0
     call    combat_reset
-    mov     dword [abilities_cd], 100
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 100
     movss   xmm0, [k_180]
     call    mobs_clear
     call    spawn_zombie
     mov     dword [rbx + MOB.health], 5
     call    swing                               ; a kill, but not from behind
     CHK     [rbx + MOB.type], MOB_NONE
-    CHK     [abilities_cd], 100
+    CHK     [abilities_cd + ABIL_SHADOWSTEP * 4], 100
     call    combat_reset
     movss   xmm0, [k_0]
     call    mobs_clear
     call    spawn_zombie
     call    swing                               ; a backstab, but no kill
-    CHK     [abilities_cd], 100
+    CHK     [abilities_cd + ABIL_SHADOWSTEP * 4], 100
     mov     dword [gear_powers], 0
-    mov     dword [abilities_cd], 0
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP * 4], 0
     xor     ebx, ebx
     jmp     .ret
 .fail:
@@ -739,7 +764,7 @@ test_stamina_mana_regen_and_max_health:
     FNEAR   [combat_stamina], k_48
     mov     dword [game_mode], MODE_SURVIVAL
     ; a Mage regenerates 4 mana per second, and pays spells from it
-    mov     edi, CLASS_MAGE
+    mov     edi, ARCH_MAGE
     call    set_class
     FNEAR   [combat_mana], k_100
     mov     dword [combat_mana], 0
@@ -759,7 +784,7 @@ test_stamina_mana_regen_and_max_health:
     jne     .fail
     FNEAR   [combat_mana], k_20
     ; a Warrior has 24 half hearts, and a fresh survival state starts with all of them
-    mov     edi, CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
     call    set_class
     CHK     [surv_max_health], 24
     call    survival_reset
@@ -1456,7 +1481,7 @@ test_heavy_attack_and_speed:
     PREVIEW 7, 10, 50                           ; 7, 10.5 rounds to even, 600 / 12
     mov     byte [inv + INVENTORY.slots + ITEMSTACK.count], 0
     PREVIEW 1, 2, 60
-    mov     edi, CLASS_WARRIOR                  ; MELEE +10 %
+    mov     edi, ARCH_WARRIOR                  ; MELEE +10 %
     call    set_class
     HELD    IRON_SWORD
     PREVIEW 8, 12, 50
@@ -1472,7 +1497,7 @@ test_heavy_attack_and_speed:
     PREVIEW 14, 20, 10                          ; Deadeye: attack speed no longer speeds it
     mov     dword [rpg_keystones], 0
     POKE    STAT_ATTACK_SPEED, 0
-    mov     edi, CLASS_MAGE                     ; SPELL +10 %: shock bolts
+    mov     edi, ARCH_MAGE                     ; SPELL +10 %: shock bolts
     call    set_class
     HELD    STAFF
     PREVIEW 4, 7, 25                            ; 4.4, 6.6, every 24 steps
@@ -2194,7 +2219,8 @@ frame_checks:
     CHK     [surv + SURVIVAL.health], 13
     cmp     byte [inv + INVENTORY.slots + ITEMSTACK.count], 1
     jne     .fail
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_MAGE        ; 100 mana
+    mov     edi, ARCH_MAGE                      ; 100 mana
+    call    take_path
     HELD    MANA_POTION
     mov     dword [combat_mana], 0
     RPRESS

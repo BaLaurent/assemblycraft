@@ -11,6 +11,7 @@ global test_boss_phases_slam_and_summons, test_mob_kill_awards_xp_and_coins
 global test_mob_levels_and_scaling, test_elite_affixes
 global test_entities_rebase, test_entities_remove_box, test_mob_water_ai
 
+extern rpg_spend, rpg_bar_set
 extern mobs, mobs_clear, mobs_step, mob_spawn, mobs_raycast, mob_hurt, mob_count_type, mob_count_kind
 extern mob_spawn_elite, folk_spawn, mob_is_hostile, mob_strike, mobs_save, mobs_load
 extern mobs_populate, spawn_at_ground, mobs_shift, mobs_remove_box
@@ -128,6 +129,31 @@ far_cases:
     dd 130.5, -200.5, MOB_NONE          ; row -13: 13 away
 
 section .text
+; take_path(edi arch 0..4): the character takes that archetype's path (0: none, a fresh character)
+; at its current level, with the stats recomputed. Kits are poked given so the spend wears nothing;
+; the spend refills mana and stamina. Clobbers the usual caller-saved registers.
+take_path:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    movzx   r12d, byte [rpg_state + RPGSAVE.level]
+    call    rpg_reset
+    test    ebx, ebx
+    jz      .done
+    mov     byte [rpg_state + RPGSAVE.level], 50
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    lea     edi, [rbx - 1]
+    call    rpg_spend
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+.done:
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+    call    rpg_recompute
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 
 ; SETF mem, float literal
 %macro SETF 2
@@ -1333,7 +1359,8 @@ test_mob_kill_awards_xp_and_coins:
     call    rpg_reset
     call    drops_clear
     mov     dword [game_time], 40000    ; night: nothing burns
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
+    call    take_path
     mov     byte [combat_hit_flags], HF_PLAYER
     SPAWN   MOB_ZOMBIE, k_8_5, k_8_5
     test    eax, eax
@@ -1533,7 +1560,8 @@ test_mob_kill_awards_xp_and_coins:
     call    clear_sites                 ; a boss born at no site (origin 0) touches no record...
     SITE_KIND 2, SITE_CRYPT             ; (origin 3 backs this one)
     mov     dword [world_header + WORLDHDR.site_count], 3
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
+    call    take_path
     mov     byte [combat_hit_flags], HF_PLAYER | HF_CRIT
     SPAWN   MOB_BOSS, k_16_5, k_16_5
     test    eax, eax
@@ -1547,7 +1575,8 @@ test_mob_kill_awards_xp_and_coins:
     jne     .fail
     call    drops_clear                 ; ...the Fallen King born in the crypt of record 3 falls to an archer
     call    rpg_reset
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_ARCHER
+    mov     edi, ARCH_ARCHER
+    call    take_path
     mov     byte [combat_hit_flags], HF_PLAYER | HF_CRIT
     SPAWN   MOB_BOSS, k_16_5, k_16_5
     test    eax, eax
@@ -1934,7 +1963,7 @@ test_mob_levels_and_scaling:
     call    combat_reset
     call    inv_clear                   ; no armor
     mov     dword [game_time], 40000
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_WARRIOR
+    call    rpg_reset                   ; no path: the old class poke left the classless stats anyway
     mov     byte [rpg_state + RPGSAVE.level], 10    ; poked: the stats stay as they are
     call    clear_sites                 ; site state records: 1 and 6 dungeons, 7 a village, 9 a crypt, 10 a camp
     SITE_KIND 0, SITE_DUNGEON
@@ -3194,7 +3223,8 @@ mask64:
     call    combat_reset
     call    inv_clear
     call    abilities_reset
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
+    call    take_path
     mov     byte [rpg_state + RPGSAVE.level], 5
     call    rpg_recompute
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
@@ -3232,8 +3262,11 @@ mask64:
     call    mobs_clear                  ; ---- Ground Slam
     call    abilities_reset
     mov     byte [rpg_state + RPGSAVE.level], 15
-    mov     dword [rpg_ext + RPGEXT.ranks + 12], 0x01010101
+    mov     byte [rpg_ext + RPGEXT.web + 4 + (ARCH_WARRIOR - 1) * 18 + 15], 1   ; Ground Slam learned...
     call    rpg_recompute
+    mov     edi, 3                      ; ...and bound to bar slot 3
+    mov     esi, (ARCH_WARRIOR - 1) * 4 + 3
+    call    rpg_bar_set
     mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 0
     mov     dword [rpg_stats + STAT_AREA * 4], 0
     SETF    [combat_stamina], 100.0

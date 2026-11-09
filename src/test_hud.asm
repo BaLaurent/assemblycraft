@@ -1,14 +1,16 @@
 ; test_hud.asm - the HUD's anchor in the world (world_to_ui), the floating combat text (dmgnum: rise,
-; expiry, colour / size / alpha by element, crit and DoT, the new words) and the heart levels.
+; expiry, colour / size / alpha by element, crit and DoT, the new words), the heart levels and the
+; grimoire's mapping between web cells and screen pixels (web_node_xy, web_pick).
 %include "common.inc"
 default rel
 
-global test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
+global test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires, test_web_view_mapping
 
 extern world_clear, player, body_init, player_eye, player_forward
 extern settings, game_aim, ui_w, ui_h, world_to_ui
 extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list, dmgnum_style
 extern hud_heart_level, hud_ability_pos
+extern web_node_xy, web_pick, rpg_web_node
 
 ; layout of one dmgnum_list entry (struc DMGNUM in dmgnum.asm)
 %define DN_Y        4
@@ -612,6 +614,176 @@ check_heart_levels:
     xor     eax, eax
 .ret:
     add     rsp, 16
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- the grimoire's pixel mapping ---------------------------------------------------------------
+
+%define WV_OX       200                 ; the web origin the picks are made against
+%define WV_OY       120
+%define WV_ROWS     9
+
+section .rodata
+align 4
+; web_pick probes around a node centre (cx, cy) with half-size h: x = cx + ax * h + bx,
+; y = cy + ay * h + by, and whether the node itself must be the answer (1) or must not be (0)
+wv_rows:
+    dd  0,  0,  0,  0, 1                ; the centre
+    dd  1,  0,  1,  0, 1                ; the four corners of the pick box, inclusive
+    dd -1,  0,  1,  0, 1
+    dd  1,  0, -1,  0, 1
+    dd -1,  0, -1,  0, 1
+    dd  1,  1,  0,  0, 0                ; one unit beyond each side
+    dd -1, -1,  0,  0, 0
+    dd  0,  0,  1,  1, 0
+    dd  0,  0, -1, -1, 0
+
+section .text
+
+; test_web_view_mapping: web_node_xy is the node's cell times 28 at zoom 1 and 13 at zoom 0 (Path of
+; the Warrior, cell (0, -2): (0, -56) and (0, -26); node 4, cell (-1, -3): (-28, -84) and (-13, -39)).
+; web_pick on the compass centre, which has no node, answers -1 at both zooms. For every one of the
+; 88 nodes at both zooms the pick box (half 11 for an ordinary node and 14 for a path node at zoom 1,
+; 5 and 6 at zoom 0) answers that node at its centre and its four corners and anything else one unit
+; outside each side: it is inclusive, exactly that size, and no lower-numbered node's box reaches it
+; (so the first hit in id order is the node itself).
+; ebx = node, r12d = zoom, r13d / r14d = node centre dx / dy, r15d = half, [rsp] probe row
+; Returns 0, 1..9 for a web_node_xy or compass failure, 100 + node (+ 100 at zoom 1) for a pick
+test_web_view_mapping:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    xor     edi, edi                    ; Path of the Warrior at zoom 1
+    mov     esi, 1
+    call    web_node_xy
+    mov     ecx, 1
+    test    eax, eax
+    jnz     .fail_c
+    cmp     edx, -56
+    jne     .fail_c
+    xor     edi, edi                    ; ... and at zoom 0
+    xor     esi, esi
+    call    web_node_xy
+    mov     ecx, 2
+    test    eax, eax
+    jnz     .fail_c
+    cmp     edx, -26
+    jne     .fail_c
+    mov     edi, 4                      ; Weapon Mastery, cell (-1, -3)
+    mov     esi, 1
+    call    web_node_xy
+    mov     ecx, 3
+    cmp     eax, -28
+    jne     .fail_c
+    cmp     edx, -84
+    jne     .fail_c
+    mov     edi, 4
+    xor     esi, esi
+    call    web_node_xy
+    mov     ecx, 4
+    cmp     eax, -13
+    jne     .fail_c
+    cmp     edx, -39
+    jne     .fail_c
+    mov     edi, WV_OX                  ; the compass centre: no node
+    mov     esi, WV_OY
+    mov     edx, WV_OX
+    mov     ecx, WV_OY
+    mov     r8d, 1
+    call    web_pick
+    mov     ecx, 5
+    cmp     eax, -1
+    jne     .fail_c
+    mov     edi, WV_OX
+    mov     esi, WV_OY
+    mov     edx, WV_OX
+    mov     ecx, WV_OY
+    xor     r8d, r8d
+    call    web_pick
+    mov     ecx, 6
+    cmp     eax, -1
+    jne     .fail_c
+    xor     r12d, r12d                  ; zoom
+.zoom:
+    xor     ebx, ebx                    ; node
+.node:
+    mov     edi, ebx
+    mov     esi, r12d
+    call    web_node_xy
+    mov     r13d, eax
+    mov     r14d, edx
+    mov     edi, ebx
+    call    rpg_web_node
+    mov     r15d, 5                     ; half-size by zoom and kind
+    mov     ecx, 11
+    test    r12d, r12d
+    cmovnz  r15d, ecx
+    mov     ecx, 6
+    mov     edx, 14
+    test    r12d, r12d
+    cmovnz  ecx, edx
+    cmp     byte [rax + WEBNODE.kind], NODE_PATH
+    cmove   r15d, ecx
+    mov     dword [rsp], 0
+.row:
+    mov     eax, [rsp]
+    imul    eax, eax, 20
+    lea     rcx, [wv_rows]
+    add     rcx, rax
+    mov     eax, [rcx]                  ; x = WV_OX + dx + ax * half + bx
+    imul    eax, r15d
+    add     eax, [rcx + 4]
+    add     eax, r13d
+    add     eax, WV_OX
+    mov     edi, eax
+    mov     eax, [rcx + 8]              ; y = WV_OY + dy + ay * half + by
+    imul    eax, r15d
+    add     eax, [rcx + 12]
+    add     eax, r14d
+    add     eax, WV_OY
+    mov     esi, eax
+    mov     edx, WV_OX
+    mov     ecx, WV_OY
+    mov     r8d, r12d
+    call    web_pick
+    xor     edx, edx
+    cmp     eax, ebx
+    sete    dl                          ; 1 when the pick is this node
+    mov     eax, [rsp]
+    imul    eax, eax, 20
+    lea     rcx, [wv_rows]
+    cmp     edx, [rcx + rax + 16]
+    jne     .fail_pick
+    inc     dword [rsp]
+    cmp     dword [rsp], WV_ROWS
+    jb      .row
+    inc     ebx
+    cmp     ebx, NUM_WEB_NODES
+    jb      .node
+    inc     r12d
+    cmp     r12d, 2
+    jb      .zoom
+    xor     eax, eax
+    jmp     .ret
+.fail_pick:
+    lea     eax, [rbx + 100]
+    imul    ecx, r12d, 100
+    add     eax, ecx
+    jmp     .ret
+.fail_c:
+    mov     eax, ecx
+.ret:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

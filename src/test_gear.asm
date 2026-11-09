@@ -6,6 +6,7 @@ default rel
 global test_gear_decode_deterministic, test_gear_stats_and_powers
 global test_gear_drops_and_chests, test_gear_jewelry_and_no_wear
 
+extern rpg_spend, rpg_ext, rpg_recompute, rpg_archetype, rpg_reset
 extern affix_tab, gear_affixes, gear_rarity, gear_rarity_color, gear_name
 extern gear_add_stats, gear_powers, gear_has_power, gear_make, gear_roll
 extern gear_tier_for_level, gear_pick_base, gear_drop_from_mob, gear_fill_chest
@@ -106,6 +107,31 @@ t_cnt:    resd 4                        ; scan_drops results
 t_save:   resd 4                        ; saved globals: class, magic find
 
 section .text
+; take_path(edi arch 0..4): the character takes that archetype's path (0: none, a fresh character)
+; at its current level, with the stats recomputed. Kits are poked given so the spend wears nothing;
+; the spend refills mana and stamina. Clobbers the usual caller-saved registers.
+take_path:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    movzx   r12d, byte [rpg_state + RPGSAVE.level]
+    call    rpg_reset
+    test    ebx, ebx
+    jz      .done
+    mov     byte [rpg_state + RPGSAVE.level], 50
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    lea     edi, [rbx - 1]
+    call    rpg_spend
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+.done:
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+    call    rpg_recompute
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 
 ; ---- helpers -----------------------------------------------------------------------------------
 
@@ -1141,7 +1167,8 @@ test_gear_drops_and_chests:
     call    inv_clear
     mov     eax, [rpg_stats + STAT_MAGIC_FIND*4]
     mov     [t_save + 4], eax
-    movzx   eax, byte [rpg_state + RPGSAVE.class]
+    call    rpg_archetype
+    movzx   eax, al
     mov     [t_save], eax
     mov     dword [rpg_stats + STAT_MAGIC_FIND*4], 0
 
@@ -1214,7 +1241,7 @@ test_gear_drops_and_chests:
 
     ; base items: always gear, an archer finds bows, the tier decides the material
     mov     edi, 5
-    mov     esi, CLASS_ARCHER
+    mov     esi, ARCH_ARCHER
     mov     edx, 200
     call    pick_many
     test    eax, eax
@@ -1224,7 +1251,7 @@ test_gear_drops_and_chests:
 %assign tier_n 0
 %rep 16
     mov     edi, tier_n
-    mov     esi, CLASS_WARRIOR
+    mov     esi, ARCH_WARRIOR
     mov     edx, 120
     call    pick_many
     test    eax, eax
@@ -1428,7 +1455,8 @@ test_gear_drops_and_chests:
 .boss:
     call    mobs_clear
     call    drops_clear
-    mov     byte [rpg_state + RPGSAVE.class], r15b
+    mov     edi, r15d
+    call    take_path
     mov     edi, MOB_BOSS
     mov     esi, 20
     xor     edx, edx
@@ -1453,7 +1481,7 @@ test_gear_drops_and_chests:
     test    eax, eax
     jz      .fail
     inc     r15d
-    cmp     r15d, NUM_CLASSES
+    cmp     r15d, NUM_ARCHETYPES
     jbe     .boss
     xor     eax, eax
     jmp     .out
@@ -1464,7 +1492,8 @@ test_gear_drops_and_chests:
     mov     eax, [t_save + 4]
     mov     [rpg_stats + STAT_MAGIC_FIND*4], eax
     mov     eax, [t_save]
-    mov     [rpg_state + RPGSAVE.class], al
+    mov     edi, eax
+    call    take_path
     call    drops_clear
     call    mobs_clear
     call    inv_clear

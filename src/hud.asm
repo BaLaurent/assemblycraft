@@ -20,8 +20,8 @@ extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw, 
 extern item_names, item_durability, armor_points
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
 extern str_append, str_copy, i32_to_str, f32_to_str, fx_flash, atan2_deg
-extern rpg_state, rpg_class, rpg_level, rpg_xp_need, rpg_stat, rpg_ability_unlocked, rpg_keystones
-extern rpg_class_info, rpg_ability_info, rpg_ability_tile, quests_current, quests_progress
+extern rpg_state, rpg_level, rpg_xp_need, rpg_stat, rpg_bar_ability, rpg_keystones
+extern rpg_title, rpg_ability_info, rpg_ability_tile, quests_current, quests_progress
 extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
 extern abilities_cd, abilities_cd_total, structures_nearest
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
@@ -89,8 +89,7 @@ s_food:     db "  Food ", 0
 s_sat:      db "/20  Sat ", 0
 s_slash:    db "/", 0
 s_comma:    db ",", 0
-s_class:    db "Class: ", 0
-s_no_class: db "none", 0
+s_archetype: db "Archetype: ", 0
 s_lv:       db " Lv ", 0
 s_xp:       db "  XP ", 0
 s_xp_max:   db "  XP max", 0
@@ -145,7 +144,7 @@ hud_dt:     resd 1                      ; frame time in seconds, written by the 
 name_timer: resd 1                      ; seconds left to show the held item's name
 banner_timer: resd 1                    ; seconds left to show the banner
 banner_rgba: resd 1
-banner_text: resb 48
+banner_text: resb 64
 dbg_buf:    resb 128
 quest_buf:  resb 128
 plate_buf:  resb 48                     ; a folk's name plate text
@@ -183,7 +182,7 @@ hud_draw:
     lea     r13d, [r12 - 12]            ; the held name sits just over the hotbar
     lea     r14d, [r12 - 5]             ; without hearts the XP bar is the top of the stack
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .class
+    jne     .progress
     mov     edi, ebx
     mov     esi, r12d
     call    hud_status_pips
@@ -198,10 +197,7 @@ hud_draw:
     cmp     eax, edx
     cmovg   eax, edx                    ; or of the stamina bar, whichever is higher
     lea     r13d, [rax - 12]            ; over the bars in survival
-.class:
-    call    rpg_class
-    test    eax, eax
-    jz      .name
+.progress:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_xp
@@ -212,7 +208,6 @@ hud_draw:
     lea     ecx, [rax - 12]
     cmp     r13d, ecx
     cmovg   r13d, ecx                   ; the held name clears the ability bar
-.name:
     mov     edi, r13d
     call    hud_held_name
     mov     edi, ebx
@@ -520,7 +515,7 @@ hud_heart_level:
 ; hud_bars(edi x0, esi y0) -> eax y of the top of the left stack
 ; Ten hearts at the left (each full, half or empty by its tenth of the maximum health) with the
 ; "health/max" number right-aligned just left of them, food icons at the right, then stacked over the
-; hearts the mana bar (when the class has mana) and the armor row (worn armor plus the skill-tree
+; hearts the mana bar (when the character has mana) and the armor row (worn armor plus the skill-web
 ; bonus); the stamina bar sits over the food.
 ; r12d = x0, r13d = y0, ebx = icon, r15d = top of the stack; [rsp] armor points, [rsp+8] health text
 hud_bars:
@@ -1181,10 +1176,11 @@ hud_ability_pos:
     ret
 
 ; hud_abilities(edi x0, esi y0, edx top) -> eax y of the top of the key labels when the bar is above the
-; left stack (see hud_ability_pos), else 0x7FFFFFFF: the four ability slots: the icon (dimmed while
-; locked, red while the resource is short: stamina or mana, or with Blood Magic the health it would
-; take), the cooldown sweeping down from the top, and the key
-; ebx = x of slot 0, r12d = slot 0 y - 1, r13d = slot, r14d = class, r15d = slot x
+; left stack (see hud_ability_pos), else 0x7FFFFFFF: the four ability bar slots: the icon of the bound
+; ability (red while the resource is short: stamina or mana, or with Blood Magic the health it would
+; take), the cooldown of that ability sweeping down from the top, and the key; an empty slot shows its
+; backing and its key only
+; ebx = x of slot 0, r12d = slot 0 y - 1, r13d = slot, r14d = its ability id (-1: empty), r15d = slot x
 ; [rsp] icon tint, [rsp+4] sweep height, [rsp+8] above the stack, [rsp+16] key label
 hud_abilities:
     push    rbp
@@ -1199,8 +1195,6 @@ hud_abilities:
     mov     ebx, eax
     lea     r12d, [rdx - 1]
     mov     [rsp + 8], ecx
-    call    rpg_class
-    mov     r14d, eax
     xor     r13d, r13d
 .slot:
     imul    r15d, r13d, 23
@@ -1214,16 +1208,13 @@ hud_abilities:
     mov     dword [rsp], WHITE
     mov     dword [rsp + 4], 0
     mov     edi, r13d
-    call    rpg_ability_unlocked
+    call    rpg_bar_ability
+    mov     r14d, eax
     test    eax, eax
-    jnz     .unlocked
-    mov     dword [rsp], RGBA(255, 255, 255, 80)        ; locked: dimmed, no timer
-    jmp     .icon
-.unlocked:
+    js      .label                      ; nothing bound: the backing and the key only
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .sweep                      ; creative pays nothing
     mov     edi, r14d
-    mov     esi, r13d
     call    rpg_ability_info
     cvtsi2ss xmm1, dword [rax + ABILINFO.cost]
     movss   xmm0, [combat_stamina]
@@ -1248,9 +1239,9 @@ hud_abilities:
     jle     .short
 .sweep:
     lea     rcx, [abilities_cd]
-    mov     eax, [rcx + r13*4]          ; steps left
+    mov     eax, [rcx + r14*4]          ; steps left
     lea     rcx, [abilities_cd_total]
-    mov     ecx, [rcx + r13*4]          ; steps of the whole cooldown
+    mov     ecx, [rcx + r14*4]          ; steps of the whole cooldown
     test    eax, eax
     jle     .icon
     test    ecx, ecx
@@ -1263,7 +1254,7 @@ hud_abilities:
     cmova   eax, edx
     mov     [rsp + 4], eax              ; 20 * left / total
 .icon:
-    mov     edi, r13d
+    mov     edi, r14d
     call    rpg_ability_tile
     mov     edi, eax
     lea     esi, [r15 + 2]
@@ -1752,13 +1743,13 @@ hud_quest:
     ret
 
 ; hud_banner(rdi zstr, esi rgba): show a message in the middle of the screen for 2.5 s, fading over
-; the last half second; the text is copied, at most 47 characters
+; the last half second; the text is copied, at most 63 characters
 hud_banner:
     sub     rsp, 8
     mov     [banner_rgba], esi
     mov     rsi, rdi
     lea     rdi, [banner_text]
-    mov     edx, 47
+    mov     edx, 63
     call    str_copy
     movss   xmm0, [f_2_5]
     movss   [banner_timer], xmm0
@@ -2113,7 +2104,7 @@ hud_debug:
     EMIT
 
     cmp     dword [game_mode], MODE_SURVIVAL
-    jne     .class
+    jne     .archetype
     APPEND_STR s_health
     APPEND_INT [surv + SURVIVAL.health]
     APPEND_STR s_slash
@@ -2124,17 +2115,10 @@ hud_debug:
     APPEND_F32 [surv + SURVIVAL.saturation], 1
     EMIT
 
-.class:
-    APPEND_STR s_class
-    call    rpg_class
-    test    eax, eax
-    jnz     .class_named
-    APPEND_STR s_no_class
-    jmp     .class_done
-.class_named:
-    mov     edi, eax
-    call    rpg_class_info
-    mov     rsi, [rax + CLASSINFO.name]
+.archetype:
+    APPEND_STR s_archetype
+    call    rpg_title
+    mov     rsi, rax
     mov     rdi, rbx
     call    str_append
     mov     rbx, rax
@@ -2151,10 +2135,10 @@ hud_debug:
     APPEND_INT [rpg_state + RPGSAVE.xp]
     APPEND_STR s_slash
     APPEND_INT [rsp + 12]
-    jmp     .class_done
+    jmp     .archetype_done
 .xp_max:
     APPEND_STR s_xp_max
-.class_done:
+.archetype_done:
     EMIT
 
     APPEND_STR s_sites

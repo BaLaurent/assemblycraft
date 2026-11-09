@@ -77,7 +77,7 @@ s_b_dodge:      db "Dodge", 0
 s_b_ability1:   db "Ability 1", 0
 s_b_ability2:   db "Ability 2", 0
 s_b_ability3:   db "Ability 3", 0
-s_b_skills:     db "Skill Tree", 0
+s_b_skills:     db "Grimoire", 0
 s_b_ability4:   db "Ability 4", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump

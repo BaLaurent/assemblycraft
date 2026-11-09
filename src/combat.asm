@@ -2,7 +2,7 @@
 ; dodge roll, the damage pipeline every hit the player lands on a mob goes through (combat_calc,
 ; combat_hit_mob), melee strikes (combo, crits, backstabs, riposte, warhammer stuns), the heavy
 ; attack, hits taken from monsters (parry, block, Mana Shield, thorns), the burn, chill and poison
-; the player can suffer, and the timers the class abilities set. Timers count fixed 1/60 s steps and
+; the player can suffer, and the timers the abilities set. Timers count fixed 1/60 s steps and
 ; age in combat_step, which runs once per step. Stats come from rpg_stats (rpg.asm); the statuses of
 ; mobs are in status.asm.
 %include "common.inc"
@@ -20,7 +20,7 @@ global combat_spend, combat_pay, combat_set_guard, combat_dodge, combat_melee, c
 global player_take_hit, combat_speed_mult, combat_crit_roll, combat_crit_mult, combat_heal
 global combat_hit_mob, combat_calc, combat_weapon_preview, combat_kb_mult, combat_player_status
 
-extern rpg_stats, rpg_keystones, rpg_class, gear_powers, surv, surv_max_health, game_mode
+extern rpg_stats, rpg_keystones, rpg_rank, gear_powers, surv, surv_max_health, game_mode
 extern player, player_eye, player_forward, sincos_deg, rng_next
 extern inv_held, item_tool, item_gear, item_attack_damage
 extern mobs, mob_strike, mob_hurt, mob_is_hostile, mob_resist, survival_damage, survival_dot
@@ -1611,7 +1611,7 @@ combat_melee:
     jz      .feel
     cmp     dword [rbx + MOB.type], MOB_NONE
     jne     .feel
-    mov     dword [abilities_cd], 0     ; a backstab kill with the Shadow Fang resets Shadowstep
+    mov     dword [abilities_cd + ABIL_SHADOWSTEP*4], 0    ; a backstab kill with the Shadow Fang resets Shadowstep
 .feel:
     movss   xmm0, [k_0_05]              ; hit-stop
     test    r14d, r14d
@@ -1785,10 +1785,11 @@ combat_weapon_preview:
     je      .bow
     cmp     eax, GK_STAFF
     jne     .melee
-    call    rpg_class
-    cmp     eax, CLASS_MAGE
-    jne     .melee
-    mov     r13d, SRC_BOLT              ; a mage's staff: shock bolts
+    mov     edi, ARCH_MAGE - 1          ; the Path of the Mage: without it the staff is swung
+    call    rpg_rank
+    test    eax, eax
+    jz      .melee
+    mov     r13d, SRC_BOLT              ; the mage's staff: shock bolts
     mov     dword [rsp + 8], ELEM_SHOCK
     movss   xmm0, [k_4]
     mov     edi, 24

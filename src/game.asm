@@ -34,7 +34,7 @@ extern cont_at, cont_create, cont_block_removed, conts_step
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
 extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box
 extern fx_clear, fx_step, fx_shift
-extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_class, rpg_stat
+extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_rank, rpg_stat
 extern rpg_recompute, rpg_stats, rpg_keystones, status_step
 extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_heavy, combat_step, combat_heal
 extern combat_speed_mult, combat_crit_roll, combat_max_mana
@@ -1528,9 +1528,10 @@ game_frame:
     cmp     eax, ARCHMAGE_STAFF
     jne     .melee
 .staff:
-    call    rpg_class
-    cmp     eax, CLASS_MAGE
-    jne     .melee                      ; any other class swings the staff
+    mov     edi, ARCH_MAGE - 1          ; the Path of the Mage
+    call    rpg_rank
+    test    eax, eax
+    jz      .melee                      ; anyone else swings the staff
     mov     dword [game_heavy_s], __float32__(-1.0)     ; ...nor with a mage's staff
     mov     dword [game_break_progress], 0
     mov     dword [break_cooldown], 0

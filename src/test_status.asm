@@ -5,6 +5,7 @@ default rel
 
 global test_status_effects
 
+extern rpg_spend, rpg_ext, rpg_recompute
 extern mobs, mobs_clear, mob_spawn, drops_clear
 extern status_apply, status_step, status_speed_mult, status_damage_mult
 extern rpg_reset, rpg_state, rpg_stats, rpg_keystones, gear_powers
@@ -34,6 +35,31 @@ align 4
 tmp: resd 1
 
 section .text
+; take_path(edi arch 0..4): the character takes that archetype's path (0: none, a fresh character)
+; at its current level, with the stats recomputed. Kits are poked given so the spend wears nothing;
+; the spend refills mana and stamina. Clobbers the usual caller-saved registers.
+take_path:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    movzx   r12d, byte [rpg_state + RPGSAVE.level]
+    call    rpg_reset
+    test    ebx, ebx
+    jz      .done
+    mov     byte [rpg_state + RPGSAVE.level], 50
+    mov     byte [rpg_ext + RPGEXT.kits], 0xFF
+    lea     edi, [rbx - 1]
+    call    rpg_spend
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+.done:
+    mov     byte [rpg_state + RPGSAVE.level], r12b
+    call    rpg_recompute
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 
 ; fail unless |float at %1 - float constant %2| < 1e-4 (NaN fails)
 %macro FNEAR 2
@@ -308,7 +334,8 @@ test_status_effects:
     CHK     [rbx + MOB.health], 100     ; no tick fell due meanwhile
     ; ---- 7. a mob killed by a status pays the player's XP --------------------------------------
     call    mobs_clear
-    mov     byte [rpg_state + RPGSAVE.class], CLASS_WARRIOR
+    mov     edi, ARCH_WARRIOR
+    call    take_path
     mov     dword [rpg_state + RPGSAVE.xp], 0
     mov     edi, MOB_ZOMBIE
     call    spawn

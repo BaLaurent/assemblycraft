@@ -1,15 +1,18 @@
-; abilities.asm - the sixteen class abilities (four per class), the mage's staff bolt and the
-; timers behind them.
+; abilities.asm - the sixteen abilities (four per archetype, taught by the skill web), the staff
+; bolt of the Path of the Mage and the timers behind them.
 ;
-; abilities_use(slot, eye, dir) checks the unlock, the cooldown and, for the three abilities that
-; need one (blink, shadowstep, hunter's mark), a landing spot or a target; only then does it pay
-; through combat_pay (Blood Magic pays mana in health), start the cooldown and fire, so a failed
-; cast costs nothing and plays the dry-fire click. Resource, cost and base cooldown come from
-; rpg_ability_info; the COOLDOWN_RED stat shortens the cooldown. The abilities that last (charge,
-; whirlwind, meteor storm, arrow rain) keep their state in this file and abilities_step advances
-; it once per fixed step. Nothing here scales a damage: a strike is a combat_hit_mob call and a
-; projectile (a plain arrows.asm entity) carries an unscaled base; a critical roll is only a flag,
-; and the pipeline applies the stats, the element, the resistances and the crit multiplier.
+; abilities_use(slot, eye, dir) casts what the ability bar holds in that slot (rpg_bar_ability; an
+; empty slot dry-fires). The effect index and the cooldown index are the ability id,
+; (archetype - 1) * 4 + slot of its archetype, so rebinding an ability does not reset its cooldown.
+; It checks the cooldown and, for the three abilities that need one (blink, shadowstep, hunter's
+; mark), a landing spot or a target; only then does it pay through combat_pay (Blood Magic pays
+; mana in health), start the cooldown and fire, so a failed cast costs nothing and plays the
+; dry-fire click. Resource, cost and base cooldown come from rpg_ability_info; the COOLDOWN_RED
+; stat shortens the cooldown. The abilities that last (charge, whirlwind, meteor storm, arrow
+; rain) keep their state in this file and abilities_step advances it once per fixed step. Nothing
+; here scales a damage: a strike is a combat_hit_mob call and a projectile (a plain arrows.asm
+; entity) carries an unscaled base; a critical roll is only a flag, and the pipeline applies the
+; stats, the element, the resistances and the crit multiplier.
 %include "common.inc"
 default rel
 
@@ -24,7 +27,7 @@ extern arrows_spawn, fx_burst, fx_explosion, fx_shake
 extern audio_play, hand_swing
 extern inv_held, item_attack_damage
 extern rng_next, sincos_deg
-extern rpg_class, rpg_stat, rpg_keystone, rpg_ability_unlocked, rpg_ability_info
+extern rpg_rank, rpg_stat, rpg_keystone, rpg_bar_ability, rpg_ability_info
 extern gear_has_power
 extern combat_pay, combat_crit_roll, combat_hit_mob
 extern combat_stealth_t, combat_warcry_t, combat_slow_t
@@ -35,7 +38,7 @@ extern combat_blade_t, combat_crit_next_t
 %error "abilities.asm: AF_CRIT must be 1 and HITF_CRIT AF_CRIT << 8"
 %endif
 
-; effect index = (class - 1) * 4 + slot
+; effect index = ability id = (archetype - 1) * 4 + slot
 %define IDX_BLINK       5               ; mage, slot 1
 %define IDX_MARK        11              ; archer, slot 3
 %define IDX_SHADOW      12              ; rogue, slot 0
@@ -144,8 +147,8 @@ ab_effects:                             ; by effect index; each (rdi eye*, rsi d
 section .bss
 alignb 4
 ab_state:                               ; everything abilities_reset clears
-abilities_cd:       resd NUM_ABILITY_SLOTS  ; steps left, by slot
-abilities_cd_total: resd NUM_ABILITY_SLOTS  ; the cooldown each was started with (for the HUD)
+abilities_cd:       resd NUM_ABILITIES  ; steps left, by ability id
+abilities_cd_total: resd NUM_ABILITIES  ; the cooldown each was started with (for the HUD)
 abilities_bolt_cd:  resd 1              ; steps until the next staff bolt
 bolt_n:       resd 1                    ; bolts under the Archmage's power since the last fireball
 charge_t:     resd 1                    ; steps of charge left
@@ -184,7 +187,7 @@ abilities_step:
     dec     dword [rdx + rcx*4]
 .cd_next:
     inc     ecx
-    cmp     ecx, NUM_ABILITY_SLOTS
+    cmp     ecx, NUM_ABILITIES
     jb      .cd
     cmp     dword [abilities_bolt_cd], 0
     jle     .lasting
@@ -198,10 +201,10 @@ abilities_step:
     ret
 
 ; abilities_use(edi slot 0..3, rsi eye float[3], rdx dir float[3] unit look direction) -> eax 1
-; when the ability fired, 0 when it did not (no class, locked, cooling down, short of its
-; resource, no valid target: nothing is paid, the dry-fire click plays). Every cast but the smoke
-; bomb ends stealth.
-; rbx = ABILINFO*, r12d = slot, r13d = effect index
+; when the ability bound to that bar slot fired, 0 when it did not (no such slot: silently; an
+; empty slot, cooling down, short of its resource, no valid target: nothing is paid, the dry-fire
+; click plays). Every cast but the smoke bomb ends stealth.
+; rbx = ABILINFO*, r12d = bar slot, r13d = ability id: the effect index and the cooldown index
 abilities_use:
     push    rbp
     mov     rbp, rsp
@@ -214,22 +217,16 @@ abilities_use:
     mov     r12d, edi
     cmp     r12d, NUM_ABILITY_SLOTS
     jae     .none                       ; no such slot
-    call    rpg_class
-    lea     r13d, [rax - 1]
-    cmp     r13d, NUM_CLASSES - 1
-    ja      .fail                       ; no class yet
-    mov     edi, r12d
-    call    rpg_ability_unlocked
+    call    rpg_bar_ability
+    mov     r13d, eax
     test    eax, eax
-    jz      .fail
+    js      .fail                       ; nothing bound to the slot
     lea     rax, [abilities_cd]
-    cmp     dword [rax + r12*4], 0
+    cmp     dword [rax + r13*4], 0
     jg      .fail                       ; still cooling down
-    lea     edi, [r13 + 1]
-    mov     esi, r12d
+    mov     edi, r13d
     call    rpg_ability_info
     mov     rbx, rax
-    lea     r13d, [r12 + r13*4]         ; the effect's index: (class - 1) * 4 + slot
     cmp     r13d, IDX_BLINK
     je      .plan_blink
     cmp     r13d, IDX_MARK
@@ -274,9 +271,9 @@ abilities_use:
     mov     ecx, 100
     div     ecx
     lea     rdx, [abilities_cd]
-    mov     [rdx + r12*4], eax
+    mov     [rdx + r13*4], eax
     lea     rdx, [abilities_cd_total]
-    mov     [rdx + r12*4], eax
+    mov     [rdx + r13*4], eax
     lea     rax, [ab_effects]
     mov     rdi, [rsp + U_EYE]
     mov     rsi, [rsp + U_DIR]
@@ -302,14 +299,15 @@ abilities_use:
     pop     rbp
     ret
 
-; abilities_staff_bolt(rdi eye float[3], rsi dir float[3]) -> eax 1 when a bolt flew. A mage holding
-; a staff: STAFF 5 mana, 24 steps between bolts, base damage 4; ARCHMAGE_STAFF 4 mana, 18 steps,
-; base 7. The steps shrink with ATTACK_SPEED: round(steps * 100 / (100 + ATTACK_SPEED)). The bolt
-; is a PROJ_BOLT carrying the unscaled base, AF_ATTACK, a shock element and the crit flag
-; combat_crit_roll decides; under the Archmage's power every 4th bolt is a PROJ_FIREBALL for twice
-; the base instead. 0 for anyone else, while the previous bolt is still cooling down (silently) or
-; when the mana is short (the click plays, and the next try waits one bolt cooldown, so a held
-; button does not click every frame).
+; abilities_staff_bolt(rdi eye float[3], rsi dir float[3]) -> eax 1 when a bolt flew. A character who
+; took the Path of the Mage, holding a staff: STAFF 5 mana, 24 steps between bolts, base damage 4;
+; ARCHMAGE_STAFF 4 mana, 18 steps, base 7. The steps shrink with ATTACK_SPEED:
+; round(steps * 100 / (100 + ATTACK_SPEED)). The bolt is a PROJ_BOLT carrying the unscaled base,
+; AF_ATTACK, a shock element and the crit flag combat_crit_roll decides; under the Archmage's power
+; every 4th bolt is a PROJ_FIREBALL for twice the base instead. 0 for anyone else (the staff is
+; swung), while the previous bolt is still cooling down (silently) or when the mana is short (the
+; click plays, and the next try waits one bolt cooldown, so a held button does not click every
+; frame).
 ; rbx = mana cost, r12d = bolt cooldown, r13d = base damage; frame: eye[3] @0, dir[3] @12, scratch
 ; @24
 abilities_staff_bolt:
@@ -340,9 +338,10 @@ abilities_staff_bolt:
     cmp     eax, ARCHMAGE_STAFF
     jne     .none
 .have:
-    call    rpg_class
-    cmp     eax, CLASS_MAGE
-    jne     .none                       ; anyone else swings it
+    mov     edi, ARCH_MAGE - 1          ; the Path of the Mage
+    call    rpg_rank
+    test    eax, eax
+    jz      .none                       ; without it the staff is swung
     cmp     dword [abilities_bolt_cd], 0
     jg      .none
     cvtsi2ss xmm0, r12d                 ; the cooldown: steps * 100 / (100 + ATTACK_SPEED), rounded
