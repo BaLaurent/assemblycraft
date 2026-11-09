@@ -94,8 +94,14 @@ extern test_net_handshake_deny
 extern test_net_long_rtt, test_net_event_queue_full
 extern test_world_column_hash, test_stream_extra_centres, test_region_encode_roundtrip
 extern test_stream_guest_local_until_joined
+extern test_stream_pending_edit_columns
 extern test_net_pos_roundtrip, test_net_player_image_roundtrip
+extern test_world_delete_with_players, test_net_ready_resync, test_net_host_close_boats
+extern test_net_cli_join_cleared, test_net_rejoin_takeover, test_net_wait_ends_with_session
 extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
+extern test_net_stale_verdict, test_net_block_overflow, test_net_cont_close_retry, test_net_fire_in_column
+extern test_net_boat_double_mount, test_net_fire_guest_step, test_net_column_expiry, test_net_boat_giveback
+extern test_net_edit_columns
 extern test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
 extern test_net_kill_credit, test_net_pvp_toggle
 extern test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
@@ -330,11 +336,27 @@ tests:
     TEST stream_extra_centres
     TEST region_encode_roundtrip
     TEST stream_guest_local_until_joined
+    TEST stream_pending_edit_columns
     TEST net_pos_roundtrip
     TEST net_player_image_roundtrip
+    TEST world_delete_with_players
+    TEST net_ready_resync
+    TEST net_host_close_boats
+    TEST net_cli_join_cleared
+    TEST net_rejoin_takeover
+    TEST net_wait_ends_with_session
     TEST net_edit_queue_replay
     TEST net_column_verdict
     TEST net_container_put_seq
+    TEST net_stale_verdict
+    TEST net_block_overflow
+    TEST net_cont_close_retry
+    TEST net_fire_in_column
+    TEST net_boat_double_mount
+    TEST net_fire_guest_step
+    TEST net_column_expiry
+    TEST net_boat_giveback
+    TEST net_edit_columns
     TEST net_mob_snapshot_apply
     TEST net_mob_target_nearest
     TEST net_guest_hit_forward
@@ -572,11 +594,27 @@ section .rodata
     TESTNAME stream_extra_centres
     TESTNAME region_encode_roundtrip
     TESTNAME stream_guest_local_until_joined
+    TESTNAME stream_pending_edit_columns
     TESTNAME net_pos_roundtrip
     TESTNAME net_player_image_roundtrip
+    TESTNAME world_delete_with_players
+    TESTNAME net_ready_resync
+    TESTNAME net_host_close_boats
+    TESTNAME net_cli_join_cleared
+    TESTNAME net_rejoin_takeover
+    TESTNAME net_wait_ends_with_session
     TESTNAME net_edit_queue_replay
     TESTNAME net_column_verdict
     TESTNAME net_container_put_seq
+    TESTNAME net_stale_verdict
+    TESTNAME net_block_overflow
+    TESTNAME net_cont_close_retry
+    TESTNAME net_fire_in_column
+    TESTNAME net_boat_double_mount
+    TESTNAME net_fire_guest_step
+    TESTNAME net_column_expiry
+    TESTNAME net_boat_giveback
+    TESTNAME net_edit_columns
     TESTNAME net_mob_snapshot_apply
     TESTNAME net_mob_target_nearest
     TESTNAME net_guest_hit_forward

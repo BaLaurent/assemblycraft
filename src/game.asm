@@ -33,7 +33,7 @@ extern arrows_clear, arrows_step, arrows_spawn, arrows_shift
 extern tnt_clear, tnt_step, tnt_prime, tnt_shift, tnt_remove_box
 extern cont_at, cont_create, cont_block_removed, conts_step
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
-extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box
+extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box, fire_guest_step
 extern fx_clear, fx_step, fx_shift
 extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_rank, rpg_stat
 extern rpg_recompute, rpg_stats, rpg_keystones, status_step
@@ -2733,9 +2733,12 @@ sim_step:
 .boats_done:
     call    check_region                ; the site cache follows the player across regions
     test    ebx, ebx
-    jnz     .no_sites
+    jnz     .guest_sites
     call    structures_step
     call    fire_step
+    jmp     .no_sites
+.guest_sites:
+    call    fire_guest_step             ; a guest: the fires are the host's; only their damage to this player runs here
 .no_sites:
     call    fx_step
     test    ebx, ebx

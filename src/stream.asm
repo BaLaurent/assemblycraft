@@ -11,9 +11,11 @@
 ; Radii: R = stream_rdist() (settings.render_dist clamped to 2..16, capped by net_rdist_cap while hosting);
 ; columns within Chebyshev R + 1 of the centre column are loaded, columns beyond R + 2 are unloaded (saved
 ; first when modified or holding containers). A hosting peer also loads the columns within MP_SIM_R + 1 of
-; every remote player's column (net_stream_centres) and keeps those within MP_SIM_R + 2. A guest asks the
-; host for each column it needs (net_column_verdict): it generates a pristine one itself and installs the
-; host's blob for an edited one; it never reads or writes region files.
+; every remote player's column (net_stream_centres) and keeps those within MP_SIM_R + 2; and it loads, lights
+; and keeps the column of every block edit that waits in networld's queue (net_edit_columns) - an edit of a
+; guest in a column nobody here loads would expire there and be lost for good - until the edit is applied. A
+; guest asks the host for each column it needs (net_column_verdict): it generates a pristine one itself and
+; installs the host's blob for an edited one; it never reads or writes region files.
 ; Coordinates passed to stream_update / stream_area_ready are local cells (x, z).
 %include "common.inc"
 default rel
@@ -34,7 +36,7 @@ extern worldgen_set_seed, gen_column, gen_biome
 extern time_mono_ns, sys_print
 extern pthread_create, pthread_join, pthread_mutex_lock, pthread_mutex_unlock
 extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
-extern net_role, net_in_world, net_rdist_cap, net_stream_centres, net_column_verdict, net_column_take, net_column_forget
+extern net_role, net_in_world, net_rdist_cap, net_stream_centres, net_edit_columns, net_column_verdict, net_column_take, net_column_forget
 
 %define SPIRAL_R        18              ; offsets -18..18: 37 x 37 = 1369 entries
 %define SPIRAL_MAX      (37 * 37)
@@ -43,6 +45,7 @@ extern net_role, net_in_world, net_rdist_cap, net_stream_centres, net_column_ver
 %define MAX_INLINE      4               ; columns generated inline per stream_update
 %define MAX_LIGHT       6               ; columns lit per stream_update
 %define FAIL_MAX        64              ; columns backing off at once (fail_list)
+%define MAX_EDIT_COLS   32              ; columns kept for waiting block edits at once (the max passed to net_edit_columns)
 
 section .rodata
 d_1e9:          dq 1.0e9
@@ -74,6 +77,8 @@ su_inline:      resd 1                  ; columns generated inline so far
 su_lit:         resd 1                  ; columns lit so far
 su_nex:         resd 1                  ; remote players' columns this call (a hosting peer)
 su_ex:          resd 2 * (NET_MAX_PEERS - 1)    ; their (acx, acz) pairs
+su_ned:         resd 1                  ; columns with a block edit waiting for them (a hosting peer) ...
+su_ed:          resd 2 * MAX_EDIT_COLS  ; ... their (acx, acz), the oldest edit's column first
 stream_ccx:     resd 1                  ; the centre column of the last stream_update (absolute chunk coordinates):
 stream_ccz:     resd 1                  ; render.asm measures the columns it never meshes from it
 
@@ -907,10 +912,11 @@ stream_light:
     ret
 
 ; stream_update(edi x, esi z, xmm0 budget_s): one frame around the local cell (x, z).
-; 1. unload the columns beyond R + 2 of the local column and beyond MP_SIM_R + 2 of every remote player's
-; column, 2. install the generator's finished columns, 3. start the missing columns within R + 1 nearest
-; first (region file, the host's blob, worker or inline), then those within MP_SIM_R + 1 of each remote
-; player (a hosting peer: net_stream_centres), 4. light the columns that hold blocks, in the same order.
+; 1. unload the columns beyond R + 2 of the local column, beyond MP_SIM_R + 2 of every remote player's
+; column and without a block edit waiting for them, 2. install the generator's finished columns, 3. start the
+; missing columns within R + 1 nearest first (region file, the host's blob, worker or inline), then those
+; within MP_SIM_R + 1 of each remote player (a hosting peer: net_stream_centres), then the columns of the
+; waiting block edits (just the column), 4. light the columns that hold blocks, in the same order.
 ; Steps 3 and 4 stop when budget_s seconds have passed; 1 and 2 always run. A column whose install did not
 ; fit (world_install -1) is passed over for BACKOFF_FRAMES frames - its buffer stays DONE, or its record goes
 ; free again - and every other column carries on.
@@ -949,6 +955,7 @@ stream_update:
     mov     [su_inline], eax
     mov     [su_lit], eax
     mov     [su_nex], eax
+    mov     [su_ned], eax
     cmp     byte [net_role], NET_ROLE_HOST
     jne     .unload
     lea     rdi, [su_ex]
@@ -957,6 +964,13 @@ stream_update:
     cmp     eax, ecx
     cmova   eax, ecx
     mov     [su_nex], eax
+    lea     rdi, [su_ed]
+    mov     esi, MAX_EDIT_COLS
+    call    net_edit_columns            ; the columns of the block edits that wait, the oldest edit's first
+    mov     ecx, MAX_EDIT_COLS
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [su_ned], eax
 .unload:
     lea     r14, [columns]
     xor     r15d, r15d                  ; slot
@@ -983,7 +997,7 @@ stream_update:
     mov     ecx, [su_nex]
 .u_remote:                              ; or within MP_SIM_R + 2 of a remote player's column
     test    ecx, ecx
-    jz      .u_unload
+    jz      .u_edits
     dec     ecx
     mov     edx, [r14 + COLUMN.cx]
     sub     edx, [su_ex + rcx*8]
@@ -1002,6 +1016,19 @@ stream_update:
     cmp     edx, MP_SIM_R + 2
     jg      .u_remote
     jmp     .u_next                     ; kept for that player
+.u_edits:                               ; or holds a block edit that waits to be applied
+    mov     ecx, [su_ned]
+.u_ed:
+    test    ecx, ecx
+    jz      .u_unload
+    dec     ecx
+    mov     edx, [r14 + COLUMN.cx]
+    cmp     [su_ed + rcx*8], edx
+    jne     .u_ed
+    mov     edx, [r14 + COLUMN.cz]
+    cmp     [su_ed + rcx*8 + 4], edx
+    jne     .u_ed
+    jmp     .u_next                     ; kept until the edit is applied
 .u_unload:
     cmp     byte [net_role], NET_ROLE_GUEST
     jne     .u_state
@@ -1078,7 +1105,7 @@ stream_update:
     xor     ebx, ebx                    ; remote player
 .d_remote:
     cmp     ebx, [su_nex]
-    jae     .light
+    jae     .d_edits
     mov     edi, [su_ex + rbx*8]
     mov     esi, [su_ex + rbx*8 + 4]
     mov     edx, MP_SIM_R + 1
@@ -1086,6 +1113,18 @@ stream_update:
     inc     ebx
     test    eax, eax
     jz      .d_remote
+    jmp     .light
+.d_edits:                               ; the columns of the block edits that wait: just the column
+    xor     ebx, ebx
+.d_ed:
+    cmp     ebx, [su_ned]
+    jae     .light
+    mov     edi, [su_ed + rbx*8]
+    mov     esi, [su_ed + rbx*8 + 4]
+    call    stream_try_column
+    inc     ebx
+    cmp     eax, 2
+    jne     .d_ed
 .light:
     mov     edi, r12d
     mov     esi, r13d
@@ -1096,7 +1135,7 @@ stream_update:
     xor     ebx, ebx
 .l_remote:
     cmp     ebx, [su_nex]
-    jae     .done
+    jae     .l_edits
     mov     edi, [su_ex + rbx*8]
     mov     esi, [su_ex + rbx*8 + 4]
     mov     edx, MP_SIM_R + 1
@@ -1104,6 +1143,19 @@ stream_update:
     inc     ebx
     test    eax, eax
     jz      .l_remote
+    jmp     .done
+.l_edits:
+    xor     ebx, ebx
+.l_ed:
+    cmp     ebx, [su_ned]
+    jae     .done
+    mov     edi, [su_ed + rbx*8]
+    mov     esi, [su_ed + rbx*8 + 4]
+    xor     edx, edx                    ; L = 0: just the column
+    call    stream_light
+    inc     ebx
+    test    eax, eax
+    jz      .l_ed
 .done:
     add     rsp, 24
     pop     r15

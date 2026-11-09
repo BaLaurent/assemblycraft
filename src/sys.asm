@@ -14,6 +14,7 @@ d_half:     dq 0.5
 d_ten:      dq 10.0
 d_nano:     dq 1.0e-9
 s_regions:  db "/regions", 0
+s_players:  db "/players", 0
 
 section .bss
 tmp_path:   resb 4104
@@ -714,8 +715,10 @@ rmdir_flat:
     ret
 
 ; dir_remove_tree(rdi path) -> eax 0 / -errno (the first error).
-; Removes a world directory: every entry of path/regions, that directory, every file of path, then
-; path itself. One level of subdirectory only; -ENOENT when path does not exist.
+; Removes a world directory: every entry of path/regions, that directory, every entry of path/players (the
+; characters a hosted world keeps for its guests), that directory, every file of path, then path itself. One
+; level of subdirectory only; -ENOENT when path does not exist.
+; rbx = the first error of the subdirectories (0 when none; a missing one is not an error)
 dir_remove_tree:
     push    rbp
     mov     rbp, rsp
@@ -740,8 +743,23 @@ dir_remove_tree:
     call    rmdir_flat                  ; regions first; no regions directory is fine
     mov     rbx, rax
     cmp     rbx, -ENOENT
-    jne     .top
+    jne     .players
     xor     ebx, ebx
+.players:
+    mov     rdi, rsp
+    mov     rsi, r12
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_players]
+    call    str_append
+    mov     byte [rax], 0
+    mov     rdi, rsp
+    call    rmdir_flat                  ; then the guests' characters; a world never hosted has none
+    cmp     rax, -ENOENT
+    je      .top
+    test    rbx, rbx
+    jnz     .top
+    mov     rbx, rax
 .top:
     mov     rdi, r12
     call    rmdir_flat

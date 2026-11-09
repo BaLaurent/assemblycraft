@@ -246,9 +246,12 @@ boats_place:
     inc     r12d
     cmp     r12d, MAX_BOATS
     jb      .slot
+    cmp     byte [net_applying], 0
+    jne     .full                       ; a guest's request on the host: no banner (nw_on_boat_place gives the item back)
     lea     rdi, [s_many]
     mov     esi, RGBA(255, 150, 90, 255)
     call    hud_banner
+.full:
     xor     eax, eax
     jmp     .out
 .take:

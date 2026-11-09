@@ -9,7 +9,7 @@ global app_state, app_entered, app_settings_parent, app_selected, app_in_world
 global app_fps, app_show_debug, app_window, app_message, app_message_timer
 global app_run, app_goto, app_play_world, app_create_world, app_quit_to_title
 global app_respawn, app_request_quit, app_wait_area
-global app_title_msg, app_join_world, app_leave_world, app_world_path, app_show_loading
+global app_title_msg, app_join_world, app_leave_world, app_world_path, app_show_loading, app_wait_net
 
 extern sys_print, str_append, str_copy, i32_to_str, floor_i
 extern input_poll, input_set_captured, input_captured, frame_input, ui_input
@@ -331,7 +331,18 @@ show_wait:
     pop     rbp
     ret
 
-; app_wait_area(rdi text, rsi BODY* centre) -> eax 0 ready / 1 the window was closed
+; app_wait_net() -> eax 1 when the multiplayer session is over (a guest whose host went away: the columns it
+; waits for will never come), else 0. Pumps the network first: behind a loading screen that is what tells it.
+app_wait_net:
+    sub     rsp, 8
+    call    net_pump
+    xor     eax, eax
+    cmp     dword [net_end_reason], 0
+    setne   al
+    add     rsp, 8
+    ret
+
+; app_wait_area(rdi text, rsi BODY* centre) -> eax 0 ready / 1 the window was closed or the session ended
 ; Streams the world around the centre behind a loading screen ("<text> N%") until the 5 x 5 columns
 ; around it are lit and meshed. With the player as the centre, game_on_area_ready then settles a new
 ; world or a respawn (stands the player on the ground, populates, finds the bed); when that moves the
@@ -353,7 +364,10 @@ app_wait_area:
     call    glfwWindowShouldClose
     test    eax, eax
     jnz     .closed
-    call    net_pump                    ; the network goes on behind a loading screen too
+    call    app_wait_net                ; the network goes on behind a loading screen, and says when the host is gone
+    test    eax, eax
+    jnz     .closed                     ; (only a guest's session ends that way) the callers return and the main loop
+                                        ; leaves the world
     movss   xmm0, [r12 + BODY.x]
     call    floor_i
     mov     r13d, eax

@@ -869,10 +869,10 @@ h_corners:
     pop     rbx
     ret
 
-; h_index_empty() -> eax 1 when no word of col_index is set
+; h_index_empty() -> eax 1 when no word of col_index (the whole table: COL_INDEX words) is set
 h_index_empty:
     lea     rdi, [col_index]
-    mov     ecx, COL_INDEX / 4
+    mov     ecx, COL_INDEX / 2          ; dwords
     xor     eax, eax
     repe    scasd
     sete    al
@@ -1336,6 +1336,19 @@ test_world_column_hash:
     inc     r12d
     cmp     r12d, MAX_COLUMNS
     jb      .free
+    call    h_index_empty
+    cmp     eax, 1
+    jne     .bad
+    mov     word [col_index], 1         ; the helper looks at the whole table: it sees the first word ...
+    call    h_index_empty
+    mov     word [col_index], 0
+    test    eax, eax
+    jnz     .bad
+    mov     word [col_index + COL_INDEX * 2 - 2], 1     ; ... and the last one
+    call    h_index_empty
+    mov     word [col_index + COL_INDEX * 2 - 2], 0
+    test    eax, eax
+    jnz     .bad
     call    h_index_empty
     cmp     eax, 1
     jne     .bad

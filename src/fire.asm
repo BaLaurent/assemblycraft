@@ -6,7 +6,7 @@
 default rel
 
 global fires, fire_clear, fire_place, fire_step, fire_render, fire_shift, fire_remove_box
-global fire_track, fire_untrack
+global fire_track, fire_untrack, fire_guest_step
 
 extern world_get, world_set, world_column_ready, rng_next, block_flammable
 extern survival_damage, mobs, mob_hurt, player
@@ -275,6 +275,50 @@ fire_step:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; fire_guest_step(): a guest's share of fire_step, the damage pass only: every fire in the local table whose
+; cell still holds FIRE hurts the local player standing in it (survival_damage 1, CAUSE_FIRE: creative, death
+; and the invulnerability window decline), and a fire whose block is gone leaves the table. The host's BLOCK
+; messages keep the table and the blocks in step (fire_track / fire_untrack), so nothing spreads, burns out,
+; ignites or places here, and mobs are the host's business. Called once per simulation step on a guest.
+fire_guest_step:
+    push    rbx
+    push    r12
+    push    r13
+    lea     rbx, [fires]
+    mov     r12d, MAX_FIRES
+.l:
+    cmp     dword [rbx + FIREENT.y], -1
+    je      .next
+    mov     edi, [rbx + FIREENT.x]
+    mov     esi, [rbx + FIREENT.y]
+    mov     edx, [rbx + FIREENT.z]
+    call    world_get
+    cmp     eax, FIRE
+    jne     .free
+    lea     rdi, [player]
+    mov     esi, [rbx + FIREENT.x]
+    mov     edx, [rbx + FIREENT.y]
+    mov     ecx, [rbx + FIREENT.z]
+    movss   xmm0, [c_pw]
+    movss   xmm1, [c_ph]
+    call    body_in_cell
+    test    eax, eax
+    jz      .next
+    mov     edi, 1
+    mov     esi, CAUSE_FIRE
+    call    survival_damage
+    jmp     .next
+.free:
+    mov     dword [rbx + FIREENT.y], -1
+.next:
+    add     rbx, FIREENT_size
+    dec     r12d
+    jnz     .l
+    pop     r13
+    pop     r12
+    pop     rbx
     ret
 
 ; dir_cell(): edi, esi, edx = the cell neighbouring (r13d, r14d, r15d) in direction r12d

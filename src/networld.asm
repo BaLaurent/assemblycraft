@@ -2,17 +2,25 @@
 ; containers, TNT and boats. The host owns all of it; a guest edits a copy and asks the host.
 ;
 ;  * Block edits. world_set tells net_block_out (guest: BLOCK to the host; host: BLOCK to every
-;    accepted guest). A received BLOCK goes through nw_apply_edit with net_applying set, so that
-;    nothing is echoed; the host applies a guest's edit and relays the cell as it then stands to
-;    every guest, the originator included, so that the host's order is the final one. An edit whose
-;    column is not lit yet waits in net_edit_q (600 frames), and so does every later edit of a
-;    column that has one waiting (the order of a cell's edits is kept); net_edits_replay applies
-;    them once the column is lit. A BLOCK the send queue has no room for waits in net_bq and goes
-;    out first thing in the next frame's net_edits_replay.
+;    accepted guest, one send each). A received BLOCK goes through nw_apply_edit with net_applying
+;    set, so that nothing is echoed; the host applies a guest's edit and relays the cell as it then
+;    stands to every guest, the originator included, so that the host's order is the final one. An
+;    edit whose column is not lit yet waits in net_edit_q and net_edits_replay applies it once the
+;    column is lit; so does every later edit of a column that has one waiting (the order of a cell's
+;    edits is kept). The host lets an edit wait NEDIT_TTL frames (net_edit_columns names the columns
+;    the stream must load for them). A guest keeps an edit for as long as it holds the column or an
+;    answer / a request for it: an answer the column is installed from may predate the edit.
+;    A BLOCK is never lost for want of room in a send queue: a guest's wait in net_bq; the host, whose
+;    guests each have a queue of their own, remembers the COLUMNS a guest missed an edit of
+;    (dirty_mark) and tells the guest to fetch them afresh once it has room (COL_REQ, host to guest:
+;    column_stale), so that the answer holds every edit made so far.
 ;  * Columns. A guest asks the host for every column it needs (COL_REQ) and is answered with the
 ;    saved/modified blob (COL_DATA), or "pristine" (generate it from the seed). The answers wait in
-;    net_colv / net_colbuf until the stream takes them (net_column_verdict / net_column_take). The
-;    host answers at most 8 requests per frame, round-robin over the guests.
+;    net_colv / net_colbuf until the stream takes them (net_column_verdict / net_column_take); one
+;    nobody asks about for COLV_IDLE frames is forgotten, and a full set of buffers gives up its least
+;    recently asked blob. The host answers at most 8 requests per frame, round-robin over the guests,
+;    and follows every COL_DATA with a BLOCK(FIRE) for each flame in the column (the encoding of a
+;    column writes FIRE as AIR).
 ;  * Containers. The records live on the host. A guest opens one with CONT_OPEN, edits a shadow copy
 ;    (net_cont_shadow) and sends whole-slot puts with a sequence number (continuing the host's count
 ;    of its puts); the host applies them (last writer wins) and resends the record to the peers who
@@ -26,7 +34,7 @@
 default rel
 
 global net_stat_block_rx, net_stat_block_tx
-global net_block_out, nw_apply_edit, net_edits_replay, net_edit_n
+global net_block_out, nw_apply_edit, net_edits_replay, net_edit_n, net_edit_columns, net_bq_n, net_dirty_n
 global net_column_verdict, net_column_take, net_column_forget, net_host_columns_serve, net_colv_pending, net_colbuf_used
 global net_cont_open_out, net_cont_close_out, net_cont_frame, net_cont_removed
 global net_cont_shadow, net_cont_sent, net_cont_seq, net_cont_active
@@ -47,20 +55,24 @@ extern cont_at, cont_create, cont_block_removed, item_max_stack
 extern fire_place, fire_track, fire_untrack
 extern tnt_prime
 extern boats, boat_riding, boat_rider, boats_place, boats_mount, boats_break
-extern player
+extern player, game_mode, net_give_out
 extern app_state, inv_container, game_open_cont, game_open_screen
+extern world_unload, world_column_release
+extern fires
 
 %define NEDIT_MAX      1024             ; queued edits (a power of two: a ring)
 %define NEDIT_TTL      600              ; frames an edit waits for its column
-%define NOUT_MAX       4096             ; BLOCK messages waiting for room in the send queue (a ring)
+%define NOUT_MAX       4096             ; guest: BLOCK messages waiting for room in the send queue (a ring)
 %define COLV_MAX       256              ; guest: column answers tracked (net_colv)
 %define COLV_PENDING   64               ; ... of which unanswered requests
 %define COLV_TIMEOUT   3600             ; frames before an unanswered request is asked again
+%define COLV_IDLE      NEDIT_TTL        ; frames an answered entry may go unasked about before it is forgotten
 %define COLBUF_N       32               ; guest: blobs held until the stream takes them
 %define COLQ_N         256              ; host: requests queued per guest (a power of two: a ring)
 %define COLS_FRAME     8                ; host: requests answered per frame, all guests together
 %define CONT_SYNC      10               ; host: frames between the resends of an open container
 %define CONT_GRACE     3                ; guest: frames its container screen may take to appear
+%define NDIRTY_MAX     128              ; host: columns remembered per guest whose edits it could not send
 
 %define CV_FREE        0                ; COLV.state
 %define CV_PENDING     1                ; asked, no answer yet
@@ -101,9 +113,11 @@ net_guest_dirty:   resd 1               ; guest: some per-session state below wa
 net_edit_q:        resb NEDIT_MAX * NEDIT_size
 net_edit_head:     resd 1               ; next write index
 net_edit_n:        resd 1               ; entries queued, the oldest at (head - n) & (NEDIT_MAX - 1)
-net_bq:            resb NOUT_MAX * 12   ; BLOCK messages that found no room, oldest first: {ax, az, y, id, 2 pad}
+net_bq:            resb NOUT_MAX * 12   ; guest: BLOCK messages that found no room, oldest first: {ax, az, y, id, 2 pad}
 net_bq_head:       resd 1               ; next write index
 net_bq_n:          resd 1               ; entries waiting, the oldest at (head - n) & (NOUT_MAX - 1)
+net_dirty:         resq NET_MAX_PEERS * NDIRTY_MAX  ; host: per guest slot the columns it missed an edit of: {acx, acz}
+net_dirty_n:       resd NET_MAX_PEERS
 net_colv:          resb COLV_MAX * COLV_size
 net_colv_pending:  resd 1
 net_colbuf_used:   resd 1               ; bit i = net_colbuf[i] holds a blob
@@ -194,13 +208,51 @@ net_block_out:
     leave
     ret
 
+; edit_lost(rdi NEDIT*): the queued edit is dropped without having been applied (the host's time for it ran
+; out, or the ring needs its place). The copies of the world must not stay apart over it: the host tells the
+; guest who made the edit to fetch the column afresh (the host never applied it), a guest fetches the column
+; afresh itself (what it holds of the column may be older than the edit). Both are marks on the column
+; (dirty_mark: dirty_flush / guest_dirty_flush act on them). Clobbers like dirty_mark.
+edit_lost:
+    mov     esi, [rdi + NEDIT.ax]
+    sar     esi, 4
+    mov     edx, [rdi + NEDIT.az]
+    sar     edx, 4
+    xor     eax, eax                    ; a guest marks for itself: slot 0
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .mark
+    movzx   eax, byte [rdi + NEDIT.from]
+.mark:
+    mov     edi, eax
+    jmp     dirty_mark
+
 ; edit_queue(edi ax, esi y, edx az, ecx id, r8d from): the edit waits for its column. A full ring
-; overwrites its oldest entry.
+; overwrites its oldest entry (edit_lost).
 edit_queue:
     mov     eax, [net_edit_head]
     imul    r9d, eax, NEDIT_size
     lea     r10, [net_edit_q]
     add     r10, r9
+    cmp     dword [net_edit_n], NEDIT_MAX
+    jb      .store
+    push    rdi                         ; full: the oldest entry (at head) is about to be overwritten
+    push    rsi
+    push    rdx
+    push    rcx
+    push    r8
+    push    r10
+    sub     rsp, 8
+    mov     rdi, r10
+    call    edit_lost
+    add     rsp, 8
+    pop     r10
+    pop     r8
+    pop     rcx
+    pop     rdx
+    pop     rsi
+    pop     rdi
+    mov     eax, [net_edit_head]
+.store:
     mov     [r10 + NEDIT.ax], edi
     mov     [r10 + NEDIT.az], edx
     mov     word [r10 + NEDIT.ttl], NEDIT_TTL
@@ -251,13 +303,25 @@ edit_pending:
     mov     eax, 1
     ret
 
-; block_send(rdi msg): BLOCK {ax i32, az i32, y u8, id u8} (the 10 bytes at msg) goes out now, or, when
-; the connection has no room or older ones are still waiting for it, behind them in net_bq (a burst of
-; edits - a TNT chain - can outrun the 2048 entries of a send queue; a lost edit would be a lasting
-; difference between the worlds). A full ring loses the new message.
+; block_send(rdi msg): BLOCK {ax i32, az i32, y u8, id u8} (the 10 bytes at msg) goes out.
+;  * A guest sends it to the host: now, or, when the connection has no room or older ones still wait for it,
+;    behind them in net_bq (a burst of edits can outrun the 2048 entries of the send queue). When that ring
+;    is full as well, the guest remembers the COLUMN of the edit it cannot send (dirty_mark, slot 0) and
+;    fetches it afresh from the host (net_edits_replay: column_stale): its own edit is undone, the host's
+;    world is the truth.
+;  * The host sends it to every accepted guest on its own (net_send_to), so that a guest whose queue is full
+;    neither holds the others back nor makes them hear it twice. What such a guest missed is not queued (a
+;    stalled guest would make that grow without end): the host remembers the COLUMN (dirty_mark). When the
+;    guest has room again (dirty_flush, from net_host_columns_serve) it is told "that column is stale"
+;    (COL_REQ, host to guest); the guest drops the column (column_stale) and asks for it afresh, and the
+;    answer holds every edit made so far. A guest therefore never misses an edit for good.
 block_send:
     push    rbx
+    push    r12
+    push    r13
     mov     rbx, rdi
+    cmp     byte [net_role], NET_ROLE_HOST
+    je      .host
     cmp     dword [net_bq_n], 0
     jne     .wait
     mov     edi, MT_BLOCK
@@ -269,7 +333,15 @@ block_send:
     jnz     .done
 .wait:
     cmp     dword [net_bq_n], NOUT_MAX
-    jae     .done
+    jb      .enqueue
+    xor     edi, edi                    ; the ring is full too: this guest fetches the column afresh itself
+    mov     esi, [rbx]
+    sar     esi, 4
+    mov     edx, [rbx + 4]
+    sar     edx, 4
+    call    dirty_mark
+    jmp     .done
+.enqueue:
     mov     eax, [net_bq_head]
     imul    ecx, eax, 12
     lea     rdx, [net_bq]
@@ -281,29 +353,42 @@ block_send:
     and     eax, NOUT_MAX - 1
     mov     [net_bq_head], eax
     inc     dword [net_bq_n]
+    jmp     .done
+.host:
+    mov     r12d, 1
+.guest:
+    mov     edi, r12d
+    call    peer_ok
+    test    eax, eax
+    jz      .next
+    mov     edi, r12d
+    mov     esi, MT_BLOCK
+    mov     rdx, rbx
+    mov     ecx, 10
+    mov     r8d, 1
+    call    net_send_to
+    test    eax, eax
+    jnz     .next
+    mov     edi, r12d                   ; no room for this guest: its copy of the column is stale from now on
+    mov     esi, [rbx]
+    sar     esi, 4
+    mov     edx, [rbx + 4]
+    sar     edx, 4
+    call    dirty_mark
+.next:
+    inc     r12d
+    cmp     r12d, NET_MAX_PEERS
+    jb      .guest
 .done:
+    pop     r13
+    pop     r12
     pop     rbx
     ret
 
-; block_flush(): the BLOCK messages that found no room go out, oldest first, until one finds none again.
-; A host with nobody to tell forgets them (they belong to a session that is over).
+; block_flush(): a guest's BLOCK messages that found no room go out, oldest first, until one finds none again
+; (the host keeps no such queue: see block_send)
 block_flush:
     push    rbx
-    cmp     dword [net_bq_n], 0
-    je      .ret
-    cmp     byte [net_role], NET_ROLE_HOST
-    jne     .loop
-    mov     ebx, 1
-.peer:
-    mov     edi, ebx
-    call    peer_ok
-    test    eax, eax
-    jnz     .loop
-    inc     ebx
-    cmp     ebx, NET_MAX_PEERS
-    jb      .peer
-    mov     dword [net_bq_n], 0
-    jmp     .ret
 .loop:
     mov     eax, [net_bq_n]
     test    eax, eax
@@ -323,6 +408,118 @@ block_flush:
     dec     dword [net_bq_n]
     jmp     .loop
 .ret:
+    pop     rbx
+    ret
+
+; dirty_mark(edi slot, esi acx, edx acz): the copy of that absolute column which `slot` holds is stale. The host
+; marks for a guest (slot 1..7: dirty_flush tells it); a guest marks for itself with slot 0 (guest_dirty_flush acts
+; on it). A column already remembered is not added twice; a full set (NDIRTY_MAX columns of one slot at once)
+; loses the mark. Clobbers eax, ecx, r8-r11.
+dirty_mark:
+    cmp     edi, NET_MAX_PEERS
+    jae     .ret
+    lea     r8, [net_dirty_n]
+    mov     ecx, [r8 + rdi*4]
+    imul    r9d, edi, NDIRTY_MAX
+    lea     r10, [net_dirty]
+    xor     eax, eax
+.l:
+    cmp     eax, ecx
+    jae     .add
+    lea     r11d, [r9 + rax]
+    cmp     [r10 + r11*8], esi
+    jne     .n
+    cmp     [r10 + r11*8 + 4], edx
+    je      .ret
+.n:
+    inc     eax
+    jmp     .l
+.add:
+    cmp     ecx, NDIRTY_MAX
+    jae     .ret
+    lea     r11d, [r9 + rcx]
+    mov     [r10 + r11*8], esi
+    mov     [r10 + r11*8 + 4], edx
+    inc     dword [r8 + rdi*4]
+    test    edi, edi
+    jnz     .ret
+    mov     dword [net_guest_dirty], 1  ; (a guest's own marks belong to its session)
+.ret:
+    ret
+
+; dirty_flush() (host, once per frame from net_host_columns_serve): every guest that missed edits is told which
+; of its columns are stale (COL_REQ {acx, acz}, host to guest), the newest mark first, for as long as its
+; connection has room; the marks that found none stay. A slot nobody holds forgets its marks.
+; Frame: [rsp] the message.
+dirty_flush:
+    push    rbx
+    sub     rsp, 16
+    mov     ebx, 1
+.slot:
+    mov     edi, ebx
+    call    peer_ok
+    test    eax, eax
+    jnz     .mark
+    lea     rax, [net_dirty_n]
+    mov     dword [rax + rbx*4], 0
+    jmp     .next
+.mark:
+    lea     rax, [net_dirty_n]
+    mov     ecx, [rax + rbx*4]
+    test    ecx, ecx
+    jz      .next
+    dec     ecx                         ; the newest mark
+    imul    edx, ebx, NDIRTY_MAX
+    add     edx, ecx
+    lea     rsi, [net_dirty]
+    mov     rax, [rsi + rdx*8]
+    mov     [rsp], rax
+    mov     edi, ebx
+    mov     esi, MT_COL_REQ
+    mov     rdx, rsp
+    mov     ecx, 8
+    mov     r8d, 1
+    call    net_send_to
+    test    eax, eax
+    jz      .next                       ; no room yet
+    lea     rax, [net_dirty_n]
+    dec     dword [rax + rbx*4]
+    jmp     .mark
+.next:
+    inc     ebx
+    cmp     ebx, NET_MAX_PEERS
+    jb      .slot
+    add     rsp, 16
+    pop     rbx
+    ret
+
+; column_stale(edi acx, esi acz) (guest): the host says that column changed in ways it could not tell us (its
+; send queue to us was full). Whatever we hold or wait for of it goes: the entry, and the column itself the way
+; stream_update drops one (a loaded one is unloaded, one still being generated is released: its worker result
+; is dropped at install), so that the stream asks the host for it afresh. The edits that wait for the column
+; are dropped by net_edits_replay in the same pass (edit_try: the guest holds neither column nor answer).
+column_stale:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edi
+    mov     r13d, esi
+    call    net_column_forget
+    mov     edi, r12d
+    mov     esi, r13d
+    call    world_column
+    test    rax, rax
+    jz      .ret
+    cmp     dword [rax + COLUMN.state], COL_PENDING
+    mov     rdi, rax
+    je      .pending
+    call    world_unload
+    jmp     .ret
+.pending:
+    call    world_column_release
+.ret:
+    pop     r13
+    pop     r12
     pop     rbx
     ret
 
@@ -433,10 +630,10 @@ edit_apply:
     ret
 
 ; nw_apply_edit(edi ax, esi y, edx az, ecx id, r8d from_slot) -> eax 1 applied / 0 queued or dropped
-; Makes the absolute cell hold block id (see edit_apply). A bad y or id is dropped. When the column
-; is not lit: the host queues the edit (its stream may still load the column); a guest queues it when
-; the column is loaded below COL_LIT or the host's answer for it is pending or waiting (the data in
-; hand predates the edit), and drops it otherwise (a column asked for later brings the change).
+; Makes the absolute cell hold block id (see edit_apply). A bad y or id is dropped. When the column is not
+; lit: the host queues the edit (its stream may still load the column); a guest queues it when it holds the
+; column (loaded below COL_LIT) or an answer / a request for it (column_awaited), and drops it otherwise
+; (a column asked for later is answered with the edit in).
 nw_apply_edit:
     push    rbp
     mov     rbp, rsp
@@ -470,15 +667,8 @@ nw_apply_edit:
     sar     edi, 4
     mov     esi, r14d
     sar     esi, 4
-    call    world_column
-    test    rax, rax
-    jnz     .queue                      ; loading
-    mov     edi, r12d
-    sar     edi, 4
-    mov     esi, r14d
-    sar     esi, 4
-    call    colv_find
-    test    rax, rax
+    call    column_awaited
+    test    eax, eax
     jz      .drop
 .queue:
     mov     edi, r12d
@@ -516,9 +706,40 @@ nw_apply_edit:
     pop     rbp
     ret
 
+; column_awaited(edi acx, esi acz) -> eax 1 when this guest holds that column (loaded) or an answer or a
+; request for it (colv_find), else 0
+column_awaited:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    call    world_column
+    test    rax, rax
+    jnz     .yes
+    mov     edi, ebx
+    mov     esi, r12d
+    call    colv_find
+    test    rax, rax
+    jnz     .yes
+    xor     eax, eax
+    jmp     .out
+.yes:
+    mov     eax, 1
+.out:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
 ; edit_try(rdi NEDIT*) -> eax 1 the entry stays, 0 it is finished (applied or dropped)
-; Applies the edit when its column is lit. Otherwise its time runs down (a dead entry is dropped), and
-; a guest also drops it once its column is neither loaded nor awaited.
+; Applies the edit when its column is lit. Otherwise:
+;  * host: its time runs down; an edit that waited NEDIT_TTL frames is dropped (edit_lost: the guest who made
+;    it is told to fetch the column afresh);
+;  * guest: it stays for as long as the guest holds the column (loaded, below COL_LIT) or an answer / a
+;    request for it (column_awaited): the answer a column is installed from may predate the edit, so the edit
+;    must outlive it however long the stream keeps the answer. Once the guest holds neither, the next request
+;    is answered with the edit in, and the edit is dropped.
 edit_try:
     push    rbp
     mov     rbp, rsp
@@ -536,23 +757,20 @@ edit_try:
     call    world_column_ready
     test    eax, eax
     jnz     .lit
-    dec     word [rbx + NEDIT.ttl]
-    jz      .drop
     cmp     byte [net_role], NET_ROLE_GUEST
-    jne     .keep
-    mov     edi, r12d
-    sar     edi, 4
-    mov     esi, r13d
-    sar     esi, 4
-    call    world_column
-    test    rax, rax
+    je      .guest
+    dec     word [rbx + NEDIT.ttl]
     jnz     .keep
+    mov     rdi, rbx                    ; the host's time for it is up
+    call    edit_lost
+    jmp     .drop
+.guest:
     mov     edi, r12d
     sar     edi, 4
     mov     esi, r13d
     sar     esi, 4
-    call    colv_find
-    test    rax, rax
+    call    column_awaited
+    test    eax, eax
     jnz     .keep
 .drop:
     xor     eax, eax
@@ -574,6 +792,28 @@ edit_try:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; guest_dirty_flush() (guest): every column in this guest's own dirty set (its outbox overflowed, or the host
+; said the column is stale: nw_on_col_req) is dropped and asked for afresh (column_stale). Marks made while it
+; runs (none can) would be taken in the same loop.
+guest_dirty_flush:
+    push    rbx
+.l:
+    mov     eax, [net_dirty_n]          ; slot 0's marks are net_dirty[0 .. n)
+    test    eax, eax
+    jz      .ret
+    dec     eax
+    mov     [net_dirty_n], eax
+    lea     rcx, [net_dirty]
+    mov     rbx, [rcx + rax*8]
+    mov     edi, ebx
+    shr     rbx, 32
+    mov     esi, ebx
+    call    column_stale
+    jmp     .l
+.ret:
+    pop     rbx
     ret
 
 ; net_edits_replay(): once per frame (net_pump). Offline: the queue is emptied. A guest outside a world
@@ -600,6 +840,7 @@ net_edits_replay:
     jmp     .ret
 .live:
     call    colv_age
+    call    guest_dirty_flush
 .queue:
     call    block_flush
     mov     r12d, [net_edit_n]
@@ -651,6 +892,58 @@ net_edits_replay:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; net_edit_columns(rdi int32 out[2 * max], esi max) -> eax n
+; The distinct absolute chunk columns (acx = ax sar 4, acz = az sar 4) of the edits waiting in the queue,
+; the oldest edit's column first, at most max (and at most 32) of them, written to out as (acx, acz) int32
+; pairs. The host's stream loads these columns (the edits wait for them to be lit); 0 when this is not the
+; host or nothing waits. Changes nothing but out. A leaf: rdi, esi, eax, ecx, edx, r8-r11 only.
+net_edit_columns:
+    xor     eax, eax
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .ret
+    mov     ecx, [net_edit_n]
+    test    ecx, ecx
+    jz      .ret
+    mov     r8d, 32
+    cmp     esi, r8d
+    cmova   esi, r8d                    ; at most 32
+    test    esi, esi
+    jz      .ret
+    mov     r8d, [net_edit_head]
+    sub     r8d, ecx
+    and     r8d, NEDIT_MAX - 1          ; the oldest entry
+    lea     r9, [net_edit_q]
+.entry:
+    imul    r10d, r8d, NEDIT_size
+    mov     r11d, [r9 + r10 + NEDIT.ax]
+    sar     r11d, 4                     ; acx
+    mov     r10d, [r9 + r10 + NEDIT.az]
+    sar     r10d, 4                     ; acz
+    xor     edx, edx
+.seen:
+    cmp     edx, eax
+    jae     .new
+    cmp     [rdi + rdx*8], r11d
+    jne     .again
+    cmp     [rdi + rdx*8 + 4], r10d
+    je      .next
+.again:
+    inc     edx
+    jmp     .seen
+.new:
+    cmp     eax, esi
+    jae     .ret                        ; max columns: the rest are newer
+    mov     [rdi + rax*8], r11d
+    mov     [rdi + rax*8 + 4], r10d
+    inc     eax
+.next:
+    inc     r8d
+    and     r8d, NEDIT_MAX - 1
+    dec     ecx
+    jnz     .entry
+.ret:
     ret
 
 ; nw_on_block(edi from, esi type, rdx payload, ecx len): BLOCK {ax i32, az i32, y u8, id u8}.
@@ -745,9 +1038,11 @@ colv_alloc:
 .ret:
     ret
 
-; colv_age(): every entry grows older; one unused for COLV_TIMEOUT frames is forgotten (a request the
-; host never answered is asked again, a stale answer cannot be taken for a fresh one). A verdict
-; asked of an answered entry keeps it young (net_column_verdict).
+; colv_age(): every entry grows older. A request the host did not answer for COLV_TIMEOUT frames is forgotten
+; (the host may never have got it: the next verdict asks again). An answer - pristine, or a blob - nobody asked
+; about for COLV_IDLE frames is forgotten too: the stream lost interest, its blob must not hold one of the
+; buffers, and an answer that old must not be installed under newer edits. A verdict asked of an answered entry
+; keeps it young (net_column_verdict).
 colv_age:
     push    rbx
     push    r12
@@ -755,10 +1050,16 @@ colv_age:
     lea     rbx, [net_colv]
     mov     r12d, COLV_MAX
 .l:
-    cmp     byte [rbx + COLV.state], CV_FREE
-    je      .n
+    movzx   eax, byte [rbx + COLV.state]
+    test    eax, eax
+    jz      .n
     inc     word [rbx + COLV.age]
-    cmp     word [rbx + COLV.age], COLV_TIMEOUT
+    mov     ecx, COLV_IDLE
+    cmp     eax, CV_PENDING
+    jne     .limit
+    mov     ecx, COLV_TIMEOUT
+.limit:
+    cmp     [rbx + COLV.age], cx
     jb      .n
     mov     rdi, rbx
     call    colv_release
@@ -782,6 +1083,7 @@ nw_guest_reset:
     mov     dword [net_edit_head], 0
     mov     dword [net_bq_n], 0
     mov     dword [net_bq_head], 0
+    mov     dword [net_dirty_n], 0      ; (slot 0: the columns this guest was to fetch afresh)
     lea     rdi, [net_colv]
     mov     ecx, COLV_MAX * COLV_size / 8
     xor     eax, eax
@@ -917,8 +1219,10 @@ net_column_forget:
 
 ; nw_on_col_data(edi from, esi type, rdx payload, ecx len): COL_DATA {acx i32, acz i32, blob}.
 ; Guest. The blob is copied into a free buffer of net_colbuf and the entry becomes CV_DATA; a column
-; nobody asked about (anymore) is ignored; with no free buffer the entry is forgotten and the next
-; verdict asks again. A newer answer replaces an older one that was not taken yet.
+; nobody asked about (anymore) is ignored. When every buffer holds a blob nobody has taken, the blob
+; asked about least recently (the oldest age) gives up its buffer: its entry is forgotten and that
+; column is asked for again when the stream wants it. A newer answer replaces an older one that was
+; not taken yet.
 nw_on_col_data:
     push    rbp
     mov     rbp, rsp
@@ -944,10 +1248,33 @@ nw_on_col_data:
     mov     rbx, rax
     cmp     byte [rbx + COLV.state], CV_DATA
     je      .copy                       ; its buffer is reused
+.alloc:
     mov     eax, [net_colbuf_used]
     not     eax
     bsf     ecx, eax
-    jz      .no_buf
+    jnz     .got
+    lea     rax, [net_colv]             ; every buffer is taken: find the blob asked about least recently
+    mov     ecx, COLV_MAX
+    xor     r14d, r14d
+    mov     edx, -1
+.old:
+    cmp     byte [rax + COLV.state], CV_DATA
+    jne     .old_next
+    movzx   esi, word [rax + COLV.age]
+    cmp     esi, edx
+    jle     .old_next
+    mov     edx, esi
+    mov     r14, rax
+.old_next:
+    add     rax, COLV_size
+    dec     ecx
+    jnz     .old
+    test    r14, r14
+    jz      .no_buf                     ; (cannot happen: a full set of buffers is a set of blobs)
+    mov     rdi, r14
+    call    colv_release                ; its buffer is free now
+    jmp     .alloc
+.got:
     bts     dword [net_colbuf_used], ecx
     cmp     byte [rbx + COLV.state], CV_PENDING
     jne     .claimed
@@ -1004,13 +1331,29 @@ nw_on_col_pristine:
 
 ; ---- host: serving columns ---------------------------------------------------------------------------
 
-; nw_on_col_req(edi from, esi type, rdx payload, ecx len): COL_REQ {acx i32, acz i32}. Host: the
-; request joins that guest's queue (256; a full queue drops the request, which the guest's timeout asks
-; again).
+; nw_on_col_req(edi from, esi type, rdx payload, ecx len): COL_REQ {acx i32, acz i32}.
+; Host: the request joins that guest's queue (256; a full queue drops the request, which the guest's
+; timeout asks again).
+; Guest: the host says that column is stale (it could not tell this guest of an edit of it: its send queue
+; to the guest was full): the column is marked, net_edits_replay drops it and asks for it afresh
+; (column_stale).
 nw_on_col_req:
     sub     rsp, 24
-    cmp     byte [net_role], NET_ROLE_HOST
+    movzx   eax, byte [net_role]
+    cmp     eax, NET_ROLE_HOST
+    je      .host
+    cmp     eax, NET_ROLE_GUEST
     jne     .ret
+    test    edi, edi
+    jnz     .ret                        ; only the host says so
+    cmp     ecx, 8
+    jb      .ret
+    mov     esi, [rdx]
+    mov     edx, [rdx + 4]
+    xor     edi, edi
+    call    dirty_mark
+    jmp     .ret
+.host:
     cmp     ecx, 8
     jb      .ret
     mov     [rsp], rdx
@@ -1038,12 +1381,82 @@ nw_on_col_req:
     add     rsp, 24
     ret
 
+; fire_column(edi slot, esi acx, edx acz) -> eax the flames of that absolute column in the host's fire table
+; (an entry whose cell no longer holds FIRE - fire_step has not freed it yet - is not one).
+; With a slot (>= 0) each of them is also sent to that guest as BLOCK(FIRE) {ax, az, y, FIRE} on the reliable
+; channel: a column's encoding (a COL_DATA blob) writes FIRE as AIR, so the guest learns of the burning cells
+; from these (edit_apply puts the block and fire_track's its entry). The caller has made sure that the
+; connection has room for them (slot -1 only counts).
+; r12d = slot, r13d, r14d = acx, acz, r15d = count, rbx = the entry. Frame: [rsp] the BLOCK, [rsp + 16] the end.
+fire_column:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 32
+    mov     r12d, edi
+    mov     r13d, esi
+    mov     r14d, edx
+    xor     r15d, r15d
+    lea     rbx, [fires]
+    lea     rax, [rbx + MAX_FIRES * FIREENT_size]
+    mov     [rsp + 16], rax
+.l:
+    cmp     dword [rbx + FIREENT.y], -1
+    je      .next
+    mov     edi, [rbx + FIREENT.x]
+    mov     esi, [rbx + FIREENT.y]
+    mov     edx, [rbx + FIREENT.z]
+    call    world_get
+    cmp     eax, FIRE
+    jne     .next
+    mov     eax, [rbx + FIREENT.x]
+    add     eax, [world_origin_x]       ; absolute cell
+    mov     ecx, eax
+    sar     ecx, 4
+    cmp     ecx, r13d
+    jne     .next
+    mov     edx, [rbx + FIREENT.z]
+    add     edx, [world_origin_z]
+    mov     ecx, edx
+    sar     ecx, 4
+    cmp     ecx, r14d
+    jne     .next
+    inc     r15d
+    test    r12d, r12d
+    js      .next                       ; only counting
+    mov     [rsp], eax
+    mov     [rsp + 4], edx
+    mov     ecx, [rbx + FIREENT.y]
+    mov     [rsp + 8], cl
+    mov     byte [rsp + 9], FIRE
+    inc     dword [net_stat_block_tx]
+    mov     edi, r12d
+    mov     esi, MT_BLOCK
+    mov     rdx, rsp
+    mov     ecx, 10
+    mov     r8d, 1
+    call    net_send_to
+.next:
+    add     rbx, FIREENT_size
+    cmp     rbx, [rsp + 16]
+    jb      .l
+    mov     eax, r15d
+    add     rsp, 32
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
 ; col_serve_one(edi slot) -> eax 1 when the oldest request of that guest was answered (and removed),
 ; 0 when it must wait (its connection has no room for the answer)
 ; The answer: the loaded column when it holds changes (CF_MODIFIED | CF_CONTS) -> its encoding; else
 ; the region file's blob when it has the column; else "pristine". A blob goes out as COL_DATA {acx,
-; acz, blob} (net_send_big_to) when the connection has room for its parts and four more messages.
-; r12d, r13d = acx, acz, rbx = slot, r14d = blob length.
+; acz, blob} (net_send_big_to) when the connection has room for its parts, the flames of the column
+; (fire_column: BLOCK(FIRE) after the blob) and four more messages.
 col_serve_one:
     push    rbp
     mov     rbp, rsp
@@ -1103,6 +1516,11 @@ col_serve_one:
     mov     ecx, NET_PART_MAX
     div     ecx                         ; the parts of the message
     lea     r15d, [rax + 4]
+    mov     edi, -1
+    mov     esi, r12d
+    mov     edx, r13d
+    call    fire_column                 ; the flames of the column follow the blob: they need room as well
+    add     r15d, eax
     lea     rdi, [net_ep]
     mov     esi, ebx
     call    net_ep_room
@@ -1115,6 +1533,10 @@ col_serve_one:
     call    net_send_big_to
     test    eax, eax
     jz      .wait
+    mov     edi, ebx
+    mov     esi, r12d
+    mov     edx, r13d
+    call    fire_column                 ; ... and now the flames, behind it on the same ordered channel
     jmp     .pop
 .pristine:
     mov     [rsp], r12d
@@ -1163,6 +1585,7 @@ net_host_columns_serve:
     sub     rsp, 8
     cmp     byte [net_role], NET_ROLE_HOST
     jne     .ret
+    call    dirty_flush                 ; the guests that missed edits are told which columns to fetch afresh
     mov     ebx, 1
 .free:
     mov     edi, ebx
@@ -1234,18 +1657,19 @@ cont_dirty:
     movzx   eax, al
     ret
 
-; cont_put_if_dirty(): a guest whose shadow changed since the last put sends CONT_PUT {ax, ay, az, seq,
-; slots[108]} with the next sequence number. A put that finds no room is made again next frame.
+; cont_put_if_dirty() -> eax 1 when nothing is left to send (the shadow equals what the host holds, or the put
+; was queued just now), 0 when the put found no room (it is made again next frame). A guest whose shadow
+; changed since the last put sends CONT_PUT {ax, ay, az, seq, slots[108]} with the next sequence number.
 ; Frame: the message at [rsp] (124 bytes).
 cont_put_if_dirty:
     push    rbp
     mov     rbp, rsp
     sub     rsp, 128
     cmp     byte [net_cont_shadow + CONTAINER.kind], 0
-    je      .ret
+    je      .clean
     call    cont_dirty
     test    eax, eax
-    jz      .ret
+    jz      .clean
     mov     eax, [net_cont_shadow + CONTAINER.x]
     mov     [rsp], eax
     mov     eax, [net_cont_shadow + CONTAINER.y]
@@ -1265,13 +1689,15 @@ cont_put_if_dirty:
     mov     ecx, 1
     call    net_out
     test    eax, eax
-    jz      .ret
+    jz      .out                        ; no room: eax is 0
     inc     dword [net_cont_seq]
     lea     rdi, [net_cont_sent + CONTAINER.slots]
     lea     rsi, [net_cont_shadow + CONTAINER.slots]
     mov     ecx, 27
     rep     movsd
-.ret:
+.clean:
+    mov     eax, 1
+.out:
     leave
     ret
 
@@ -1787,8 +2213,11 @@ nw_on_cont_gone:
 .ret:
     ret
 
-; net_cont_close_out() (guest): the open container is closed: a last put when the shadow changed after
-; the previous one, then CONT_CLOSE. A screen that never showed is called off.
+; net_cont_close_out() (guest): the open container is closed: a last put when the shadow changed after the
+; previous one, then CONT_CLOSE. Both must be queued before the guest lets the container go: while either finds
+; no room it stays open and net_cont_frame calls this again next frame (a put dropped here would lose the last
+; edit, a close dropped would leave the host holding the container open for it). A screen that never showed is
+; called off when the container goes.
 net_cont_close_out:
     cmp     byte [net_role], NET_ROLE_GUEST
     jne     .ret
@@ -1797,19 +2226,23 @@ net_cont_close_out:
     push    rbp
     mov     rbp, rsp
     sub     rsp, 16
-    mov     dword [net_cont_active], 0
     call    cont_put_if_dirty
-    lea     rax, [net_cont_shadow]
-    cmp     [game_open_cont], rax
-    jne     .send
-    mov     dword [game_open_screen], 0     ; its screen never opened: it must not open later
-    mov     qword [game_open_cont], 0
-.send:
+    test    eax, eax
+    jz      .out
     mov     edi, MT_CONT_CLOSE
     mov     rsi, rsp
     xor     edx, edx
     mov     ecx, 1
     call    net_out
+    test    eax, eax
+    jz      .out
+    mov     dword [net_cont_active], 0
+    lea     rax, [net_cont_shadow]
+    cmp     [game_open_cont], rax
+    jne     .out
+    mov     dword [game_open_screen], 0     ; its screen never opened: it must not open later
+    mov     qword [game_open_cont], 0
+.out:
     leave
 .ret:
     ret
@@ -2247,8 +2680,10 @@ nw_on_boat_dismount:
     ret
 
 ; nw_on_boat_mount(edi from, esi type, rdx payload, ecx len): BOAT_MOUNT {slot}. Host: answers
-; BOAT_MOUNT_OK {slot, ok}; ok = the boat is in use, no guest rides it and the host does not either.
-; On ok the guest rides it from now on (boat_rider; a boat the guest rode before is let go).
+; BOAT_MOUNT_OK {slot, ok}; ok = the boat is in use and either nobody rides it (no guest, and the host
+; does not) or the asking guest already does (a double click: the second answer must not take the boat
+; away from the guest who sits in it). On a free boat the guest rides it from now on (boat_rider; a
+; boat the guest rode before is let go).
 ; Frame: [rsp] the answer.
 nw_on_boat_mount:
     push    rbp
@@ -2273,8 +2708,15 @@ nw_on_boat_mount:
     cmp     dword [rcx + rax + BOATENT.used], 0
     je      .answer
     lea     rcx, [boat_rider]
-    cmp     byte [rcx + r12], 0
-    jne     .answer
+    movzx   eax, byte [rcx + r12]
+    test    eax, eax
+    jz      .free
+    lea     esi, [rbx + 1]
+    cmp     eax, esi
+    jne     .answer                     ; a boat another guest rides
+    mov     edx, 1                      ; his own, asked for again: yes again, nothing changes
+    jmp     .answer
+.free:
     lea     eax, [r12 + 1]
     cmp     eax, [boat_riding]
     je      .answer                     ; the host sits in it
@@ -2428,11 +2870,26 @@ nw_on_boat_place:
     mov     eax, [player + BODY.yaw]
     mov     [rsp + 32], eax
     mov     [player + BODY.yaw], edx
+    movzx   eax, byte [net_applying]    ; a guest's request, not the host's own click: no banner
+    mov     [rsp + 36], eax
+    mov     byte [net_applying], 1
     lea     rdi, [rsp]
     lea     rsi, [rsp + 16]
     call    boats_place
+    mov     r12d, eax
+    mov     eax, [rsp + 36]
+    mov     [net_applying], al
     mov     eax, [rsp + 32]
     mov     [player + BODY.yaw], eax
+    test    r12d, r12d
+    jnz     .out
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .out                        ; (in Creative the guest's boat item was not used up)
+    mov     edi, ebx
+    mov     esi, BOAT
+    mov     edx, 1
+    xor     ecx, ecx
+    call    net_give_out                ; no boat could be put there (the table is full, ...): the item comes back
 .out:
     add     rsp, 48
     pop     r12

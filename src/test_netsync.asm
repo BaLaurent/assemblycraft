@@ -1,16 +1,28 @@
-; test_netsync.asm - the multiplayer session layer's tests that need no network: a position on the wire is
-; absolute (exact to 1/32768 under one origin, the same point under another origin), and a character's image
-; (the first PLAYER_IMG_SIZE bytes of a header image) holds the whole character: inventory, armor, jewelry,
-; RPG record, health, position, origin and bed.
+; test_netsync.asm - the multiplayer session layer's tests: a position on the wire is absolute (exact to 1/32768
+; under one origin, the same point under another origin), a character's image (the first PLAYER_IMG_SIZE bytes of
+; a header image) holds the whole character, a hosted world's directory can be deleted with the characters of its
+; guests in it, a guest that becomes ready is brought up to date (standings, quest chain, PvP), closing the
+; multiplayer frees the boats, a --join of the command line ends with its join, and a name held by a dead
+; connection can be taken over by its player coming back.
 %include "common.inc"
 default rel
 
 global test_net_pos_roundtrip, test_net_player_image_roundtrip
+global test_world_delete_with_players, test_net_ready_resync, test_net_host_close_boats
+global test_net_cli_join_cleared, test_net_rejoin_takeover, test_net_wait_ends_with_session
 
 extern net_pos_out, net_pos_in, world_origin_x, world_origin_z
 extern game_player_save, game_player_load, game_mode
 extern world_header, player, surv, surv_max_health, inv, inv_sel
 extern rpg_state, rpg_ext, rpg_reset, rpg_recompute, debug_stat_bonus
+extern file_write_atomic, file_stat_mtime, mkdir_p, dir_remove_tree, str_copy
+extern net_role, net_self, net_pvp, net_in_world, net_peers, net_rdist_cap, net_winfo, net_session_reset
+extern net_capture, net_captured, netsync_dispatch, net_host_open, net_host_close, net_cfg_server
+extern app_world_path, boat_rider
+extern net_cli_join, net_join_exit, net_join_failed, net_join_active, net_session_name, net_join_target
+extern net_join_begin, net_join_cancel
+extern net_pump_now, net_peer_rx, net_peer_addr, net_peer_replaceable
+extern app_wait_net, net_end_reason
 
 section .rodata
 align 16
@@ -414,6 +426,611 @@ test_net_player_image_roundtrip:
     mov     eax, [bk_misc + 16]
     mov     [surv_max_health], eax
     mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ==============================================================================================================
+; the review fixes of round 1
+; ==============================================================================================================
+
+section .rodata
+d_wd_root:    db "/tmp/assemblycraft-selftest-netsync-wd", 0
+d_wd_reg:     db "/tmp/assemblycraft-selftest-netsync-wd/regions", 0
+d_wd_pl:      db "/tmp/assemblycraft-selftest-netsync-wd/players", 0
+f_wd_world:   db "/tmp/assemblycraft-selftest-netsync-wd/world.acw", 0
+f_wd_region:  db "/tmp/assemblycraft-selftest-netsync-wd/regions/r.0.0.acr", 0
+f_wd_bob:     db "/tmp/assemblycraft-selftest-netsync-wd/players/Bob.hdr", 0
+d_hc_root:    db "/tmp/assemblycraft-selftest-netsync-hc", 0
+s_bob:        db "Bob", 0
+s_data:       db "data", 0
+t_bad:        db "1.2.3", 0                      ; a dotted target that is no address: the join fails at once
+t_bad2:       db "1.2.3", 0                      ; the same text in another place (typed on the join screen)
+t_local:      db "127.0.0.1:1", 0                ; a real attempt, at a port nobody listens on
+align 2
+k_standing:   dw 100, -200, 300, 400, 500, 0, 0, 0
+%define WINFO_PVP 45                             ; WORLDINFO.pvp (seed, mode, time and the 33-byte name come first)
+
+section .bss
+alignb 16
+t_pst:        resb PSTATE_size
+t_capbuf:     resb 512
+t_ev:         resb NETEVENT_size
+t_bk_peers:   resb PEER_size * NET_MAX_PEERS
+t_bk_stand:   resb 16
+t_bk_path:    resb 4096
+t_bk_sname:   resb 20
+t_bk_jtarget: resb 64
+t_bk_boats:   resb MAX_BOATS
+t_bk_misc:    resb 32                            ; saved scalars (the layout is each test's own)
+t_bk_q:       resq 8
+t_one:        resb 8
+t_path:       resb 128                          ; a path in memory mkdir_p may write to
+
+section .text
+
+; mk_dir(rdi path zstr) -> eax mkdir_p's answer: the path is copied to where mkdir_p may write (the literals are
+; read-only)
+mk_dir:
+    push    rbp
+    mov     rbp, rsp
+    mov     rsi, rdi
+    lea     rdi, [t_path]
+    mov     edx, 127
+    call    str_copy
+    lea     rdi, [t_path]
+    call    mkdir_p
+    pop     rbp
+    ret
+
+; test_world_delete_with_players: a world that was ever hosted has <world>/players holding its guests'
+; characters; deleting the world (dir_remove_tree, which saves.asm's delete uses) must take that directory, its
+; files, the regions and the world file with it - 0 back, nothing left
+test_world_delete_with_players:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    lea     rdi, [d_wd_root]
+    call    dir_remove_tree                             ; (what an earlier run may have left)
+    lea     rdi, [d_wd_reg]
+    call    mk_dir
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [d_wd_pl]
+    call    mk_dir
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [f_wd_world]
+    lea     rsi, [s_data]
+    mov     edx, 4
+    call    file_write_atomic
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [f_wd_region]
+    lea     rsi, [s_data]
+    mov     edx, 4
+    call    file_write_atomic
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [f_wd_bob]
+    lea     rsi, [s_data]
+    mov     edx, 4
+    call    file_write_atomic
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [d_wd_root]
+    call    dir_remove_tree
+    test    eax, eax
+    jnz     .fail                                       ; the delete itself must succeed ...
+    lea     rdi, [d_wd_root]
+    call    file_stat_mtime
+    test    rax, rax
+    jns     .fail                                       ; ... and the directory be gone
+    lea     rdi, [f_wd_bob]
+    call    file_stat_mtime
+    test    rax, rax
+    jns     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+    lea     rdi, [d_wd_root]
+    call    dir_remove_tree
+.out:
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; cap_find(edi type) -> rax the first captured record (slot u8, type u8, len u16, payload) of that message type
+; or 0. The capture must still be on (turning it off forgets the count). Leaf
+cap_find:
+    lea     rax, [t_capbuf]
+    mov     ecx, [net_captured]
+    lea     rdx, [rax + rcx]
+.loop:
+    cmp     rax, rdx
+    jae     .none
+    cmp     [rax + 1], dil
+    je      .hit
+    movzx   ecx, word [rax + 2]
+    lea     rax, [rax + rcx + 4]
+    jmp     .loop
+.none:
+    xor     eax, eax
+.hit:
+    ret
+
+; test_net_ready_resync: a joining guest's handlers drop the world's messages until it is in the world, so
+; when it becomes ready (READY and a first state arrived) the host sends it the standings, the quest chain and
+; the PvP rule as they are now; and a PVP that arrives while the world downloads is kept in the WORLDINFO game_join
+; reads. The sends are captured (nothing goes on the wire).
+; ebx = the answer
+test_net_ready_resync:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    COPY    t_bk_peers, net_peers, PEER_size * NET_MAX_PEERS
+    COPY    t_bk_stand, world_header + WORLDHDR.standing, 16
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    movzx   eax, byte [net_self]
+    mov     [t_bk_misc + 1], al
+    movzx   eax, byte [net_pvp]
+    mov     [t_bk_misc + 2], al
+    movzx   eax, byte [net_in_world]
+    mov     [t_bk_misc + 3], al
+    movzx   eax, byte [world_header + WORLDHDR.champions]
+    mov     [t_bk_misc + 4], al
+    movzx   eax, byte [rpg_state + RPGSAVE.quest]
+    mov     [t_bk_misc + 5], al
+    movzx   eax, byte [rpg_state + RPGSAVE.quest_state]
+    mov     [t_bk_misc + 6], al
+    movzx   eax, word [rpg_state + RPGSAVE.quest_progress]
+    mov     [t_bk_misc + 8], ax
+    movzx   eax, byte [net_winfo + WINFO_PVP]
+    mov     [t_bk_misc + 7], al
+    ; the host: Bob is joining, the world has moved on since his WORLDINFO
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    mov     byte [net_pvp], 1
+    mov     byte [net_in_world], 0
+    lea     rsi, [k_standing]
+    lea     rdi, [world_header + WORLDHDR.standing]
+    mov     ecx, 16
+    rep     movsb
+    mov     byte [world_header + WORLDHDR.champions], 5
+    mov     byte [rpg_state + RPGSAVE.quest], 3
+    mov     byte [rpg_state + RPGSAVE.quest_state], 1
+    mov     word [rpg_state + RPGSAVE.quest_progress], 7
+    WIPE    net_peers, PEER_size * NET_MAX_PEERS
+    mov     dword [net_peers + PEER_size + PEER.state], PEER_JOINING
+    mov     dword [net_peers + PEER_size + PEER.name], 0x00626F42      ; "Bob"
+    WIPE    t_pst, PSTATE_size
+    mov     word [t_pst + PSTATE.flags], PS_GROUND
+    mov     dword [t_pst + PSTATE.pos + NPOS.ax], 10
+    mov     dword [t_pst + PSTATE.pos + NPOS.az], 10
+    mov     dword [t_pst + PSTATE.pos + NPOS.y], __float32__(70.0)
+    mov     word [t_pst + PSTATE.health], 20
+    mov     word [t_pst + PSTATE.max_health], 20
+    mov     byte [t_pst + PSTATE.level], 3
+    lea     rdi, [t_capbuf]
+    mov     esi, 512
+    call    net_capture
+    mov     edi, 1                                      ; a first state alone does not make him ready
+    mov     esi, MT_PSTATE
+    lea     rdx, [t_pst]
+    mov     ecx, PSTATE_size
+    call    netsync_dispatch
+    cmp     dword [net_captured], 0
+    jne     .fail
+    cmp     dword [net_peers + PEER_size + PEER.state], PEER_JOINING
+    jne     .fail
+    mov     edi, 1                                      ; READY does: now he is brought up to date
+    mov     esi, MT_READY
+    xor     edx, edx
+    xor     ecx, ecx
+    call    netsync_dispatch
+    cmp     dword [net_peers + PEER_size + PEER.state], PEER_READY
+    jne     .fail
+    mov     edi, MT_SYS                                 ; (everybody hears that he joined: unchanged)
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax], 1
+    jne     .fail
+    cmp     byte [rax + 4], SYS_JOINED
+    jne     .fail
+    mov     edi, MT_STANDING
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax], 1                               ; to Bob (slot 1)
+    jne     .fail
+    cmp     word [rax + 2], 18
+    jne     .fail
+    cmp     word [rax + 4], 100
+    jne     .fail
+    cmp     word [rax + 6], -200
+    jne     .fail
+    cmp     byte [rax + 20], 5                          ; the champions
+    jne     .fail
+    mov     edi, MT_QUEST_SYNC
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax], 1
+    jne     .fail
+    cmp     word [rax + 2], 4
+    jne     .fail
+    cmp     dword [rax + 4], 0x00070103                 ; quest 3, state 1, progress 7
+    jne     .fail
+    mov     edi, MT_PVP
+    call    cap_find
+    test    rax, rax
+    jz      .fail
+    cmp     byte [rax], 1
+    jne     .fail
+    cmp     word [rax + 2], 1
+    jne     .fail
+    cmp     byte [rax + 4], 1                           ; PvP on
+    jne     .fail
+    xor     edi, edi                                    ; the guest side: a PVP that arrives before the world
+    xor     esi, esi
+    call    net_capture
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_in_world], 0
+    mov     byte [net_pvp], 0
+    mov     byte [net_winfo + WINFO_PVP], 0
+    mov     byte [t_one], 1
+    xor     edi, edi
+    mov     esi, MT_PVP
+    lea     rdx, [t_one]
+    mov     ecx, 1
+    call    netsync_dispatch
+    cmp     byte [net_pvp], 1
+    jne     .fail
+    cmp     byte [net_winfo + WINFO_PVP], 1             ; ... is in the WORLDINFO game_join will read
+    jne     .fail
+    mov     byte [t_one], 0                             ; and the other way round
+    xor     edi, edi
+    mov     esi, MT_PVP
+    lea     rdx, [t_one]
+    mov     ecx, 1
+    call    netsync_dispatch
+    cmp     byte [net_pvp], 0
+    jne     .fail
+    cmp     byte [net_winfo + WINFO_PVP], 0
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+.restore:
+    xor     edi, edi
+    xor     esi, esi
+    call    net_capture
+    call    net_session_reset                           ; the chat line of "Bob joined" goes with the session
+    COPY    net_peers, t_bk_peers, PEER_size * NET_MAX_PEERS
+    COPY    world_header + WORLDHDR.standing, t_bk_stand, 16
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    movzx   eax, byte [t_bk_misc + 1]
+    mov     [net_self], al
+    movzx   eax, byte [t_bk_misc + 2]
+    mov     [net_pvp], al
+    movzx   eax, byte [t_bk_misc + 3]
+    mov     [net_in_world], al
+    movzx   eax, byte [t_bk_misc + 4]
+    mov     [world_header + WORLDHDR.champions], al
+    movzx   eax, byte [t_bk_misc + 5]
+    mov     [rpg_state + RPGSAVE.quest], al
+    movzx   eax, byte [t_bk_misc + 6]
+    mov     [rpg_state + RPGSAVE.quest_state], al
+    movzx   eax, word [t_bk_misc + 8]
+    mov     [rpg_state + RPGSAVE.quest_progress], ax
+    movzx   eax, byte [t_bk_misc + 7]
+    mov     [net_winfo + WINFO_PVP], al
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_host_close_boats: "Close multiplayer" frees what the guests held: net_host_open on an ephemeral
+; loopback port (the rendezvous server is a closed local port), a boat marked as ridden by guests 1 and 4, then
+; net_host_close - the role is off again and every boat_rider entry is zero
+test_net_host_close_boats:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    COPY    t_bk_path, app_world_path, 4096
+    COPY    t_bk_boats, boat_rider, MAX_BOATS
+    mov     eax, [net_cfg_server]
+    mov     [t_bk_misc], eax
+    movzx   eax, word [net_cfg_server + 4]
+    mov     [t_bk_misc + 4], ax
+    lea     rdi, [app_world_path]
+    lea     rsi, [d_hc_root]
+    mov     edx, 4000
+    call    str_copy
+    lea     rdi, [d_hc_root]
+    call    dir_remove_tree                             ; (what an earlier run may have left)
+    mov     dword [net_cfg_server], 0x0100007F          ; 127.0.0.1 ...
+    mov     word [net_cfg_server + 4], 0x0900           ; ... port 9: nobody answers there
+    xor     edi, edi
+    call    net_host_open
+    test    eax, eax
+    jnz     .fail
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .fail
+    cmp     dword [net_rdist_cap], MP_HOST_RDIST
+    jne     .fail
+    mov     byte [boat_rider + 1], 2
+    mov     byte [boat_rider + 3], 5
+    call    net_host_close
+    cmp     byte [net_role], NET_ROLE_OFF
+    jne     .fail
+    cmp     dword [net_rdist_cap], 0
+    jne     .fail
+    lea     rax, [boat_rider]
+    xor     ecx, ecx
+.boats:
+    cmp     byte [rax + rcx], 0
+    jne     .fail
+    inc     ecx
+    cmp     ecx, MAX_BOATS
+    jb      .boats
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+    call    net_session_reset                           ; (a host that did not close: no socket left behind)
+.restore:
+    lea     rdi, [d_hc_root]
+    call    dir_remove_tree
+    COPY    app_world_path, t_bk_path, 4096
+    COPY    boat_rider, t_bk_boats, MAX_BOATS
+    mov     eax, [t_bk_misc]
+    mov     [net_cfg_server], eax
+    movzx   eax, word [t_bk_misc + 4]
+    mov     [net_cfg_server + 4], ax
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_cli_join_cleared: the command line's --join is one story: while its own target is being joined a
+; failure ends the game (join_exit), but a join the player starts later from the join screen (another string) or a
+; join that is cancelled ends that story - a later failure must not close the game. All with joins that fail at
+; once, plus one real attempt at a closed loopback port that is cancelled.
+test_net_cli_join_cleared:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     rax, [net_cli_join]
+    mov     [t_bk_q], rax
+    movzx   eax, byte [net_join_exit]
+    mov     [t_bk_misc], al
+    movzx   eax, byte [net_join_failed]
+    mov     [t_bk_misc + 1], al
+    movzx   eax, byte [net_join_active]
+    mov     [t_bk_misc + 2], al
+    COPY    t_bk_sname, net_session_name, 20
+    COPY    t_bk_jtarget, net_join_target, 64
+    lea     rax, [t_bad]                                ; the command line's own target fails: the exit stays armed
+    mov     [net_cli_join], rax
+    lea     rdi, [t_bad]
+    lea     rsi, [s_bob]
+    xor     edx, edx
+    call    net_join_begin
+    cmp     eax, NJE_UNREACHABLE
+    jne     .fail
+    cmp     byte [net_join_exit], 1
+    jne     .fail
+    lea     rax, [t_bad]
+    cmp     [net_cli_join], rax
+    jne     .fail
+    lea     rax, [t_bad]                                ; a join typed on the join screen: the --join is over
+    mov     [net_cli_join], rax
+    lea     rdi, [t_bad2]
+    lea     rsi, [s_bob]
+    xor     edx, edx
+    call    net_join_begin
+    cmp     eax, NJE_UNREACHABLE
+    jne     .fail
+    cmp     byte [net_join_exit], 0                     ; its failure does not close the game
+    jne     .fail
+    cmp     qword [net_cli_join], 0
+    jne     .fail
+    lea     rax, [t_local]                              ; a cancelled join ends it too
+    mov     [net_cli_join], rax
+    lea     rdi, [t_local]
+    lea     rsi, [s_bob]
+    xor     edx, edx
+    call    net_join_begin
+    test    eax, eax
+    jnz     .fail
+    cmp     byte [net_join_active], 1
+    jne     .fail
+    cmp     qword [net_cli_join], 0                     ; (its own target: kept while it runs)
+    je      .fail
+    call    net_join_cancel
+    cmp     byte [net_join_active], 0
+    jne     .fail
+    cmp     qword [net_cli_join], 0
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .restore
+.fail:
+    mov     ebx, 1
+    call    net_session_reset                           ; (no socket left behind)
+.restore:
+    mov     rax, [t_bk_q]
+    mov     [net_cli_join], rax
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_join_exit], al
+    movzx   eax, byte [t_bk_misc + 1]
+    mov     [net_join_failed], al
+    movzx   eax, byte [t_bk_misc + 2]
+    mov     [net_join_active], al
+    COPY    net_session_name, t_bk_sname, 20
+    COPY    net_join_target, t_bk_jtarget, 64
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_rejoin_takeover: a guest whose process was killed holds its name until the transport's timeout; its
+; player coming back is let in when the request comes from the address the dead connection had, or when nobody has
+; heard from the guest for more than 3 s - never from the host's own slot, never from a guest that was just heard.
+; The decision (net_peer_replaceable) and the stamps that feed it (netsync_dispatch, host role only).
+; r12 = the CONNECT event, the guest is slot 1 (1.2.3.4 port 0x1234), last heard at T = 1000 s
+test_net_rejoin_takeover:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    COPY    t_bk_q, net_peer_addr, 16
+    COPY    t_bk_q + 16, net_peer_rx, 16
+    mov     rax, [net_pump_now]
+    mov     [t_bk_q + 32], rax
+    movzx   eax, byte [net_role]
+    mov     [t_bk_misc], al
+    lea     r12, [t_ev]
+    lea     rax, [net_peer_addr]
+    mov     dword [rax + 8], 0x04030201
+    mov     word [rax + 12], 0x1234
+    mov     word [rax + 14], 0
+    mov     dword [rax], 0x04030201                     ; the host's own slot has the same address (a decoy)
+    mov     word [rax + 4], 0x4321
+    mov     rcx, 1000000000000
+    lea     rax, [net_peer_rx]
+    mov     [rax + 8], rcx                              ; guest 1 was last heard at T
+    mov     qword [rax], 0                              ; ... the host's slot long ago (a decoy)
+    mov     [net_pump_now], rcx                         ; and the clock says T
+    WIPE    t_ev, NETEVENT_size
+    mov     dword [t_ev + NETEVENT.addr + NADDR.ip], 0x04030201
+    mov     word [t_ev + NETEVENT.addr + NADDR.port], 0x4321    ; same address, another port
+    mov     edi, 1                                      ; heard just now, another port: refused
+    mov     rsi, r12
+    call    net_peer_replaceable
+    test    eax, eax
+    jnz     .fail
+    mov     rcx, 1003000000000                          ; quiet for exactly 3 s: still refused (more than 3 s)
+    mov     [net_pump_now], rcx
+    mov     edi, 1
+    mov     rsi, r12
+    call    net_peer_replaceable
+    test    eax, eax
+    jnz     .fail
+    mov     rcx, 1003500000000                          ; quiet for 3.5 s: gone
+    mov     [net_pump_now], rcx
+    mov     edi, 1
+    mov     rsi, r12
+    call    net_peer_replaceable
+    cmp     eax, 1
+    jne     .fail
+    mov     rcx, 1000000000000                          ; heard just now, but from its very address: gone
+    mov     [net_pump_now], rcx
+    mov     word [t_ev + NETEVENT.addr + NADDR.port], 0x1234
+    mov     edi, 1
+    mov     rsi, r12
+    call    net_peer_replaceable
+    cmp     eax, 1
+    jne     .fail
+    mov     word [t_ev + NETEVENT.addr + NADDR.port], 0x4321
+    mov     dword [t_ev + NETEVENT.addr + NADDR.ip], 0x08070605    ; another address, just heard: refused
+    mov     edi, 1
+    mov     rsi, r12
+    call    net_peer_replaceable
+    test    eax, eax
+    jnz     .fail
+    mov     dword [t_ev + NETEVENT.addr + NADDR.ip], 0x04030201
+    mov     rcx, 1100000000000                          ; the host's slot is never given away, silent for ages
+    mov     [net_pump_now], rcx
+    xor     edi, edi
+    mov     rsi, r12
+    call    net_peer_replaceable
+    test    eax, eax
+    jnz     .fail
+    mov     byte [net_role], NET_ROLE_HOST              ; a host stamps what it hears from a guest ...
+    mov     rcx, 5000000000000
+    mov     [net_pump_now], rcx
+    mov     edi, 1
+    mov     esi, MT_SAVE_ACK                            ; (a message the host's handler ignores)
+    xor     edx, edx
+    xor     ecx, ecx
+    call    netsync_dispatch
+    lea     rax, [net_peer_rx]
+    mov     rdx, 5000000000000
+    cmp     [rax + 8], rdx
+    jne     .fail
+    mov     rcx, 6000000000000                          ; ... but not a message that is none
+    mov     [net_pump_now], rcx
+    mov     edi, 1
+    mov     esi, 200
+    xor     edx, edx
+    xor     ecx, ecx
+    call    netsync_dispatch
+    lea     rax, [net_peer_rx]
+    mov     rdx, 5000000000000
+    cmp     [rax + 8], rdx
+    jne     .fail
+    xor     eax, eax
+    jmp     .restore
+.fail:
+    mov     eax, 1
+.restore:
+    mov     ebx, eax
+    COPY    net_peer_addr, t_bk_q, 16
+    COPY    net_peer_rx, t_bk_q + 16, 16
+    mov     rax, [t_bk_q + 32]
+    mov     [net_pump_now], rax
+    movzx   eax, byte [t_bk_misc]
+    mov     [net_role], al
+    mov     eax, ebx
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_net_wait_ends_with_session: the loading screens a guest waits behind (app_wait_area) end when the session
+; does - the host closed or went silent, so the columns it waits for will never come. app_wait_net is what the wait
+; loop asks each round: 0 while the session runs, 1 once net_end_reason says it is over (offline there is nothing
+; to pump).
+test_net_wait_ends_with_session:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    mov     ebx, [net_end_reason]
+    mov     dword [net_end_reason], 0
+    call    app_wait_net
+    test    eax, eax
+    jnz     .fail
+    mov     dword [net_end_reason], SYS_HOST_CLOSED
+    call    app_wait_net
+    cmp     eax, 1
+    jne     .fail
+    mov     dword [net_end_reason], SYS_TIMEOUT
+    call    app_wait_net
+    cmp     eax, 1
+    jne     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     [net_end_reason], ebx
     add     rsp, 8
     pop     rbx
     pop     rbp

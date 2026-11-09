@@ -3,6 +3,7 @@
 default rel
 
 global test_stream_sync, test_stream_thread, test_stream_extra_centres, test_stream_guest_local_until_joined
+global test_stream_pending_edit_columns
 
 extern settings, world_clear, world_set, world_get, world_column, world_chunk, world_origin_x, world_origin_z
 extern stream_begin, stream_end, stream_update, stream_thread_start, stream_thread_stop
@@ -10,12 +11,15 @@ extern gen_column, time_mono, dir_remove_tree, region_set_dir, region_write_colu
 extern worldgen_set_seed, conts, cont_create, cont_at, gen_bufs, install_waiting, stream_frame
 extern net_role, net_peers, gen_seed, col_index
 extern net_in_world, net_capture, net_captured, net_column_forget, net_colv_pending
+extern nw_apply_edit, net_edits_replay, net_edit_columns, region_read_column, world_set_raw
 
 %define GJ_CAP 4096                     ; the capture buffer of test_stream_guest_local_until_joined
+%define PE_MAX 32                       ; the most columns test_stream_pending_edit_columns asks net_edit_columns for
 
 section .rodata
 dir_stream:     db "/tmp/ac9t-stream", 0
 dir_conts:      db "/tmp/ac9t-stream-conts", 0
+dir_pending:    db "/tmp/ac11t-pending", 0
 align 4
 k_one:          dd 1.0
 k_004:          dd 0.004
@@ -37,6 +41,7 @@ sv_peer:        resd 5                 ; their state, position (ax, az, fx and f
 sv_seed:        resd 1
 gj_cap:         resb GJ_CAP            ; test_stream_guest_local_until_joined: what the capture seam recorded
 gj_pend:        resd 1                 ; ... and the column requests that were pending before it
+pe_cols:        resd 2 * PE_MAX        ; test_stream_pending_edit_columns: the (acx, acz) pairs net_edit_columns listed
 
 section .text
 
@@ -887,13 +892,18 @@ test_stream_extra_centres:
     mov     [net_peers + PEER_size + PEER.ps + PSTATE.pos + NPOS.y], eax
     xor     edi, edi
     call    stream_end
-    lea     rdi, [col_index]            ; every record went back: nothing is left in the index
-    mov     ecx, COL_INDEX / 4
-    xor     eax, eax
-    repe    scasd
+    call    index_empty                 ; every record went back: nothing is left in the index
+    cmp     eax, 1
     je      .clean
     mov     ebx, 1
 .clean:
+    mov     word [col_index + COL_INDEX * 2 - 2], 1     ; the helper looks at the whole table: it sees the last word
+    call    index_empty
+    mov     word [col_index + COL_INDEX * 2 - 2], 0
+    test    eax, eax
+    jz      .sees
+    mov     ebx, 1
+.sees:
     mov     edi, [sv_seed]
     call    worldgen_set_seed
     mov     [settings + SETTINGS.render_dist], r12d
@@ -1037,6 +1047,289 @@ test_stream_guest_local_until_joined:
     mov     [net_in_world], r14b
     xor     edi, edi
     call    stream_end
+    mov     edi, [sv_seed]
+    call    worldgen_set_seed
+    mov     [settings + SETTINGS.render_dist], r12d
+    mov     eax, ebx
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- block edits that wait for their column ----------------------------------------------------------------
+
+; index_empty() -> eax 1 when no word of col_index (the whole table: COL_INDEX words) is set
+index_empty:
+    lea     rdi, [col_index]
+    mov     ecx, COL_INDEX / 2          ; dwords
+    xor     eax, eax
+    repe    scasd
+    sete    al
+    movzx   eax, al
+    ret
+
+; edit_cols() -> eax how many columns net_edit_columns lists - the distinct columns of the block edits that wait
+; in networld's queue, the oldest edit's first, at most PE_MAX - as (acx, acz) dword pairs in pe_cols
+edit_cols:
+    sub     rsp, 8
+    lea     rdi, [pe_cols]
+    mov     esi, PE_MAX
+    call    net_edit_columns
+    add     rsp, 8
+    ret
+
+; queue_edit(edi acx, esi lx) -> eax what nw_apply_edit makes of a BRICK at (acx * 16 + lx, 70, 8) - in column
+; (acx, 0) - taken from guest slot 1 (0: the column is not loaded, the edit waits in the queue)
+queue_edit:
+    sub     rsp, 8
+    shl     edi, 4
+    add     edi, esi
+    mov     esi, 70
+    mov     edx, 8
+    mov     ecx, BRICK
+    mov     r8d, 1
+    call    nw_apply_edit
+    add     rsp, 8
+    ret
+
+; a hosting peer loads the column of every block edit that waits for it - the columns net_edit_columns lists. A
+; guest's edit in a column nobody here loads (a rocket 100 blocks from every player) would wait in networld's
+; queue and expire after 600 frames - and the guest's world would differ from the host's for good. With the local
+; player in column 0 and no remote player: (a) an edit in column (200, 0) is queued and listed; stream_update loads
+; and lights that column and keeps it: a block poked into it (not saved) is still there after 40 updates, and so
+; is the edit; (b) the replay applies it; (c) nothing waits for the column any more, so the next updates unload
+; it - saved with the edit; (d) an edit that expires in the queue (601 replays, no stream) brings its column in
+; no more; (e) three edits, two of them in column 100, are listed as 2 columns, the oldest first; edits in 34
+; columns list PE_MAX, the oldest first, and are all applied in the end, each column saved with its edits.
+; -> eax 0 = pass
+test_stream_pending_edit_columns:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    xor     ebx, ebx                    ; 0 = pass
+    movzx   r13d, byte [net_role]
+    mov     eax, [gen_seed]
+    mov     [sv_seed], eax
+    mov     r12d, [settings + SETTINGS.render_dist]
+    mov     dword [settings + SETTINGS.render_dist], 2
+    mov     byte [net_role], NET_ROLE_OFF
+    call    net_edits_replay            ; offline the queue is emptied: no edit of an earlier test waits
+    lea     rdi, [dir_pending]
+    call    dir_remove_tree             ; (the leftovers of an aborted run)
+    call    world_clear
+    mov     edi, 42
+    lea     rsi, [dir_pending]
+    call    stream_begin                ; a world directory: an unloaded column is saved
+    lea     rdi, [gj_cap]
+    mov     esi, GJ_CAP
+    call    net_capture                 ; what the host relays when it applies an edit goes nowhere
+    mov     edi, 8
+    mov     esi, 8
+    call    pump                        ; the local 7 x 7 columns
+    test    eax, eax
+    jnz     .bad
+    mov     byte [net_role], NET_ROLE_HOST
+    call    edit_cols
+    test    eax, eax
+    jnz     .bad                        ; nothing waits yet
+    mov     edi, 200                    ; (a) an edit far from every player: it waits ...
+    mov     esi, 8
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    call    edit_cols
+    cmp     eax, 1
+    jne     .bad                        ;     and its column is listed
+    cmp     dword [pe_cols], 200
+    jne     .bad
+    cmp     dword [pe_cols + 4], 0
+    jne     .bad
+    mov     edi, 8
+    mov     esi, 8
+    mov     edx, 3
+    call    pump_n
+    mov     edi, 200                    ;     the stream loads and lights it ...
+    xor     esi, esi
+    call    world_column
+    test    rax, rax
+    jz      .bad
+    cmp     dword [rax + COLUMN.state], COL_LIT
+    jne     .bad
+    mov     edi, 3209                   ;     ... and keeps it: a block poked into it is still there after 40 updates
+    mov     esi, 70
+    mov     edx, 8
+    mov     ecx, GLASS
+    call    world_set_raw
+    mov     edi, 8
+    mov     esi, 8
+    mov     edx, 40
+    call    pump_n
+    mov     edi, 3209
+    mov     esi, 70
+    mov     edx, 8
+    call    world_get
+    cmp     eax, GLASS
+    jne     .bad
+    call    edit_cols
+    cmp     eax, 1
+    jne     .bad                        ;     (nobody applied the edit)
+    call    net_edits_replay            ; (b) the replay applies it
+    call    edit_cols
+    test    eax, eax
+    jnz     .bad
+    mov     edi, 3208
+    mov     esi, 70
+    mov     edx, 8
+    call    world_get
+    cmp     eax, BRICK
+    jne     .bad
+    mov     edi, 8                      ; (c) nothing waits any more: the column goes ...
+    mov     esi, 8
+    mov     edx, 3
+    call    pump_n
+    mov     edi, 200
+    xor     esi, esi
+    call    world_column
+    test    rax, rax
+    jnz     .bad
+    mov     edi, 200                    ;     ... saved with the edit
+    xor     esi, esi
+    lea     rdx, [gb]
+    call    region_read_column
+    cmp     eax, 1
+    jne     .bad
+    cmp     byte [gb + GENBUF.blocks + (70 << 8) + (8 << 4) + 8], BRICK
+    jne     .bad
+    mov     edi, 300                    ; (d) an edit whose time runs out in the queue
+    mov     esi, 8
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    call    edit_cols
+    cmp     eax, 1
+    jne     .bad
+    mov     r14d, 601
+.expire:
+    call    net_edits_replay            ;     (no stream: its column is never loaded)
+    dec     r14d
+    jnz     .expire
+    call    edit_cols
+    test    eax, eax
+    jnz     .bad
+    mov     edi, 8                      ;     brings its column in no more
+    mov     esi, 8
+    mov     edx, 4
+    call    pump_n
+    mov     edi, 300
+    xor     esi, esi
+    call    world_column
+    test    rax, rax
+    jnz     .bad
+    mov     edi, 100                    ; (e) edits in column 100 (two of them) and in column 101 ...
+    mov     esi, 8
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    mov     edi, 101
+    mov     esi, 8
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    mov     edi, 100
+    mov     esi, 9
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    call    edit_cols
+    cmp     eax, 2
+    jne     .bad                        ;     ... list 2 columns, the oldest edit's first
+    cmp     dword [pe_cols], 100
+    jne     .bad
+    cmp     dword [pe_cols + 4], 0
+    jne     .bad
+    cmp     dword [pe_cols + 8], 101
+    jne     .bad
+    cmp     dword [pe_cols + 12], 0
+    jne     .bad
+    mov     r14d, 2                     ;     and edits in 32 more columns
+.many:
+    lea     edi, [r14 + 100]
+    mov     esi, 8
+    call    queue_edit
+    test    eax, eax
+    jnz     .bad
+    inc     r14d
+    cmp     r14d, 34
+    jb      .many
+    call    edit_cols
+    cmp     eax, PE_MAX
+    jne     .bad                        ;     34 columns wait, PE_MAX of them are listed ...
+    cmp     dword [pe_cols], 100
+    jne     .bad
+    cmp     dword [pe_cols + 8 * (PE_MAX - 1)], 100 + PE_MAX - 1
+    jne     .bad                        ;     ... the oldest edits' columns
+    mov     r14d, 600
+.frames:
+    call    net_edits_replay            ;     a frame: the replay, then the stream
+    mov     edi, 8
+    mov     esi, 8
+    movss   xmm0, [k_one]
+    call    stream_update
+    call    edit_cols
+    test    eax, eax
+    jz      .applied
+    dec     r14d
+    jnz     .frames
+    jmp     .bad                        ;     (not all of them within 600 frames)
+.applied:
+    mov     edi, 8                      ;     the last columns go
+    mov     esi, 8
+    mov     edx, 3
+    call    pump_n
+    xor     r14d, r14d
+.saved:
+    lea     edi, [r14 + 100]            ;     each of the 34 columns was saved with its edit
+    xor     esi, esi
+    lea     rdx, [gb]
+    call    region_read_column
+    cmp     eax, 1
+    jne     .bad
+    cmp     byte [gb + GENBUF.blocks + (70 << 8) + (8 << 4) + 8], BRICK
+    jne     .bad
+    test    r14d, r14d
+    jnz     .saved_next
+    cmp     byte [gb + GENBUF.blocks + (70 << 8) + (8 << 4) + 9], BRICK
+    jne     .bad                        ;     (column 100 holds its second edit too)
+.saved_next:
+    inc     r14d
+    cmp     r14d, 34
+    jb      .saved
+    jmp     .done
+.bad:
+    mov     ebx, 1
+.done:
+    mov     byte [net_role], NET_ROLE_OFF
+    call    net_edits_replay            ; (a failing run leaves no edit waiting)
+    xor     edi, edi
+    xor     esi, esi
+    call    net_capture                 ; the real network again
+    xor     edi, edi
+    call    stream_end
+    call    index_empty                 ; every record went back
+    cmp     eax, 1
+    je      .clean
+    mov     ebx, 1
+.clean:
+    xor     edi, edi
+    call    region_set_dir
+    lea     rdi, [dir_pending]
+    call    dir_remove_tree
+    mov     [net_role], r13b
     mov     edi, [sv_seed]
     call    worldgen_set_seed
     mov     [settings + SETTINGS.render_dist], r12d

@@ -27,6 +27,8 @@ global net_capture, netsync_dispatch, net_ready_out, net_session_reset, net_psta
 %define CLI_NAME   1                    ; cfg_cli_flags: what the command line set for this run only
 %define CLI_SERVER 2
 %define CLI_PORT   4
+global net_pump_now, net_peer_rx, net_peer_addr, net_peer_replaceable
+%define SILENT_NS  3000000000           ; a guest nobody has heard of for this long is gone (its name can be taken)
 
 ; net.asm (transport)
 extern net_ep, net_ep_open, net_ep_close, net_ep_poll, net_ep_next_event, net_ep_flush
@@ -322,6 +324,9 @@ net_swing_t:    resd 1                          ; steps left of "his arm swings"
 net_image_valid: resd 1                         ; the saved character in net_image is real (else a fresh one)
 net_step_ctr:   resd 1                          ; sim steps since the last state message
 hc_t0:          resq 1                          ; time of HOST_CLOSING
+net_pump_now:   resq 1                          ; the clock (ns) at the start of this frame's pump
+net_peer_rx:    resq NET_MAX_PEERS              ; host: when each guest was last heard (a delivered message), ns
+net_peer_addr:  resq NET_MAX_PEERS              ; host: the address (a NADDR) each guest connected from
 net_role:       resb 1
 net_self:       resb 1
 net_pvp:        resb 1
@@ -1274,6 +1279,15 @@ net_flush:
 netsync_dispatch:
     cmp     esi, NUM_MT
     jae     .drop
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .gate
+    cmp     edi, NET_MAX_PEERS
+    jae     .gate
+    mov     r8d, edi                    ; a host notes when it last heard each guest (a name is only taken over
+    mov     r9, [net_pump_now]          ; from a guest that has gone quiet); the handler's arguments (rdx, rcx)
+    lea     r10, [net_peer_rx]          ; stay as they are
+    mov     [r10 + r8*8], r9
+.gate:
     cmp     esi, 20
     jb      .go
     cmp     byte [net_role], NET_ROLE_GUEST
@@ -2004,6 +2018,53 @@ peer_join_broadcast:
     LEAVE_N 2
     ret
 
+; net_peer_replaceable(edi slot, rsi NETEVENT* of a CONNECT) -> eax 1 when the guest in that slot is gone, so its
+; name may go to the new connection: the request comes from the address that guest connected from (one socket
+; cannot live twice: the player restarted on the same port), or nobody has heard from the guest for 3 s (a killed
+; process says nothing; a live guest sends its state twenty times a second). The host's own slot never is. Leaf
+net_peer_replaceable:
+    cmp     edi, 1
+    jb      .no
+    cmp     edi, NET_MAX_PEERS
+    jae     .no
+    mov     eax, edi
+    lea     rcx, [net_peer_addr]
+    mov     edx, [rsi + NETEVENT.addr + NADDR.ip]
+    cmp     edx, [rcx + rax*8 + NADDR.ip]
+    jne     .silent
+    movzx   edx, word [rsi + NETEVENT.addr + NADDR.port]
+    cmp     dx, [rcx + rax*8 + NADDR.port]
+    je      .yes
+.silent:
+    lea     rcx, [net_peer_rx]
+    mov     rdx, [net_pump_now]
+    sub     rdx, [rcx + rax*8]
+    mov     r8, SILENT_NS
+    cmp     rdx, r8
+    jg      .yes
+.no:
+    xor     eax, eax
+    ret
+.yes:
+    mov     eax, 1
+    ret
+
+; peer_evict(edi slot): the guest in that slot is replaced by a new connection of the same name (net_peer_replaceable
+; says its old one is dead). The old connection is dropped (a guest that was only hung hears of it when it wakes),
+; the slot is freed as for a timeout and everyone is told
+peer_evict:
+    ENTER_N 1
+    mov     ebx, edi
+    lea     rdi, [net_ep]
+    mov     esi, ebx
+    mov     edx, DENY_NAME
+    call    net_ep_drop
+    mov     edi, ebx
+    mov     esi, SYS_TIMEOUT
+    call    peer_gone
+    LEAVE_N 1
+    ret
+
 ; host_on_connect(rdi NETEVENT*): a connection request. The name must be valid and not be the host's or any
 ; guest's, and a slot must be free; the guest then gets the welcome sequence
 host_on_connect:
@@ -2026,7 +2087,14 @@ host_on_connect:
     lea     rsi, [rbx + NETEVENT.name]
     call    str_eq
     test    eax, eax
-    jnz     .bad_name
+    jz      .names_next
+    mov     edi, r12d                   ; the name is in use: refused, unless this is the dead connection of that
+    mov     rsi, rbx                    ; very player coming back
+    call    net_peer_replaceable
+    test    eax, eax
+    jz      .bad_name
+    mov     edi, r12d
+    call    peer_evict
 .names_next:
     inc     r12d
     cmp     r12d, NET_MAX_PEERS
@@ -2048,6 +2116,12 @@ host_on_connect:
     mov     esi, r12d
     mov     rdx, rbx
     call    net_ep_accept
+    mov     rax, [rbx + NETEVENT.addr]  ; where the guest connected from, and when it was last heard (now)
+    lea     rcx, [net_peer_addr]
+    mov     [rcx + r12*8], rax
+    mov     rax, [net_pump_now]
+    lea     rcx, [net_peer_rx]
+    mov     [rcx + r12*8], rax
     mov     rdi, r13
     lea     rsi, [rbx + NETEVENT.name]
     mov     edx, PEER_JOINING
@@ -2110,8 +2184,48 @@ peer_try_ready:
     inc     r13d
     cmp     r13d, NET_MAX_PEERS
     jb      .loop
+    mov     edi, ebx                    ; what changed while it downloaded the world (its handlers drop those
+    call    standing_send               ; messages before game_join): the standings, the quest chain and the PvP
+    mov     edi, ebx                    ; rule as they are now
+    call    quest_sync_send
+    mov     edi, ebx
+    call    pvp_send
 .out:
     LEAVE_N 3
+    ret
+
+; quest_sync_send(edi slot): the quest chain's position (quest, state, progress) to one guest
+quest_sync_send:
+    ENTER_N 1
+    mov     ebx, edi
+    mov     al, [rpg_state + RPGSAVE.quest]
+    mov     [msg_buf], al
+    mov     al, [rpg_state + RPGSAVE.quest_state]
+    mov     [msg_buf + 1], al
+    mov     ax, [rpg_state + RPGSAVE.quest_progress]
+    mov     [msg_buf + 2], ax
+    mov     edi, ebx
+    mov     esi, MT_QUEST_SYNC
+    lea     rdx, [msg_buf]
+    mov     ecx, 4
+    mov     r8d, 1
+    call    net_send_to
+    LEAVE_N 1
+    ret
+
+; pvp_send(edi slot): the PvP rule to one guest
+pvp_send:
+    ENTER_N 1
+    mov     ebx, edi
+    mov     al, [net_pvp]
+    mov     [msg_buf], al
+    mov     edi, ebx
+    mov     esi, MT_PVP
+    lea     rdx, [msg_buf]
+    mov     ecx, 1
+    mov     r8d, 1
+    call    net_send_to
+    LEAVE_N 1
     ret
 
 ; chat_named(edi slot, rsi suffix zstr): the log gets "<name of the slot><suffix>"
@@ -2356,6 +2470,10 @@ net_host_close:
     inc     r12d
     cmp     r12d, NET_MAX_PEERS
     jb      .drop_one
+    lea     rdi, [boat_rider]           ; nobody rides any more: the boats are free in the next session
+    mov     ecx, MAX_BOATS
+    xor     eax, eax
+    rep     stosb
     call    net_session_reset
 .out:
     LEAVE_N 3
@@ -2707,6 +2825,10 @@ net_join_begin:
     call    net_join_cancel
 .fresh:
     call    ep_close_stale              ; (the leftover of an earlier failed join)
+    cmp     r12, [net_cli_join]         ; the command line's own target keeps the --join (it exits with code 3 when
+    je      .cli_own                    ; it fails); a join the player starts from the join screen is a new story
+    mov     qword [net_cli_join], 0
+.cli_own:
     mov     byte [net_join_failed], 0
     mov     byte [net_join_exit], 0
     mov     dword [join_err], 0
@@ -2850,6 +2972,7 @@ net_join_cancel:
     cmp     byte [net_in_world], 0
     jne     .out
 .go:
+    mov     qword [net_cli_join], 0     ; a cancelled join ends the command line's --join too
     cmp     byte [net_role], NET_ROLE_GUEST
     jne     .close
     lea     rdi, [net_ep]
@@ -3015,6 +3138,8 @@ on_event:
     ja      .out                        ; a guest slot is 1..7
     mov     [net_self], al
     mov     byte [net_role], NET_ROLE_GUEST
+    mov     qword [net_cli_join], 0     ; accepted: the command line's --join is done; a later failed join must not
+                                        ; close the game
     mov     dword [net_step_ctr], 0
     mov     dword [chat_count], 0
     mov     dword [chat_head], 0
@@ -3121,6 +3246,8 @@ net_pump:
     cmp     byte [net_join_active], 0
     je      .out
 .active:
+    call    time_mono_ns
+    mov     [net_pump_now], rax         ; this frame's clock (stamps of the guests heard from in this pump)
     lea     rdi, [net_ep]
     lea     rsi, [netsync_dispatch]
     call    net_ep_poll
@@ -3536,6 +3663,7 @@ ns_on_pvp:
     movzx   eax, byte [rdx]
     and     eax, 1
     mov     [net_pvp], al
+    mov     [net_winfo + WINFO.pvp], al ; (a PVP that arrives while the world downloads: game_join reads it from here)
 .ret:
     ret
 
