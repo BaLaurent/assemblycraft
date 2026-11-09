@@ -24,11 +24,10 @@ extern game_mode, frame_input, ui_input, inv, craft_size, inv_container
 extern app_goto, app_entered
 extern ui_w, ui_h, ui_mx, ui_my
 extern ui_rect, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
-extern armor_effective
 extern ui_slot, ui_item_icon, ui_tile_icon, ui_icon9, ui_nine, ui_book, ui_ribbon
 extern ui_tooltip, ui_tooltip_lines
 extern inv_click, inv_close_screen, inv_held, item_tooltip, gear_equipped_for, gear_stack_worn
-extern rpg_recompute, rpg_title, rpg_level, rpg_stats, armor_points, surv, surv_max_health
+extern rpg_recompute, rpg_title, rpg_level, rpg_stats, armor_effective, surv, surv_max_health
 extern item_max_stack, i32_to_str, str_append, audio_play
 extern book_reset, book_draw, book_ghost_draw, book_tip
 

@@ -28,7 +28,7 @@ extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_ink, ui_text
 extern ui_nine, ui_nine_tint, ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
 extern app_goto, key_name, hud_banner_paint
-extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_points
+extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_effective
 extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_level, rpg_points, rpg_rank
 extern rpg_spend, rpg_stat_info, rpg_format_stat, rpg_recompute
@@ -1868,11 +1868,7 @@ screen_character:
     APPN    dword [surv_max_health]
     mov     byte [r15], 0
     TXTL    coin_buf, r12, 140, r13, 18, C_INK
-    call    armor_points
-    add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
-    mov     ecx, 20
-    cmp     eax, ecx
-    cmovg   eax, ecx
+    call    armor_effective
     mov     ebx, eax
     lea     r15, [coin_buf]
     APPZ    s_armor

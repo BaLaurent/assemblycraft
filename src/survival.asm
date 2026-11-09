@@ -3,7 +3,7 @@
 default rel
 
 global surv, surv_max_health
-global survival_reset, survival_damage, survival_land, survival_exhaust
+global armor_effective, survival_reset, survival_damage, survival_land, survival_exhaust
 global survival_step, survival_eat_step, survival_can_sprint, survival_dot
 
 extern game_mode, settings, player
@@ -54,6 +54,18 @@ survival_reset:
     mov     dword [surv + SURVIVAL.breath], MAX_BREATH
     ret
 
+; armor_effective() -> eax worn armor points plus the skill-web bonus, at most 20: the armor
+; survival_damage works with and the armor lines of the character screens show
+armor_effective:
+    sub     rsp, 8
+    call    armor_points
+    add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    add     rsp, 8
+    ret
+
 ; survival_damage(edi amount, esi cause) -> eax 1 if applied. Armor (worn points plus the RPG
 ; armor bonus, at most 20) reduces damage from mobs (a faction's folk: CAUSE_FOLK..CAUSE_LAST)
 ; and explosions; environmental damage (a fall, fire, hunger, suffocation, drowning) is given for
@@ -85,11 +97,7 @@ survival_damage:
     cmp     r12d, CAUSE_SPIDER
     ja      .environment
 .armored:
-    call    armor_points
-    add     eax, [rpg_stats + STAT_ARMOR_BONUS * 4]
-    mov     ecx, 20
-    cmp     eax, ecx
-    cmovg   eax, ecx                    ; at most 20 points
+    call    armor_effective
     test    eax, eax
     jz      .apply
     mov     ecx, 25

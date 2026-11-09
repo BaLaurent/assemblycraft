@@ -12,7 +12,7 @@
 default rel
 
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
-global hud_bubble_tiles, banner_text, hud_biome_name, armor_effective
+global hud_bubble_tiles, banner_text, hud_biome_name
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
@@ -20,7 +20,7 @@ extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
 extern surv, surv_max_health, inv, inv_sel, player, mobs, mob_count_kind, mob_is_hostile
 extern sky_brightness, world_get, settings, key_name, world_to_ui, dmgnum_draw, light_get
-extern item_names, item_durability, armor_points
+extern item_names, item_durability, armor_effective
 extern gun_magazine, gun_ammo, gun_reload, gun_reload_total, inv_count
 extern str_append, str_copy, i32_to_str, f32_to_str, fx_flash, atan2_deg
 extern rpg_state, rpg_level, rpg_xp_need, rpg_stat, rpg_bar_ability, rpg_keystones
@@ -1028,21 +1028,6 @@ bar_draw:
     pop     r12
     pop     rbx
     pop     rbp
-    ret
-
-; armor_effective() -> eax worn armor points plus the skill-tree bonus, at most 20: the armor
-; survival_damage works with
-armor_effective:
-    sub     rsp, 8
-    call    armor_points
-    mov     [rsp], eax
-    mov     edi, STAT_ARMOR_BONUS
-    call    rpg_stat
-    add     eax, [rsp]
-    mov     ecx, 20
-    cmp     eax, ecx
-    cmovg   eax, ecx
-    add     rsp, 8
     ret
 
 ; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and "Level N" right of the hotbar, followed
