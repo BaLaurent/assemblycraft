@@ -80,6 +80,7 @@ extern test_caves_reworked
 extern test_grimoire_tiles
 extern test_ui_nine_layout
 extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
+extern test_sheet_sections
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -274,6 +275,7 @@ tests:
     TEST ability_bar_binding
     TEST archetype_titles
     TEST web_view_mapping
+    TEST sheet_sections
     dq 0
 
 section .rodata
@@ -460,6 +462,7 @@ section .rodata
     TESTNAME ability_bar_binding
     TESTNAME archetype_titles
     TESTNAME web_view_mapping
+    TESTNAME sheet_sections
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

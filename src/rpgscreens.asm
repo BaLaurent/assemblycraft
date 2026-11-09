@@ -21,13 +21,13 @@
 default rel
 
 global screen_skills, screen_character, screen_trade, screen_dialog
-global screen_shrine, screen_leader, web_node_xy, web_pick
+global screen_shrine, screen_leader, web_node_xy, web_pick, sheet_build, sheet_section, sheet_sec
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
 extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
 extern ui_nine, ui_nine_tint, ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
-extern app_goto, key_name, hud_banner_paint
+extern app_goto, key_name, hud_banner_paint, audio_play, ui_icon9
 extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_effective
 extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_level, rpg_points, rpg_rank
@@ -60,13 +60,12 @@ extern tier_names, champion_names
 %define DRAG_NODE   2
 %define DRAG_CANCEL 3
 
-%define CH_W        300                 ; character sheet: attributes, summary, stat list
-%define CH_H        232
-%define CH_ROWS     16                  ; stat list: rows per column (a power of two) ...
-%define CH_COL0     8                   ; ... the x of its two columns ...
-%define CH_COL1     154
-%define CH_LIST_Y   70                  ; ... and the y of its first row
-%define CH_COLW     142                 ; widest stat line a column holds (pen advance)
+%define SH_LW       156                 ; character sheet, an open book: left page (title, attributes, vitals) ...
+%define SH_RW       166                 ; ... right page (the stats by section) ...
+%define SH_H        224                 ; ... both this high
+%define SH_TITLEW   144                 ; widest title drawn at scale 2
+%define SH_TEXTW    144                 ; widest stat line a row holds (pen advance)
+%define SH_BAND     RGBA(110, 84, 58, 28) ; every other stat row
 
 %define SH_OFFENSE  0xF0                ; sheet_order entries beyond the stat ids: group headers, end
 %define SH_DEFENSE  0xF1
@@ -89,6 +88,8 @@ extern tier_names, champion_names
 section .rodata
 align 4
 attr_tiles:     db TILE_ATTR_STR, TILE_ATTR_DEX, TILE_ATTR_INT, TILE_ATTR_VIT
+f_click:        dd 0.6                  ; click volume, as ui.asm's buttons
+sheet_tab_geom: db 4, 56, 60, 56, 116, 46     ; the section tabs: x in the page, width (the labels are 49, 49, 40 wide)
 web_dims_tab:   db 3, 7, 5, 10, 11, 22, 14, 28  ; web_dims: pick half, frame size by zoom * 2 + path
 ability_binds:  db BIND_ABILITY1, BIND_ABILITY2, BIND_ABILITY3, BIND_ABILITY4   ; bind of bar slot 0..3
 align 4
@@ -138,13 +139,15 @@ s_character:   db "Character", 0
 s_offense:      db "Offense", 0
 s_defense:      db "Defense", 0
 s_utility:      db "Utility", 0
-s_health:       db "Health ", 0
-s_armor:        db "Armor ", 0
+s_v_health:     db "Health", 0
+s_v_armor:      db "Armor", 0
 s_armor_mid:    db " (-", 0
-s_armor_end:    db "% damage)", 0
-s_hit:          db "Hit ", 0
-s_crit:         db "  Crit ", 0
-s_attacks:      db "Attacks ", 0
+s_armor_close:  db "%)", 0
+s_v_hit:        db "Hit", 0
+s_v_crit:       db "Crit", 0
+s_v_attacks:    db "Attacks", 0
+s_level:        db "Level ", 0
+s_wheel_tab:    db "Wheel: more  Tab: Grimoire", 0
 s_per_s:        db "/s", 0
 s_plus:         db "+", 0
 s_empty:        db 0
@@ -203,6 +206,9 @@ alignb 8
 s_px:           resd 1                  ; panel origin of the screen being drawn
 s_py:           resd 1
 sheet_scroll:   resd 1                  ; first listed row of the character sheet's stat list
+sheet_tab:      resd 1                  ; its section: 0 offense, 1 defense, 2 utility
+sheet_hover:    resd 1                  ; the attribute card under the mouse, or -1
+sheet_sec:      resb 32                 ; the stat ids of the section being drawn (sheet_section)
 hdr_buf:        resb 64                 ; "<title> - Level N" / "<Faction> Leader" / "Wanted: <item>"
 pts_buf:        resb 32                 ; "Points: N" / "Attribute points: N"
 coin_buf:       resb 32                 ; "Coins: N" / "Progress: p/c" / "Standing: N (Tier)" / counts / summary lines
@@ -1690,6 +1696,32 @@ sheet_build:
     mov     eax, ecx
     ret
 
+; sheet_section(edi tab, esi rows) -> eax n: the stat ids of group `tab` (0 offense, 1 defense, 2 utility)
+; among the first `rows` entries of sheet_rows, in order, in sheet_sec (leaf)
+sheet_section:
+    lea     rdx, [sheet_rows]
+    lea     r8, [sheet_sec]
+    xor     ecx, ecx                    ; row read
+    xor     eax, eax                    ; ids written
+    mov     r9d, -1                     ; group of the rows being read
+.row:
+    cmp     ecx, esi
+    jae     .done
+    movzx   r10d, byte [rdx + rcx]
+    inc     ecx
+    cmp     r10d, SH_OFFENSE
+    jb      .stat
+    lea     r9d, [r10 - SH_OFFENSE]     ; a group header
+    jmp     .row
+.stat:
+    cmp     r9d, edi
+    jne     .row
+    mov     [r8 + rax], r10b
+    inc     eax
+    jmp     .row
+.done:
+    ret
+
 ; stat_compact(edi stat, rsi formatted, rdx out) -> rax out: "<label>: <number>[%]" for a stat whose
 ; rpg_format_stat text (sign, number, then a suffix that starts with '%' or a space) does not fit a
 ; column. The number is copied up to the first space, so a '%' stays with it.
@@ -1760,78 +1792,144 @@ plus_box:
 .ret:
     LEAVE_FRAME 24
 
-; screen_character(): attribute rows (a "+" box spends an attribute point, Shift up to five), a
-; summary of health, armor and the held weapon, and every stat in two columns that the wheel
-; scrolls; Tab opens the grimoire. The stats are recomputed first: gear changes them.
-; Locals: [rsp] hovered attribute or -1, [rsp+8] attribute points, [rsp+12]
-; combat_weapon_preview {hit, crit hit, attacks per 10 s}, and of the stat row being drawn: [rsp+24]
-; x, [rsp+28] y, [rsp+32] stat, [rsp+36] width of its text
-screen_character:
+; vital_row(edi y, esi icon tile or -1, rdx label, rcx value): one line of the character sheet's dark
+; vitals plate: the icon (a gold bullet for -1) at px + 13, the label in cream, the value in gold ending
+; at px + 142
+vital_row:
+    ENTER_FRAME 8
+    mov     ebx, edi
+    mov     r12, rdx
+    mov     r13, rcx
+    mov     r14d, [s_px]
+    test    esi, esi
+    js      .bullet
+    mov     edi, esi
+    lea     esi, [r14 + 13]
+    mov     edx, ebx
+    call    ui_icon9
+    jmp     .label
+.bullet:
+    lea     edi, [r14 + 16]
+    lea     esi, [rbx + 3]
+    mov     edx, 3
+    mov     ecx, 3
+    mov     r8d, C_GOLD_TEXT
+    call    ui_rect
+.label:
+    mov     rdi, r12
+    lea     esi, [r14 + 25]
+    lea     edx, [rbx + 1]
+    mov     ecx, C_CREAM
+    mov     r8d, 1
+    call    ui_text
+    mov     rdi, r13
+    mov     esi, 1
+    call    ui_text_width
+    lea     esi, [r14 + 143]
+    sub     esi, eax
+    mov     rdi, r13
+    lea     edx, [rbx + 1]
+    mov     ecx, C_GOLD_TEXT
+    mov     r8d, 1
+    call    ui_text
+    LEAVE_FRAME 8
+
+; sheet_left(): the character sheet's left page (origin s_px / s_py): the title (rpg_title, large when it fits),
+; "Level N", the attribute points, four attribute cards (icon, name, points spent, a "+" box that spends a point,
+; Shift up to five) and the dark vitals plate (health, armor with the damage it stops, the held weapon's hit,
+; crit hit and attack rate). sheet_hover = the attribute whose card is under the mouse, else -1.
+; Locals: [rsp] points in the attribute, [rsp+4] attribute points left, [rsp+12] combat_weapon_preview {hit,
+; crit hit, attacks per 10 s}
+sheet_left:
     ENTER_FRAME 40
-    cmp     dword [app_entered], 0
-    je      .seen
-    mov     dword [sheet_scroll], 0     ; a fresh visit starts at the top of the list
-.seen:
-    call    close_check
-    test    eax, eax
-    jnz     .ret
-    cmp     dword [ui_input + UIINPUT.key_pressed], KEY_TAB
-    jne     .no_tab
-    mov     edi, ST_SKILLS
-    call    app_goto
-    jmp     .ret
-.no_tab:
-    call    rpg_recompute
-    mov     edi, CH_W
-    mov     esi, CH_H
-    lea     rdx, [s_character]
-    call    panel_begin
     mov     r12d, [s_px]
     mov     r13d, [s_py]
+    mov     dword [sheet_hover], -1
+    call    rpg_title
+    mov     r14, rax
+    mov     rdi, r14
+    mov     esi, 2
+    call    ui_text_width
+    mov     ebx, 2                      ; scale 2 when the title fits the page, else 1 a little lower
+    mov     r15d, 8
+    cmp     eax, SH_TITLEW
+    jbe     .title
+    mov     ebx, 1
+    mov     r15d, 12
+.title:
+    mov     rdi, r14
+    lea     esi, [r12 + SH_LW / 2]
+    lea     edx, [r13 + r15]
+    mov     ecx, C_RUBRIC
+    mov     r8d, ebx
+    call    ui_text_ink_centered
+    lea     r15, [hdr_buf]
+    APPZ    s_level
+    call    rpg_level
+    APPN    eax
+    mov     byte [r15], 0
+    TXTC    hdr_buf, r12, SH_LW / 2, r13, 26, C_INK
     call    rpg_attr_points
-    mov     [rsp + 8], eax
-    mov     edx, eax
-    lea     rsi, [s_attr_points]
-    mov     ecx, CH_W
-    call    screen_header
-    ; ---- attribute rows: icon, name, points spent, "+" box; the hovered row's effect is the tooltip
-    mov     dword [rsp], -1
+    mov     [rsp + 4], eax
+    lea     r15, [pts_buf]
+    APPZ    s_attr_points
+    APPN    dword [rsp + 4]
+    mov     byte [r15], 0
+    lea     rdi, [pts_buf]
+    lea     esi, [r12 + SH_LW / 2]
+    lea     edx, [r13 + 38]
+    mov     ecx, C_INK_SOFT
+    mov     eax, C_RUBRIC
+    cmp     dword [rsp + 4], 0
+    cmovg   ecx, eax                    ; red while there are points to spend
+    mov     r8d, 1
+    call    ui_text_ink_centered
     xor     ebx, ebx
 .attr:
-    imul    r14d, ebx, 12
-    lea     r14d, [r14 + r13 + 18]      ; row y
+    imul    r14d, ebx, 25
+    lea     r14d, [r14 + r13 + 50]      ; card y
     lea     edi, [r12 + 8]
     mov     esi, r14d
-    mov     edx, 119
-    mov     ecx, 12
+    mov     edx, 140
+    mov     ecx, 22
     call    hit
     test    eax, eax
-    jz      .attr_draw
-    mov     [rsp], ebx
-    lea     edi, [r12 + 8]              ; the hovered row is washed
-    mov     esi, r14d
-    mov     edx, 119
-    mov     ecx, 12
+    jz      .card
+    mov     [sheet_hover], ebx
+.card:
+    mov     edi, NINE_SLOT
+    lea     esi, [r12 + 8]
+    mov     edx, r14d
+    mov     ecx, 140
+    mov     r8d, 22
+    call    ui_nine
+    cmp     [sheet_hover], ebx
+    jne     .icon
+    lea     edi, [r12 + 9]              ; the hovered card is washed
+    lea     esi, [r14 + 1]
+    mov     edx, 138
+    mov     ecx, 20
     mov     r8d, C_HOVER
     call    ui_rect
-.attr_draw:
+.icon:
     lea     rax, [attr_tiles]
     movzx   edi, byte [rax + rbx]
-    lea     esi, [r12 + 8]
-    lea     edx, [r14 + 1]
-    mov     ecx, 10
+    lea     esi, [r12 + 11]
+    lea     edx, [r14 + 3]
+    mov     ecx, 16
     mov     r8d, WHITE
     call    ui_tile_icon
     mov     edi, ebx
     call    rpg_attr_info
     mov     rdi, rax
-    lea     esi, [r12 + 22]
-    lea     edx, [r14 + 2]
+    lea     esi, [r12 + 31]
+    lea     edx, [r14 + 7]
     mov     ecx, C_INK
     mov     r8d, 1
     call    ui_text_ink
     mov     edi, ebx
     call    rpg_attr
+    mov     [rsp], eax
     mov     edi, eax
     lea     rsi, [coin_buf]
     call    i32_to_str
@@ -1839,17 +1937,20 @@ screen_character:
     lea     rdi, [coin_buf]
     mov     esi, 1
     call    ui_text_width
-    lea     esi, [r12 + 112 + 1]        ; right aligned at px + 112
+    lea     esi, [r12 + 127]            ; right aligned: the ink ends at px + 126
     sub     esi, eax
     lea     rdi, [coin_buf]
-    lea     edx, [r14 + 2]
-    mov     ecx, C_INK
+    lea     edx, [r14 + 7]
+    mov     ecx, C_INK_SOFT
+    mov     eax, C_RUBRIC
+    cmp     dword [rsp], 0
+    cmovg   ecx, eax
     mov     r8d, 1
     call    ui_text_ink
-    lea     edi, [r12 + 116]
-    mov     esi, r14d
+    lea     edi, [r12 + 131]
+    lea     esi, [r14 + 5]
     xor     edx, edx
-    cmp     dword [rsp + 8], 0
+    cmp     dword [rsp + 4], 0
     setg    dl                          ; enabled while attribute points are left
     call    plus_box
     test    eax, eax
@@ -1870,35 +1971,55 @@ screen_character:
     inc     ebx
     cmp     ebx, NUM_ATTRS
     jb      .attr
-    ; ---- summary: health, armor (what the damage formula uses: at most 20, 4% each), the held
-    ; weapon's hit, crit hit and attack rate
+    ; ---- the vitals plate
+    mov     edi, NINE_TOOLTIP
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 152]
+    mov     ecx, 140
+    mov     r8d, 64
+    call    ui_nine
     lea     rdi, [rsp + 12]
     call    combat_weapon_preview
     lea     r15, [coin_buf]
-    APPZ    s_health
     APPN    dword [surv + SURVIVAL.health]
     APPZ    s_slash
     APPN    dword [surv_max_health]
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 18, C_INK
-    call    armor_effective
+    lea     edi, [r13 + 158]
+    mov     esi, TILE_HEART_FULL
+    lea     rdx, [s_v_health]
+    lea     rcx, [coin_buf]
+    call    vital_row
+    call    armor_effective             ; what the damage formula uses: at most 20, 4% each
     mov     ebx, eax
     lea     r15, [coin_buf]
-    APPZ    s_armor
     APPN    ebx
     APPZ    s_armor_mid
     lea     eax, [rbx*4]
     APPN    eax
-    APPZ    s_armor_end
+    APPZ    s_armor_close
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 27, C_INK
+    lea     edi, [r13 + 169]
+    mov     esi, TILE_ARMOR_FULL
+    lea     rdx, [s_v_armor]
+    lea     rcx, [coin_buf]
+    call    vital_row
     lea     r15, [coin_buf]
-    APPZ    s_hit
     APPN    dword [rsp + 12]
-    APPZ    s_crit
+    mov     byte [r15], 0
+    lea     edi, [r13 + 180]
+    mov     esi, -1
+    lea     rdx, [s_v_hit]
+    lea     rcx, [coin_buf]
+    call    vital_row
+    lea     r15, [coin_buf]
     APPN    dword [rsp + 16]
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 36, C_INK
+    lea     edi, [r13 + 191]
+    mov     esi, -1
+    lea     rdx, [s_v_crit]
+    lea     rcx, [coin_buf]
+    call    vital_row
     mov     eax, [rsp + 20]
     xor     edx, edx
     mov     ecx, 10
@@ -1906,7 +2027,6 @@ screen_character:
     mov     r14d, eax                   ; whole attacks per second
     mov     ebx, edx                    ; and the tenth
     lea     r15, [coin_buf]
-    APPZ    s_attacks
     APPN    r14d
     mov     byte [r15], '.'
     add     bl, '0'
@@ -1914,27 +2034,101 @@ screen_character:
     add     r15, 2
     APPZ    s_per_s
     mov     byte [r15], 0
-    TXTL    coin_buf, r12, 140, r13, 45, C_INK
-    ; ---- divider and the stat list
-    lea     edi, [r12 + 8]
-    lea     esi, [r13 + 66]
-    mov     edx, CH_W - 16
+    lea     edi, [r13 + 202]
+    mov     esi, -1
+    lea     rdx, [s_v_attacks]
+    lea     rcx, [coin_buf]
+    call    vital_row
+    LEAVE_FRAME 40
+
+; sheet_right(): the character sheet's right page: three section tabs (Offense, Defense, Utility, touching; the choice is
+; sheet_tab) over a gold rule, then the stats of that section in banded rows with a gold bullet, 14 units apart
+; (12 and the wheel scrolls when there are more than 12). A line too wide for the page is shortened to
+; "<label>: <number>" when that is shorter. The footer is the Tab hint.
+; Locals: [rsp] row in the window, [rsp+4] first row, [rsp+8] y, [rsp+12] stat, [rsp+16] width of its text
+; ebx = rows in the section, r12d = page x, r13d = page y, r14d = pitch, r15d = rows in the window
+sheet_right:
+    ENTER_FRAME 40
+    mov     r12d, [s_px]
+    add     r12d, SH_LW + 4
+    mov     r13d, [s_py]
+    xor     ebx, ebx
+.tab:
+    lea     rax, [sheet_tab_geom]
+    movzx   r14d, byte [rax + rbx*2]
+    add     r14d, r12d                  ; tab x
+    movzx   r15d, byte [rax + rbx*2 + 1]    ; tab width
+    mov     edi, r14d
+    lea     esi, [r13 + 6]
+    mov     edx, r15d
+    mov     ecx, 16
+    call    hit
+    test    eax, eax
+    jz      .tab_draw
+    cmp     dword [ui_input + UIINPUT.lmb_pressed], 0
+    je      .tab_draw
+    cmp     [sheet_tab], ebx
+    je      .tab_draw
+    mov     [sheet_tab], ebx
+    mov     dword [sheet_scroll], 0
+    movss   xmm0, [f_click]
+    mov     edi, SND_CLICK
+    call    audio_play
+.tab_draw:
+    mov     edi, NINE_BUTTON
+    mov     eax, NINE_BUTTON_HOT
+    cmp     [sheet_tab], ebx
+    cmove   edi, eax
+    mov     esi, r14d
+    lea     edx, [r13 + 6]
+    mov     ecx, r15d
+    mov     r8d, 16
+    call    ui_nine
+    lea     rax, [sheet_head]
+    mov     rdi, [rax + rbx*8]
+    mov     esi, r15d
+    shr     esi, 1
+    add     esi, r14d
+    lea     edx, [r13 + 11]
+    mov     ecx, C_INK
+    mov     eax, C_RUBRIC
+    cmp     [sheet_tab], ebx
+    cmove   ecx, eax
+    mov     r8d, 1
+    call    ui_text_ink_centered
+    inc     ebx
+    cmp     ebx, 3
+    jb      .tab
+    lea     edi, [r12 + 6]
+    lea     esi, [r13 + 26]
+    mov     edx, SH_RW - 12
     mov     ecx, 1
-    mov     r8d, C_GOLD
+    mov     r8d, C_GOLD_DEEP
     call    ui_rect
     call    sheet_build
-    mov     ebx, eax                    ; rows listed
-    lea     edi, [r12 + CH_COL0]
-    lea     esi, [r13 + CH_LIST_Y]
-    mov     edx, CH_W - 16
-    mov     ecx, CH_ROWS * 9 + 6
+    mov     esi, eax
+    mov     edi, [sheet_tab]
+    call    sheet_section
+    mov     ebx, eax                    ; rows in the section
+    mov     r14d, 14                    ; up to 12 rows: 14 apart, all shown
+    mov     r15d, ebx
+    cmp     ebx, 12
+    jbe     .pitch
+    mov     r14d, 12                    ; more: 12 apart, a window of 14 that the wheel scrolls
+    mov     r15d, 14
+.pitch:
+    lea     edi, [r12 + 6]
+    lea     esi, [r13 + 30]
+    mov     edx, SH_RW - 12
+    mov     ecx, 180
     call    hit
     mov     ecx, [sheet_scroll]
     test    eax, eax
     jz      .clamp
     sub     ecx, [ui_input + UIINPUT.scroll]    ; wheel up scrolls towards the top
 .clamp:
-    lea     eax, [rbx - 2 * CH_ROWS]    ; the largest first row: the window stays full
+    mov     eax, ebx
+    sub     eax, r15d                   ; the largest first row: the window stays full
     xor     edx, edx
     test    eax, eax
     cmovs   eax, edx
@@ -1943,39 +2137,52 @@ screen_character:
     test    ecx, ecx
     cmovs   ecx, edx
     mov     [sheet_scroll], ecx
-    mov     r14d, ecx                   ; first listed row
-    xor     r15d, r15d                  ; position in the window: column = r15 / CH_ROWS
+    mov     [rsp + 4], ecx
+    mov     dword [rsp], 0
 .row:
-    lea     eax, [r14 + r15]
+    mov     eax, [rsp]
+    cmp     eax, r15d
+    jae     .rows_done
+    add     eax, [rsp + 4]
     cmp     eax, ebx
-    jae     .list_done
-    lea     rdx, [sheet_rows]
-    movzx   edi, byte [rdx + rax]
-    mov     ecx, r15d
-    shr     ecx, 4
-    imul    ecx, ecx, CH_COL1 - CH_COL0
-    lea     eax, [r12 + rcx + CH_COL0]
-    mov     [rsp + 24], eax             ; x
-    mov     edx, r15d
-    and     edx, CH_ROWS - 1
-    imul    edx, edx, 9
-    lea     eax, [rdx + r13 + CH_LIST_Y]
-    mov     [rsp + 28], eax             ; y
-    cmp     edi, SH_OFFENSE
-    jae     .head
+    jae     .rows_done
+    lea     rdx, [sheet_sec]
+    movzx   eax, byte [rdx + rax]
+    mov     [rsp + 12], eax
+    mov     eax, [rsp]
+    imul    eax, r14d
+    lea     eax, [rax + r13 + 33]
+    mov     [rsp + 8], eax              ; y
+    test    byte [rsp], 1
+    jnz     .no_band
+    lea     edi, [r12 + 6]
+    mov     esi, [rsp + 8]
+    sub     esi, 3
+    mov     edx, SH_RW - 12
+    mov     ecx, 13
+    mov     r8d, SH_BAND
+    call    ui_rect
+.no_band:
+    lea     edi, [r12 + 10]
+    mov     esi, [rsp + 8]
+    add     esi, 2
+    mov     edx, 3
+    mov     ecx, 3
+    mov     r8d, C_GOLD_DEEP
+    call    ui_rect
+    mov     edi, [rsp + 12]
     lea     rax, [rpg_stats]
     mov     esi, [rax + rdi*4]
-    mov     [rsp + 32], edi
     lea     rdx, [fmt_buf]
     call    rpg_format_stat
     lea     rdi, [fmt_buf]
     mov     esi, 1
     call    ui_text_width
-    mov     [rsp + 36], eax             ; the sentence's width
+    mov     [rsp + 16], eax             ; the sentence's width
     lea     rdi, [fmt_buf]
-    cmp     eax, CH_COLW
+    cmp     eax, SH_TEXTW
     jbe     .fits
-    mov     edi, [rsp + 32]             ; too wide for its column: "<label>: <number>" if that is shorter
+    mov     edi, [rsp + 12]             ; too wide: "<label>: <number>" if that is shorter
     lea     rsi, [fmt_buf]
     lea     rdx, [coin_buf]
     call    stat_compact
@@ -1983,28 +2190,84 @@ screen_character:
     mov     esi, 1
     call    ui_text_width
     lea     rdi, [fmt_buf]
-    cmp     eax, [rsp + 36]
+    cmp     eax, [rsp + 16]
     jae     .fits
     lea     rdi, [coin_buf]
 .fits:
+    lea     esi, [r12 + 18]
+    mov     edx, [rsp + 8]
     mov     ecx, C_INK
-    jmp     .text
-.head:
-    sub     edi, SH_OFFENSE
-    lea     rax, [sheet_head]
-    mov     rdi, [rax + rdi*8]
-    mov     ecx, C_RUBRIC
-.text:
-    mov     esi, [rsp + 24]
-    mov     edx, [rsp + 28]
     mov     r8d, 1
     call    ui_text_ink
-    inc     r15d
-    cmp     r15d, 2 * CH_ROWS
-    jb      .row
-.list_done:
-    TXTC    s_tab_grimoire, r12, CH_W / 2, r13, 221, C_INK_SOFT
-    mov     eax, [rsp]
+    inc     dword [rsp]
+    jmp     .row
+.rows_done:
+    lea     rdi, [s_tab_grimoire]
+    cmp     ebx, r15d
+    jbe     .footer
+    lea     rdi, [s_wheel_tab]          ; the list scrolls
+.footer:
+    lea     esi, [r12 + SH_RW / 2]
+    lea     edx, [r13 + SH_H - 12]
+    mov     ecx, C_INK_SOFT
+    mov     r8d, 1
+    call    ui_text_ink_centered
+    LEAVE_FRAME 40
+
+; screen_character(): the character sheet, an open book: the left page holds the title, attribute cards and the
+; vitals plate (sheet_left), the right page the stats by section (sheet_right); Tab opens the grimoire. The stats
+; are recomputed first: gear changes them. Hovering an attribute card explains what a point does.
+screen_character:
+    ENTER_FRAME 24
+    cmp     dword [app_entered], 0
+    je      .seen
+    mov     dword [sheet_scroll], 0     ; a fresh visit starts at the top of the list
+.seen:
+    call    close_check
+    test    eax, eax
+    jnz     .ret
+    cmp     dword [ui_input + UIINPUT.key_pressed], KEY_TAB
+    jne     .no_tab
+    mov     edi, ST_SKILLS
+    call    app_goto
+    jmp     .ret
+.no_tab:
+    call    rpg_recompute
+    mov     eax, [ui_w]
+    sub     eax, SH_LW + 4 + SH_RW
+    sar     eax, 1
+    mov     ecx, 6
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     [s_px], eax
+    mov     eax, [ui_h]
+    sub     eax, SH_H
+    sar     eax, 1
+    mov     ecx, 8
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     [s_py], eax                 ; the ribbon hangs 7 units over the page
+    xor     edi, edi
+    xor     esi, esi
+    mov     edx, [ui_w]
+    mov     ecx, [ui_h]
+    mov     r8d, C_DIM
+    call    ui_rect
+    mov     edi, [s_px]
+    mov     esi, [s_py]
+    mov     edx, SH_LW
+    mov     ecx, SH_RW
+    mov     r8d, SH_H
+    call    ui_book
+    lea     rdi, [s_character]
+    mov     esi, [s_px]
+    add     esi, (SH_LW + 4 + SH_RW) / 2
+    mov     edx, [s_py]
+    sub     edx, 7
+    call    ui_ribbon
+    call    sheet_left
+    call    sheet_right
+    mov     eax, [sheet_hover]
     test    eax, eax
     js      .ret
     mov     edi, eax
@@ -2016,7 +2279,7 @@ screen_character:
     mov     edx, 1
     call    tooltip_wrapped
 .ret:
-    LEAVE_FRAME 40
+    LEAVE_FRAME 24
 
 ; ---- traders -------------------------------------------------------------------------------------
 

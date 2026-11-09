@@ -5,12 +5,14 @@
 default rel
 
 global test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires, test_web_view_mapping
+global test_sheet_sections
 
 extern world_clear, player, body_init, player_eye, player_forward
 extern settings, game_aim, ui_w, ui_h, world_to_ui
 extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list, dmgnum_style
 extern hud_heart_level, hud_ability_pos
 extern web_node_xy, web_pick, rpg_web_node
+extern sheet_build, sheet_section, sheet_sec, rpg_stats
 
 ; layout of one dmgnum_list entry (struc DMGNUM in dmgnum.asm)
 %define DN_Y        4
@@ -783,6 +785,76 @@ test_web_view_mapping:
     add     rsp, 8
     pop     r15
     pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+section .rodata
+; test_sheet_sections: the stat ids each section tab lists, in sheet_order, for a character with only
+; melee damage, fire damage, fire resistance and max mana. max health, crit chance and max stamina are
+; always listed.
+sec_offense:    db STAT_MELEE_DMG, STAT_CRIT_CHANCE, STAT_FIRE_DMG
+sec_defense:    db STAT_MAX_HEALTH, STAT_RES_FIRE
+sec_utility:    db STAT_MAX_MANA, STAT_MAX_STAMINA
+sec_ptrs:       dq sec_offense, sec_defense, sec_utility
+sec_lens:       db 3, 2, 2
+
+section .text
+
+; test_sheet_sections: with only melee damage, fire damage, fire resistance and max mana set, the three
+; section tabs list exactly the stats above, in order (nothing from another section, nothing missing).
+; Returns 1 + tab on a wrong count, 11 + tab on a wrong id.
+test_sheet_sections:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    lea     rdi, [rpg_stats]
+    xor     eax, eax
+    mov     ecx, NUM_STATS
+    rep stosd
+    mov     dword [rpg_stats + STAT_MELEE_DMG * 4], 5
+    mov     dword [rpg_stats + STAT_FIRE_DMG * 4], 3
+    mov     dword [rpg_stats + STAT_RES_FIRE * 4], 2
+    mov     dword [rpg_stats + STAT_MAX_MANA * 4], 10
+    call    sheet_build
+    mov     r13d, eax                   ; rows
+    xor     ebx, ebx                    ; tab
+.tab:
+    mov     edi, ebx
+    mov     esi, r13d
+    call    sheet_section
+    lea     rdx, [sec_lens]
+    movzx   ecx, byte [rdx + rbx]
+    cmp     eax, ecx
+    jne     .bad_count
+    lea     rdx, [sec_ptrs]
+    mov     r12, [rdx + rbx*8]
+    xor     ecx, ecx
+.id:
+    lea     rdx, [sheet_sec]
+    movzx   eax, byte [rdx + rcx]
+    cmp     al, [r12 + rcx]
+    jne     .bad_id
+    inc     ecx
+    lea     rdx, [sec_lens]
+    movzx   eax, byte [rdx + rbx]
+    cmp     ecx, eax
+    jb      .id
+    inc     ebx
+    cmp     ebx, 3
+    jb      .tab
+    xor     eax, eax
+    jmp     .ret
+.bad_count:
+    lea     eax, [rbx + 1]
+    jmp     .ret
+.bad_id:
+    lea     eax, [rbx + 11]
+.ret:
     pop     r13
     pop     r12
     pop     rbx
