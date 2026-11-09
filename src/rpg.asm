@@ -583,7 +583,7 @@ banner:     resb 16                     ; "Level 50!"
 web_scratch: resb WEB_MAX               ; web_valid: 1 per ranked node joined to a ranked path
 rpg_migrated: resb 1                    ; rpg_load refunded the web this session (rpg_begin keeps the banner)
 alignb 2
-debug_stat_bonus: resw NUM_STATS        ; the debug menu's flat bonus per stat (int16), added after the caps; saved in WORLDHDR.debug_stats
+debug_stat_bonus: resw NUM_STATS        ; the debug menu's flat bonus per stat (int16), added before the caps; saved in WORLDHDR.debug_stats
 
 section .text
 
@@ -1247,7 +1247,7 @@ rpg_clamp_stats:
 ; the stat nodes (rank * value; the ranked keystone nodes set their rpg_keystones bit), the
 ; attributes (with the Marksman's path ranked, each Dexterity point is also +1 gun damage), the
 ; keystones' stat changes, the equipped gear (gear_add_stats), the caps and floors, Bloodrage's -10%
-; health, and last the debug menu's flat bonus per stat (debug_stat_bonus: beyond the caps; max health
+; health, and last the debug menu's flat bonus per stat (debug_stat_bonus: before the caps; max health
 ; stays at least 2). Then publishes surv_max_health and keeps health, mana and stamina at or below their
 ; maxima.
 rpg_recompute:
@@ -1341,6 +1341,15 @@ rpg_recompute:
     KS_STAT KS_VENOM_BLADES, STAT_POISON_DMG, 50
     lea     rdi, [rpg_stats]
     call    gear_add_stats
+    lea     rsi, [debug_stat_bonus]     ; the debug menu's flat bonus, before the caps so every invariant holds
+    lea     rdi, [rpg_stats]
+    xor     ecx, ecx
+.bonus:
+    movsx   eax, word [rsi + rcx*2]
+    add     [rdi + rcx*4], eax
+    inc     ecx
+    cmp     ecx, NUM_STATS
+    jb      .bonus
     call    rpg_clamp_stats
     bt      dword [rpg_keystones], KS_BLOODRAGE
     jnc     .publish
@@ -1354,15 +1363,6 @@ rpg_recompute:
     cmovl   eax, ecx
     mov     [rpg_stats + STAT_MAX_HEALTH*4], eax
 .publish:
-    lea     rsi, [debug_stat_bonus]
-    lea     rdi, [rpg_stats]
-    xor     ecx, ecx
-.bonus:
-    movsx   eax, word [rsi + rcx*2]
-    add     [rdi + rcx*4], eax
-    inc     ecx
-    cmp     ecx, NUM_STATS
-    jb      .bonus
     mov     eax, [rpg_stats + STAT_MAX_HEALTH*4]
     mov     ecx, 2
     cmp     eax, ecx

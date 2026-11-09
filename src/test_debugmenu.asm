@@ -1907,7 +1907,7 @@ test_debug_to_spawn_and_bed:
 
 ; ---- stats --------------------------------------------------------------------------------------------
 
-; A debug bonus moves the stat as it stands (it survives every recompute, goes past the caps, and
+; A debug bonus moves the stat as it stands (it survives every recompute, goes through the caps like any stat, and
 ; changes surv_max_health), within safe ranges (no reload speed below -90, no reduction above 90, no flat
 ; stat below 0, max health at least 2); it is saved with the header and loaded back (each bonus within
 ; +-5000); a new character has none.
@@ -1944,14 +1944,14 @@ test_debug_stat_bonus:
     call    rpg_stat
     cmp     eax, 7
     jne     .fail
-    mov     edi, STAT_CRIT_CHANCE       ; past the cap of 75 (the bonus comes after the caps)
+    mov     edi, STAT_CRIT_CHANCE       ; the bonus goes through the caps: 100 more crit still reads the cap, 75
     mov     esi, 100
     call    debug_bonus_add
     cmp     eax, 100
     jne     .fail
     mov     edi, STAT_CRIT_CHANCE
     call    rpg_stat
-    cmp     eax, 100
+    cmp     eax, 75
     jne     .fail
     mov     edi, STAT_MAX_HEALTH        ; max health follows: 20 + 10
     mov     esi, 10
@@ -1972,10 +1972,14 @@ test_debug_stat_bonus:
     call    debug_bonus_add
     test    eax, eax
     jnz     .fail                       ; nothing moves past the floor
-    mov     edi, STAT_COOLDOWN_RED      ; a reduction stays under 100%
+    mov     edi, STAT_COOLDOWN_RED      ; a reduction stays under 100%, and the stat itself under its cap of 50
     mov     esi, 500
     call    debug_bonus_add
     cmp     eax, 90
+    jne     .fail
+    mov     edi, STAT_COOLDOWN_RED
+    call    rpg_stat
+    cmp     eax, 50
     jne     .fail
     mov     edi, STAT_RES_FIRE
     mov     esi, 500
