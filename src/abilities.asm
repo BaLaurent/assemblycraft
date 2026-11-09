@@ -92,6 +92,7 @@ k_box_xz:     dd 0.299                  ; half width 0.3 less the slack
 k_box_top:    dd 1.799                  ; height 1.8 less the slack
 k_vol:        dd 0.8
 k_vol_fail:   dd 0.5
+k_vol_bolt:   dd 0.35                   ; the staff's basic bolt: an attack spammed all fight long
 k_2:          dd 2.0
 k_25:         dd 2.5
 k_3:          dd 3.0
@@ -387,7 +388,8 @@ abilities_staff_bolt:
     or      r8d, AF_ATTACK | (ELEM_SHOCK << AF_ELEM_SHIFT)
     call    ab_shoot
     mov     edi, SND_SPELL
-    jmp     .flew
+    movss   xmm0, [k_vol_bolt]
+    jmp     .play
 .fireball:
     lea     rdi, [rsp]
     lea     rsi, [rsp + 12]
@@ -398,8 +400,8 @@ abilities_staff_bolt:
     mov     r8d, [rsp + 24]
     call    ab_shoot
     mov     edi, SND_FIREBALL
-.flew:
     movss   xmm0, [k_vol]
+.play:
     call    audio_play
     mov     [abilities_bolt_cd], r12d
     mov     eax, 1
