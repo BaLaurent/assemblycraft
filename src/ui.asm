@@ -21,6 +21,7 @@ extern font8x8, item_icon, item_max_stack, item_durability
 extern str_append, i32_to_str
 
 %define BTN_H   20
+%define NINE_SEGS 1024                  ; segments per nine-slice axis
 
 section .rodata
 align 8
@@ -69,9 +70,8 @@ ui_my:       resd 1
 glyph_w:     resb 96                    ; ink width of glyph c-32 (3 for blank glyphs)
 glyph_left:  resb 96                    ; first ink column of glyph c-32, 0xFF = blank
 ui_fb_h:     resd 1                     ; framebuffer height in pixels (ui_clip)
-nine_xs:     resb 4096                  ; ui_nine_layout axis segments {p0, p1, t0, t1}, 256 per axis
-nine_ys:     resb 4096
-nine_buf:    resb NINE_MAX_QUADS * 32   ; ui_nine_tint's layout records
+nine_xs:     resb NINE_SEGS * 16        ; nine_setup axis segments {p0, p1, t0, t1}
+nine_ys:     resb NINE_SEGS * 16
 
 section .text
 
@@ -1481,7 +1481,8 @@ ui_tooltip_lines:
 ; nine_axis(rdi out, esi len, edx b) -> eax segment count
 ; Cuts a length into the corner b, the tile's middle strip (16 - 2b texels) repeated, the last
 ; repeat cut short, and the far corner. out[i] = int32 {p0, p1, t0, t1}: the span in units and
-; the texel span of the tile it samples. At most 256 segments (the far corner is always kept).
+; the texel span of the tile it samples. At most NINE_SEGS segments (the far corner is always
+; kept), which covers any framebuffer up to ~6000 units across.
 nine_axis:
     mov     dword [rdi], 0              ; near corner
     mov     [rdi + 4], edx
@@ -1499,7 +1500,7 @@ nine_axis:
 .mid:
     cmp     r8d, r9d
     jge     .far
-    cmp     ecx, 255
+    cmp     ecx, NINE_SEGS - 1
     jae     .far
     mov     eax, r9d
     sub     eax, r8d                    ; room left
@@ -1527,12 +1528,86 @@ nine_axis:
     lea     eax, [rcx + 1]
     ret
 
+; nine_setup(esi w, edx h, ecx b) -> eax x segments, edx y segments (both 0 for w <= 0 or h <= 0)
+; When w or h < 2b, b becomes min(w, h) / 2 (b <= 7). Fills nine_xs and nine_ys.
+nine_setup:
+    push    rbx
+    push    r12
+    push    r13
+    mov     r12d, edx                   ; h
+    test    esi, esi
+    jle     .empty
+    test    r12d, r12d
+    jle     .empty
+    mov     eax, 7                      ; b <= 7 keeps the middle strip non-empty
+    cmp     ecx, eax
+    cmovg   ecx, eax
+    lea     eax, [rcx + rcx]
+    mov     edx, esi
+    cmp     r12d, edx
+    cmovl   edx, r12d                   ; min(w, h)
+    cmp     eax, edx
+    jle     .b_ok
+    mov     ecx, edx
+    shr     ecx, 1
+.b_ok:
+    mov     r13d, ecx
+    lea     rdi, [nine_xs]
+    mov     edx, r13d
+    call    nine_axis                   ; esi is still w
+    mov     ebx, eax
+    lea     rdi, [nine_ys]
+    mov     esi, r12d
+    mov     edx, r13d
+    call    nine_axis
+    mov     edx, eax
+    mov     eax, ebx
+    jmp     .ret
+.empty:
+    xor     eax, eax
+    xor     edx, edx
+.ret:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; nine_record(rdi out, esi i, edx j): the quad of x segment i and y segment j as int32 {x0, y0,
+; x1, y1, u0, v0, u1, v1}: units in the rectangle, texels in the tile
+nine_record:
+    mov     eax, esi
+    shl     eax, 4
+    lea     rcx, [nine_xs]
+    add     rcx, rax
+    mov     eax, edx
+    shl     eax, 4
+    lea     r8, [nine_ys]
+    add     r8, rax
+    mov     eax, [rcx]
+    mov     [rdi], eax
+    mov     eax, [r8]
+    mov     [rdi + 4], eax
+    mov     eax, [rcx + 4]
+    mov     [rdi + 8], eax
+    mov     eax, [r8 + 4]
+    mov     [rdi + 12], eax
+    mov     eax, [rcx + 8]
+    mov     [rdi + 16], eax
+    mov     eax, [r8 + 8]
+    mov     [rdi + 20], eax
+    mov     eax, [rcx + 12]
+    mov     [rdi + 24], eax
+    mov     eax, [r8 + 12]
+    mov     [rdi + 28], eax
+    ret
+
 ; ui_nine_layout(rdi out, esi w, edx h, ecx b) -> eax n
 ; The geometry of a nine-slice of a w x h rectangle: n records of 8 int32 {x0, y0, x1, y1, u0,
 ; v0, u1, v1}, x/y as unit offsets in the rectangle, u/v as texel offsets in the 16x16 tile.
 ; Corners are b x b at 1:1, edges and the centre repeat the tile's middle (16 - 2b) texels and
 ; the last repeat is cut short. When w or h < 2b, b becomes min(w, h) / 2. Rows run top to
-; bottom, left to right. Stops at NINE_MAX_QUADS records. Nothing for w <= 0 or h <= 0.
+; bottom, left to right. Writes at most NINE_MAX_QUADS records (ui_nine_tint has no such
+; limit: it draws the same quads straight from the segments). Nothing for w <= 0 or h <= 0.
 ui_nine_layout:
     push    rbp
     mov     rbp, rsp
@@ -1541,84 +1616,36 @@ ui_nine_layout:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 24                     ; [rsp] x segments, +4 y segments, +8 records written
+    sub     rsp, 8                      ; [rsp] records written
     mov     rbx, rdi
-    mov     r12d, esi
-    mov     r13d, edx
-    xor     eax, eax
-    test    r12d, r12d
-    jle     .ret
-    test    r13d, r13d
-    jle     .ret
-    mov     eax, 7                      ; b <= 7 keeps the middle strip non-empty
-    cmp     ecx, eax
-    cmovg   ecx, eax
-    lea     eax, [rcx + rcx]
-    mov     edx, r12d
-    cmp     r13d, edx
-    cmovl   edx, r13d                   ; min(w, h)
-    cmp     eax, edx
-    jle     .b_ok
-    mov     ecx, edx
-    shr     ecx, 1
-.b_ok:
-    mov     r14d, ecx
-    lea     rdi, [nine_xs]
-    mov     esi, r12d
-    mov     edx, r14d
-    call    nine_axis
-    mov     [rsp], eax
-    lea     rdi, [nine_ys]
-    mov     esi, r13d
-    mov     edx, r14d
-    call    nine_axis
-    mov     [rsp + 4], eax
-    mov     dword [rsp + 8], 0
+    mov     dword [rsp], 0
+    call    nine_setup
+    mov     r12d, eax                   ; x segments
+    mov     r13d, edx                   ; y segments
     xor     r15d, r15d                  ; y segment
 .row:
-    cmp     r15d, [rsp + 4]
+    cmp     r15d, r13d
     jae     .done
     xor     r14d, r14d                  ; x segment
 .col:
-    cmp     r14d, [rsp]
+    cmp     r14d, r12d
     jae     .next_row
-    cmp     dword [rsp + 8], NINE_MAX_QUADS
+    cmp     dword [rsp], NINE_MAX_QUADS
     jae     .done
-    mov     rax, r14
-    shl     rax, 4
-    lea     rcx, [nine_xs]
-    add     rcx, rax
-    mov     rax, r15
-    shl     rax, 4
-    lea     rdx, [nine_ys]
-    add     rdx, rax
-    mov     eax, [rcx]
-    mov     [rbx], eax                  ; x0
-    mov     eax, [rdx]
-    mov     [rbx + 4], eax              ; y0
-    mov     eax, [rcx + 4]
-    mov     [rbx + 8], eax              ; x1
-    mov     eax, [rdx + 4]
-    mov     [rbx + 12], eax             ; y1
-    mov     eax, [rcx + 8]
-    mov     [rbx + 16], eax             ; u0
-    mov     eax, [rdx + 8]
-    mov     [rbx + 20], eax             ; v0
-    mov     eax, [rcx + 12]
-    mov     [rbx + 24], eax             ; u1
-    mov     eax, [rdx + 12]
-    mov     [rbx + 28], eax             ; v1
+    mov     rdi, rbx
+    mov     esi, r14d
+    mov     edx, r15d
+    call    nine_record
     add     rbx, 32
-    inc     dword [rsp + 8]
+    inc     dword [rsp]
     inc     r14d
     jmp     .col
 .next_row:
     inc     r15d
     jmp     .row
 .done:
-    mov     eax, [rsp + 8]
-.ret:
-    add     rsp, 24
+    mov     eax, [rsp]
+    add     rsp, 8
     pop     r15
     pop     r14
     pop     r13
@@ -1629,7 +1656,8 @@ ui_nine_layout:
 
 ; ui_nine_tint(edi kind, esi x, edx y, ecx w, r8d h, r9d rgba)
 ; draws NINE_* kind's tile as a nine-slice over (x, y, w, h), 1 texel = 1 unit, times the colour
-; (all of it one GL_QUADS batch)
+; (all of it one GL_QUADS batch, however large the rectangle)
+; Frame: [rsp] quad record, +32 x segment, +36 y segment, +40 x segments, +44 y segments.
 ui_nine_tint:
     push    rbp
     mov     rbp, rsp
@@ -1638,7 +1666,7 @@ ui_nine_tint:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 56                     ; [rsp] quad record, +32 quads left, +40 record cursor
+    sub     rsp, 56
     mov     ebx, esi                    ; x
     mov     r12d, edx                   ; y
     mov     r15d, r9d                   ; colour
@@ -1656,54 +1684,51 @@ ui_nine_tint:
     mov     esi, ecx                    ; w
     mov     edx, r8d                    ; h
     mov     ecx, r11d
-    lea     rdi, [nine_buf]
-    call    ui_nine_layout
-    mov     [rsp + 32], eax
+    call    nine_setup
+    mov     [rsp + 40], eax
+    mov     [rsp + 44], edx
     test    eax, eax
     jz      .ret
-    lea     rax, [nine_buf]
-    mov     [rsp + 40], rax
     mov     edi, GL_TEXTURE_2D
     call    glEnable
     mov     edi, r15d
     call    set_color
     mov     edi, GL_QUADS
     call    glBegin
-.quad:
-    mov     rsi, [rsp + 40]
-    mov     eax, [rsi]
-    add     eax, ebx
-    mov     [rsp], eax
-    mov     eax, [rsi + 4]
-    add     eax, r12d
-    mov     [rsp + 4], eax
-    mov     eax, [rsi + 8]
-    add     eax, ebx
-    mov     [rsp + 8], eax
-    mov     eax, [rsi + 12]
-    add     eax, r12d
-    mov     [rsp + 12], eax
-    mov     eax, [rsi + 16]
-    shl     eax, 4
-    add     eax, r13d
-    mov     [rsp + 16], eax
-    mov     eax, [rsi + 20]
-    shl     eax, 4
-    add     eax, r14d
-    mov     [rsp + 20], eax
-    mov     eax, [rsi + 24]
-    shl     eax, 4
-    add     eax, r13d
-    mov     [rsp + 24], eax
-    mov     eax, [rsi + 28]
-    shl     eax, 4
-    add     eax, r14d
-    mov     [rsp + 28], eax
+    mov     dword [rsp + 36], 0
+.row:
+    mov     eax, [rsp + 36]
+    cmp     eax, [rsp + 44]
+    jae     .end
+    mov     dword [rsp + 32], 0
+.col:
+    mov     eax, [rsp + 32]
+    cmp     eax, [rsp + 40]
+    jae     .next_row
+    mov     rdi, rsp
+    mov     esi, [rsp + 32]
+    mov     edx, [rsp + 36]
+    call    nine_record
+    add     [rsp], ebx                  ; unit offsets -> screen
+    add     [rsp + 4], r12d
+    add     [rsp + 8], ebx
+    add     [rsp + 12], r12d
+    shl     dword [rsp + 16], 4         ; texels -> atlas 1/16 texel units
+    add     [rsp + 16], r13d
+    shl     dword [rsp + 20], 4
+    add     [rsp + 20], r14d
+    shl     dword [rsp + 24], 4
+    add     [rsp + 24], r13d
+    shl     dword [rsp + 28], 4
+    add     [rsp + 28], r14d
     mov     rdi, rsp
     call    quad_uv
-    add     qword [rsp + 40], 32
-    dec     dword [rsp + 32]
-    jnz     .quad
+    inc     dword [rsp + 32]
+    jmp     .col
+.next_row:
+    inc     dword [rsp + 36]
+    jmp     .row
+.end:
     call    glEnd
 .ret:
     add     rsp, 56

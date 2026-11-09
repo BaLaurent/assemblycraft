@@ -131,7 +131,8 @@ t_check:
 ; test_ui_nine_layout: an 18 x 18 frame with border 2 is 16 records (4 corners, 8 edge pieces,
 ; 4 centre pieces); 176 x 166 with border 4 is 23 x 22 = 506 records covering every unit once
 ; with the strip repeated and the last repeat cut short; 6 x 30 and 30 x 6 clamp the border to 3
-; (10 records, first corner 3 wide); a zero-sized rectangle has no records.
+; (10 records, first corner 3 wide); 3000 x 10 is 376 x 3 = 1128 records (no per-axis cap); a
+; zero-sized rectangle has no records.
 test_ui_nine_layout:
     push    rbp
     mov     rbp, rsp
@@ -162,6 +163,12 @@ test_ui_nine_layout:
     mov     edx, 4
     call    t_check
     cmp     eax, 10
+    jne     .fail
+    mov     edi, 3000                   ; 374 strip repeats: past any per-axis cap of 256
+    mov     esi, 10
+    mov     edx, 4
+    call    t_check
+    cmp     eax, 1128
     jne     .fail
     mov     edi, 0
     mov     esi, 10

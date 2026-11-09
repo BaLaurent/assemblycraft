@@ -14,7 +14,7 @@ global screen_title, screen_worlds, screen_create, screen_rename
 global screen_delete, screen_pause, screen_death, screen_loading
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_focus
-extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon, ui_clip, ui_unclip
+extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon
 extern ui_text, ui_text_ink, ui_text_width, ui_text_centered, ui_text_ink_centered
 extern ui_button, ui_textfield
 extern ui_input, surv, world_list, world_count
@@ -27,7 +27,6 @@ extern str_append, str_copy, str_eq, parse_u32, fnv1a
 
 %define C_DEATH         RGBA(80, 0, 0, 120)     ; the red veil over the world behind the death page
 %define C_LOADING       (C_UMBER | 0xFF000000)  ; C_UMBER made opaque: the frame cleared behind must not tint it
-%define LEATHER_SLAB    32                      ; rows per scissored slab of the title's leather cover
 
 ; ---- drawing macros (xbase / ybase are 64-bit registers holding a GUI coordinate) ------
 %macro TXTC 7                           ; str, xbase, xoff, ybase, yoff, rgba, scale (centred)
@@ -375,49 +374,14 @@ form_page:
     pop     rbp
     ret
 
-; draw_leather(): the NINE_LEATHER cover over the whole screen. One nine-slice of that size would
-; pass ui.asm's NINE_MAX_QUADS on a big window and lose its bottom rows, so the cover is drawn in
-; slabs of LEATHER_SLAB rows, each a nine-slice clipped to its own rows. A slab's nine-slice starts
-; 8 rows above it and ends 8 rows below it: its top row is then a multiple of 8, so its 8-row middle
-; strip repeats in phase with the slabs around it, and its 4-row rims fall outside the clip. The
-; first slab starts at the top edge and the one that reaches the bottom ends at it, so the real rim
-; is drawn exactly once.
+; draw_leather(): the NINE_LEATHER cover over the whole screen
 draw_leather:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    xor     ebx, ebx                    ; top row of the slab
-.slab:
-    cmp     ebx, [ui_h]
-    jge     .done
-    xor     edi, edi
-    mov     esi, ebx
-    mov     edx, [ui_w]
-    mov     ecx, LEATHER_SLAB
-    call    ui_clip
-    lea     r12d, [rbx - 8]             ; nine-slice top: 8 rows above the slab, at least row 0
-    xor     eax, eax
-    test    r12d, r12d
-    cmovs   r12d, eax
-    lea     r8d, [rbx + LEATHER_SLAB + 8]
-    mov     eax, [ui_h]
-    cmp     r8d, eax
-    cmovg   r8d, eax                    ; nine-slice bottom: 8 rows below the slab, at most ui_h
-    sub     r8d, r12d                   ; its height
     mov     edi, NINE_LEATHER
     xor     esi, esi
-    mov     edx, r12d
+    xor     edx, edx
     mov     ecx, [ui_w]
-    call    ui_nine
-    add     ebx, LEATHER_SLAB
-    jmp     .slab
-.done:
-    call    ui_unclip
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
+    mov     r8d, [ui_h]
+    jmp     ui_nine
 
 ; ---- title -------------------------------------------------------------------------------
 
