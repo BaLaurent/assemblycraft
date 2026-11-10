@@ -10,7 +10,7 @@
 %include "gl.inc"
 default rel
 
-global item_model_draw, item_model_is_block, held_item_draw
+global item_model_draw, item_model_is_block, held_item_draw, item_fp_orient
 
 extern render_box16, render_box_px16, atlas, block_tiles, block_shape, item_icon, item_max_stack
 extern shape_boxes, gun_index, gun_model_draw, item_tool
@@ -38,6 +38,7 @@ f_hold_item_t:    dd 0.3                ;   its lower-left grip moved to the han
 f_hold_axe_ang:   dd -120.0             ; an axe is turned 120 degrees about its grip so its head hangs toward the ground
 f_hold_axe_g:     dd -0.3               ;   the grip, x and y in the icon plane
 f_hold_axe_ng:    dd 0.3
+f_fp_axe_ang:     dd 180.0              ; first person: an axe is turned half a turn about its shaft, edge down
 
 section .bss
 alignb 4
@@ -388,7 +389,7 @@ held_item_draw:
 ; carried head down: the sprite is turned clockwise in the icon plane (the head that pointed up and forward then
 ; points forward and down toward the ground) about the grip, the point (-0.3, -0.3) near the lower left end of
 ; the shaft, which is where held_item_draw puts the hand. Every other item is left as it is. The first-person
-; hand does not use it: its pose places the model centre and keeps the head up, as before.
+; hand uses item_fp_orient instead: its pose places the model centre.
 hold_orient:
     sub     rsp, 8
     cmp     edi, FIRST_ITEM
@@ -409,6 +410,27 @@ hold_orient:
     movaps  xmm1, xmm0
     xorps   xmm2, xmm2
     call    glTranslatef
+.done:
+    add     rsp, 8
+    ret
+
+; item_fp_orient(edi id): the first-person hand's counterpart of hold_orient, applied right before
+; item_model_draw. The pose places the model centre, so the axe is not swung about its grip: it is turned half
+; a turn about its shaft (the icon's lower left to upper right diagonal through the centre, axis (1, 1, 0)),
+; which puts the head with its cutting edge on the lower side, toward the ground, instead of up. Every other
+; item is left as it is. Clobbers the caller-saved registers.
+item_fp_orient:
+    sub     rsp, 8
+    cmp     edi, FIRST_ITEM
+    jb      .done
+    movzx   eax, byte [item_tool + rdi]
+    cmp     eax, TOOL_AXE
+    jne     .done
+    movss   xmm0, [f_fp_axe_ang]
+    movss   xmm1, [f_one]
+    movaps  xmm2, xmm1
+    xorps   xmm3, xmm3
+    call    glRotatef
 .done:
     add     rsp, 8
     ret

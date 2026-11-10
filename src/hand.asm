@@ -8,7 +8,7 @@ default rel
 global hand_render, hand_swing
 
 extern player, inv_held, player_eye, light_brightness_at, sincos_deg, game_bow_charge, gun_kick
-extern item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim, skin_model_draw, m_avatar
+extern item_model_draw, item_model_is_block, item_fp_orient, tex_id, gun_model_draw, game_aim, skin_model_draw, m_avatar
 extern gun_reload, gun_reload_total, gun_index, item_tool, combat_guard_t, combat_dodge_t, game_heavy_s
 extern net_role, net_self, peer_colors
 
@@ -337,6 +337,8 @@ hand_render:
     call    apply_pose
     test    ebx, ebx
     jz      .arm
+    mov     edi, ebx
+    call    item_fp_orient
     mov     edi, ebx
     movss   xmm0, [light]
     call    item_model_draw
