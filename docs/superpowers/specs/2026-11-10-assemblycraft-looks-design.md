@@ -667,3 +667,11 @@ WIRE's changes:
   Re-measure afterwards.
 - **Held item pose:** if `held_item_draw`'s third-person constants show the item inside the arm or floating in the Wave 4 shots, adjust only the translate values of that branch until the grip touches the fist in the front and side views, and record the values in "As built".
 - **First-person arm:** if the first-person arm sits visibly off the old position, adjust only the two `hand.asm` translate values (`−0.34375`, `−1.05`) until the fist appears where the old arm box did.
+
+## As built (0.13 looks)
+
+- **Result:** 35 skin models (`src/skins_*.asm`, registry `src/artreg.asm`) and 93 icons (`src/iconart_a/b/c.asm`), engines `src/skin.asm` and `src/icons.asm`, 319 selftests (also under Wine). Style and the full set were validated by the user from the renders in `looks-mockup/`; the user then played it and found it very pretty.
+- **Deviations from the plan:** the art was split over more files and workers (`skins_boss.asm`, `skins_folk2.asm`, `iconart_c.asm`); `skin_build` packs by shelf height descending (the four samples took 209 rows instead of 290; the whole roster uses 1229 of 3072); `test_skin_models` also pins the registry order and tpb; `TILE_STAT_COIN` (tile 138) is kept for the stat glyph; `SKMODEL.pad` became `.hscale` (held item size multiplier, the boss wields a double-size King's Blade).
+- **Baseline FPS (omabox, vsync cap):** 62 for the previous build and 62 for this one, same box, fresh world, 30 zombies at about 6 blocks at midnight, read 12 s after spawning (one earlier baseline reading of 47 was a transient GPU clock state; a repeat gave 62).
+- **Held items:** tools are held with the head up and forward, except the axe, which is turned so its head hangs toward the ground (`hold_orient` for other holders, `item_fp_orient` for the first-person hand).
+- **Known leftovers:** the revolver in a third-person hand is mostly hidden by the fist (0.6 scale); a peer that stops walking keeps its mid-stride legs (netsync walk phase never returns to 0, pre-existing); the airplane item did nothing when placed on a snow layer (pre-existing, not investigated).

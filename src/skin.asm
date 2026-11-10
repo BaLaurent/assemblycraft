@@ -1093,6 +1093,12 @@ skin_model_draw:
     call    glTranslatef
     movzx   eax, word [r12 + SKMODEL.tpb]
     cvtsi2ss xmm0, eax
+    movzx   eax, word [r12 + SKMODEL.hscale]    ; a big holder (the boss) wields a scaled item: 0 = as is
+    test    eax, eax
+    jz      .hs_one
+    cvtsi2ss xmm1, eax
+    mulss   xmm0, xmm1
+.hs_one:
     movaps  xmm1, xmm0
     movaps  xmm2, xmm0
     call    glScalef

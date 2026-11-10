@@ -1527,7 +1527,7 @@ bs_pal:
     SKBMP bs_curl_top, bs_curl_top_rows, 8, 3, bs_pal
 
 section .data
-SKMODEL_BEGIN m_boss, 32, KINGS_BLADE, 18, 45, -3
+SKMODEL_BEGIN m_boss, 32, KINGS_BLADE, 18, 45, -3, 2
     SKBONE BK_BODY, 0, 0, 0.00
     PART bs_belt, -15, 51, -9, 30, 5, 19, 0, 0              ; crimson sash
     PART bs_pendant, -2, 65, -7, 4, 4, 1, 0, 0              ; ruby pendant on the ribs

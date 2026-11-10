@@ -66,8 +66,8 @@ global %1
 %endmacro
 
 ; ---- skin models (section .data: skin_build writes SKR_U/SKR_V and the sizes of SKPART_AS parts) -----
-; SKMODEL_BEGIN label, tpb, held, hand_x, hand_y, hand_z
-%macro SKMODEL_BEGIN 6
+; SKMODEL_BEGIN label, tpb, held, hand_x, hand_y, hand_z [, held item size multiplier]
+%macro SKMODEL_BEGIN 6-7 0
 %push skmodel
 %define %$name %1
 %assign %$bones 0
@@ -77,7 +77,7 @@ align 8
 %1:
     dq %1 %+ _recs
     dq %1 %+ _ops
-    dw %2, %3, %4, %5, %6, 0
+    dw %2, %3, %4, %5, %6, %7
 %1 %+ _recs:
 %endmacro
 ; SKBONE kind, pivot_y, pivot_z, swing (a float literal, 0.0 for rigid)

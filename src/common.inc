@@ -368,7 +368,7 @@ struc SKMODEL
     .tpb:   resw 1                      ; texels per block: 32 characters and vehicles, 64 guns
     .held:  resw 1                      ; default held item id, 0 none
     .hand:  resw 3                      ; held item origin (x, y, z), texels, in the BK_RARM bone
-    .pad:   resw 1
+    .hscale: resw 1                     ; held item size multiplier (whole number), 0 = 1
 endstruc                                ; 28
 struc SKPOSE
     .flags:   resd 1                    ; SKP_*
