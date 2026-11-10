@@ -1,5 +1,5 @@
 ; boats.asm - boats: put on water, floating, driven by the rider, broken into an item, kept in the
-; world header (WORLDHDR.boats) and drawn as five plank boxes. All coordinates are local. A boat is
+; world header (WORLDHDR.boats) and drawn as the skin model m_boat. All coordinates are local. A boat is
 ; a BODY (y = bottom of its 1.2 x 0.5 x 1.2 box, yaw = heading; the box is 2.05 high while the player
 ; rides it, so that a ceiling over the water stops it before the rider's head meets it) plus its speed
 ; along the heading.
@@ -14,7 +14,7 @@ global boats_dismount, boats_break, boats_save, boats_load, boats_shift, coord_o
 extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb
-extern block_tiles, render_box, light_bind_at, light_bind_index
+extern light_bind_at, light_bind_index, skin_model_draw, m_boat
 extern net_role, net_applying, net_send_to
 extern net_boat_place_out, net_boat_mount_out, net_boat_dismount_out, net_boat_break_out
 
@@ -53,22 +53,12 @@ c_bound:    dd 16777216.0               ; saved coordinates must lie inside +-2^
 c_256:      dd 256.0
 c_abs_mask: dd 0x7FFFFFFF
 s_many:     db "Too many boats", 0
-; the five boxes of the hull in model space (blocks, bow towards -z): lo xyz, hi xyz. The floor is
-; 5/16 thick so it covers the water surface (14/16 of the cell, 0.25 above a floating boat's bottom)
-hull:
-    dd -0.55, 0.0, -0.85, 0.55, 0.3125, 0.85        ; floor
-    dd -0.55, 0.3125, -0.85, -0.45, 0.5, 0.85       ; left wall
-    dd 0.45, 0.3125, -0.85, 0.55, 0.5, 0.85         ; right wall
-    dd -0.45, 0.3125, -0.85, 0.45, 0.5, -0.75       ; bow
-    dd -0.45, 0.3125, 0.75, 0.45, 0.5, 0.85         ; stern
-hull_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8        ; +X -X +Y -Y +Z -Z
 
 section .bss
 alignb 16
 boats:       resb MAX_BOATS * BOATENT_size
 boat_riding: resd 1                     ; 0, or the index + 1 of the boat the player rides
 boat_rider:  resb MAX_BOATS            ; host: peer slot + 1 of the guest who rides the boat, 0 none
-plank_tiles: resb 8                     ; the PLANKS tile on all six faces
 
 section .text
 
@@ -984,21 +974,15 @@ meshable:
     pop     rbp
     ret
 
-; boats_render(): every boat in a drawable column as five plank boxes (floor, two walls, bow,
-; stern) under glTranslatef(x, y, z) and glRotatef(-yaw, 0, 1, 0), lit by the cell above its bottom.
-; Called in the world pass after the mobs (atlas bound, alpha test on, modelview = world - eye).
-; rbx = boat, r12d = slot counter, r13d = box counter.
+; boats_render(): every boat in a drawable column as the skin model m_boat under glTranslatef(x, y, z) and
+; glRotatef(-yaw, 0, 1, 0), lit by the cell above its bottom. Its floor covers the water surface, 0.25 above a
+; floating boat's bottom. Called in the world pass after the mobs (atlas bound, alpha test on, modelview = world - eye).
+; rbx = boat, r12d = slot counter.
 boats_render:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    push    r13
-    sub     rsp, 8
-    movzx   eax, word [block_tiles + (PLANKS * 3 + 1) * 2]
-    mov     rcx, 0x0101010101010101
-    imul    rax, rcx
-    mov     [plank_tiles], rax
     lea     rbx, [boats]
     xor     r12d, r12d
 .boat:
@@ -1029,20 +1013,13 @@ boats_render:
     movss   xmm2, [c_one]
     xorps   xmm3, xmm3
     call    glRotatef
-    xor     r13d, r13d
-.box:
-    imul    eax, r13d, 24
-    lea     rdi, [hull]
-    add     rdi, rax
-    lea     rsi, [plank_tiles]
-    lea     rdx, [hull_shades]
-    movss   xmm0, [c_one]
-    movaps  xmm1, xmm0
-    movaps  xmm2, xmm0
-    call    render_box
-    inc     r13d
-    cmp     r13d, 5
-    jb      .box
+    lea     rdi, [m_boat]
+    xor     esi, esi
+    xorps   xmm0, xmm0
+    movss   xmm1, [c_one]
+    movaps  xmm2, xmm1
+    movaps  xmm3, xmm1
+    call    skin_model_draw
     call    glPopMatrix
 .next:
     add     rbx, BOATENT_size
@@ -1051,8 +1028,6 @@ boats_render:
     jb      .boat
     mov     edi, LIGHT_SKY_FULL         ; the entities after this one are lit by their own cells
     call    light_bind_index
-    add     rsp, 8
-    pop     r13
     pop     r12
     pop     rbx
     pop     rbp

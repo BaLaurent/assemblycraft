@@ -380,8 +380,22 @@ held_item_draw:
     ret
 
 ; sprite_source(edi id): chooses the atlas rect the sprite path extrudes for item id and stores it with
-; sprite_set: today the id's 16x16 icon tile from item_icon. Clobbers eax, edx, esi, edi, xmm0, xmm1.
+; sprite_set. An item (id >= FIRST_ITEM) takes its 32x32 icon cell, k = id - FIRST_ITEM at x (k & 7) * 32,
+; y ICON32_Y0 + (k >> 3) * 32; a block drawn as a sprite (torch, ladder, fence, pane, door ...) takes its
+; 16x16 icon tile from item_icon. Clobbers eax, edx, esi, edi, xmm0, xmm1.
 sprite_source:
+    cmp     edi, FIRST_ITEM
+    jb      .tile
+    sub     edi, FIRST_ITEM             ; k
+    mov     esi, edi
+    shr     esi, 3
+    imul    esi, esi, ICON32_PX
+    add     esi, ICON32_Y0              ; y0 = ICON32_Y0 + (k >> 3) * 32
+    and     edi, 7
+    imul    edi, edi, ICON32_PX         ; x0 = (k & 7) * 32
+    mov     edx, ICON32_PX
+    jmp     sprite_set
+.tile:
     movzx   eax, word [item_icon + rdi*2]   ; tile
     mov     edi, eax
     and     edi, 15

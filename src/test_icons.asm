@@ -1,12 +1,13 @@
 ; test_icons.asm - the 32x32 item icons (icons.asm): icon_paint clears the cell of its icon and draws the
-; bitmap there, and touches nothing else.
+; bitmap there, and touches nothing else (test_icons_paint); and the shipped art, the icon registry
+; item_icons32 of artreg.asm: a clean, painted and distinct bitmap for every item (test_icons_art).
 %include "common.inc"
 %include "art.inc"
 default rel
 
-global test_icons_paint
+global test_icons_paint, test_icons_art
 
-extern icon_paint
+extern icon_paint, icons_build, art_pal_find, item_icons32
 
 %define TI_REGION_ROWS (SKIN_Y0 - ICON32_Y0)    ; the icon cells of the atlas: 512 rows, 128 cells
 %define TI_A           RGBO(200, 40, 40)
@@ -225,6 +226,158 @@ test_icons_paint:
     jmp     .out
 .fail3:
     mov     eax, 3
+.out:
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ti_cell(edi k) -> rax the address of the first texel of icon k's cell in ti_atlas. Leaf.
+ti_cell:
+    mov     eax, edi
+    shr     eax, 3
+    imul    eax, eax, ICON32_PX
+    add     eax, ICON32_Y0              ; the cell's atlas row
+    imul    eax, eax, ATLAS_W
+    and     edi, 7
+    imul    edi, edi, ICON32_PX         ; its atlas column
+    add     eax, edi
+    lea     rdx, [ti_atlas]
+    lea     rax, [rdx + rax * 4]
+    ret
+
+; ti_cells_equal(rdi cell a, rsi cell b) -> eax 1 when the two 32x32 cells of the atlas hold the same texels.
+; Leaf; clobbers rcx, rdx, rsi, rdi, r8, r9.
+ti_cells_equal:
+    mov     edx, ICON32_PX              ; rows left
+.row:
+    mov     r8, rdi
+    mov     r9, rsi
+    mov     ecx, ICON32_PX
+    repe cmpsd
+    jne     .differ
+    lea     rdi, [r8 + ATLAS_W * 4]
+    lea     rsi, [r9 + ATLAS_W * 4]
+    dec     edx
+    jnz     .row
+    mov     eax, 1
+    ret
+.differ:
+    xor     eax, eax
+    ret
+
+; test_icons_art() -> eax 0 pass / 1 an item_icons32 entry is null, has no rows or palette, or is not 32 x 32 /
+;   2 a bitmap char is neither '.' nor in its palette / 3 an icon cell has fewer than 64 opaque texels (alpha > 127)
+;   after icons_build / 4 two icon cells are byte-identical
+;   Every one of the ICON32_COUNT entries of the registry (checks 1 and 2 on the bitmaps), then icons_build on the
+;   test atlas and checks 3 and 4 on the painted cells (the pairs: every cell against every later one).
+test_icons_art:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    xor     ebx, ebx                    ; k
+.entry:
+    lea     rax, [item_icons32]
+    mov     r12, [rax + rbx * 8]        ; the bitmap
+    test    r12, r12
+    jz      .fail1
+    cmp     qword [r12 + SKBMP.rows], 0
+    je      .fail1
+    cmp     qword [r12 + SKBMP.pal], 0
+    je      .fail1
+    cmp     byte [r12 + SKBMP.w], ICON32_PX
+    jne     .fail1
+    cmp     byte [r12 + SKBMP.h], ICON32_PX
+    jne     .fail1
+    mov     r13, [r12 + SKBMP.rows]
+    xor     r14d, r14d                  ; char index
+.char:
+    movzx   edi, byte [r13 + r14]
+    cmp     edi, '.'
+    je      .char_next
+    mov     rsi, [r12 + SKBMP.pal]
+    call    art_pal_find                ; edx = 1 when the palette has the char
+    test    edx, edx
+    jz      .fail2
+.char_next:
+    inc     r14d
+    cmp     r14d, ICON32_PX * ICON32_PX
+    jb      .char
+    inc     ebx
+    cmp     ebx, ICON32_COUNT
+    jb      .entry
+    lea     rdi, [ti_atlas]
+    lea     rsi, [item_icons32]
+    call    icons_build
+    xor     ebx, ebx
+.cell:
+    mov     edi, ebx
+    call    ti_cell
+    mov     r12, rax                    ; the cell's row 0
+    xor     r14d, r14d                  ; opaque texels
+    mov     r15d, ICON32_PX             ; rows left
+.opaque_row:
+    xor     ecx, ecx
+.opaque_texel:
+    cmp     byte [r12 + rcx * 4 + 3], 127
+    seta    al
+    movzx   eax, al
+    add     r14d, eax
+    inc     ecx
+    cmp     ecx, ICON32_PX
+    jb      .opaque_texel
+    add     r12, ATLAS_W * 4
+    dec     r15d
+    jnz     .opaque_row
+    cmp     r14d, 64
+    jb      .fail3
+    inc     ebx
+    cmp     ebx, ICON32_COUNT
+    jb      .cell
+    xor     ebx, ebx                    ; i
+.pair_i:
+    lea     r13d, [rbx + 1]             ; j
+.pair_j:
+    cmp     r13d, ICON32_COUNT
+    jae     .pair_next
+    mov     edi, ebx
+    call    ti_cell
+    mov     r12, rax
+    mov     edi, r13d
+    call    ti_cell
+    mov     rdi, r12
+    mov     rsi, rax
+    call    ti_cells_equal
+    test    eax, eax
+    jnz     .fail4
+    inc     r13d
+    jmp     .pair_j
+.pair_next:
+    inc     ebx
+    cmp     ebx, ICON32_COUNT - 1
+    jb      .pair_i
+    xor     eax, eax
+    jmp     .out
+.fail1:
+    mov     eax, 1
+    jmp     .out
+.fail2:
+    mov     eax, 2
+    jmp     .out
+.fail3:
+    mov     eax, 3
+    jmp     .out
+.fail4:
+    mov     eax, 4
 .out:
     add     rsp, 8
     pop     r15

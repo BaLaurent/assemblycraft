@@ -1,19 +1,19 @@
 ; peerrender.asm - the other players of a multiplayer session. peers_render draws their avatars in
 ; the world pass (right after mobs_render: atlas on unit 0, light map on unit 1, every avatar binds
 ; the light at its body centre), peers_hud their name plates and health bars in the 2D pass (after
-; hud_mobs). An avatar is the Villagers' humanoid skin (folk_tables[FAC_VILLAGERS]) tinted half way
-; from white to the colour of its slot (peer_colors; red while PS_HURT), its arms and legs swinging
-; with the walk phase the netsync proxy keeps in PEER.walk, the right arm raised while PS_SWING is
-; set. No held item and no armour model. The local player (slot net_self), dead players and slots
-; that are not PEER_READY are skipped. Proxy bodies are in local coordinates, like every body.
+; hud_mobs). An avatar is the skin model m_avatar, untinted (red while PS_HURT) with the colour of its
+; slot (peer_colors) on the model's accent parts, its arms and legs swinging with the walk phase the
+; netsync proxy keeps in PEER.walk, the right arm raised while PS_SWING is set and the item the player
+; holds (PSTATE.held) in the right hand. No armour model. The local player (slot net_self), dead players
+; and slots that are not PEER_READY are skipped. Proxy bodies are in local coordinates, like every body.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global peers_render, peers_hud, peer_slot_rgba
+global peers_render, peers_hud, peer_slot_rgba, peer_colors
 
 extern net_role, net_self, net_peers, player
-extern folk_tables, mob_parts_draw
+extern skin_model_draw, m_avatar
 extern sincos_deg, light_bind_at, light_bind_index
 extern world_to_ui, ui_text_centered, ui_text_width, ui_rect, bar_px
 
@@ -21,7 +21,6 @@ extern world_to_ui, ui_text_centered, ui_text_width, ui_rect, bar_px
 section .rodata
 align 4
 f_one:      dd 1.0
-f_half:     dd 0.5
 f_255:      dd 255.0
 f_swing:    dd 30.0                     ; peak limb angle, degrees (as mobs_render)
 f_arm_up:   dd 60.0                     ; the right arm's extra angle while the player attacks (a positive
@@ -65,18 +64,9 @@ peer_slot_rgba:
     or      eax, 0xFF000000
     ret
 
-; the arguments of mob_parts_draw after the parts, the extra part and the count: the swing angle
-; and the tint, as peers_render keeps them on its stack
-%macro PARTS_ARGS 0
-    movss   xmm0, [rsp]
-    movss   xmm1, [rsp + 4]
-    movss   xmm2, [rsp + 8]
-    movss   xmm3, [rsp + 12]
-%endmacro
-
 ; peers_render(): the avatar of every other player; nothing offline
 ; rbx = slot, r12 = PEER*, r13d = its PS_* flags
-; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] the model's parts
+; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+16] the avatar's SKPOSE (24 bytes)
 peers_render:
     push    rbp
     mov     rbp, rsp
@@ -86,9 +76,6 @@ peers_render:
     sub     rsp, 40
     cmp     byte [net_role], NET_ROLE_OFF
     je      .ret
-    lea     rax, [folk_tables]
-    mov     rax, [rax + FAC_VILLAGERS*8]
-    mov     [rsp + 16], rax
     xor     ebx, ebx
     lea     r12, [net_peers]
 .peer:
@@ -108,27 +95,35 @@ peers_render:
     je      .swing_set
     mov     dword [rsp], 0              ; sitting in a plane: the limbs hang still
 .swing_set:
-    lea     rax, [rbx + rbx*2]
-    lea     rcx, [peer_colors]
-    lea     rcx, [rcx + rax*4]
-    movss   xmm0, [f_one]               ; tint = (1 + slot colour) / 2 per channel
-    addss   xmm0, [rcx]
-    mulss   xmm0, [f_half]
-    movss   xmm1, [f_one]
-    addss   xmm1, [rcx + 4]
-    mulss   xmm1, [f_half]
-    movss   xmm2, [f_one]
-    addss   xmm2, [rcx + 8]
-    mulss   xmm2, [f_half]
+    movss   xmm0, [f_one]               ; tint: white, red while hurt
+    movaps  xmm1, xmm0
+    movaps  xmm2, xmm0
     test    r13d, PS_HURT
     jz      .tinted
-    movss   xmm0, [f_one]               ; hurt: red
     movss   xmm1, [f_hurt_gb]
     movaps  xmm2, xmm1
 .tinted:
     movss   [rsp + 4], xmm0
     movss   [rsp + 8], xmm1
     movss   [rsp + 12], xmm2
+    xor     eax, eax                    ; the pose: the right arm raised while the player attacks,
+    mov     ecx, SKP_ARM_UP
+    test    r13d, PS_SWING
+    cmovnz  eax, ecx
+    mov     [rsp + 16 + SKPOSE.flags], eax
+    movss   xmm0, [f_arm_up]
+    movss   [rsp + 16 + SKPOSE.arm_deg], xmm0
+    movzx   eax, byte [r12 + PEER.ps + PSTATE.held]
+    mov     [rsp + 16 + SKPOSE.held], eax       ; the item in the right hand (0: a bare hand)
+    lea     rax, [rbx + rbx*2]
+    lea     rcx, [peer_colors]
+    lea     rcx, [rcx + rax*4]
+    mov     eax, [rcx]                  ; the slot colour on the accent parts
+    mov     [rsp + 16 + SKPOSE.accent], eax
+    mov     eax, [rcx + 4]
+    mov     [rsp + 16 + SKPOSE.accent + 4], eax
+    mov     eax, [rcx + 8]
+    mov     [rsp + 16 + SKPOSE.accent + 8], eax
     movss   xmm1, [r12 + PEER.body + BODY.y]    ; lit by the cell at the middle of the body
     addss   xmm1, [f_chest]
     movss   xmm0, [r12 + PEER.body + BODY.x]
@@ -145,34 +140,13 @@ peers_render:
     movss   xmm2, [f_one]
     xorps   xmm3, xmm3
     call    glRotatef                   ; front (-Z) turns to the player's heading
-    test    r13d, PS_SWING
-    jnz     .attack
-    mov     rdi, [rsp + 16]
-    xor     esi, esi
-    mov     edx, FOLK_PARTS
-    PARTS_ARGS
-    call    mob_parts_draw
-    jmp     .drawn
-.attack:
-    mov     rdi, [rsp + 16]             ; legs, body and left arm swing with the walk
-    xor     esi, esi
-    mov     edx, FOLK_ARM_R
-    PARTS_ARGS
-    call    mob_parts_draw
-    mov     rdi, [rsp + 16]             ; the right arm alone, raised on top of its walk swing
-    add     rdi, FOLK_ARM_R * FOLK_PART_SIZE
-    xor     esi, esi
-    mov     edx, 1
-    PARTS_ARGS
-    addss   xmm0, [f_arm_up]
-    call    mob_parts_draw
-    mov     rdi, [rsp + 16]             ; and the head
-    add     rdi, FOLK_HEAD * FOLK_PART_SIZE
-    xor     esi, esi
-    mov     edx, 1
-    PARTS_ARGS
-    call    mob_parts_draw
-.drawn:
+    lea     rdi, [m_avatar]
+    lea     rsi, [rsp + 16]
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    call    skin_model_draw
     call    glPopMatrix
 .next:
     add     r12, PEER_size

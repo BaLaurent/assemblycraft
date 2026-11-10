@@ -3,9 +3,15 @@
 ; packs the models' unwraps into the skin region of the atlas, paints them, and draws them.
 ;
 ;   skin_build(rdi atlas, rsi registry) -> eax 0 fits / 1 overflow
-;       registry = SKMODEL* array, 0-terminated. Packs first (registry order, record order; a shelf cursor
-;       from (0, SKIN_Y0), a part's unwrap footprint is 2(w+d) x (d+h) texels; a SKPART_AS part copies the
-;       size and place of its source), then paints every model's ops. On overflow nothing is painted.
+;       registry = SKMODEL* array, 0-terminated. Packs first: the unwrap footprint 2(w+d) x (d+h) texels of every
+;       own-skin part (SKR_AS = SKAS_NONE) of every model is collected in registry order, then record order (at
+;       most SK_MAX_RECTS = 4096), ordered by height descending, then width descending, then collection order (two
+;       stable counting passes, so the order is total and deterministic), and shelf-packed in that order: a cursor
+;       (cu, cv) from (0, SKIN_Y0) and the shelf height sh; a footprint with cu + width > ATLAS_W starts the next
+;       shelf (cu = 0, cv += sh, sh = 0) and is placed at (cu, cv), then cu += width, sh = max(sh, height). A
+;       footprint wider than the atlas, more than SK_MAX_RECTS of them, or cv + height > ATLAS_H return 1. Then
+;       every SKPART_AS part copies the size and place of its source part, and every model's ops are painted
+;       (registry order, op order). On overflow nothing is painted.
 ;   skin_face_rect(rdi part, esi face) -> eax u, edx v, ecx width, r8d height (atlas texels)
 ;   skin_face_uvs(rdi part, esi face, rdx out dd[8])   the four corners' (u, v) in 1/16 texel units
 ;   skin_model_draw(rdi SKMODEL*, rsi SKPOSE* or 0, xmm0 swing_deg, xmm1 r, xmm2 g, xmm3 b)
@@ -38,7 +44,16 @@ global skin_build, skin_check, skin_verify, skin_face_rect, skin_face_uvs, skin_
 
 extern art_blit, face_corners, held_item_draw
 
-%define SK_MAX_RECTS   4096             ; own-skin footprints skin_check can compare
+%define SK_MAX_RECTS   4096             ; own-skin footprints skin_build packs / skin_check can compare
+%define SK_MAX_FH      510              ; the tallest footprint, d + h (two bytes); the widest, 2(w+d), is ATLAS_W
+; the packer's scratch block (.bss, sk_blk): the entries are the own-skin parts in collection order
+%define SKB_REC        0                                    ; qword[SK_MAX_RECTS] the part records
+%define SKB_FW         (SKB_REC + 8 * SK_MAX_RECTS)         ; word[SK_MAX_RECTS] footprint widths
+%define SKB_FH         (SKB_FW + 2 * SK_MAX_RECTS)          ; word[SK_MAX_RECTS] footprint heights
+%define SKB_ORDA       (SKB_FH + 2 * SK_MAX_RECTS)          ; word[SK_MAX_RECTS] entry indices: the order
+%define SKB_ORDB       (SKB_ORDA + 2 * SK_MAX_RECTS)        ; word[SK_MAX_RECTS] the sort's other buffer
+%define SKB_COUNT      (SKB_ORDB + 2 * SK_MAX_RECTS)        ; dword[SK_MAX_FH + 1] the counting buckets
+%define SKB_SIZE       (SKB_COUNT + 4 * (SK_MAX_FH + 1))
 
 ; skin_model_draw locals (rsp-relative) and the draw state bits kept in DR_STATE
 %define DR_TINT        0                ; float r, g, b
@@ -82,9 +97,8 @@ section .bss
 align 8
 sk_parts:       resq 256                ; the part records of the model being worked on, by part index
 sk_rects:       resw 4 * SK_MAX_RECTS   ; skin_check: own-skin footprints (u, v, u_end, v_end)
-sk_cu:          resd 1                  ; the packer's shelf cursor and shelf height
-sk_cv:          resd 1
-sk_sh:          resd 1
+sk_blk:         resb SKB_SIZE           ; the packer's entries and sort buffers (SKB_*)
+sk_nent:        resd 1                  ; how many entries are in use
 sk_nrects:      resd 1
 
 section .text
@@ -178,56 +192,199 @@ sk_index_parts:
 .done:
     ret
 
-; sk_pack(rdi model) -> eax 0 placed / 1 overflow
-; Places the model's own-skin parts on the shelf cursor (sk_cu, sk_cv, sk_sh) and copies size and place
-; into its SKPART_AS parts. Also leaves the part records in sk_parts. Leaf.
-sk_pack:
+; sk_collect(rdi model) -> eax 0 / 1
+; Appends the model's own-skin parts (SKR_AS = SKAS_NONE) to the packer's entries in record order: the record
+; and its footprint 2(w+d) x (d+h). 1 when a footprint is wider than the atlas or SK_MAX_RECTS entries are
+; in use already (sk_nent counts them). Leaf.
+sk_collect:
     mov     rsi, [rdi + SKMODEL.recs]
-    lea     r8, [sk_parts]
-    xor     r9d, r9d                            ; part index
-    mov     r10d, [sk_cu]
-    mov     r11d, [sk_cv]
-    mov     edi, [sk_sh]
+    lea     r8, [sk_blk]
+    mov     r9d, [sk_nent]
 .rec:
     movzx   eax, byte [rsi + SKR_TYPE]
     cmp     eax, SKR_PART
     je      .part
     cmp     eax, SKR_BONE
     jne     .done                               ; SKR_END
+.next:
     add     rsi, SKREC_SIZE
     jmp     .rec
 .part:
-    mov     [r8 + r9*8], rsi
-    inc     r9d
-    movzx   eax, byte [rsi + SKR_AS]
-    cmp     eax, SKAS_NONE
-    jne     .shared
+    cmp     byte [rsi + SKR_AS], SKAS_NONE
+    jne     .next                               ; a SKPART_AS part takes its source's place later
     movzx   ecx, byte [rsi + SKR_W]
     movzx   edx, byte [rsi + SKR_D]
     add     ecx, edx
     add     ecx, ecx                            ; footprint width 2 (w + d)
     cmp     ecx, ATLAS_W
     ja      .overflow
-    lea     eax, [r10 + rcx]
-    cmp     eax, ATLAS_W
-    jbe     .on_shelf
-    xor     r10d, r10d                          ; next shelf
-    add     r11d, edi
-    xor     edi, edi
-.on_shelf:
+    cmp     r9d, SK_MAX_RECTS
+    jae     .overflow
     movzx   eax, byte [rsi + SKR_H]
     add     eax, edx                            ; footprint height d + h
-    lea     edx, [r11 + rax]
-    cmp     edx, ATLAS_H
-    ja      .overflow
-    mov     [rsi + SKR_U], r10w
-    mov     [rsi + SKR_V], r11w
-    add     r10d, ecx
-    cmp     edi, eax
-    cmovb   edi, eax                            ; shelf height = the tallest footprint
+    mov     [r8 + r9*8 + SKB_REC], rsi
+    mov     [r8 + r9*2 + SKB_FW], cx
+    mov     [r8 + r9*2 + SKB_FH], ax
+    inc     r9d
     jmp     .next
-.shared:
-    mov     rdx, [r8 + rax*8]                   ; the source part (SKPART_AS: an earlier one)
+.done:
+    mov     [sk_nent], r9d
+    xor     eax, eax
+    ret
+.overflow:
+    mov     eax, 1
+    ret
+
+; sk_pass(rdi in, rsi out, rdx dim word[], ecx K, r8d n)
+; One stable counting-sort pass: the n entry indices at rdi go to rsi in ascending key K - dim[entry], so in
+; descending dim, equal dims keeping their order; dim <= K. O(n + K). Leaf; clobbers r9-r11.
+sk_pass:
+    push    rbx
+    lea     r9, [sk_blk + SKB_COUNT]
+    xor     eax, eax
+    xor     r10d, r10d
+.zero:
+    mov     [r9 + r10*4], eax
+    inc     r10d
+    cmp     r10d, ecx
+    jbe     .zero                               ; buckets 0..K
+    xor     r10d, r10d
+.count:
+    cmp     r10d, r8d
+    jae     .counted
+    movzx   eax, word [rdi + r10*2]
+    movzx   r11d, word [rdx + rax*2]
+    neg     r11d
+    add     r11d, ecx                           ; key
+    inc     dword [r9 + r11*4]
+    inc     r10d
+    jmp     .count
+.counted:
+    xor     eax, eax                            ; bucket -> where its entries start
+    xor     r10d, r10d
+.prefix:
+    mov     r11d, [r9 + r10*4]
+    mov     [r9 + r10*4], eax
+    add     eax, r11d
+    inc     r10d
+    cmp     r10d, ecx
+    jbe     .prefix
+    xor     r10d, r10d
+.scatter:
+    cmp     r10d, r8d
+    jae     .done
+    movzx   eax, word [rdi + r10*2]
+    movzx   r11d, word [rdx + rax*2]
+    neg     r11d
+    add     r11d, ecx
+    mov     ebx, [r9 + r11*4]
+    inc     dword [r9 + r11*4]
+    mov     [rsi + rbx*2], ax                   ; in input order within a bucket: stable
+    inc     r10d
+    jmp     .scatter
+.done:
+    pop     rbx
+    ret
+
+; sk_sort()
+; Puts the entry indices into SKB_ORDA in packing order: footprint height descending, then width descending,
+; then collection order (registry, then record order). LSD radix: a stable pass by width, then one by height.
+; No recursion, O(n + ATLAS_W + SK_MAX_FH) for n entries.
+sk_sort:
+    sub     rsp, 8
+    lea     r9, [sk_blk]
+    mov     r8d, [sk_nent]
+    xor     eax, eax
+.ident:
+    cmp     eax, r8d
+    jae     .passes
+    mov     [r9 + rax*2 + SKB_ORDA], ax         ; collection order to start with
+    inc     eax
+    jmp     .ident
+.passes:
+    lea     rdi, [r9 + SKB_ORDA]                ; by width, descending: key = ATLAS_W - width
+    lea     rsi, [r9 + SKB_ORDB]
+    lea     rdx, [r9 + SKB_FW]
+    mov     ecx, ATLAS_W
+    call    sk_pass
+    lea     r9, [sk_blk]
+    mov     r8d, [sk_nent]
+    lea     rdi, [r9 + SKB_ORDB]                ; then by height, descending: key = SK_MAX_FH - height
+    lea     rsi, [r9 + SKB_ORDA]
+    lea     rdx, [r9 + SKB_FH]
+    mov     ecx, SK_MAX_FH
+    call    sk_pass
+    add     rsp, 8
+    ret
+
+; sk_place() -> eax 0 / 1
+; Shelf-packs the entries in sorted order from (0, SKIN_Y0): the cursor (cu, cv) and the shelf height sh. An
+; entry that does not fit in the rest of the shelf (cu + width > ATLAS_W) starts the next one (cu = 0,
+; cv += sh, sh = 0); it is placed at (cu, cv), then cu += width and sh = the tallest. 1 when cv + height would
+; leave the atlas. Writes SKR_U and SKR_V of each record. Leaf.
+sk_place:
+    push    rbx
+    mov     r8d, [sk_nent]
+    lea     r9, [sk_blk]
+    xor     ecx, ecx                            ; the entry's rank in the order
+    xor     edi, edi                            ; cu
+    mov     edx, SKIN_Y0                        ; cv
+    xor     esi, esi                            ; sh
+.next:
+    cmp     ecx, r8d
+    jae     .ok
+    movzx   eax, word [r9 + rcx*2 + SKB_ORDA]   ; the entry
+    movzx   r10d, word [r9 + rax*2 + SKB_FW]
+    movzx   r11d, word [r9 + rax*2 + SKB_FH]
+    mov     rax, [r9 + rax*8 + SKB_REC]         ; its record
+    lea     ebx, [rdi + r10]
+    cmp     ebx, ATLAS_W
+    jbe     .on_shelf
+    xor     edi, edi                            ; next shelf
+    add     edx, esi
+    xor     esi, esi
+.on_shelf:
+    lea     ebx, [rdx + r11]
+    cmp     ebx, ATLAS_H
+    ja      .overflow
+    mov     [rax + SKR_U], di
+    mov     [rax + SKR_V], dx
+    add     edi, r10d
+    cmp     esi, r11d
+    cmovb   esi, r11d                           ; shelf height = the tallest footprint
+    inc     ecx
+    jmp     .next
+.ok:
+    xor     eax, eax
+    pop     rbx
+    ret
+.overflow:
+    mov     eax, 1
+    pop     rbx
+    ret
+
+; sk_resolve_as(rdi model)
+; Every SKPART_AS part takes w, h, d, u and v of its source part, in record order (a source is an earlier
+; part, so a chain resolves). Leaves the model's part records in sk_parts.
+sk_resolve_as:
+    sub     rsp, 8
+    call    sk_index_parts                      ; keeps rdi
+    mov     rsi, [rdi + SKMODEL.recs]
+    lea     r8, [sk_parts]
+.rec:
+    movzx   eax, byte [rsi + SKR_TYPE]
+    cmp     eax, SKR_PART
+    je      .part
+    cmp     eax, SKR_BONE
+    jne     .done
+.next:
+    add     rsi, SKREC_SIZE
+    jmp     .rec
+.part:
+    movzx   eax, byte [rsi + SKR_AS]
+    cmp     eax, SKAS_NONE
+    je      .next
+    mov     rdx, [r8 + rax*8]                   ; the source part
     movzx   eax, byte [rdx + SKR_W]
     mov     [rsi + SKR_W], al
     movzx   eax, byte [rdx + SKR_H]
@@ -236,17 +393,9 @@ sk_pack:
     mov     [rsi + SKR_D], al
     mov     eax, [rdx + SKR_U]                  ; u and v, two words
     mov     [rsi + SKR_U], eax
-.next:
-    add     rsi, SKREC_SIZE
-    jmp     .rec
+    jmp     .next
 .done:
-    mov     [sk_cu], r10d
-    mov     [sk_cv], r11d
-    mov     [sk_sh], edi
-    xor     eax, eax
-    ret
-.overflow:
-    mov     eax, 1
+    add     rsp, 8
     ret
 
 ; sk_fill_rect(rdi atlas, esi x, edx y, ecx w, r8d h, r9d colour, r10d noise)
@@ -539,8 +688,9 @@ sk_paint:
     ret
 
 ; skin_build(rdi atlas, rsi registry: SKMODEL* array, 0-terminated) -> eax 0 fits / 1 overflow
-; Packs every model (writing SKR_U / SKR_V and the sizes of the SKPART_AS parts into the records), then
-; paints every model's ops into the atlas. On overflow it returns 1 before painting anything.
+; Packs every model's own-skin parts together (collect, sort by height then width, shelf-pack: see the header),
+; writing SKR_U / SKR_V into the records, then copies size and place into the SKPART_AS parts and paints every
+; model's ops into the atlas. On overflow it returns 1 before painting anything.
 skin_build:
     push    rbp
     mov     rbp, rsp
@@ -550,19 +700,30 @@ skin_build:
     sub     rsp, 8
     mov     rbx, rdi
     mov     r12, rsi
-    mov     dword [sk_cu], 0
-    mov     dword [sk_cv], SKIN_Y0
-    mov     dword [sk_sh], 0
+    mov     dword [sk_nent], 0
     mov     r13, rsi
-.pack:
+.collect:
+    mov     rdi, [r13]
+    test    rdi, rdi
+    jz      .place
+    call    sk_collect
+    test    eax, eax
+    jnz     .out                                ; 1: a footprint wider than the atlas, or too many parts
+    add     r13, 8
+    jmp     .collect
+.place:
+    call    sk_sort
+    call    sk_place
+    test    eax, eax
+    jnz     .out                                ; 1: the shelves leave the atlas
+    mov     r13, r12
+.resolve:
     mov     rdi, [r13]
     test    rdi, rdi
     jz      .paint
-    call    sk_pack
-    test    eax, eax
-    jnz     .out
+    call    sk_resolve_as
     add     r13, 8
-    jmp     .pack
+    jmp     .resolve
 .paint:
     mov     r13, r12
 .paint_one:
@@ -809,7 +970,8 @@ sk_chk_paint:
 ;   4  two own-skin footprints overlap
 ;   5  a face with a bare texel: every texel of a solid part's faces must be opaque (alpha > 127), each
 ;      face of a SKPF_CUTOUT part needs at least one opaque texel
-;   6  more than SK_MAX_RECTS own-skin parts in the registry
+;   6  more than SK_MAX_RECTS own-skin footprints in the registry (skin_build refuses that many parts, so
+;      only skin_verify on its own gets here)
 skin_verify:
     push    rbx
     push    r12
@@ -836,7 +998,8 @@ skin_verify:
 ; The whole proof for a registry on an atlas of the caller's (a zeroed 256 x 4096 RGBA buffer, or one
 ; texgen_build made): skin_build runs first, so this is the one call a test needs (and calling skin_build
 ; before is harmless, it gives the same atlas again), then skin_verify's checks:
-;   1  the unwraps do not fit (skin_build returned 1, nothing was painted)
+;   1  the unwraps do not fit: skin_build returned 1 (a footprint wider than the atlas, more than
+;      SK_MAX_RECTS own-skin parts, or the shelves leave the atlas) and painted nothing
 ;   2..6  skin_verify's
 skin_check:
     push    rbx

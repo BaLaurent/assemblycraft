@@ -16,12 +16,12 @@ default rel
 global book_reset, book_draw, book_ghost_draw, book_tip
 
 extern ui_mx, ui_my, ui_input
-extern ui_rect, ui_frame, ui_text_ink_centered, ui_button, ui_slot, ui_tile_icon
+extern ui_rect, ui_frame, ui_text_ink_centered, ui_button, ui_slot, ui_item_icon_tint
 extern inv, craft_size
 extern recipes, recipes_end
 extern recipe_uses, recipe_have, recipe_fits, recipe_sets, recipe_fill
 extern cont_fill_from_inv, inv_count
-extern item_names, item_icon, item_burn, item_smelt, item_max_stack
+extern item_names, item_burn, item_smelt, item_max_stack
 extern audio_play, i32_to_str
 
 %define BOOK_CRAFT      0               ; book kinds (invscreen.asm passes the same numbers)
@@ -914,14 +914,12 @@ book_ghost_draw:
     imul    ecx, r14d, CELL
     lea     ecx, [r13 + rcx + 1]
     mov     [rsp + 8], ecx
-    mov     eax, [rsp]
-    lea     rdx, [item_icon]
-    movzx   edi, word [rdx + rax*2]
+    mov     edi, [rsp]
     mov     esi, [rsp + 4]
     mov     edx, [rsp + 8]
     mov     ecx, 16
     mov     r8d, RGBA(255, 255, 255, 150)
-    call    ui_tile_icon
+    call    ui_item_icon_tint
     mov     rdi, rbx
     mov     esi, [rsp]
     call    recipe_uses

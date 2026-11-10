@@ -6,8 +6,8 @@
 ; 256 x 1 light map rebuilt every frame. Every chunk of the streamed world has two VBO ranges
 ; (opaque and alpha-tested vertices first, translucent vertices after them) in the buffer
 ; slot_vbo[slot * 16 + cy], slot = the column's record index in the column table (world_column_slot).
-; render_box and render_box_px are the textured box primitives shared with mobrender.asm,
-; itemmodel.asm and hand.asm; the CPU copy of the atlas is exported too.
+; render_box and render_box_px are the textured box primitives shared with arrows.asm, itemmodel.asm and
+; gunmodel.asm; the CPU copy of the atlas is exported too.
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -15,7 +15,7 @@ default rel
 global render_init, render_update_chunks, render_column_freed, render_world
 global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, frustum_test, tex_id, atlas, face_corners
 
-extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
+extern texgen_build, icons_build, item_icons32, skin_build, skin_models, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
 extern mobs_render, boats_render, planes_render, drops_render, arrows_render, tnt_render, peers_render
@@ -131,16 +131,25 @@ section .text
     TEXPARAM GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE
 %endmacro
 
-; render_init(): atlas texture, texture matrix, VBO names, fog mode, alpha test, and the
-; unit-1 light map: a 256 x 1 texture (filled every frame) that multiplies the previous colour,
-; previous alpha untouched. Its texture matrix maps the vertex's packed light index i (the s
-; coordinate, t = 0) to ((i + 0.5) / 256, 0.5): translate(1/512, 0.5, 0) . scale(1/256, 1, 1)
+; render_init(): paints the CPU atlas (texgen_build: tiles and font; icons_build: the 32x32 item icons of
+; item_icons32; skin_build: the model unwraps of skin_models, packed and painted in the skin region; its result
+; is not checked, test_skin_models proves that the registry fits), uploads it as the atlas texture and sets up
+; the texture matrix, VBO names, fog mode, alpha test and the unit-1 light map: a 256 x 1 texture (filled every
+; frame) that multiplies the previous colour, previous alpha untouched. Its texture matrix maps the vertex's
+; packed light index i (the s coordinate, t = 0) to ((i + 0.5) / 256, 0.5): translate(1/512, 0.5, 0) .
+; scale(1/256, 1, 1)
 render_init:
     push    rbp
     mov     rbp, rsp
     sub     rsp, 32
     lea     rdi, [atlas]
     call    texgen_build
+    lea     rdi, [atlas]
+    lea     rsi, [item_icons32]
+    call    icons_build
+    lea     rdi, [atlas]
+    lea     rsi, [skin_models]
+    call    skin_build
     mov     edi, 1
     lea     rsi, [tex_id]
     call    glGenTextures
@@ -946,7 +955,7 @@ render_box:
     jmp     box_draw
 
 ; render_box16(rdi box float[6]; rsi tiles word[6]; rdx shades float[6]; xmm0 r, xmm1 g, xmm2 b)
-; render_box with 16-bit atlas tile ids (the faction skins live at tiles 304..323).
+; render_box with 16-bit atlas tile ids (the block tiles past 255, such as the dry grass at 324).
 render_box16:
     lea     rcx, [px_full]
     mov     eax, 1

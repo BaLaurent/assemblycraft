@@ -1246,15 +1246,12 @@ test_new_blocks_tables:
     movzx   eax, byte [block_base + BIRCH_LEAVES]
     cmp     eax, BIRCH_LEAVES
     jne     .fail
-    ; items: BOAT stacks to 1, icons, names
+    ; items: BOAT stacks to 1, the bed's icon tile, names
     movzx   eax, byte [item_max_stack + BOAT]
     cmp     eax, 1
     jne     .fail
     movzx   eax, word [item_icon + BED*2]
     cmp     eax, TILE_ICON_BED
-    jne     .fail
-    movzx   eax, word [item_icon + BOAT*2]
-    cmp     eax, TILE_ICON_BOAT
     jne     .fail
     lea     rbx, [name_rows]
 .name:
@@ -1280,14 +1277,9 @@ test_new_blocks_tables:
     ret
 
 section .rodata
-; the 22 tiles 0.10 draws: shrine top and side, then the faction skins 304..323
+; the 2 tiles 0.10 draws: shrine top and side
 art_tiles:
     dw TILE_SHRINE_TOP, TILE_SHRINE_SIDE
-%assign art_i 0
-%rep 20
-    dw TILE_FOLK0 + art_i
-%assign art_i art_i + 1
-%endrep
 art_tiles_end:
 nm_shrine:  db "Shrine", 0
 t_minus_one: dd -1.0
@@ -1301,9 +1293,9 @@ section .text
 ; test_shrine_block_tables() -> eax 0 pass
 ;   SHRINE .. SHRINE + 4: flags solid + opaque, tiles (TILE_SHRINE_TOP, TILE_SHRINE_SIDE,
 ;   TILE_STONE_BRICK), hardness -1, no drop, variant base SHRINE, light 10, no item form (stack 0,
-;   icon 0), the name "Shrine", right-clickable; SHRINE + 5 is not a block. The atlas draws the 22
-;   0.10 tiles (228, 229, 304..323) fully opaque with no black pixel (a bitmap char missing from
-;   its palette would leave a transparent or black one).
+;   icon 0), the name "Shrine", right-clickable; SHRINE + 5 is not a block. The atlas draws the 2
+;   0.10 tiles (228, 229) fully opaque with no black pixel (a bitmap char missing from its palette
+;   would leave a transparent or black one).
 test_shrine_block_tables:
     push    rbp
     mov     rbp, rsp

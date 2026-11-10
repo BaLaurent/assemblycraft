@@ -1,42 +1,32 @@
-; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken box models, faction folk
-; and the Fallen King boss, drawn with the state render_world leaves set up:
-; atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog,
-; alpha test, face culling.
+; mobrender.asm - zombie, pig, creeper, skeleton, spider and chicken, the faction folk and the Fallen King boss,
+; drawn as skin models (skin.asm: the models of skins_mobs.asm and skins_folk.asm) with the state render_world
+; leaves set up: atlas on unit 0, light map on unit 1 (each mob binds the light at its body centre), fog, alpha
+; test, face culling.
 ; Model space has the front at -Z; limbs swing about X at their pivot. A mob is tinted by what it
 ; is doing and suffering (hit red, wind-up red flicker, a raging folk red, frozen and chilled blue,
 ; burning orange flicker, poisoned green, stun yellow flicker, a champion its faction colour, a
 ; captive grey, elite gold; first one wins) and sized by what it is (elite 1.2 x, wind-up surge
-; 1.05 x, creeper swell). A folk wears its faction's skin plus one more part for its role.
+; 1.05 x, creeper swell). A folk wears its faction's model (the Villagers' leader and trader their own
+; robes) plus one more model for its role (crown, hat, helmet, hood or pack) and holds its weapon
+; (MOB.wid) in the right hand; a skeleton and the boss hold the item their model carries by default.
 %include "common.inc"
 %include "gl.inc"
 default rel
 
-global mobs_render, mob_parts_draw, folk_tables
+global mobs_render
 
-extern mobs, render_box16, sincos_deg, light_bind_at, light_bind_index
-
-; part record: box (lo xyz, hi xyz), tile per face (+X -X +Y -Y +Z -Z, 16-bit atlas ids), pivot y,
-; pivot z, swing factor (limb angle = factor * walk swing; 0 = rigid)
-%define PART_SIZE FOLK_PART_SIZE
-%define P_BOX     0
-%define P_TILES   24
-%define P_PIVOT_Y 36
-%define P_PIVOT_Z 40
-%define P_SWING   44
-
-; PART x0, y0, z0, x1, y1, z1, tile, front tile (-Z face), pivot y, pivot z, swing
-%macro PART 11
-    dd %1, %2, %3, %4, %5, %6
-    dw %7, %7, %7, %7, %7, %8
-    dd %9, %10, %11
-%endmacro
+extern mobs, sincos_deg, light_bind_at, light_bind_index, skin_model_draw
+extern m_zombie, m_pig, m_creeper, m_skeleton, m_spider, m_chicken, m_boss
+extern m_folk_villagers, m_folk_bandits, m_folk_cult, m_folk_beastfolk, m_folk_stonekin
+extern m_villager_elder, m_villager_merchant
+extern m_extra_hat, m_extra_helmet, m_extra_pack, m_extra_crown
+extern m_hood_villagers, m_hood_bandits, m_hood_cult, m_hood_beastfolk, m_hood_stonekin
 
 section .rodata
 align 4
 f_one:      dd 1.0
 f_half:     dd 0.5
 f_swing:    dd 30.0                     ; peak limb angle, degrees
-mob_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8   ; +X -X +Y -Y +Z -Z
 f_swell:    dd 0.0022222222             ; creeper swell: 20 % over 90 fuse steps
 f_elite_g:  dd 0.85                     ; elite tint (1, 0.85, 0.5)
 f_elite_b:  dd 0.5
@@ -61,184 +51,48 @@ champion_tint:                          ; per faction, in place of the elite gol
     dd 1.0, 0.85, 0.5                   ; Beastfolk
     dd 0.7, 0.85, 1.0                   ; Stonekin
 
-zombie_parts:
-    PART -0.25, 0.0, -0.125,  0.0, 0.75, 0.125,   TILE_ZOMBIE_PANTS, TILE_ZOMBIE_PANTS, 0.75, 0.0,  1.0    ; left leg
-    PART  0.0,  0.0, -0.125,  0.25, 0.75, 0.125,  TILE_ZOMBIE_PANTS, TILE_ZOMBIE_PANTS, 0.75, 0.0, -1.0    ; right leg
-    PART -0.25, 0.75, -0.125, 0.25, 1.5, 0.125,   TILE_ZOMBIE_SHIRT, TILE_ZOMBIE_SHIRT, 0.0, 0.0,  0.0     ; body
-    PART -0.5,  1.25, -0.75, -0.25, 1.5, 0.0,     TILE_ZOMBIE_SKIN, TILE_ZOMBIE_SKIN, 1.375, 0.0, -0.25    ; left arm
-    PART  0.25, 1.25, -0.75,  0.5,  1.5, 0.0,     TILE_ZOMBIE_SKIN, TILE_ZOMBIE_SKIN, 1.375, 0.0,  0.25    ; right arm
-    PART -0.25, 1.5, -0.25,   0.25, 2.0, 0.25,    TILE_ZOMBIE_SKIN, TILE_ZOMBIE_FACE, 0.0, 0.0,  0.0       ; head
-%define ZOMBIE_PARTS 6
-
-pig_parts:
-    PART -0.3125, 0.375, -0.5,   0.3125, 0.875, 0.5,     TILE_PIG_SKIN, TILE_PIG_SKIN, 0.0, 0.0, 0.0        ; body
-    PART -0.25,   0.5,   -0.875, 0.25,   1.0,  -0.5,     TILE_PIG_SKIN, TILE_PIG_FACE, 0.0, 0.0, 0.0        ; head
-    PART -0.3125, 0.0, -0.4375, -0.0625, 0.375, -0.1875, TILE_PIG_SKIN, TILE_PIG_SKIN, 0.375, -0.3125,  1.0  ; front left
-    PART  0.0625, 0.0, -0.4375,  0.3125, 0.375, -0.1875, TILE_PIG_SKIN, TILE_PIG_SKIN, 0.375, -0.3125, -1.0  ; front right
-    PART -0.3125, 0.0,  0.1875, -0.0625, 0.375,  0.4375, TILE_PIG_SKIN, TILE_PIG_SKIN, 0.375,  0.3125, -1.0  ; back left
-    PART  0.0625, 0.0,  0.1875,  0.3125, 0.375,  0.4375, TILE_PIG_SKIN, TILE_PIG_SKIN, 0.375,  0.3125,  1.0  ; back right
-%define PIG_PARTS 6
-
-creeper_parts:
-    PART -0.25, 0.375, -0.125,  0.25, 1.125, 0.125,  TILE_CREEPER_SKIN, TILE_CREEPER_SKIN, 0.0, 0.0, 0.0       ; body
-    PART -0.25, 1.125, -0.25,   0.25, 1.625, 0.25,   TILE_CREEPER_SKIN, TILE_CREEPER_FACE, 0.0, 0.0, 0.0       ; head
-    PART -0.25, 0.0, -0.375,    0.0,  0.375, -0.125, TILE_CREEPER_SKIN, TILE_CREEPER_SKIN, 0.375, -0.25,  1.0  ; front left
-    PART  0.0,  0.0, -0.375,    0.25, 0.375, -0.125, TILE_CREEPER_SKIN, TILE_CREEPER_SKIN, 0.375, -0.25, -1.0  ; front right
-    PART -0.25, 0.0,  0.125,    0.0,  0.375,  0.375, TILE_CREEPER_SKIN, TILE_CREEPER_SKIN, 0.375,  0.25, -1.0  ; back left
-    PART  0.0,  0.0,  0.125,    0.25, 0.375,  0.375, TILE_CREEPER_SKIN, TILE_CREEPER_SKIN, 0.375,  0.25,  1.0  ; back right
-%define CREEPER_PARTS 6
-
-skeleton_parts:
-    PART -0.1875, 0.0, -0.0625, -0.0625, 0.75, 0.0625, TILE_SKELETON_BONE, TILE_SKELETON_BONE, 0.75, 0.0,  1.0   ; left leg
-    PART  0.0625, 0.0, -0.0625,  0.1875, 0.75, 0.0625, TILE_SKELETON_BONE, TILE_SKELETON_BONE, 0.75, 0.0, -1.0   ; right leg
-    PART -0.25,   0.75, -0.125,  0.25,   1.5,  0.125,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 0.0,  0.0,  0.0   ; body
-    PART -0.375,  0.75, -0.0625, -0.25,  1.5,  0.0625, TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.4375, 0.0, -1.0 ; left arm
-    PART  0.25,   0.75, -0.0625,  0.375, 1.5,  0.0625, TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.4375, 0.0,  1.0 ; right arm
-    PART -0.25,   1.5,  -0.25,    0.25,  2.0,  0.25,   TILE_SKELETON_BONE, TILE_SKELETON_FACE, 0.0, 0.0,  0.0   ; head
-%define SKELETON_PARTS 6
-
-spider_parts:
-    PART -0.375,  0.25,   0.0,   0.375,  0.8125, 0.75,  TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.0, 0.0, 0.0   ; abdomen
-    PART -0.1875, 0.3125, -0.25, 0.1875, 0.6875, 0.0,   TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.0, 0.0, 0.0   ; thorax
-    PART -0.25,   0.25,  -0.75,  0.25,   0.75,  -0.25,  TILE_SPIDER_BODY, TILE_SPIDER_FACE, 0.0, 0.0, 0.0   ; head
-    PART -1.0, 0.4375, -0.4375, -0.1875, 0.5625, -0.3125, TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5, -0.375,  0.5  ; left legs, front to back
-    PART -1.0, 0.4375, -0.1875, -0.1875, 0.5625, -0.0625, TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5, -0.125, -0.5
-    PART -1.0, 0.4375,  0.0625, -0.1875, 0.5625,  0.1875, TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5,  0.125,  0.5
-    PART -1.0, 0.4375,  0.3125, -0.1875, 0.5625,  0.4375, TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5,  0.375, -0.5
-    PART 0.1875, 0.4375, -0.4375, 1.0, 0.5625, -0.3125,   TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5, -0.375, -0.5  ; right legs
-    PART 0.1875, 0.4375, -0.1875, 1.0, 0.5625, -0.0625,   TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5, -0.125,  0.5
-    PART 0.1875, 0.4375,  0.0625, 1.0, 0.5625,  0.1875,   TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5,  0.125, -0.5
-    PART 0.1875, 0.4375,  0.3125, 1.0, 0.5625,  0.4375,   TILE_SPIDER_BODY, TILE_SPIDER_BODY, 0.5,  0.375,  0.5
-%define SPIDER_PARTS 11
-
-chicken_parts:
-    PART -0.1875, 0.3125, -0.25,   0.1875, 0.75,   0.25,    TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, 0.0, 0.0, 0.0   ; body
-    PART -0.125,  0.5625, -0.4375, 0.125,  0.9375, -0.1875, TILE_CHICKEN_BODY, TILE_CHICKEN_FACE, 0.0, 0.0, 0.0   ; head
-    PART -0.25,   0.375,  -0.1875, -0.1875, 0.6875, 0.1875, TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, 0.0, 0.0, 0.0   ; left wing
-    PART  0.1875, 0.375,  -0.1875,  0.25,   0.6875, 0.1875, TILE_CHICKEN_BODY, TILE_CHICKEN_BODY, 0.0, 0.0, 0.0   ; right wing
-    PART -0.125,  0.0, -0.03125, -0.0625, 0.3125, 0.03125, TILE_CHICKEN_LEG, TILE_CHICKEN_LEG, 0.3125, 0.0,  1.0  ; left leg
-    PART  0.0625, 0.0, -0.03125,  0.125,  0.3125, 0.03125, TILE_CHICKEN_LEG, TILE_CHICKEN_LEG, 0.3125, 0.0, -1.0  ; right leg
-%define CHICKEN_PARTS 6
-
-; the villagers share one model, only the robe differs: legs, body, folded arms, head, nose
-%macro VILLAGER 1
-    PART -0.22, 0.0, -0.11,  0.0,  0.75, 0.11,  %1, %1, 0.75, 0.0,  1.0                 ; left leg
-    PART  0.0,  0.0, -0.11,  0.22, 0.75, 0.11,  %1, %1, 0.75, 0.0, -1.0                 ; right leg
-    PART -0.25, 0.75, -0.15, 0.25, 1.45, 0.15,  %1, %1, 0.0, 0.0, 0.0                   ; body
-    PART -0.3,  1.1, -0.3,   0.3,  1.35, -0.15, %1, %1, 0.0, 0.0, 0.0                   ; folded arms
-    PART -0.2,  1.45, -0.2,  0.2,  1.95, 0.2,   TILE_VILLAGER_SKIN, TILE_VILLAGER_FACE, 0.0, 0.0, 0.0   ; head
-    PART -0.05, 1.55, -0.3,  0.05, 1.72, -0.2,  TILE_VILLAGER_SKIN, TILE_VILLAGER_SKIN, 0.0, 0.0, 0.0   ; nose
-%endmacro
-merchant_parts:
-    VILLAGER TILE_MERCHANT_ROBE
-elder_parts:
-    VILLAGER TILE_ELDER_ROBE
-%define VILLAGER_PARTS 6
-
-; the folk share one model, only the skin differs: legs, body, arms, head
-%macro FOLK 4
-    PART -0.22, 0.0, -0.11,  0.0,  0.75, 0.11,  %4, %4, 0.75, 0.0,  1.0                 ; left leg
-    PART  0.0,  0.0, -0.11,  0.22, 0.75, 0.11,  %4, %4, 0.75, 0.0, -1.0                 ; right leg
-    PART -0.25, 0.75, -0.15, 0.25, 1.45, 0.15,  %3, %3, 0.0, 0.0, 0.0                   ; body
-    PART -0.38, 0.75, -0.1, -0.25, 1.45, 0.1,   %3, %3, 1.4, 0.0, -1.0                  ; left arm
-    PART  0.25, 0.75, -0.1,  0.38, 1.45, 0.1,   %3, %3, 1.4, 0.0,  1.0                  ; right arm
-    PART -0.2,  1.45, -0.2,  0.2,  1.95, 0.2,   %1, %2, 0.0, 0.0, 0.0                   ; head
-%endmacro
-; FOLK_SKIN f: the skin tiles 304 + 4f .. 304 + 4f + 3 of faction f
-%macro FOLK_SKIN 1
-    FOLK TILE_FOLK0 + 4 * %1 + TILE_FOLK_HEAD, TILE_FOLK0 + 4 * %1 + TILE_FOLK_FACE, TILE_FOLK0 + 4 * %1 + TILE_FOLK_TUNIC, TILE_FOLK0 + 4 * %1 + TILE_FOLK_PANTS
-%endmacro
-folk_parts_villagers:
-    FOLK_SKIN FAC_VILLAGERS
-folk_parts_bandits:
-    FOLK_SKIN FAC_BANDITS
-folk_parts_cult:
-    FOLK_SKIN FAC_CULT
-folk_parts_beastfolk:
-    FOLK_SKIN FAC_BEASTFOLK
-folk_parts_stonekin:
-    FOLK_SKIN FAC_STONEKIN
-
-; role extras: one more rigid part on top of the model
-extra_hat:                              ; non-Villagers leader
-    PART -0.22, 1.85, -0.22,  0.22, 2.0, 0.22,  TILE_GOLD_BLOCK, TILE_GOLD_BLOCK, 0.0, 0.0, 0.0
-extra_helmet:                           ; guard and patrol, except acolytes
-    PART -0.22, 1.7, -0.22,  0.22, 2.0, 0.22,  TILE_IRON_BLOCK, TILE_IRON_BLOCK, 0.0, 0.0, 0.0
-extra_pack:                             ; non-Villagers trader and any traveller
-    PART -0.2, 0.85, 0.15,  0.2, 1.35, 0.35,  TILE_CHEST_SIDE, TILE_CHEST_SIDE, 0.0, 0.0, 0.0
-extra_crown:                            ; champion
-    PART -0.23, 1.95, -0.23,  0.23, 2.15, 0.23,  TILE_BOSS_CROWN, TILE_BOSS_CROWN, 0.0, 0.0, 0.0
-extra_hoods:                            ; acolyte, one per faction in the faction's tunic tile
-%assign hood_f 0
-%rep 5
-    PART -0.22, 1.7, -0.22,  0.22, 2.02, 0.22,  TILE_FOLK0 + 4 * hood_f + TILE_FOLK_TUNIC, TILE_FOLK0 + 4 * hood_f + TILE_FOLK_TUNIC, 0.0, 0.0, 0.0
-%assign hood_f hood_f + 1
-%endrep
-
-boss_parts:                             ; the Fallen King, 3.3 blocks tall
-    PART -0.35, 0.0, -0.12, -0.1,  1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0,  1.0   ; left leg
-    PART  0.1,  0.0, -0.12,  0.35, 1.3, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 1.3, 0.0, -1.0   ; right leg
-    PART -0.45, 1.1, -0.25,  0.45, 2.4, 0.25,  TILE_BOSS_ROBE, TILE_BOSS_ROBE, 0.0, 0.0, 0.0           ; robe
-    PART -0.7,  1.4, -0.12, -0.45, 2.4, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 2.3, 0.0, -0.5   ; left arm
-    PART  0.45, 1.4, -0.12,  0.7,  2.4, 0.12,  TILE_SKELETON_BONE, TILE_SKELETON_BONE, 2.3, 0.0,  0.5   ; right arm
-    PART -0.35, 2.4, -0.35,  0.35, 3.1, 0.35,  TILE_SKELETON_BONE, TILE_BOSS_FACE, 0.0, 0.0, 0.0        ; head
-    PART -0.38, 3.1, -0.38,  0.38, 3.35, 0.38, TILE_BOSS_CROWN, TILE_BOSS_CROWN, 0.0, 0.0, 0.0         ; crown
-%define BOSS_PARTS 7
-
 align 8
-models:                                 ; indexed by type - 1: parts, part count
-    dq zombie_parts, ZOMBIE_PARTS
-    dq pig_parts, PIG_PARTS
-    dq creeper_parts, CREEPER_PARTS
-    dq skeleton_parts, SKELETON_PARTS
-    dq spider_parts, SPIDER_PARTS
-    dq chicken_parts, CHICKEN_PARTS
-    dq boss_parts, BOSS_PARTS
-    dq folk_parts_villagers, FOLK_PARTS  ; folk: folk_model picks the table
-
-align 8
-folk_tables:                            ; folk skins by faction
-    dq folk_parts_villagers, folk_parts_bandits, folk_parts_cult, folk_parts_beastfolk
-    dq folk_parts_stonekin
+mob_models:                             ; the model of each mob type, indexed by type - 1
+    dq m_zombie, m_pig, m_creeper, m_skeleton, m_spider, m_chicken, m_boss
+    dq 0                                ; MOB_FOLK: folk_model picks its models
+folk_models:                            ; the folk's body model by faction
+    dq m_folk_villagers, m_folk_bandits, m_folk_cult, m_folk_beastfolk, m_folk_stonekin
+folk_hoods:                             ; an acolyte's hood by faction
+    dq m_hood_villagers, m_hood_bandits, m_hood_cult, m_hood_beastfolk, m_hood_stonekin
+%if folk_models - mob_models != NUM_MOB_TYPES * 8
+%error "mob_models needs one entry per mob type"
+%endif
+%if folk_hoods - folk_models != NUM_FACTIONS * 8 || $ - folk_hoods != NUM_FACTIONS * 8
+%error "folk_models and folk_hoods need one model per faction"
+%endif
 
 section .text
 
-; DRAW_PART: render_box16 of the part at r14, tinted by the mob's hurt colour at [rsp + 4..12]
-%macro DRAW_PART 0
-    lea     rdi, [r14 + P_BOX]
-    lea     rsi, [r14 + P_TILES]
-    lea     rdx, [mob_shades]
-    movss   xmm0, [rsp + 4]
-    movss   xmm1, [rsp + 8]
-    movss   xmm2, [rsp + 12]
-    call    render_box16
-%endmacro
-
-; folk_model(rdi mob) -> rax = its 6-part table, rdx = its role extra part or 0
-; The Villagers' leader wears elder_parts and their trader merchant_parts; every other folk its
-; faction's skin. The extra: a champion's crown; else a hat for a leader of another faction; else
-; a hood for an acolyte guard or patrol, a helmet for any other; else a pack for a traveller and a
-; trader of another faction.
+; folk_model(rdi mob) -> rax = its body model, rdx = its role extra model or 0
+; The Villagers' leader wears m_villager_elder and their trader m_villager_merchant; every other folk its
+; faction's model. The extra: a champion's crown; else a hat for a leader of another faction; else a hood
+; for an acolyte guard or patrol, a helmet for any other; else a pack for a traveller and a trader of
+; another faction.
 folk_model:
     movzx   ecx, byte [rdi + MOB.faction]
     movzx   r8d, byte [rdi + MOB.role]
-    lea     rax, [folk_tables]
+    lea     rax, [folk_models]
     mov     rax, [rax + rcx * 8]
     test    ecx, ecx
     jnz     .extra
-    lea     rsi, [elder_parts]
+    lea     rsi, [m_villager_elder]
     cmp     r8d, ROLE_LEADER
     cmove   rax, rsi
-    lea     rsi, [merchant_parts]
+    lea     rsi, [m_villager_merchant]
     cmp     r8d, ROLE_TRADER
     cmove   rax, rsi
 .extra:
-    lea     rdx, [extra_crown]
+    lea     rdx, [m_extra_crown]
     cmp     r8d, ROLE_CHAMPION
     je      .done
     cmp     r8d, ROLE_LEADER
     jne     .not_leader
-    lea     rdx, [extra_hat]
+    lea     rdx, [m_extra_hat]
     test    ecx, ecx
     jnz     .done
     jmp     .none
@@ -248,15 +102,14 @@ folk_model:
     cmp     r8d, ROLE_PATROL
     jne     .not_fighter
 .fighter:
-    lea     rdx, [extra_helmet]
+    lea     rdx, [m_extra_helmet]
     cmp     byte [rdi + MOB.fclass], FCLASS_ACOLYTE
     jne     .done
-    imul    ecx, ecx, PART_SIZE
-    lea     rdx, [extra_hoods]
-    add     rdx, rcx
+    lea     rdx, [folk_hoods]
+    mov     rdx, [rdx + rcx * 8]
     ret
 .not_fighter:
-    lea     rdx, [extra_pack]
+    lea     rdx, [m_extra_pack]
     cmp     r8d, ROLE_TRAVELLER
     je      .done
     cmp     r8d, ROLE_CARAVAN
@@ -270,84 +123,17 @@ folk_model:
 .done:
     ret
 
-; mob_parts_draw(rdi parts, rsi extra or 0, edx count, xmm0 swing_deg, xmm1 r, xmm2 g, xmm3 b): draw
-; the first count parts of the table at rdi in the model space the caller has set up (translated to
-; the feet, turned to the heading, scaled: see mobs_render), every one tinted (r, g, b); a part with
-; a swing factor turns about X at its pivot by factor * swing_deg. Then the rigid part at rsi, when
-; there is one (a role extra). mobs_render and peers_render (peerrender.asm) draw their bodies with it.
-; r14 = part, r15d = parts left; stack: [rsp] swing, [rsp+4..12] tint rgb, [rsp+16] limb angle,
-; [rsp+32] the extra part (0 once drawn)
-mob_parts_draw:
-    push    rbp
-    mov     rbp, rsp
-    push    r14
-    push    r15
-    sub     rsp, 48
-    movss   [rsp], xmm0
-    movss   [rsp + 4], xmm1
-    movss   [rsp + 8], xmm2
-    movss   [rsp + 12], xmm3
-    mov     [rsp + 32], rsi
-    mov     r14, rdi
-    mov     r15d, edx
-    test    r15d, r15d
-    jz      .extra
-.part:
-    movss   xmm0, [r14 + P_SWING]
-    xorps   xmm1, xmm1
-    ucomiss xmm0, xmm1
-    jne     .swung
-    DRAW_PART
-    jmp     .part_next
-.swung:
-    mulss   xmm0, [rsp]
-    movss   [rsp + 16], xmm0
-    call    glPushMatrix
-    xorps   xmm0, xmm0
-    movss   xmm1, [r14 + P_PIVOT_Y]
-    movss   xmm2, [r14 + P_PIVOT_Z]
-    call    glTranslatef
-    movss   xmm0, [rsp + 16]
-    movss   xmm1, [f_one]
-    xorps   xmm2, xmm2
-    xorps   xmm3, xmm3
-    call    glRotatef
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    subss   xmm1, [r14 + P_PIVOT_Y]
-    xorps   xmm2, xmm2
-    subss   xmm2, [r14 + P_PIVOT_Z]
-    call    glTranslatef
-    DRAW_PART
-    call    glPopMatrix
-.part_next:
-    add     r14, PART_SIZE
-    dec     r15d
-    jnz     .part
-.extra:
-    mov     r14, [rsp + 32]             ; then the role extra part, if any
-    test    r14, r14
-    jz      .done
-    mov     qword [rsp + 32], 0
-    mov     r15d, 1
-    jmp     .part
-.done:
-    add     rsp, 48
-    pop     r15
-    pop     r14
-    pop     rbp
-    ret
-
 ; mobs_render(): draw every live mob.
 ; rbx = mob, r12 = end of the table, r13d = model index
-; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+20] flash flag, [rsp+24] size factor
+; stack: [rsp] swing angle, [rsp+4..12] tint rgb, [rsp+20] flash flag, [rsp+24] size factor,
+; [rsp+32] the role extra model (0 none), [rsp+40] the body model's SKPOSE (24 bytes)
 mobs_render:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     push    r13
-    sub     rsp, 40
+    sub     rsp, 72
     lea     rbx, [mobs]
     lea     r12, [mobs + MAX_MOBS * MOB_size]
 .mob:
@@ -511,24 +297,39 @@ mobs_render:
     mov     edi, GL_TEXTURE_2D
     call    glDisable
 .model:
-    shl     r13d, 4
-    lea     rax, [models]
-    mov     rdi, [rax + r13]            ; the model's parts and how many there are
-    mov     edx, [rax + r13 + 8]
-    xor     esi, esi                    ; no role extra part
+    lea     rax, [mob_models]
+    mov     rdi, [rax + r13 * 8]        ; the type's model (none for a folk)
+    mov     qword [rsp + 32], 0         ; no role extra model
     cmp     dword [rbx + MOB.type], MOB_FOLK
     jne     .draw
     mov     rdi, rbx
-    call    folk_model                  ; rax = its 6-part table, rdx = its role extra part or 0
+    call    folk_model                  ; rax = its body model, rdx = its role extra model or 0
     mov     rdi, rax
-    mov     rsi, rdx
-    mov     edx, FOLK_PARTS
+    mov     [rsp + 32], rdx
 .draw:
+    mov     dword [rsp + 40 + SKPOSE.flags], 0
+    mov     dword [rsp + 40 + SKPOSE.arm_deg], 0
+    movzx   eax, byte [rbx + MOB.wid]
+    mov     [rsp + 40 + SKPOSE.held], eax           ; the weapon in the right hand, 0 = the model's own
+    mov     eax, [f_one]
+    mov     [rsp + 40 + SKPOSE.accent], eax         ; accent parts stay white
+    mov     [rsp + 40 + SKPOSE.accent + 4], eax
+    mov     [rsp + 40 + SKPOSE.accent + 8], eax
+    lea     rsi, [rsp + 40]
     movss   xmm0, [rsp]
     movss   xmm1, [rsp + 4]
     movss   xmm2, [rsp + 8]
     movss   xmm3, [rsp + 12]
-    call    mob_parts_draw
+    call    skin_model_draw
+    mov     rdi, [rsp + 32]             ; then the role extra model, if any, without a pose
+    test    rdi, rdi
+    jz      .parts_done
+    xor     esi, esi
+    xorps   xmm0, xmm0
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [rsp + 12]
+    call    skin_model_draw
 .parts_done:
     cmp     dword [rsp + 20], 0
     je      .unflash
@@ -542,7 +343,7 @@ mobs_render:
     jb      .mob
     mov     edi, LIGHT_SKY_FULL
     call    light_bind_index
-    add     rsp, 40
+    add     rsp, 72
     pop     r13
     pop     r12
     pop     rbx

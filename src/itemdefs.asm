@@ -1,6 +1,6 @@
-; itemdefs.asm - per-item data tables, indexed by item id 0..230 (NUM_ITEMS).
+; itemdefs.asm - per-item data tables, indexed by item id 0..236 (NUM_ITEMS).
 ; Ids 0..136 are the blocks (variant ids: the item form is block_base), 137..143 are unused,
-; 144..230 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat/attachments.
+; 144..236 (FIRST_ITEM..) are tools/materials/food/armor/firearms/RPG gear/jewelry/boat/attachments/plane parts.
 ; Every table lists entries in ascending id order; PAD_TO fills the gaps.
 %include "common.inc"
 default rel
@@ -242,13 +242,9 @@ item_names:
     dq n_pengine, n_pwing, n_pfuse, n_pprop, n_ptail, n_plane
     END_TABLE item_names, 8, n_unused
 
-; 0.13 plane item icons: tiles 368..373, in the free stretch 368..380 between the first and second rows of
-; the silhouette block (365..367, 381..383, ...); drawn in texgen.asm
-%define TILE_ICON_PLANE0   368
-
-; atlas tile of the inventory icon (a word: the 0.10.4 tiles lie past 255): a block's side tile
-; or icon tile (0 for non-base variants), tiles 32.. for STICK..PORKCHOP,
-; TILE_ITEM0 + id - COAL from COAL to GOLD_COIN, then the jewelry, weapon and gun tiles
+; atlas tile of the inventory icon of a block (a word): its side tile or icon tile (0 for non-base variants).
+; The table ends at FIRST_ITEM: an item's icon is a 32x32 cell of the atlas (icons.asm, ICON32_Y0), found
+; from the id by ui_item_icon_tint and by the sprite path of itemmodel.asm, never through this table.
 align 2
 item_icon:
     dw 0, 0, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, TILE_TABLE_SIDE
@@ -282,26 +278,10 @@ item_icon:
     times 7 dw 0
     times 5 dw 0                        ; SHRINE: no item form
     times 2 dw 0                        ; DRY_GRASS, LAVA: no item form
-    PAD_TO item_icon, STICK, 2, 0
-%assign i 0
-%rep COAL - STICK
-    dw 32 + i
-%assign i i + 1
-%endrep
-%assign i 0
-%rep RING - COAL
-    dw TILE_ITEM0 + i
-%assign i i + 1
-%endrep
-    dw TILE_RING, TILE_AMULET, TILE_RING, TILE_RING ; ring, amulet, Phoenix Ring, Band of Storms
-    dw TILE_AMULET, TILE_AMULET         ; Ember, Viper amulets
-    dw TILE_IRON_HAMMER, TILE_DIAMOND_HAMMER, TILE_IRON_SPEAR, TILE_DIAMOND_SPEAR
-    dw TILE_ICON_BOAT
-    dw TILE_ICON_REVOLVER, TILE_ICON_HRIFLE, TILE_ICON_SCOPE, TILE_ICON_EXTMAG
-    dw TILE_ICON_RIFLED, TILE_ICON_COMP
-    dw TILE_ICON_PLANE0, TILE_ICON_PLANE0 + 1, TILE_ICON_PLANE0 + 2 ; engine, wing, fuselage
-    dw TILE_ICON_PLANE0 + 3, TILE_ICON_PLANE0 + 4, TILE_ICON_PLANE0 + 5 ; propeller, tail, airplane
-    END_TABLE item_icon, 2, 0
+    PAD_TO item_icon, FIRST_ITEM, 2, 0
+%if $ - item_icon != FIRST_ITEM * 2
+%error item_icon covers block ids only
+%endif
 
 ; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
 item_max_stack:

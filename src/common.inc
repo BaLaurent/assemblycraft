@@ -384,6 +384,12 @@ struc SKBMP
     .pad:   resb 6
 endstruc                                ; 24
 
+; 0.13 looks: entities are skin models and item icons are 32x32 cells (ICON32_Y0, SKIN_Y0 above), so the tiles
+; that depicted mobs, folk, the boss, the player's arm and the items are gone. Free atlas tiles: 32..42, 64..72,
+; 74..76, 78, 80..137, 173..179, 203..207, 216, 225, 304..323, 357..362, 368..373. Kept: 73, 77, 79 (the arrows'
+; steel, fletching and brass: arrows.asm; the muzzle flash: gunmodel.asm), 138 (a stat glyph) and the block, HUD, UI
+; and ability tiles.
+
 ; atlas tiles beyond the 0.1 block tiles 0..12
 %define TILE_TABLE_TOP     13
 %define TILE_TABLE_SIDE    14
@@ -412,34 +418,13 @@ endstruc                                ; 24
 %define TILE_FIRE1         58
 %define TILE_STONE_BRICK   59
 %define TILE_MOSSY_BRICK   60
-%define TILE_ZOMBIE_SKIN   64
-%define TILE_ZOMBIE_FACE   65
-%define TILE_ZOMBIE_SHIRT  66
-%define TILE_ZOMBIE_PANTS  67
-%define TILE_PIG_SKIN      68
-%define TILE_PIG_FACE      69
-%define TILE_PLAYER_SKIN   70
-%define TILE_CREEPER_SKIN  71
-%define TILE_CREEPER_FACE  72
 %define TILE_SKELETON_BONE 73
-%define TILE_SKELETON_FACE 74
-%define TILE_SPIDER_BODY   75
-%define TILE_SPIDER_FACE   76
 %define TILE_CHICKEN_BODY  77
-%define TILE_CHICKEN_FACE  78
 %define TILE_CHICKEN_LEG   79
-%define TILE_ITEM0         80           ; icon of item id i >= COAL is TILE_ITEM0 + i - COAL (80..138);
-                                        ; STICK..PORKCHOP use tiles 32 + i - STICK
+%define TILE_STAT_COIN     138          ; the gold coin glyph of the XP bonus, Gold find and Magic find stats (rpg.asm)
 %define TILE_ABILITY0      139          ; 139 + (archetype-1)*3 + slot, slots 0..2
 %define TILE_CLASS0        151          ; 151..154, archetype-1 (the path node icons)
 %define TILE_STAT0         155          ; 155 + stat id
-%define TILE_VILLAGER_SKIN 173
-%define TILE_VILLAGER_FACE 174
-%define TILE_MERCHANT_ROBE 175
-%define TILE_ELDER_ROBE    176
-%define TILE_BOSS_ROBE     177
-%define TILE_BOSS_FACE     178
-%define TILE_BOSS_CROWN    179
 %define TILE_DOOR_IRON_UPPER 15
 %define TILE_SANDSTONE_TOP 61
 %define TILE_SANDSTONE_SIDE 62
@@ -465,13 +450,7 @@ endstruc                                ; 24
 %define TILE_ICON_IRON_DOOR 251
 %define TILE_ICON_FENCE    252
 %define TILE_ICON_GLASS_PANE 253
-; 0.8 tiles: the only 23 free atlas tiles (203..207, 216..223, 232..239, 254, 255)
-%define TILE_RING          203
-%define TILE_AMULET        204
-%define TILE_IRON_HAMMER   205
-%define TILE_DIAMOND_HAMMER 206
-%define TILE_IRON_SPEAR    207
-%define TILE_DIAMOND_SPEAR 216
+; 0.8 tiles: 217..223, 232..239, 254, 255 (203..207 and 216 held the jewelry, hammer and spear icons before 0.13)
 %define TILE_ABILITY3_0    217          ; 217..220: slot-3 icon, archetype-1
 %define TILE_ATTR_STR      221
 %define TILE_ATTR_DEX      222
@@ -506,19 +485,12 @@ endstruc                                ; 24
 %define TILE_BED_HEAD_SIDE 214
 %define TILE_BED_FOOT_SIDE 215
 %define TILE_ICON_BED      224
-%define TILE_ICON_BOAT     225
 %define TILE_BUBBLE        226
 %define TILE_BUBBLE_POP    227
 %define TILE_SHRINE_TOP    228          ; 0.10: the last free byte tiles
 %define TILE_SHRINE_SIDE   229
 %define FONT_Y             256          ; glyph rows at atlas y 256..303, x 0..127
-; 0.10 faction skins, 16-bit tile ids past the font: faction f's tile k = TILE_FOLK0 + 4f + k
-%define TILE_FOLK0         304          ; 304..323
-%define TILE_FOLK_HEAD     0
-%define TILE_FOLK_FACE     1
-%define TILE_FOLK_TUNIC    2
-%define TILE_FOLK_PANTS    3
-; 0.10.1 block tiles, 16-bit ids past the faction skins
+; 0.10.1 block tiles, 16-bit ids past the font
 %define TILE_DRY_GRASS_TOP  324
 %define TILE_DRY_GRASS_SIDE 325
 %define TILE_LAVA           326
@@ -534,12 +506,6 @@ endstruc                                ; 24
 %define TILE_QUILL          351         ; quill left of a hovered button label
 %define TILE_CLASS_MARKSMAN 352         ; Path of the Marksman emblem
 %define TILE_MK_ABIL0       353         ; 353 + slot: Powder Grenade, Bullseye, Fan the Hammer, Flashbang
-%define TILE_ICON_REVOLVER  357         ; 357..362: revolver, hunting rifle, scope, extended
-%define TILE_ICON_HRIFLE    358         ; magazine, rifled barrel, compensator
-%define TILE_ICON_SCOPE     359
-%define TILE_ICON_EXTMAG    360
-%define TILE_ICON_RIFLED    361
-%define TILE_ICON_COMP      362
 %define TILE_SIL0           365         ; character silhouette: 3x6 tile block, sub-tile (r,c) = 365+16r+c
 %define NINE_PAGE           0           ; ui_nine kinds
 %define NINE_LEATHER        1
@@ -597,12 +563,6 @@ endstruc                                ; 24
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
 %define MAX_PLANES      4
-; the folk model of mobrender.asm (one part record per box; folk_parts_*): legs 0-1, body 2, left arm 3, right arm 4, head 5
-%define FOLK_PART_SIZE  48
-%define FOLK_PARTS      6
-%define FOLK_BODY       2
-%define FOLK_ARM_R      4
-%define FOLK_HEAD       5
 %define PLANE_SEATS     4               ; 0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner
 
 %define MOB_NONE        0

@@ -1,8 +1,10 @@
-; iconart_a.asm - the 32x32 item icons of the equipment, part A of the 0.13 "looks" art: tools, weapons, bows,
-; armour, firearms, ammunition, staffs, daggers, hammers, spears, flint and steel and the gun attachments (62
-; icons when complete; iconart_b.asm holds the other 31). The file holds the validated style samples
-; ib_iron_sword, ib_iron_pickaxe, ib_bow, ib_iron_chestplate and ib_revolver; the Wave 3 workers extend it, one
-; section per bitmap, with the conventions below.
+; iconart_a.asm - the 32x32 item icons of the tools and weapons, part A of the 0.13 "looks" art: the 20 tools (wood,
+; stone, iron, gold and diamond pickaxe, axe, shovel and sword), the bow, the arrow, the Celestial Bow, the staff,
+; the Archmage Staff, the iron and diamond dagger, Shadow Fang, the King's Blade, the iron and diamond hammer and
+; spear, and flint and steel: 34 icons. The armour, firearm, ammunition and attachment icons are drawn in
+; iconart_c.asm, the food, materials, potions, coin, jewelry, boat and plane items in iconart_b.asm. The validated
+; style samples ib_iron_sword, ib_iron_pickaxe and ib_bow are kept as they were signed off; the rest of the file
+; follows them, one section per bitmap, with the conventions below.
 ;
 ; Data only. icons.asm paints every SKBMP into the 32x32 atlas cell of its item (icon k = item id - FIRST_ITEM)
 ; through art_blit (art.asm): '.' and every char missing from the palette stay transparent. Palette colours are
@@ -20,40 +22,47 @@
 ;
 ; Role chars. One char means the same role in every bitmap of this file, so that a tier is a palette, not a bitmap:
 ;   1 2 3 4   the item's primary material, 1 highlight, 2 lit, 3 shaded, 4 deepest (also its selective outline):
-;             the tier metal, wood, stone or diamond (AC_<TIER>_1..4), the steel of a gun (AC_IRON_1..4)
-;   a b c d   wood, 1 highlight .. 4 deepest: handles, grips, bow limbs, gun stocks (AC_WOOD_1..4)
-;   e f g h   leather: armour lining, grip wraps (AC_LEATHER_1..4)
+;             the tier metal, planks, stone or diamond (AC_<TIER>_1..4), the steel of an arrow head, the blade of a
+;             unique weapon (Shadow Fang: black violet, King's Blade: white gold, Celestial Bow: sky blue)
+;   a b c d   wood, 1 highlight .. 4 deepest: handles, grips, shafts, bow limbs (AC_WOOD_1..4); a unique staff
+;             maps it to its own shaft (the Archmage Staff: violet)
+;   e f g h   leather: grip wraps (AC_LEATHER_1..4); a unique weapon maps it to its own wrap
 ;   i j k l   gold: brass fittings (AC_GOLD_1..4)
 ;   m n p     bone: caps (AC_BONE_1..3)
 ;   t u       bowstring, light and shade
+;   v w x y   the accent ramp of the item, 1 highlight .. 4 deepest (also its selective outline): the trim of a
+;             hammer, spear or dagger (iron tier: blackened steel, diamond tier: gold) and the gem, orb or ruby of
+;             a staff and of the unique blades
 ;   s         the white glint of metal
 ;   o         AC_OUTLINE
+;   A-Z       item-local roles of one bitmap, listed at its section: the arrow (F G H I feather, R Q N red
+;             cock feather) and flint and steel (J K L M flint, S T U sparks)
 ; A bitmap only uses the roles it needs; take a new role from a free letter and list it here.
 ;
-; Tiers. A tool, a sword or a piece of armour is drawn once per shape (one SKROWS, roles above) and the tiers
-; share it: one SKBMP line per item pairs the rows with the palette of its tier. TIER_PAL builds that palette: the
-; tier ramp as 1..4, the glint colour of the tier's material, and the roles every tier shares (wood, leather,
-; outline). Copy the missing lines to add a tier, then one SKBMP per item, e.g.
+; Tiers. A tool or a sword is drawn once per shape (one SKROWS, roles above) and the tiers share it: one SKBMP line
+; per item pairs the rows with the palette of its tier. TIER_PAL builds that palette: the tier ramp as 1..4, the glint
+; colour of the tier's material, and the roles every tier shares (wood, leather, outline). TRIM_PAL adds the trim ramp
+; v w x y for the shapes that carry one (hammer, spear, dagger: two tiers, told apart by the blade and by the trim).
+; Copy the missing lines to add a tier, then one SKBMP per item, e.g.
 ; SKBMP ib_gold_sword, sword_rows, 32, 32, tier_gold_pal:
-;   TIER_PAL tier_wood_pal,    AC_WOOD_1,  AC_WOOD_2,  AC_WOOD_3,  AC_WOOD_4,  AC_WOOD_1
+;   TIER_PAL tier_wood_pal,    RGBO(228,190,118), RGBO(196,152,86), RGBO(150,108,58), RGBO(100,70,36), RGBO(228,190,118)
 ;   TIER_PAL tier_stone_pal,   AC_STONE_1, AC_STONE_2, AC_STONE_3, AC_STONE_4, AC_STONE_1
-;   TIER_PAL tier_iron_pal,    AC_IRON_1,  AC_IRON_2,  AC_IRON_3,  AC_IRON_4,  RGBO(255,255,255)     (below)
+;   TIER_PAL tier_iron_pal,    AC_IRON_1,  AC_IRON_2,  AC_IRON_3,  AC_IRON_4,  RGBO(255,255,255)
 ;   TIER_PAL tier_gold_pal,    AC_GOLD_1,  AC_GOLD_2,  AC_GOLD_3,  AC_GOLD_4,  RGBO(255,252,214)
 ;   TIER_PAL tier_diamond_pal, AC_DIAM_1,  AC_DIAM_2,  AC_DIAM_3,  AC_DIAM_4,  RGBO(240,255,254)
-; (wood and stone have no specular: their glint is their highlight.) Mind the roles when a tier is also a handle
-; material: a wood sword has a wood blade (1..4) and a wood grip (a..d), told apart by the guard between them.
+; (wood and stone have no specular: their glint is their highlight.) The wood tier's 1..4 are planks, lighter and
+; yellower than the stick of the handle (a..d, AC_WOOD_1..4), so that a wood head or blade reads apart from its
+; handle: a wood sword has a plank blade and a stick grip, told apart by the guard between them.
 %include "common.inc"
 %include "art.inc"
 default rel
 
-; TIER_PAL label, ramp 1, ramp 2, ramp 3, ramp 4, glint
-%macro TIER_PAL 6
-align 8
-%1:
-    PALC '1', %2
-    PALC '2', %3
-    PALC '3', %4
-    PALC '4', %5
+; TIER_ROLES ramp 1, ramp 2, ramp 3, ramp 4, glint: the roles every tier shares (no label, no terminator)
+%macro TIER_ROLES 5
+    PALC '1', %1
+    PALC '2', %2
+    PALC '3', %3
+    PALC '4', %4
     PALC 'a', AC_WOOD_1
     PALC 'b', AC_WOOD_2
     PALC 'c', AC_WOOD_3
@@ -62,14 +71,42 @@ align 8
     PALC 'f', AC_LEATHER_2
     PALC 'g', AC_LEATHER_3
     PALC 'h', AC_LEATHER_4
-    PALC 's', %6
+    PALC 's', %5
     PALC 'o', AC_OUTLINE
+%endmacro
+
+; TIER_PAL label, ramp 1, ramp 2, ramp 3, ramp 4, glint
+%macro TIER_PAL 6
+align 8
+%1:
+    TIER_ROLES %2, %3, %4, %5, %6
     dq 0
 %endmacro
 
+; TRIM_PAL label, ramp 1, ramp 2, ramp 3, ramp 4, glint, trim 1, trim 2, trim 3, trim 4
+%macro TRIM_PAL 10
+align 8
+%1:
+    TIER_ROLES %2, %3, %4, %5, %6
+    PALC 'v', %7
+    PALC 'w', %8
+    PALC 'x', %9
+    PALC 'y', %10
+    dq 0
+%endmacro
+
+
 section .rodata
 
+TIER_PAL tier_wood_pal, RGBO(228,190,118), RGBO(196,152,86), RGBO(150,108,58), RGBO(100,70,36), RGBO(228,190,118)
+TIER_PAL tier_stone_pal, AC_STONE_1, AC_STONE_2, AC_STONE_3, AC_STONE_4, AC_STONE_1
 TIER_PAL tier_iron_pal, AC_IRON_1, AC_IRON_2, AC_IRON_3, AC_IRON_4, RGBO(255,255,255)
+TIER_PAL tier_gold_pal, AC_GOLD_1, AC_GOLD_2, AC_GOLD_3, AC_GOLD_4, RGBO(255,252,214)
+TIER_PAL tier_diamond_pal, AC_DIAM_1, AC_DIAM_2, AC_DIAM_3, AC_DIAM_4, RGBO(240,255,254)
+TRIM_PAL trim_iron_pal, AC_IRON_1, AC_IRON_2, AC_IRON_3, AC_IRON_4, RGBO(255,255,255), \
+    RGBO(144,148,162), RGBO(106,110,124), RGBO(74,78,92), RGBO(50,52,66)
+TRIM_PAL trim_diamond_pal, AC_DIAM_1, AC_DIAM_2, AC_DIAM_3, AC_DIAM_4, RGBO(240,255,254), \
+    AC_GOLD_1, AC_GOLD_2, AC_GOLD_3, AC_GOLD_4
 
 ; --------------------------------------------------------------------------------------------------------------------
 ; sword: ib_iron_sword. sword_rows is the bitmap of every sword tier (wood, stone, iron, gold, diamond)
@@ -113,7 +150,15 @@ SKROWS sword_rows, 32, 32
     SKROW "................................"  ; 31
 SKROWS_END
 align 8
+SKBMP ib_wood_sword, sword_rows, 32, 32, tier_wood_pal
+align 8
+SKBMP ib_stone_sword, sword_rows, 32, 32, tier_stone_pal
+align 8
 SKBMP ib_iron_sword, sword_rows, 32, 32, tier_iron_pal
+align 8
+SKBMP ib_gold_sword, sword_rows, 32, 32, tier_gold_pal
+align 8
+SKBMP ib_diamond_sword, sword_rows, 32, 32, tier_diamond_pal
 
 ; --------------------------------------------------------------------------------------------------------------------
 ; pickaxe: ib_iron_pickaxe. pickaxe_rows is the bitmap of every pickaxe tier
@@ -157,12 +202,123 @@ SKROWS pickaxe_rows, 32, 32
     SKROW "................................"  ; 31
 SKROWS_END
 align 8
+SKBMP ib_wood_pickaxe, pickaxe_rows, 32, 32, tier_wood_pal
+align 8
+SKBMP ib_stone_pickaxe, pickaxe_rows, 32, 32, tier_stone_pal
+align 8
 SKBMP ib_iron_pickaxe, pickaxe_rows, 32, 32, tier_iron_pal
+align 8
+SKBMP ib_gold_pickaxe, pickaxe_rows, 32, 32, tier_gold_pal
+align 8
+SKBMP ib_diamond_pickaxe, pickaxe_rows, 32, 32, tier_diamond_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; axe: ib_<tier>_axe. axe_rows is the bitmap of every axe tier
+;   A bearded head on the up-left side of the handle: the cutting edge faces the light (1 lit bevel, s glints), 2 the
+;   blade, 3 the shaded eye and poll; the handle is the stick of the pickaxe (a lit edge, b body, c shaded edge, grain).
+; --------------------------------------------------------------------------------------------------------------------
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS axe_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW ".....................44........."  ; 01
+    SKROW "...................4412o........"  ; 02
+    SKROW "..................41122o........"  ; 03
+    SKROW ".................411222o........"  ; 04
+    SKROW "................4s122222o......."  ; 05
+    SKROW "...............4s12222233o......"  ; 06
+    SKROW "..............411222223333o....."  ; 07
+    SKROW "..............4122222333333o...."  ; 08
+    SKROW ".............41222223333333o...."  ; 09
+    SKROW "..............ooooo33333333o...."  ; 10
+    SKROW "...................oo333333o...."  ; 11
+    SKROW "...................dab3333o....."  ; 12
+    SKROW "..................dabcoooo......"  ; 13
+    SKROW ".................dacco.........."  ; 14
+    SKROW "................dabco..........."  ; 15
+    SKROW "...............dabco............"  ; 16
+    SKROW "..............dabco............."  ; 17
+    SKROW ".............dacco.............."  ; 18
+    SKROW "............dabco..............."  ; 19
+    SKROW "...........dabco................"  ; 20
+    SKROW "..........dabco................."  ; 21
+    SKROW ".........dacco.................."  ; 22
+    SKROW "........dabco..................."  ; 23
+    SKROW ".......dabco...................."  ; 24
+    SKROW "......dabco....................."  ; 25
+    SKROW ".....dacco......................"  ; 26
+    SKROW "....dabco......................."  ; 27
+    SKROW "....dbco........................"  ; 28
+    SKROW ".....oo........................."  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_wood_axe, axe_rows, 32, 32, tier_wood_pal
+align 8
+SKBMP ib_stone_axe, axe_rows, 32, 32, tier_stone_pal
+align 8
+SKBMP ib_iron_axe, axe_rows, 32, 32, tier_iron_pal
+align 8
+SKBMP ib_gold_axe, axe_rows, 32, 32, tier_gold_pal
+align 8
+SKBMP ib_diamond_axe, axe_rows, 32, 32, tier_diamond_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; shovel: ib_<tier>_shovel. shovel_rows is the bitmap of every shovel tier
+;   A spade blade on the stick of the pickaxe: 1 lit rim, 2 body, 3 shaded half, s glints on the rim and the tip.
+; --------------------------------------------------------------------------------------------------------------------
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS shovel_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW ".......................44444...."  ; 01
+    SKROW "......................41ss12o..."  ; 02
+    SKROW ".....................41111123o.."  ; 03
+    SKROW "....................411222233o.."  ; 04
+    SKROW "...................4s12222333o.."  ; 05
+    SKROW "..................4s122223333o.."  ; 06
+    SKROW "..................41122233333o.."  ; 07
+    SKROW "..................4112233333o..."  ; 08
+    SKROW "..................411233333o...."  ; 09
+    SKROW "..................42233333o....."  ; 10
+    SKROW ".................da233333o......"  ; 11
+    SKROW "................dabcooooo......."  ; 12
+    SKROW "...............dabco............"  ; 13
+    SKROW "..............dacco............."  ; 14
+    SKROW ".............dabco.............."  ; 15
+    SKROW "............dabco..............."  ; 16
+    SKROW "...........dabco................"  ; 17
+    SKROW "..........dacco................."  ; 18
+    SKROW ".........dabco.................."  ; 19
+    SKROW "........dabco..................."  ; 20
+    SKROW ".......dabco...................."  ; 21
+    SKROW "......dacco....................."  ; 22
+    SKROW ".....dabco......................"  ; 23
+    SKROW "....dabco......................."  ; 24
+    SKROW "...dabco........................"  ; 25
+    SKROW "..dacco........................."  ; 26
+    SKROW ".dabco.........................."  ; 27
+    SKROW ".dbco..........................."  ; 28
+    SKROW "..oo............................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_wood_shovel, shovel_rows, 32, 32, tier_wood_pal
+align 8
+SKBMP ib_stone_shovel, shovel_rows, 32, 32, tier_stone_pal
+align 8
+SKBMP ib_iron_shovel, shovel_rows, 32, 32, tier_iron_pal
+align 8
+SKBMP ib_gold_shovel, shovel_rows, 32, 32, tier_gold_pal
+align 8
+SKBMP ib_diamond_shovel, shovel_rows, 32, 32, tier_diamond_pal
 
 ; --------------------------------------------------------------------------------------------------------------------
 ; bow: ib_bow (BOW)
 ;   Belly up and to the right, the string the straight light/shade line on the main diagonal from nock to nock;
-;   the grip is a leather wrap, the nocks are bone. ib_celestial_bow can reuse the rows with its own palette.
+;   the grip is a leather wrap, the nocks are bone.
 ; --------------------------------------------------------------------------------------------------------------------
 align 8
 bow_pal:
@@ -221,106 +377,565 @@ align 8
 SKBMP ib_bow, bow_rows, 32, 32, bow_pal
 
 ; --------------------------------------------------------------------------------------------------------------------
-; chestplate: ib_iron_chestplate. chestplate_rows is the bitmap of every chestplate tier (iron, gold, diamond)
-;   Front view: pauldrons and sleeves, a keel down the breast, a leather belt with a buckle of the tier metal, two
-;   tassets; the left half is lit (1 2), the right half shaded (3 4). The neck shows the leather lining (e f g h);
-;   s marks the pauldron rivets.
-; --------------------------------------------------------------------------------------------------------------------
-;          0         1         2         3
-;          01234567890123456789012345678901
-SKROWS chestplate_rows, 32, 32
-    SKROW "................................"  ; 00
-    SKROW "................................"  ; 01
-    SKROW "................................"  ; 02
-    SKROW "................................"  ; 03
-    SKROW ".....444444..........444444....."  ; 04
-    SKROW "....4111122o........4222223o...."  ; 05
-    SKROW "...41111123ohhhhhhhh42222233o..."  ; 06
-    SKROW "..4112222341hhhhhhhh242333344o.."  ; 07
-    SKROW "..4112s22341ffffffff24233s344o.."  ; 08
-    SKROW "..4112222342gggggggg342333344o.."  ; 09
-    SKROW "..411222234222212333342333344o.."  ; 10
-    SKROW "..422222234222212333342333444o.."  ; 11
-    SKROW "...o443333422221233334344444o..."  ; 12
-    SKROW "...4114444122221233334444433o..."  ; 13
-    SKROW "...4122241122221233344o23334o..."  ; 14
-    SKROW "...412223o112221233344o23334o..."  ; 15
-    SKROW "...412223o112221233344o23334o..."  ; 16
-    SKROW "...444444o112221233344o44444o..."  ; 17
-    SKROW "...422223o112221233344o33344o..."  ; 18
-    SKROW "....o3333o112211223344o3444o...."  ; 19
-    SKROW ".....ooooheeee1442eeeeooooo....."  ; 20
-    SKROW ".........hffff2442ffffo........."  ; 21
-    SKROW ".........hgggg2443ggggo........."  ; 22
-    SKROW "........44233322334444o4........"  ; 23
-    SKROW ".......41144444444444433o......."  ; 24
-    SKROW ".......41222222343333334o......."  ; 25
-    SKROW ".......42333333344444444o......."  ; 26
-    SKROW "........o33333334444444o........"  ; 27
-    SKROW ".........oooooooooooooo........."  ; 28
-    SKROW "................................"  ; 29
-    SKROW "................................"  ; 30
-    SKROW "................................"  ; 31
-SKROWS_END
-align 8
-SKBMP ib_iron_chestplate, chestplate_rows, 32, 32, tier_iron_pal
-
-; --------------------------------------------------------------------------------------------------------------------
-; revolver: ib_revolver (REVOLVER). The guns are drawn in side view, muzzle to the right and top, grip bottom-left
-;   Gun steel in 1..4 (the AC_IRON ramp), a wooden grip (a..d), brass trigger guard and butt cap (i..l).
+; celestial bow: ib_celestial_bow (CELESTIAL_BOW)
+;   The bow in white and sky blue 1 2 3 4, a gold grip wrap and gold tips i j k l with a star gem v w x y, a glowing
+;   string t u.
 ; --------------------------------------------------------------------------------------------------------------------
 align 8
-revolver_pal:
-    PALC '1', AC_IRON_1                     ; AC_IRON_1: glints on the cylinder and barrel
-    PALC '2', AC_IRON_2                     ; steel, lit edges
-    PALC '3', AC_IRON_3                     ; steel
-    PALC '4', AC_IRON_4                     ; steel, shaded; selective outline
-    PALC 'a', AC_WOOD_1
-    PALC 'b', AC_WOOD_2
-    PALC 'c', AC_WOOD_3
-    PALC 'd', AC_WOOD_4                     ; AC_WOOD_4: selective outline
+cbow_pal:
+    PALC '1', RGBO(250,254,255)             ; limb, the white of the lit edge
+    PALC '2', RGBO(176,232,255)             ; limb, pale blue
+    PALC '3', RGBO(104,186,238)             ; limb, sky blue
+    PALC '4', RGBO(48,110,184)              ; limb, deep blue; selective outline
     PALC 'i', AC_GOLD_1
     PALC 'j', AC_GOLD_2
     PALC 'k', AC_GOLD_3
-    PALC 'l', AC_GOLD_4                     ; AC_GOLD_4: selective outline
+    PALC 'l', AC_GOLD_4                     ; gold grip wrap and wing tips; selective outline
+    PALC 'v', RGBO(255,255,255)             ; star gem, 1 highlight
+    PALC 'w', RGBO(170,244,255)             ; star gem
+    PALC 't', RGBO(226,252,255)             ; string, light
+    PALC 'u', RGBO(110,190,236)             ; string, shade
     PALC 'o', AC_OUTLINE
-    PALC 's', RGBO(255,255,255)             ; glint
     dq 0
 ;          0         1         2         3
 ;          01234567890123456789012345678901
-SKROWS revolver_rows, 32, 32
+SKROWS cbow_rows, 32, 32
     SKROW "................................"  ; 00
-    SKROW "................................"  ; 01
-    SKROW "................................"  ; 02
-    SKROW "................................"  ; 03
-    SKROW "....44.........................."  ; 04
-    SKROW "...422o....................44..."  ; 05
-    SKROW "...4234o..................422o.."  ; 06
-    SKROW "....o334o44444444444444444433o.."  ; 07
-    SKROW "....4222222222222222221s122223o."  ; 08
-    SKROW "....42333342141341433333333334o."  ; 09
-    SKROW "....42333342342342444444444444o."  ; 10
-    SKROW "....423333423423424ooooooooooo.."  ; 11
-    SKROW "....423243423423424333333333o..."  ; 12
-    SKROW "....423433423423424444444444o..."  ; 13
-    SKROW "....423333423423424ooooooooo...."  ; 14
-    SKROW "....424444423423424o............"  ; 15
-    SKROW "....daabbcdo444444o............."  ; 16
-    SKROW "...daabbbcdio3oojo.............."  ; 17
-    SKROW "...daacbbcdio4oljo.............."  ; 18
-    SKROW "...daacbcdojkkkkko.............."  ; 19
-    SKROW "..daabbbcdooooooo..............."  ; 20
-    SKROW "..daabijcdo....................."  ; 21
-    SKROW "..daabjkcdo....................."  ; 22
-    SKROW ".daabcbcdo......................"  ; 23
-    SKROW ".daabcbcdo......................"  ; 24
-    SKROW ".daabbbcdo......................"  ; 25
-    SKROW ".liijjjjjo......................"  ; 26
-    SKROW ".lkkkkkkko......................"  ; 27
-    SKROW "..ooooooo......................."  ; 28
+    SKROW ".............4444444444........."  ; 01
+    SKROW "........l44441111111111o4......."  ; 02
+    SKROW ".....llli1111112221111122ol....."  ; 03
+    SKROW "....liii2333333333333321lijo...."  ; 04
+    SKROW "...liooooooooooooooo322liwkio..."  ; 05
+    SKROW "....out.............ooliwvwjo..."  ; 06
+    SKROW "......ut..............ojkwjl3o.."  ; 07
+    SKROW ".......ut..............oijl33o.."  ; 08
+    SKROW "........ut..............ol2233o."  ; 09
+    SKROW ".........ut..............o2233o."  ; 10
+    SKROW "..........ut.............42233o."  ; 11
+    SKROW "...........ut.............o133o."  ; 12
+    SKROW "............ut............4133o."  ; 13
+    SKROW ".............ut...........4123o."  ; 14
+    SKROW "..............ut..........4123o."  ; 15
+    SKROW "...............ut.........4123o."  ; 16
+    SKROW "................ut........4133o."  ; 17
+    SKROW ".................ut.......4133o."  ; 18
+    SKROW "..................ut......413o.."  ; 19
+    SKROW "...................ut.....413o.."  ; 20
+    SKROW "....................ut....413o.."  ; 21
+    SKROW ".....................ut...413o.."  ; 22
+    SKROW "......................ut..42jo.."  ; 23
+    SKROW ".......................ut.ljo..."  ; 24
+    SKROW "........................utljo..."  ; 25
+    SKROW ".........................uljo..."  ; 26
+    SKROW ".........................ljo...."  ; 27
+    SKROW "..........................o....."  ; 28
     SKROW "................................"  ; 29
     SKROW "................................"  ; 30
     SKROW "................................"  ; 31
 SKROWS_END
 align 8
-SKBMP ib_revolver, revolver_rows, 32, 32, revolver_pal
+SKBMP ib_celestial_bow, cbow_rows, 32, 32, cbow_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; arrow: ib_arrow (ARROW)
+;   Steel head 1 2 3 4, wood shaft a c, two fletching vanes that flare to the tail: a red cock feather R Q N and a
+;   white feather F G H I.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+arrow_pal:
+    PALC '1', AC_IRON_1
+    PALC '2', AC_IRON_2
+    PALC '3', AC_IRON_3
+    PALC '4', AC_IRON_4                     ; steel head; selective outline
+    PALC 'a', AC_WOOD_1
+    PALC 'c', AC_WOOD_3
+    PALC 'd', AC_WOOD_4                     ; shaft; selective outline
+    PALC 'F', RGBO(252,252,248)             ; feather, light
+    PALC 'G', RGBO(224,226,232)             ; feather
+    PALC 'H', RGBO(174,180,196)             ; feather, shade
+    PALC 'R', RGBO(222,70,60)               ; cock feather, mid
+    PALC 'Q', RGBO(160,40,46)               ; cock feather, shade
+    PALC 'N', RGBO(100,24,32)               ; cock feather, darkest: its selective outline
+    PALC 's', RGBO(255,255,255)             ; glint
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS arrow_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "................................"  ; 01
+    SKROW "............................4..."  ; 02
+    SKROW "...........................41o.."  ; 03
+    SKROW ".........................44s3o.."  ; 04
+    SKROW "........................4s23o..."  ; 05
+    SKROW "......................441233o..."  ; 06
+    SKROW ".....................412233o...."  ; 07
+    SKROW "....................4122333o...."  ; 08
+    SKROW "...................4122333o....."  ; 09
+    SKROW "..................41oaco3o......"  ; 10
+    SKROW "...................oaco.o......."  ; 11
+    SKROW "..................daco.........."  ; 12
+    SKROW ".................daco..........."  ; 13
+    SKROW "................daco............"  ; 14
+    SKROW "...............daco............."  ; 15
+    SKROW "..............daco.............."  ; 16
+    SKROW ".............daco..............."  ; 17
+    SKROW "............daco................"  ; 18
+    SKROW "...........daco................."  ; 19
+    SKROW ".........Ndaco.................."  ; 20
+    SKROW "........NQacGo.................."  ; 21
+    SKROW "......NNQacGo..................."  ; 22
+    SKROW ".....NRQacGFo..................."  ; 23
+    SKROW "...NNRQacGFo...................."  ; 24
+    SKROW "..NRRQacGFFo...................."  ; 25
+    SKROW ".NQQQacHHHo....................."  ; 26
+    SKROW "..ooacoooo......................"  ; 27
+    SKROW "....oo.........................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_arrow, arrow_rows, 32, 32, arrow_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; staff: ib_staff (STAFF)
+;   Wood shaft a b c with a leather wrap e f g h and a gold ferrule, a gold collar and cradle i j k l around a ruby
+;   v w x y.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+staff_pal:
+    PALC 'a', AC_WOOD_1
+    PALC 'b', AC_WOOD_2
+    PALC 'c', AC_WOOD_3
+    PALC 'd', AC_WOOD_4                     ; shaft; selective outline
+    PALC 'e', AC_LEATHER_1
+    PALC 'f', AC_LEATHER_2
+    PALC 'g', AC_LEATHER_3
+    PALC 'h', AC_LEATHER_4                  ; grip wrap
+    PALC 'i', AC_GOLD_1
+    PALC 'j', AC_GOLD_2
+    PALC 'k', AC_GOLD_3
+    PALC 'l', AC_GOLD_4                     ; ferrule, collar and cradle; selective outline
+    PALC 'v', RGBO(255,214,214)             ; ruby, 1 highlight
+    PALC 'w', RGBO(236,72,84)               ; ruby
+    PALC 'x', RGBO(190,28,52)               ; ruby
+    PALC 'y', RGBO(120,14,38)               ; ruby, deepest; selective outline
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS staff_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "......................yyyy......"  ; 01
+    SKROW ".....................yvwwwo....."  ; 02
+    SKROW "....................yvwwwwxo...."  ; 03
+    SKROW "...................yvwwwwxxxo..."  ; 04
+    SKROW "..................liwwwwxxxyko.."  ; 05
+    SKROW "..................liwwwxxxyyko.."  ; 06
+    SKROW "..................ljwwxxxyyyko.."  ; 07
+    SKROW "..................ljjxxxyyykko.."  ; 08
+    SKROW "..................lijjxyyykko..."  ; 09
+    SKROW ".................ljijjjkkkko...."  ; 10
+    SKROW ".................dakkkooooo....."  ; 11
+    SKROW "................dabclo.........."  ; 12
+    SKROW "...............dabcoo..........."  ; 13
+    SKROW "..............dabco............."  ; 14
+    SKROW ".............dabco.............."  ; 15
+    SKROW "............dabco..............."  ; 16
+    SKROW "...........dabco................"  ; 17
+    SKROW "..........hffco................."  ; 18
+    SKROW ".........hegho.................."  ; 19
+    SKROW "........hffgo..................."  ; 20
+    SKROW ".......hegho...................."  ; 21
+    SKROW "......dafgo....................."  ; 22
+    SKROW ".....dabco......................"  ; 23
+    SKROW "....dabco......................."  ; 24
+    SKROW "...dabco........................"  ; 25
+    SKROW "..lijco........................."  ; 26
+    SKROW "..ljko.........................."  ; 27
+    SKROW "...oo..........................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_staff, staff_rows, 32, 32, staff_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; archmage staff: ib_archmage_staff (ARCHMAGE_STAFF)
+;   A twisted violet shaft a b c d with gold rings, a gold collar and three claws i j k l around a cyan orb v w x y.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+astaff_pal:
+    PALC 'a', RGBO(122,92,168)              ; shaft, violet: lit
+    PALC 'b', RGBO(92,64,132)
+    PALC 'c', RGBO(64,42,98)
+    PALC 'd', RGBO(40,26,64)                ; shaft, deepest; selective outline
+    PALC 'i', AC_GOLD_1
+    PALC 'j', AC_GOLD_2
+    PALC 'k', AC_GOLD_3
+    PALC 'l', AC_GOLD_4                     ; rings, collar and claws; selective outline
+    PALC 'v', RGBO(232,255,255)             ; orb, 1 highlight
+    PALC 'w', RGBO(110,236,240)             ; orb
+    PALC 'x', RGBO(48,178,206)              ; orb
+    PALC 'y', RGBO(22,110,140)              ; orb, deepest; selective outline
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS astaff_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "......................yyy......."  ; 01
+    SKROW "....................yyvwwoy....."  ; 02
+    SKROW "...............w..lyvvwwwwxo...."  ; 03
+    SKROW "..............wvwliivwwwwxxo...."  ; 04
+    SKROW "...............w.livwwwwxxxyo..."  ; 05
+    SKROW ".................liwwwwxxxyyo..."  ; 06
+    SKROW ".................liwwwxxxyyyko.."  ; 07
+    SKROW ".................ljwwxxxyyykko.."  ; 08
+    SKROW "..................ooxxxyyyyko..."  ; 09
+    SKROW ".................liioxyyyooko..."  ; 10
+    SKROW ".................ljjkjkko..o...."  ; 11
+    SKROW "................dbblkooo....w..."  ; 12
+    SKROW "...............dbcdoo......wvw.."  ; 13
+    SKROW "..............lijdo.........w..."  ; 14
+    SKROW ".............dbbko.............."  ; 15
+    SKROW "............dbcdo..............."  ; 16
+    SKROW "...........dabdo................"  ; 17
+    SKROW "..........dbbco................."  ; 18
+    SKROW ".........ljkdo.................."  ; 19
+    SKROW "........dablo..................."  ; 20
+    SKROW ".......dbbco...................."  ; 21
+    SKROW "......dbcdo....................."  ; 22
+    SKROW ".....dabdo......................"  ; 23
+    SKROW "....dbbco......................."  ; 24
+    SKROW "...dbcdo........................"  ; 25
+    SKROW "..libdo........................."  ; 26
+    SKROW "..ljko.........................."  ; 27
+    SKROW "...oo..........................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_archmage_staff, astaff_rows, 32, 32, astaff_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; dagger: ib_iron_dagger, ib_diamond_dagger. dagger_rows is the bitmap of both tiers
+;   A short broad leaf blade 1 lit edge, 2 lit facet, 3 shaded facet, s glints; a thick crossguard and a ball pommel in
+;   the trim ramp v w x y (iron: blackened steel, diamond: gold); a leather grip wrap e f g h.
+; --------------------------------------------------------------------------------------------------------------------
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS dagger_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "................................"  ; 01
+    SKROW "................................"  ; 02
+    SKROW "...........................4...."  ; 03
+    SKROW "..........................41o..."  ; 04
+    SKROW "........................4413o..."  ; 05
+    SKROW ".......................4123o...."  ; 06
+    SKROW ".....................441233o...."  ; 07
+    SKROW "....................4s2233o....."  ; 08
+    SKROW "..................44s22333o....."  ; 09
+    SKROW ".................41222333o......"  ; 10
+    SKROW "................41222333o......."  ; 11
+    SKROW "...........yyyy41222333o........"  ; 12
+    SKROW "..........yvwxy1222333o........."  ; 13
+    SKROW "...........ovwxy22333o.........."  ; 14
+    SKROW "............owxyyoooo..........."  ; 15
+    SKROW ".............owxyyo............."  ; 16
+    SKROW "............hhowxyyo............"  ; 17
+    SKROW "...........hfghoxyyyo..........."  ; 18
+    SKROW "..........hfgho.oxyyyo.........."  ; 19
+    SKROW ".........hefgo...oooo..........."  ; 20
+    SKROW "........hefgo..................."  ; 21
+    SKROW ".......hfgho...................."  ; 22
+    SKROW "...yyyhfgho....................."  ; 23
+    SKROW "..ywwwoooo......................"  ; 24
+    SKROW ".ywwwxxo........................"  ; 25
+    SKROW ".ywwxxyo........................"  ; 26
+    SKROW ".ywxxyyo........................"  ; 27
+    SKROW "..oxyyo........................."  ; 28
+    SKROW "...ooo.........................."  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_iron_dagger, dagger_rows, 32, 32, trim_iron_pal
+align 8
+SKBMP ib_diamond_dagger, dagger_rows, 32, 32, trim_diamond_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; shadow fang: ib_shadow_fang (SHADOW_FANG)
+;   A curved black-violet blade, 1 the glowing violet edge, 2 lit, 3 shaded; a crescent guard with upturned tips and a
+;   magenta gem v w x y, a dark violet grip wrap and pommel ball e f g h.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+fang_pal:
+    PALC '1', RGBO(196,128,255)             ; violet edge glow
+    PALC '2', RGBO(104,62,156)              ; blade, lit
+    PALC '3', RGBO(62,34,98)                ; blade, shaded
+    PALC '4', RGBO(30,16,48)                ; blade, deepest; selective outline
+    PALC 'e', RGBO(112,82,150)              ; grip wrap, dark violet
+    PALC 'f', RGBO(86,58,122)
+    PALC 'g', RGBO(62,40,90)
+    PALC 'h', RGBO(38,24,58)
+    PALC 'v', RGBO(255,190,250)             ; gem, 1 highlight
+    PALC 'w', RGBO(240,80,228)              ; gem
+    PALC 'x', RGBO(176,36,168)              ; gem
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS fang_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "................................"  ; 01
+    SKROW ".........................4......"  ; 02
+    SKROW "........................41o....."  ; 03
+    SKROW "........................41o....."  ; 04
+    SKROW ".......................412o....."  ; 05
+    SKROW ".......................41o......"  ; 06
+    SKROW "......................412o......"  ; 07
+    SKROW ".....................4122o......"  ; 08
+    SKROW "....................41132o......"  ; 09
+    SKROW "...................41122o......."  ; 10
+    SKROW "..................411232o......."  ; 11
+    SKROW ".................4112232o......."  ; 12
+    SKROW "................4112232o........"  ; 13
+    SKROW "..............441222332o........"  ; 14
+    SKROW "............4411222232o........."  ; 15
+    SKROW "...........41oo2222332o........."  ; 16
+    SKROW "..........41o..o22332o.........."  ; 17
+    SKROW ".........4111o..o3332o.........."  ; 18
+    SKROW "..........o122o..o32o..........."  ; 19
+    SKROW "...........o3vwo..o2o..........."  ; 20
+    SKROW "...........hfxx3o.4o............"  ; 21
+    SKROW "..........hegh333o3o............"  ; 22
+    SKROW "......hhhhffgoo333o............."  ; 23
+    SKROW ".....heeefgho..o3o.............."  ; 24
+    SKROW ".....heeffgo....o..............."  ; 25
+    SKROW ".....heffgo....................."  ; 26
+    SKROW ".....hffggo....................."  ; 27
+    SKROW "......oooo......................"  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_shadow_fang, fang_rows, 32, 32, fang_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; king's blade: ib_kings_blade (KINGS_BLADE)
+;   A white-gold blade 1 2 3 4 with a fuller, a gold horned guard i j k l around a ruby v w x y, a red grip wrap
+;   e f g h, a gold pommel ball.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+kblade_pal:
+    PALC '1', RGBO(255,255,240)             ; blade, white gold: the lit edge
+    PALC '2', RGBO(252,240,196)
+    PALC '3', RGBO(232,200,110)
+    PALC '4', RGBO(170,124,40)              ; blade, deepest; selective outline
+    PALC 'e', RGBO(196,76,76)               ; grip wrap, red
+    PALC 'f', RGBO(156,44,52)
+    PALC 'g', RGBO(112,28,38)
+    PALC 'h', RGBO(70,16,26)
+    PALC 'i', AC_GOLD_1
+    PALC 'j', AC_GOLD_2
+    PALC 'k', AC_GOLD_3
+    PALC 'l', AC_GOLD_4                     ; guard and pommel; selective outline
+    PALC 'v', RGBO(255,214,214)             ; ruby, 1 highlight
+    PALC 'x', RGBO(190,28,52)               ; ruby
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS kblade_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "................................"  ; 01
+    SKROW "............................4..."  ; 02
+    SKROW "..........................442o.."  ; 03
+    SKROW "........................4422o..."  ; 04
+    SKROW "......................441223o..."  ; 05
+    SKROW ".....................411223o...."  ; 06
+    SKROW "....................4111333o...."  ; 07
+    SKROW "...................4111333o....."  ; 08
+    SKROW "..................41113333o....."  ; 09
+    SKROW ".................41113333o......"  ; 10
+    SKROW "................41113333o......."  ; 11
+    SKROW "...............41113333o........"  ; 12
+    SKROW "..............41113333o........."  ; 13
+    SKROW "........l....41113333o.........."  ; 14
+    SKROW ".......lio..41113333o..........."  ; 15
+    SKROW "......liio.41113333o............"  ; 16
+    SKROW ".....lkjio41123333o............."  ; 17
+    SKROW "......okjio122333o.............."  ; 18
+    SKROW ".......okjiii333o..............."  ; 19
+    SKROW "........okvvi33o................"  ; 20
+    SKROW "........kkxxioo................."  ; 21
+    SKROW ".......hekkkjioii..............."  ; 22
+    SKROW "...lllhffgookjiiio.............."  ; 23
+    SKROW "..ljjjkgho..okjio..............."  ; 24
+    SKROW "..ljjkkgo....oko................"  ; 25
+    SKROW "..ljkklo......o................."  ; 26
+    SKROW "..lkkllo........................"  ; 27
+    SKROW "...oooo........................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_kings_blade, kblade_rows, 32, 32, kblade_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; hammer: ib_iron_hammer, ib_diamond_hammer. hammer_rows is the bitmap of both tiers
+;   A maul head: 1 lit top, 2 face, 3 shaded underside, between two flanges in the trim ramp v w x y (iron:
+;   blackened steel, diamond: gold), with rivets and glints; the handle is a stick with a leather wrap e f g h and
+;   a trim collar and butt cap.
+; --------------------------------------------------------------------------------------------------------------------
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS hammer_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW ".................yy......yy....."  ; 01
+    SKROW "................ywwo4444yxxo...."  ; 02
+    SKROW "...............yvww111111xxxo..."  ; 03
+    SKROW "...............yvxx1ss111yyyo..."  ; 04
+    SKROW "...............yvsx222222yyyo..."  ; 05
+    SKROW "...............yvxx222222yvyo..."  ; 06
+    SKROW "...............yvxx222222yyyo..."  ; 07
+    SKROW "...............yvvx222222yyyo..."  ; 08
+    SKROW "...............yvxx333333yyyo..."  ; 09
+    SKROW "...............yvyy333333yyyo..."  ; 10
+    SKROW "................oyyooooooyyo...."  ; 11
+    SKROW ".................oowxyo..oo....."  ; 12
+    SKROW ".................yxyyo.........."  ; 13
+    SKROW "................dacco..........."  ; 14
+    SKROW "...............dabco............"  ; 15
+    SKROW "..............dabco............."  ; 16
+    SKROW ".............dabco.............."  ; 17
+    SKROW "............dacco..............."  ; 18
+    SKROW "...........hefgo................"  ; 19
+    SKROW "..........hefgo................."  ; 20
+    SKROW ".........hfgho.................."  ; 21
+    SKROW "........hfgho..................."  ; 22
+    SKROW ".......hefgo...................."  ; 23
+    SKROW "......hefgo....................."  ; 24
+    SKROW ".....hfgho......................"  ; 25
+    SKROW "....dacco......................."  ; 26
+    SKROW "...ywxyo........................"  ; 27
+    SKROW "..ywxyo........................."  ; 28
+    SKROW "...ooo.........................."  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_iron_hammer, hammer_rows, 32, 32, trim_iron_pal
+align 8
+SKBMP ib_diamond_hammer, hammer_rows, 32, 32, trim_diamond_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; spear: ib_iron_spear, ib_diamond_spear. spear_rows is the bitmap of both tiers
+;   A leaf head 1 lit half, 2 ridge, 3 shaded half on a trim collar with two lugs v w x y (iron: blackened steel,
+;   diamond: gold), a thin stick a c with a leather wrap e f g h and a trim butt spike.
+; --------------------------------------------------------------------------------------------------------------------
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS spear_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW "................................"  ; 01
+    SKROW "..........................44...."  ; 02
+    SKROW ".......................44412o..."  ; 03
+    SKROW ".....................4411123o..."  ; 04
+    SKROW "....................4111123o...."  ; 05
+    SKROW "...................41111233o...."  ; 06
+    SKROW "...................41112333o...."  ; 07
+    SKROW "..................41112333o....."  ; 08
+    SKROW ".................yv1123333o....."  ; 09
+    SKROW "................yvvw23333o......"  ; 10
+    SKROW "................ywwww33oo......."  ; 11
+    SKROW ".................oxwxxo........."  ; 12
+    SKROW "................dacyxo.........."  ; 13
+    SKROW "...............dacooo..........."  ; 14
+    SKROW "..............daco.............."  ; 15
+    SKROW ".............daco..............."  ; 16
+    SKROW "............hego................"  ; 17
+    SKROW "...........hfho................."  ; 18
+    SKROW "..........hego.................."  ; 19
+    SKROW ".........hfho..................."  ; 20
+    SKROW "........hego...................."  ; 21
+    SKROW ".......daco....................."  ; 22
+    SKROW "......daco......................"  ; 23
+    SKROW ".....daco......................."  ; 24
+    SKROW "....daco........................"  ; 25
+    SKROW "...ywco........................."  ; 26
+    SKROW "..ywyo.........................."  ; 27
+    SKROW "...oo..........................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_iron_spear, spear_rows, 32, 32, trim_iron_pal
+align 8
+SKBMP ib_diamond_spear, spear_rows, 32, 32, trim_diamond_pal
+
+; --------------------------------------------------------------------------------------------------------------------
+; flint and steel: ib_flint_and_steel (FLINT_AND_STEEL)
+;   A steel striker loop 1 2 3 4 at the grip end, a faceted flint J K L M at the tip, sparks S T U between them.
+; --------------------------------------------------------------------------------------------------------------------
+align 8
+fns_pal:
+    PALC '1', AC_IRON_1
+    PALC '2', AC_IRON_2
+    PALC '3', AC_IRON_3
+    PALC '4', AC_IRON_4                     ; steel striker; selective outline
+    PALC 'J', RGBO(166,168,182)             ; flint, lit facet
+    PALC 'K', RGBO(108,110,126)             ; flint
+    PALC 'L', RGBO(70,72,88)                ; flint, shaded facet
+    PALC 'M', RGBO(40,42,54)                ; flint, deepest: its selective outline
+    PALC 'S', RGBO(255,250,200)             ; spark, core
+    PALC 'T', RGBO(255,190,60)              ; spark
+    PALC 'U', RGBO(230,100,30)              ; spark, ember
+    PALC 's', RGBO(255,255,255)             ; glint
+    PALC 'o', AC_OUTLINE
+    dq 0
+;          0         1         2         3
+;          01234567890123456789012345678901
+SKROWS fns_rows, 32, 32
+    SKROW "................................"  ; 00
+    SKROW ".......................MM......."  ; 01
+    SKROW "....................MMMJJo......"  ; 02
+    SKROW "...................MJJJJJJoMM..."  ; 03
+    SKROW "..................MJJsJJJKKKKo.."  ; 04
+    SKROW ".................MJJsJJJKKKKKo.."  ; 05
+    SKROW ".................MJJJJJKKKKKKo.."  ; 06
+    SKROW ".................MJJJJKKKKKKKo.."  ; 07
+    SKROW "................MJJJJLKKKKKKKo.."  ; 08
+    SKROW "................MJJLLLLKKKKKo..."  ; 09
+    SKROW "................MJLLLLLLLKKo...."  ; 10
+    SKROW ".............U...oLLLLLLLLLo...."  ; 11
+    SKROW "...............T..ooLLLLLLLo...."  ; 12
+    SKROW "..............TST...oLLLooo....."  ; 13
+    SKROW ".........4444U.T.....ooo........"  ; 14
+    SKROW "........4s222o...U.............."  ; 15
+    SKROW ".......4s22222o................."  ; 16
+    SKROW "......4122oo223o................"  ; 17
+    SKROW ".....4122o..o333o..............."  ; 18
+    SKROW "....4122o....o334o.............."  ; 19
+    SKROW "...4122o......o44o.............."  ; 20
+    SKROW "...422o.......444o.............."  ; 21
+    SKROW "...422o......4444o.............."  ; 22
+    SKROW "...4222o....4444o..............."  ; 23
+    SKROW "....o223o..4444o................"  ; 24
+    SKROW ".....o333o4444o................."  ; 25
+    SKROW "......o334444o.................."  ; 26
+    SKROW ".......o4444o..................."  ; 27
+    SKROW "........oooo...................."  ; 28
+    SKROW "................................"  ; 29
+    SKROW "................................"  ; 30
+    SKROW "................................"  ; 31
+SKROWS_END
+align 8
+SKBMP ib_flint_and_steel, fns_rows, 32, 32, fns_pal

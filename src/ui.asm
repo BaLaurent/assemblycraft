@@ -12,7 +12,7 @@ global ui_w, ui_h, ui_scale, ui_mx, ui_my, ui_focus
 global ui_init, ui_begin, ui_rect, ui_frame, ui_panel
 global ui_text, ui_text_width, ui_text_centered
 global ui_button, ui_slider, ui_textfield, ui_slot
-global ui_item_icon, ui_icon9, ui_tooltip, ui_tooltip_lines, ui_tile_icon
+global ui_item_icon, ui_item_icon_tint, ui_icon9, ui_tooltip, ui_tooltip_lines, ui_tile_icon
 global ui_text_ink, ui_text_ink_centered, ui_nine, ui_nine_tint, ui_nine_layout
 global ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 
@@ -1052,27 +1052,61 @@ ui_textfield:
 
 ; ---- icons and item slots -----------------------------------------------------
 
-; ui_item_icon(edi id, esi x, edx y, ecx size): the item's icon, white; ui_tile_icon with the
-; item's atlas tile
+; ui_item_icon(edi id, esi x, edx y, ecx size): the item's icon, white (ui_item_icon_tint)
 ui_item_icon:
+    mov     r8d, WHITE
+                                        ; falls through
+
+; ui_item_icon_tint(edi id, esi x, edx y, ecx size, r8d rgba): the icon of item or block id scaled to
+; size x size at (x, y), multiplied by the colour (its alpha too, as ui_tile_icon). An item (id >=
+; FIRST_ITEM) is its 32x32 icon cell of the atlas (k = id - FIRST_ITEM at x (k & 7) * 32, y ICON32_Y0 +
+; (k >> 3) * 32); a block is its item_icon tile through ui_tile_icon. Air and the unused ids draw nothing.
+ui_item_icon_tint:
     mov     eax, edi
     cmp     eax, NUM_ITEMS
     jae     .ret
     cmp     byte [item_max_stack + rax], 0
     je      .ret                        ; air and the unused ids have no icon
-    movzx   edi, word [item_icon + rax*2] ; atlas tile
-    mov     r8d, WHITE
+    cmp     eax, FIRST_ITEM
+    jae     .cell
+    movzx   edi, word [item_icon + rax*2]   ; a block: its atlas tile
     jmp     ui_tile_icon
+.cell:
+    sub     eax, FIRST_ITEM             ; k
+    mov     edi, eax
+    shr     edi, 3
+    imul    edi, edi, ICON32_PX
+    add     edi, ICON32_Y0
+    shl     edi, 4
+    inc     edi                         ; v0 = (ICON32_Y0 + (k >> 3) * 32) * 16 + 1
+    and     eax, 7
+    shl     eax, 9
+    inc     eax                         ; u0 = (k & 7) * 512 + 1 (32 texels = 512 units)
+    mov     r9d, ICON32_PX * 16 - 2     ; the span: the cell less one unit inside each edge
+    jmp     ui_icon_quad
 .ret:
     ret
 
 ; ui_tile_icon(edi tile, esi x, edx y, ecx size, r8d rgba): an atlas tile scaled to size x size at
 ; (x, y), uv inset 1 unit, multiplied by the colour (its alpha too: 0xAABBGGRR as for ui_rect)
 ui_tile_icon:
+    mov     eax, edi
+    and     eax, 15
+    shl     eax, 8
+    inc     eax                         ; u0 = col * 256 + 1
+    shr     edi, 4
+    shl     edi, 8
+    inc     edi                         ; v0 = row * 256 + 1
+    mov     r9d, TILE_PX * 16 - 2       ; the span: the tile less one unit inside each edge
+                                        ; falls through
+
+; ui_icon_quad(eax u0, edi v0, r9d span, esi x, edx y, ecx size, r8d rgba): the square of the atlas from
+; texcoord (u0, v0) to (u0 + span, v0 + span) (1/16 texel units) scaled to size x size at (x, y), multiplied
+; by the colour
+ui_icon_quad:
     push    rbp
     mov     rbp, rsp
     sub     rsp, 48                     ; quad record, then the colour
-    mov     eax, edi
     mov     [rsp + 32], r8d
     mov     [rsp], esi                  ; x0
     mov     [rsp + 4], edx              ; y0
@@ -1080,19 +1114,12 @@ ui_tile_icon:
     mov     [rsp + 8], esi              ; x1
     add     edx, ecx
     mov     [rsp + 12], edx             ; y1
-    mov     edx, eax
-    and     edx, 15
-    shl     edx, 8
-    inc     edx                         ; u0 = col * 256 + 1
-    mov     [rsp + 16], edx
-    add     edx, 254
-    mov     [rsp + 24], edx             ; u1
-    shr     eax, 4
-    shl     eax, 8
-    inc     eax                         ; v0 = row * 256 + 1
-    mov     [rsp + 20], eax
-    add     eax, 254
-    mov     [rsp + 28], eax             ; v1
+    mov     [rsp + 16], eax             ; u0
+    add     eax, r9d
+    mov     [rsp + 24], eax             ; u1
+    mov     [rsp + 20], edi             ; v0
+    add     edi, r9d
+    mov     [rsp + 28], edi             ; v1
     mov     edi, GL_TEXTURE_2D
     call    glEnable
     mov     edi, [rsp + 32]

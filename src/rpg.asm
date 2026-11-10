@@ -196,9 +196,9 @@ stat_tab:                               ; by stat id
     STATI "Life on kill",     " health per kill",           FMT_FLAT,   TILE_STAT0 + STAT_LIFESTEAL
     STATI "Thorns",           " thorns damage",             FMT_FLAT,   TILE_STAT0 + STAT_ARMOR_BONUS
     STATI "Block cost",       "% block stamina cost",       FMT_NEGPCT, TILE_STAT0 + STAT_PARRY_WINDOW
-    STATI "XP bonus",         "% experience",               FMT_PCT,    TILE_ITEM0 + GOLD_COIN - COAL
-    STATI "Gold find",        "% gold found",               FMT_PCT,    TILE_ITEM0 + GOLD_COIN - COAL
-    STATI "Magic find",       "% magic find",               FMT_PCT,    TILE_ITEM0 + GOLD_COIN - COAL
+    STATI "XP bonus",         "% experience",               FMT_PCT,    TILE_STAT_COIN
+    STATI "Gold find",        "% gold found",               FMT_PCT,    TILE_STAT_COIN
+    STATI "Magic find",       "% magic find",               FMT_PCT,    TILE_STAT_COIN
     STATI "All damage",       "% all damage",               FMT_PCT,    TILE_STAT0 + STAT_CRIT_DMG
     STATI "Weapon damage",    " weapon damage",             FMT_FLAT,   TILE_STAT0 + STAT_MELEE_DMG
     STATI "Gun damage",       "% gun damage",               FMT_PCT,    TILE_STAT_GUN

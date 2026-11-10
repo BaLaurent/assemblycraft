@@ -8,8 +8,9 @@ default rel
 global hand_render, hand_swing
 
 extern player, inv_held, player_eye, light_brightness_at, sincos_deg, game_bow_charge, gun_kick
-extern render_box, item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim
+extern item_model_draw, item_model_is_block, tex_id, gun_model_draw, game_aim, skin_model_draw, m_avatar
 extern gun_reload, gun_reload_total, gun_index, item_tool, combat_guard_t, combat_dodge_t, game_heavy_s
+extern net_role, net_self, peer_colors
 
 section .rodata
 align 8
@@ -57,11 +58,11 @@ f_heavy_inv: dd 2.0                     ; 1 / 0.5 s
 f_heavy_y:   dd -0.08
 f_heavy_z:   dd 0.12
 f_heavy_rot: dd -20.0
-; bare arm: a skin-coloured box reaching from below the screen corner
-arm_box:     dd -0.1, -0.1, -0.3, 0.1, 0.1, 0.5
-arm_tiles:   times 6 db TILE_PLAYER_SKIN
-align 4
-arm_shade:   dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
+; bare arm: the right arm of the avatar (m_avatar, SKP_ARM_ONLY, its model axis x 11/32 and its hand end y 26/32
+; above the feet) turned a quarter about X, so that it reaches from below the screen corner along -Z
+f_arm_x:     dd -0.34375                ; the arm's axis onto the origin
+f_arm_z:     dd -1.05                   ; and its hand end 0.30 in front of the pose's origin
+f_90:        dd 90.0
 ; per-kind pose: rotate X, rotate Y, rotate Z (degrees), uniform scale
 pose_arm:    dd 35.0, 15.0, 0.0, 1.0
 pose_block:  dd 10.0, 45.0, 0.0, 0.32
@@ -73,7 +74,6 @@ swing_p:     resd 1                     ; swing progress 0..1
 swinging:    resd 1
 bob_phase:   resd 1
 light:       resd 1
-shades:      resd 6
 sw_s1:       resd 1                     ; sin(sqrt(p) * 180)
 sw_s2:       resd 1                     ; sin(p * 180)
 sw_s3:       resd 1                     ; sin(sqrt(p) * 360)
@@ -413,22 +413,41 @@ hand_render:
     movss   xmm1, [gun_kick]
     call    gun_model_draw
     jmp     .ret
-.arm:
-    xor     ecx, ecx
-.arm_shade:
-    movss   xmm0, [arm_shade + rcx*4]
-    mulss   xmm0, [light]
-    movss   [shades + rcx*4], xmm0
-    inc     ecx
-    cmp     ecx, 6
-    jb      .arm_shade
-    lea     rdi, [arm_box]
-    lea     rsi, [arm_tiles]
-    lea     rdx, [shades]
-    movss   xmm0, [f_one]
+.arm:                                   ; the bare arm: skin with a sleeve in the colour of the local slot
+    movss   xmm0, [f_arm_x]
+    xorps   xmm1, xmm1
+    movss   xmm2, [f_arm_z]
+    call    glTranslatef
+    movss   xmm0, [f_90]
     movss   xmm1, [f_one]
-    movss   xmm2, [f_one]
-    call    render_box
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    glRotatef
+    mov     dword [rsp + SKPOSE.flags], SKP_ARM_ONLY    ; the 24 bytes at [rsp] held the eye position
+    mov     dword [rsp + SKPOSE.arm_deg], 0
+    mov     dword [rsp + SKPOSE.held], 0
+    xor     eax, eax                    ; the local player's slot: 0 offline
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .slot
+    movzx   eax, byte [net_self]
+    and     eax, 7
+.slot:
+    lea     eax, [rax + rax * 2]
+    lea     rcx, [peer_colors]
+    lea     rcx, [rcx + rax * 4]
+    mov     eax, [rcx]
+    mov     [rsp + SKPOSE.accent], eax
+    mov     eax, [rcx + 4]
+    mov     [rsp + SKPOSE.accent + 4], eax
+    mov     eax, [rcx + 8]
+    mov     [rsp + SKPOSE.accent + 8], eax
+    lea     rdi, [m_avatar]
+    mov     rsi, rsp
+    xorps   xmm0, xmm0
+    movss   xmm1, [light]
+    movaps  xmm2, xmm1
+    movaps  xmm3, xmm1
+    call    skin_model_draw
 .ret:
     add     rsp, 24
     pop     r13

@@ -1,5 +1,5 @@
 ; planes.asm - airplanes: put on the ground, taxied, flown by the pilot, broken into an item, kept in the
-; world header (WORLDHDR.planes) and drawn as a handful of boxes. All coordinates are local. A plane is
+; world header (WORLDHDR.planes) and drawn as the skin model m_plane. All coordinates are local. A plane is
 ; a BODY (y = bottom of its 3.0 x 1.2 x 3.0 box, yaw = heading) plus its speed along the heading, its
 ; pitch (degrees, + = nose up), its bank, its throttle and the streaming governor's current speed cap.
 ; The pilot steers with the view: the plane's heading and pitch follow the player's yaw and pitch (the
@@ -21,15 +21,14 @@ global planes_free_peer, planes_free_guests, planes_hum
 extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready, coord_ok, meshable
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb, raycast, survival_damage
-extern block_tiles, render_box16, light_bind_at, light_bind_index
+extern light_bind_at, light_bind_index, skin_model_draw, m_plane, m_plane_prop, m_avatar, peer_colors
 extern audio_play_local_at, item_durability
-extern net_role, net_self, net_applying, folk_tables, mob_parts_draw, net_hurt_send_direct
+extern net_role, net_self, net_applying, net_hurt_send_direct
 extern net_plane_place_out, net_plane_board_out, net_plane_leave_out, net_plane_break_out, net_plane_ok_out
 
 %define PL_LOOK_COLS    4               ; columns sampled ahead of the heading, 16 blocks apart
 %define PL_CRASH_WEAR   30              ; durability a crash costs the plane (item_durability[PLANE] = 100: the fourth crash ends it)
 %define PL_CRASH_DMG    12              ; HP the pilot loses in a crash (survival_damage, CAUSE_FALL)
-%define PLANE_BOXES     8               ; the boxes of plane_model
 %define HUM_STEPS       15              ; a 0.30 s engine chunk is played again every 0.25 s: the ends crossfade
 
 section .rodata
@@ -48,7 +47,6 @@ c_360:      dd 360.0
 c_180:      dd 180.0
 c_n180:     dd -180.0
 c_one:      dd 1.0
-c_90:       dd 90.0
 c_quarter:  dd 0.25
 c_16:       dd 16.0                     ; the streaming governor samples a column every 16 blocks
 c_foot:     dd 2.0                      ; a step may not enter a column more than this far from the centre
@@ -111,20 +109,6 @@ s_crash:    db "The plane crashed", 0
 s_wreck:    db "The plane is wrecked", 0
 s_many:     db "Too many planes", 0
 s_load:     db "Terrain loading", 0
-; the boxes of the plane in model space (blocks, centre at the origin, nose towards -z):
-; lo xyz, hi xyz, tile set (0 iron, 1 wool, 2 coal)
-plane_model:
-    dd -0.35, -0.30, -1.20,  0.35,  0.35,  1.10, 0      ; fuselage
-    dd -0.30, -0.25, -1.45,  0.30,  0.30, -1.20, 2      ; engine cowl
-    dd -1.50,  0.05, -0.60,  1.50,  0.17,  0.30, 1      ; wing
-    dd -0.85,  0.05,  0.85,  0.85,  0.14,  1.40, 1      ; tailplane
-    dd -0.05,  0.10,  0.85,  0.05,  0.70,  1.40, 1      ; fin
-    dd -0.50, -0.60, -0.80, -0.30, -0.30, -0.50, 2      ; left wheel
-    dd  0.30, -0.60, -0.80,  0.50, -0.30, -0.50, 2      ; right wheel
-    dd -0.06, -0.50,  1.00,  0.06, -0.30,  1.15, 2      ; tail wheel
-blade:      dd -0.70, -0.06, -0.04, 0.70, 0.06, 0.04    ; one propeller blade (two, crossed)
-plane_blocks: db IRON_BLOCK, WOOL, COAL_BLOCK           ; the block each tile set takes its side tile from
-plane_shades: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8           ; +X -X +Y -Y +Z -Z
 
 section .bss
 alignb 16
@@ -136,7 +120,6 @@ hum_cd:       resb MAX_PLANES               ; steps until the plane's engine chu
 plane_hint:   resd 1                    ; 1 while "Terrain loading" has been shown for the current slow-down
 plane_cam:    resb BODY_size            ; the third-person camera
 plane_tgt:    resd MAX_PLANES * 4       ; a mirrored plane's target: x, y, z, yaw (local; guests)
-plane_tiles:  resw 6 * 3                ; the six face tiles of each tile set
 
 section .text
 
@@ -1672,35 +1655,36 @@ plane_view_cam:
     pop     rbp
     ret
 
-; planes_render(): every plane in a drawable column as the nine boxes of plane_model and the two crossed
-; propeller blades, under glTranslatef(x, y + 0.6, z), glRotatef(-yaw, 0, 1, 0), glRotatef(pitch, 1, 0, 0) and
-; glRotatef(-bank, 0, 0, 1), lit by the cell at its centre. The plane the player flies is not drawn from
-; the cockpit. Called in the world pass after the boats (atlas bound, alpha test on, modelview = world - eye).
-; rbx = plane, r12d = slot counter, r13d = box counter.
+; planes_render(): every plane in a drawable column as the skin model m_plane and its propeller m_plane_prop
+; (spinning about the nose axis), under glTranslatef(x, y + 0.6, z), glRotatef(-yaw, 0, 1, 0), glRotatef(pitch, 1, 0, 0)
+; and glRotatef(-bank, 0, 0, 1), lit by the cell at its centre. The plane the player flies carries its pilot, m_avatar
+; seated (torso and head only) with the local slot's colour on its accent parts; that plane is not drawn from the
+; cockpit. Called in the world pass after the boats (atlas bound, alpha test on, modelview = world - eye).
+; rbx = plane, r12d = slot counter. Stack: [rsp] the pilot's SKPOSE (24 bytes).
 planes_render:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    push    r13
-    push    r14
-    lea     rsi, [plane_blocks]
-    lea     rdi, [plane_tiles]
-    lea     rdx, [block_tiles]
-    xor     ecx, ecx
-.set:                                   ; the side tile of each block, on all six faces
-    movzx   eax, byte [rsi + rcx]
-    lea     eax, [rax + rax * 2 + 1]
-    movzx   eax, word [rdx + rax * 2]
-    mov     r8d, 6
-.face:
-    mov     [rdi], ax
-    add     rdi, 2
-    dec     r8d
-    jnz     .face
-    inc     ecx
-    cmp     ecx, 3
-    jb      .set
+    sub     rsp, 32
+    mov     dword [rsp + SKPOSE.flags], SKP_SEATED
+    mov     dword [rsp + SKPOSE.arm_deg], 0
+    mov     dword [rsp + SKPOSE.held], 0
+    xor     eax, eax                    ; the local player's slot: 0 offline
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .slot
+    movzx   eax, byte [net_self]
+    and     eax, 7
+.slot:
+    lea     eax, [rax + rax * 2]
+    lea     rcx, [peer_colors]
+    lea     rcx, [rcx + rax * 4]
+    mov     eax, [rcx]                  ; its colour on the accent parts
+    mov     [rsp + SKPOSE.accent], eax
+    mov     eax, [rcx + 4]
+    mov     [rsp + SKPOSE.accent + 4], eax
+    mov     eax, [rcx + 8]
+    mov     [rsp + SKPOSE.accent + 8], eax
     lea     rbx, [planes]
     xor     r12d, r12d
 .plane:
@@ -1751,24 +1735,14 @@ planes_render:
     xorps   xmm2, xmm2
     movss   xmm3, [c_one]
     call    glRotatef
-    xor     r13d, r13d
-.box:
-    imul    eax, r13d, 28
-    lea     rdi, [plane_model]
-    add     rdi, rax
-    mov     eax, [rdi + 24]
-    imul    eax, eax, 12
-    lea     rsi, [plane_tiles]
-    add     rsi, rax
-    lea     rdx, [plane_shades]
-    movss   xmm0, [c_one]
-    movaps  xmm1, xmm0
-    movaps  xmm2, xmm0
-    call    render_box16
-    inc     r13d
-    cmp     r13d, PLANE_BOXES
-    jb      .box
-    lea     eax, [r12 + 1]              ; the pilot: torso and head above the fuselage (third person only, see above)
+    lea     rdi, [m_plane]
+    xor     esi, esi
+    xorps   xmm0, xmm0
+    movss   xmm1, [c_one]
+    movaps  xmm2, xmm1
+    movaps  xmm3, xmm1
+    call    skin_model_draw
+    lea     eax, [r12 + 1]              ; the pilot above the fuselage (third person only, see above)
     cmp     eax, [plane_riding]
     jne     .no_pilot
     cmp     dword [plane_view], 0
@@ -1781,27 +1755,16 @@ planes_render:
     lea     rcx, [seat_z]
     movss   xmm2, [rcx + rax * 4]
     call    glTranslatef
-    lea     rax, [folk_tables]
-    mov     r14, [rax + FAC_VILLAGERS * 8]
-    lea     rdi, [r14 + FOLK_BODY * FOLK_PART_SIZE]
-    xor     esi, esi
-    mov     edx, 1
+    lea     rdi, [m_avatar]
+    mov     rsi, rsp
     xorps   xmm0, xmm0
     movss   xmm1, [c_one]
     movaps  xmm2, xmm1
     movaps  xmm3, xmm1
-    call    mob_parts_draw
-    lea     rdi, [r14 + FOLK_HEAD * FOLK_PART_SIZE]
-    xor     esi, esi
-    mov     edx, 1
-    xorps   xmm0, xmm0
-    movss   xmm1, [c_one]
-    movaps  xmm2, xmm1
-    movaps  xmm3, xmm1
-    call    mob_parts_draw
+    call    skin_model_draw
     call    glPopMatrix
 .no_pilot:
-    xorps   xmm0, xmm0                  ; the propeller: two blades crossed, spinning about the nose axis
+    xorps   xmm0, xmm0                  ; the propeller: crossed blades, spinning about the nose axis
     xorps   xmm1, xmm1
     movss   xmm2, [c_prop_z]
     call    glTranslatef
@@ -1810,23 +1773,13 @@ planes_render:
     xorps   xmm2, xmm2
     movss   xmm3, [c_one]
     call    glRotatef
-    xor     r13d, r13d
-.blade:
-    lea     rdi, [blade]
-    lea     rsi, [plane_tiles + 2 * 12]
-    lea     rdx, [plane_shades]
-    movss   xmm0, [c_one]
-    movaps  xmm1, xmm0
-    movaps  xmm2, xmm0
-    call    render_box16
-    movss   xmm0, [c_90]
-    xorps   xmm1, xmm1
-    xorps   xmm2, xmm2
-    movss   xmm3, [c_one]
-    call    glRotatef
-    inc     r13d
-    cmp     r13d, 2
-    jb      .blade
+    lea     rdi, [m_plane_prop]
+    xor     esi, esi
+    xorps   xmm0, xmm0
+    movss   xmm1, [c_one]
+    movaps  xmm2, xmm1
+    movaps  xmm3, xmm1
+    call    skin_model_draw
     call    glPopMatrix
 .next:
     add     rbx, PLANEENT_size
@@ -1835,8 +1788,7 @@ planes_render:
     jb      .plane
     mov     edi, LIGHT_SKY_FULL         ; the entities after this one are lit by their own cells
     call    light_bind_index
-    pop     r14
-    pop     r13
+    add     rsp, 32
     pop     r12
     pop     rbx
     pop     rbp

@@ -1,4 +1,4 @@
-; test_planeitems.asm - the plane's six items: crafting grids, names, stacks and icons.
+; test_planeitems.asm - the plane's six items: crafting grids, names and stacks (their icons are test_icons_art's).
 %include "common.inc"
 default rel
 
@@ -6,7 +6,7 @@ global test_plane_recipes, test_plane_item_tables
 
 extern inv, craft_size, inv_clear, craft_update
 extern recipes, recipes_end
-extern item_max_stack, item_icon, item_names, texgen_build
+extern item_max_stack, item_names
 
 ; CASE result id, result count, then the 3x3 grid ids row by row (0 = empty cell)
 %macro CASE 11
@@ -56,10 +56,6 @@ plane_item_rows:
     PIROW PLANE_TAIL, 16, pn_tail
     PIROW PLANE, 1, pn_plane
 plane_item_rows_end:
-
-section .bss
-align 16
-pi_atlas: resb ATLAS_W * ATLAS_H * 4
 
 section .text
 
@@ -151,15 +147,13 @@ test_plane_recipes:
     ret
 
 ; test_plane_item_tables() -> eax 0 pass
-;   the six plane items have their names and max stacks (components 16, the plane 1), and an icon
-;   tile that texgen_build draws (at least one opaque pixel)
+;   the six plane items have their names and max stacks (components 16, the plane 1); their icons are
+;   32x32 bitmaps of the icon registry, which test_icons_art checks for every item
 test_plane_item_tables:
     push    rbp
     mov     rbp, rsp
     push    rbx
-    push    r12
-    lea     rdi, [pi_atlas]
-    call    texgen_build
+    sub     rsp, 8
     lea     rbx, [plane_item_rows]
 .row:
     movzx   ecx, byte [rbx]
@@ -173,36 +167,6 @@ test_plane_item_tables:
     call    pi_streq
     test    eax, eax
     jz      .fail
-    movzx   ecx, byte [rbx]
-    lea     rdx, [item_icon]
-    movzx   eax, word [rdx + rcx*2]
-    test    eax, eax
-    jz      .fail                       ; no icon tile
-    mov     ecx, eax
-    shr     ecx, 4
-    shl     ecx, 12                     ; row * 16 px * 256 px per row
-    and     eax, 15
-    shl     eax, 4
-    add     eax, ecx                    ; the tile's first pixel
-    lea     r12, [pi_atlas]
-    lea     r12, [r12 + rax*4]
-    xor     ecx, ecx                    ; py
-.py:
-    xor     edx, edx                    ; px
-.px:
-    mov     eax, ecx
-    shl     eax, 8
-    add     eax, edx
-    cmp     dword [r12 + rax*4], 0xFF000000
-    ja      .drawn                      ; alpha 255 and rgb != 0
-    inc     edx
-    cmp     edx, 16
-    jb      .px
-    inc     ecx
-    cmp     ecx, 16
-    jb      .py
-    jmp     .fail                       ; the tile was never drawn
-.drawn:
     add     rbx, 10
     lea     rax, [plane_item_rows_end]
     cmp     rbx, rax
@@ -212,7 +176,7 @@ test_plane_item_tables:
 .fail:
     mov     eax, 1
 .out:
-    pop     r12
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
