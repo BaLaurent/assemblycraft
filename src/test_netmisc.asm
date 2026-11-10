@@ -1444,13 +1444,11 @@ ev_payload:                             ; one EVHUD: a caravan travelling, waiti
     db EVK_CARAVAN, EVS_TRAVEL, 1, 2, FAC_BEASTFOLK, 0, 7, EHF_WAIT
     dw 25, 0
     dd 1234, -567
-ev_none:                                ; events_reset's EVHUD
-    db 0, 0, 0, 0, 0, 0, 255, 0
-    times EVHUD_size - 8 db 0
 
 section .bss
 alignb 4
 ev_keep:     resb EVHUD_size            ; ev_hud kept while a test runs
+ev_none:     resb EVHUD_size            ; ev_hud as events_reset leaves it, taken by test_net_event_state
 
 section .text
 
@@ -1499,6 +1497,10 @@ test_net_event_state:
     call    net_begin
     call    ev_save
     call    events_reset
+    lea     rsi, [ev_hud]
+    lea     rdi, [ev_none]
+    mov     ecx, EVHUD_size
+    rep movsb                           ; what events_reset leaves is what "no event" means
     lea     rsi, [ev_payload]
     lea     rdi, [msg]
     mov     ecx, EVHUD_size
