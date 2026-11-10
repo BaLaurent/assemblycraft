@@ -640,3 +640,44 @@ W4 also adds `screen_event` in `rpgscreens.asm` and `nx_on_event_state` in `netm
 - **`hud_quest` height:** if `hud_quest`'s note height is not 26 (+4 gap), use its real height for the returned y.
 - **Debug layout:** if the debug rows at y = 158 collide with the footer in the smallest GUI (320 × 240), move the "Nearest camp" line into the `events_status` line (at 52, 128) and drop the y = 158 row.
 - **`evs_site_of` slots:** if the slot offsets in `structures.asm` differ from the table in W2, use the real offsets. The rule stays centre = floor(home) − slot.
+
+---
+
+# As built
+
+Shipped as 0.12.0 on master. `make test` is 283/283 and the build is warning-free; the Wine selftest of the Windows exe is 283/283 (`make windows`, no change under `win/` was needed).
+
+## Deviations from the plan
+
+- **evsites.asm.** `evs_find_route` rolls D in 162..238 (the destination is rounded to a whole cell, so the true distance stays in 160..240) and samples N = (floor(L)+7)/8 equal-fraction points instead of fixed 8-block steps. `evs_road_from` skips a road that touches the camp but has an invalid length and goes on to the next. `evs_build_tent` returns 0 when its cells are already occupied. The tent is at most 60 blocks (50 on flat ground), well inside the 64-entry record.
+- **events.asm.** `events_step` returns at once on a guest. `events_force_threat` also clears today's "done" records for that site, so the Threat button works twice in a day. `events_finish` returns 1/0. In monster mode the type is rolled per attacker (the night flag per wave). An ambush starts when the merchant passes its threshold even if it is already within 4 blocks of the destination; arrival is checked after it. The ambush's perpendicular offset is rolled per attacker try. `ev_loot` and `ev_gear` are exported for the tests.
+- **folk.asm.** The `ROLE_CARAVAN` walker sits at `.calm`, after the captive check and the panic branch, so a scared merchant still runs and then resumes. `folk_find_target` and `folk_target_at` are global (the tests call them). `folk_name` gives "<Member> Merchant" for every faction. `folk_interact` returns `ST_EVENT` for any folk with `FF_HELP`, whatever its standing.
+- **UI/net.** `nx_on_event_state` calls `events_net_apply(rdi payload, esi len)`. `events_state_send` is placed after `pvp_send` at the second site. The debug notes read "No camp within 96 blocks" (Threat), "No event to skip" (Wave), "Event started" / "No room for an event" (Camp, Caravan) and always "Done" (Win). Faction bytes are range-checked before `faction_names` is indexed.
+- **`folk_strike_mob`** takes the base damage as its third argument in `edx`.
+
+## Bug found by the live checks
+
+`ev_item_roll` read a loot row's item and minimum from each other's columns, so every item drop was item id (min) with a count that saturated at 255 (stone and grass x255 at a win). Fixed (commit `9bf5b68`); `test_events_camp_flow` now checks every drop against the faction's tables (coin, one of its two gear items, or a loot row's item with a count in min..max, one of each kind) and fails with the old offsets.
+
+## Live checks (omabox, seed 4242, Hyprland box)
+
+Seen and working:
+
+- **Camp.** The debug Camp button builds a two-canopy tent with torch posts, a leader and two guards; the leader's plate reads "<Faction> Chief - Help!" in gold; right-click opens the offer screen ("Raiders are coming for our camp. Hold them off for 3 waves." / "Reward: +40 standing, loot"); Accept gives the START banner and the note "Defend the <Faction> camp / Wave 1/3 in 10s" with the leader's bar. Wave 1 spawns four raiders of a rival faction that fight the guards; Win gives "The <Faction> camp is safe!", +40 standing exactly, XP (level 1 to 3) and a loot bundle on the ground.
+- **Loss.** With the player standing back, the banners "Wave 1/3: raiders!" then "The Beastfolk camp has fallen" appeared and the state went to cleanup; standing unchanged (also covered by `test_events_leader_dies`).
+- **Night.** At midnight the wave's attackers dumped from the mob table are zombies and spiders with `patrol & 3 == 2`, defenders carry the key.
+- **Free caravan.** Offer screen ("Escort my caravan to safety. Expect 2 ambushes on the way."), "Setting off in 10s", the note with the heading and distance ("S 169m"), an ambush ("Ambush! 4 left") from Wave-skip, "The caravan has arrived!" on Win, and the merchant then opens the trade screen.
+- **Site threat.** The Threat button at the Beastfolk camp (545,-317) flags the leader and the trader; the leader's offer reads "Our camp is under threat. Help us hold it for 4 waves. Reward: +60 standing"; four Ashen Cult raiders approached; Win gave "The Beastfolk camp is safe!".
+- **Road caravan.** The trader's offer ("Escort my caravan along the road. Expect 3 ambushes"), the merchant and a guard spawn on the gravel road outside the camp, "Caravan waits N 48m" when the player is 48 blocks away, the ambush chain via Wave, and +50 standing on Win.
+- **Spontaneous offer.** Setting `game_time` to just before 144000 (k = 4, even) gave the banner "A Beastfolk camp asks for help nearby" and a camp in the OFFERED state.
+- **Two instances.** Alice hosts, Bob joins: Bob sees the OFFER banner and the gold plate, opens the offer screen, Accept reaches the host (COUNTDOWN), both HUDs show the note and Bob's shows "Wave 1/3: 5 left" as the host's counter changes; after Win Bob sees "The Beastfolk camp is safe!", gains levels from his own XP, and sees the loot bundle; a guest that joins mid-event shows "Defend the Beastfolk camp / Wave 1/3 in 6s  SE 209m" in its first frames.
+
+Not verified live (tracked as issues): an odd-cycle spontaneous free caravan, and event monsters striking the defenders (unit-tested only) (#17); the EVK_ROAD accept path has no unit test (#16).
+
+## Deferred items (GitHub issues, labels need-triage + ready-for-human)
+
+- #13 the camp-site search often fails in dense forest ("No room for an event").
+- #14 tent removal leaves bare grass squares where the snow layer was.
+- #15 balance: a lone level-1 player cannot save a camp; the leader dies within ~15 s of the raiders arriving.
+- #16 no unit test for the EVK_ROAD accept path.
+- #17 spontaneous free caravan and monster-vs-guard contact not seen live.

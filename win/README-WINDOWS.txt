@@ -1,4 +1,4 @@
-AssemblyCraft 0.11.0 - Windows (64-bit)
+AssemblyCraft 0.12.0 - Windows (64-bit)
 =======================================
 
 Jouer / Play

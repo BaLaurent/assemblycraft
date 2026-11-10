@@ -14,6 +14,7 @@ A Minecraft-like voxel sandbox written **entirely in x86-64 NASM assembly** — 
 - **Debug menu**: press `F12` three times while playing for a tabbed menu (Player, Items, Enemies, World) to change stats and levels, give items, spawn mobs, set the time, teleport and more; opening it marks the world as cheated for good (a red `CHEATER` tag in the world list, a `[C]` in the HUD and a line in the F3 overlay)
 - **Presentation**: OpenGL chunk mesher, dynamic lighting, sky, HUD, menus, procedural sound and audio
 - **Multiplayer** (0.11): up to 8 players in one world. A player hosts the world they have open (Esc, *Open to multiplayer*); friends join with a 6-letter room code (UDP hole punching through a small rendezvous server, with a relay fallback) or a direct `IP:port`. Co-op survival (shared mobs, drops, chests, boats, TNT, fire), optional PvP, chat (`T`), a player list (`Tab`), a shared quest chain and faction standing, and each guest's character is saved by the host
+- **Events** (0.12): faction events you play through, alone or in co-op. A temporary camp asks for help and you hold it through three waves; an existing camp or village can come under threat (four waves, all its folk defend); a free caravan or a camp trader's road caravan needs an escort past two or three ambushes. Raiders of a rival faction attack by day, zombies, skeletons and spiders by night. Winning pays faction standing, XP and faction-themed loot. One event runs at a time; a new offer arrives every 10 minutes, and the debug menu's Enemies tab (Camp, Caravan, Threat, Wave, Win) starts and steers them. Design: `docs/superpowers/specs/2026-11-10-assemblycraft-events-design.md`
 - **Saves**: worlds persist to disk (`world.acw`)
 - **Tests**: a built-in selftest suite run by the binary itself (`make test`)
 
@@ -38,7 +39,7 @@ A native 64-bit Windows `.exe` is cross-built on Linux: the game's assembly is a
 ```sh
 make windows-image   # once: builds the ac-mingw docker image (gcc-mingw-w64)
 make windows         # build/win/assemblycraft.exe
-make windows-zip     # build/win/AssemblyCraft-0.11.0-win64.zip (exe + README-WINDOWS.txt + licenses)
+make windows-zip     # build/win/AssemblyCraft-0.12.0-win64.zip (exe + README-WINDOWS.txt + licenses)
 ```
 
 The full selftest suite runs under Wine: `wine build/win/assemblycraft.exe --selftest`. Windows and Linux builds play together in the same multiplayer world.
