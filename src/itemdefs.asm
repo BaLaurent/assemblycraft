@@ -186,6 +186,12 @@ n_scope:    db "Scope", 0
 n_extmag:   db "Extended Magazine", 0
 n_rifled:   db "Rifled Barrel", 0
 n_comp:     db "Compensator", 0
+n_pengine:  db "Engine", 0
+n_pwing:    db "Wing", 0
+n_pfuse:    db "Fuselage", 0
+n_pprop:    db "Propeller", 0
+n_ptail:    db "Tail", 0
+n_plane:    db "Airplane", 0
 
 align 8
 ; display name; every variant id points at its base's name
@@ -233,7 +239,12 @@ item_names:
     dq n_ihammer, n_dhammer, n_ispear, n_dspear
     dq n_boat
     dq n_revolver, n_hrifle, n_scope, n_extmag, n_rifled, n_comp
+    dq n_pengine, n_pwing, n_pfuse, n_pprop, n_ptail, n_plane
     END_TABLE item_names, 8, n_unused
+
+; 0.13 plane item icons: tiles 368..373, in the free stretch 368..380 between the first and second rows of
+; the silhouette block (365..367, 381..383, ...); drawn in texgen.asm
+%define TILE_ICON_PLANE0   368
 
 ; atlas tile of the inventory icon (a word: the 0.10.4 tiles lie past 255): a block's side tile
 ; or icon tile (0 for non-base variants), tiles 32.. for STICK..PORKCHOP,
@@ -288,6 +299,8 @@ item_icon:
     dw TILE_ICON_BOAT
     dw TILE_ICON_REVOLVER, TILE_ICON_HRIFLE, TILE_ICON_SCOPE, TILE_ICON_EXTMAG
     dw TILE_ICON_RIFLED, TILE_ICON_COMP
+    dw TILE_ICON_PLANE0, TILE_ICON_PLANE0 + 1, TILE_ICON_PLANE0 + 2 ; engine, wing, fuselage
+    dw TILE_ICON_PLANE0 + 3, TILE_ICON_PLANE0 + 4, TILE_ICON_PLANE0 + 5 ; propeller, tail, airplane
     END_TABLE item_icon, 2, 0
 
 ; 0 = not an item (air, fire, the lit furnace, non-base variants, unused ids)
@@ -338,6 +351,8 @@ item_max_stack:
     db 1                                ; boat
     times 2 db 1                        ; revolver, hunting rifle
     times 4 db 16                       ; attachments
+    times 5 db 16                       ; plane components
+    db 1                                ; airplane
     END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD

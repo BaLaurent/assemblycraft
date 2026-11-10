@@ -46,6 +46,8 @@ extern structures_reset, structures_step, structures_refresh, structures_shift
 extern events_reset, events_shift
 extern boats_clear, boats_step, boats_raycast, boats_place, boats_mount, boats_dismount
 extern boats_break, boats_save, boats_load, boats_shift, boat_riding
+extern planes_clear, planes_step, planes_raycast, planes_place, planes_board, planes_leave, planes_break
+extern planes_save, planes_load, planes_shift, plane_riding, plane_view
 extern sleep_use_bed, sleep_step, sleep_cancel, sleep_respawn_target, sleep_place_at_bed, sleep_active
 extern app_state, app_goto
 extern surv_max_health
@@ -132,6 +134,7 @@ pending_respawn: resd 1                 ; bit 0: stand on the ground, bit 1: fin
 region_x:        resd 1                 ; the player's region (absolute 512-block cell) at the last check
 region_z:        resd 1
 boat_hit:        resd 1                 ; the boat under the crosshair (nearer than any block) or -1
+plane_hit:       resd 1                 ; the plane under the crosshair (nearer than any block) or -1
 alignb 8
 hdr_buf:         resb WORLD_HDR_SIZE + 64   ; game_load reads the header here before committing it
 path_buf:        resb 4096              ; <dir>/world.hdr
@@ -159,6 +162,7 @@ reset_session:
     mov     dword [game_heavy_s], __float32__(-1.0)
     mov     dword [brk_y], -1
     mov     dword [boat_hit], -1
+    mov     dword [plane_hit], -1
     call    sleep_cancel
     call    combat_reset
     call    abilities_reset
@@ -303,6 +307,7 @@ game_new:
     call    fire_clear
     call    fx_clear
     call    boats_clear
+    call    planes_clear
     mov     qword [inv_container], 0
     call    structures_reset
     call    events_reset
@@ -388,8 +393,11 @@ game_load:
     call    fire_clear                  ; fires are not saved
     call    fx_clear
     call    boats_clear
+    call    planes_clear
     mov     rdi, rbx
     call    boats_load
+    mov     rdi, rbx
+    call    planes_load
     call    structures_reset
     call    events_reset
     mov     qword [inv_container], 0
@@ -435,6 +443,8 @@ game_save:
     mov     [rbx + WORLDHDR.mode], eax
     mov     rdi, rbx
     call    boats_save
+    mov     rdi, rbx
+    call    planes_save
     mov     rdi, rbx
     call    mobs_save
     mov     rdi, r12
@@ -793,6 +803,7 @@ game_join:
     call    fire_clear
     call    fx_clear
     call    boats_clear
+    call    planes_clear
     call    structures_reset
     call    events_reset
     mov     qword [inv_container], 0
@@ -826,6 +837,7 @@ respawn_at_target:
     je      .afoot
     call    boats_dismount
 .afoot:
+    call    planes_leave
     mov     rdi, rsp
     call    sleep_respawn_target        ; eax 1 and the bed's foot cell (local) when a bed is set
     mov     ebx, eax
@@ -902,6 +914,7 @@ game_teleport:
     je      .afoot
     call    boats_dismount
 .afoot:
+    call    planes_leave
     call    sleep_cancel
     mov     edi, ebx
     and     edi, -REBASE_STEP
@@ -998,6 +1011,7 @@ game_shift_origin:
     SHIFT_CALL dmgnum_shift
     SHIFT_CALL abilities_shift
     SHIFT_CALL boats_shift
+    SHIFT_CALL planes_shift
     sub     [game_target + RAYHIT.bx], ebx
     sub     [game_target + RAYHIT.px], ebx
     sub     [game_target + RAYHIT.bz], r12d
@@ -1377,9 +1391,14 @@ want_guard:
     je      .no                         ; the press talks to it
     mov     eax, 1                      ; (the call spent eax: the guard is up unless a block says otherwise)
     cmp     dword [boat_hit], 0
-    jl      .at_block
+    jl      .not_boat
     cmp     dword [boat_riding], 0
     je      .no                         ; the press boards the boat: no guard
+.not_boat:
+    cmp     dword [plane_hit], 0
+    jl      .at_block
+    cmp     dword [plane_riding], 0
+    je      .no                         ; the press boards the plane: no guard
 .at_block:
     cmp     dword [game_has_target], 0
     je      .ret
@@ -1541,6 +1560,8 @@ heavy_track:
 %define F_TBOAT  68                     ; float: distance to the boat hit
 %define F_PLR    72                     ; int: the player under the crosshair (PvP) or -1
 %define F_TPLR   76                     ; float: distance to that player
+%define F_PLANE  84                     ; int: the plane under the crosshair (nearer than any block) or -1
+%define F_TPLANE 88                     ; float: distance to the plane hit
 %define F_REACH  80                     ; float: the reach of the held weapon
 %define F_SCR    96                     ; scratch: screen to open / bow power
 %define F_FORCE  112                    ; int: 1 when Deadeye forces the arrow's crit
@@ -1785,6 +1806,22 @@ game_frame:
 .boat_done:
     mov     eax, [rsp + F_BOAT]
     mov     [boat_hit], eax
+    lea     rdi, [rsp + F_EYE]          ; the same for a plane
+    lea     rsi, [rsp + F_DIR]
+    movss   xmm0, [reach_surv]
+    call    planes_raycast
+    mov     [rsp + F_PLANE], eax
+    movss   [rsp + F_TPLANE], xmm0
+    test    eax, eax
+    js      .plane_done
+    cmp     dword [game_has_target], 0
+    je      .plane_done
+    comiss  xmm0, [rsp + F_TBLK]
+    jb      .plane_done                 ; nearer than the block
+    mov     dword [rsp + F_PLANE], -1
+.plane_done:
+    mov     eax, [rsp + F_PLANE]
+    mov     [plane_hit], eax
 
     ; 5b. combat input while playing: guard (RMB with a melee weapon), dodge, abilities
     cmp     dword [input_captured], 1
@@ -1804,6 +1841,11 @@ game_frame:
 .ability:
     cmp     dword [frame_input + FRAMEINPUT.ability + rbx*4], 0
     je      .next_ability
+    cmp     ebx, 2
+    jne     .use_ability
+    cmp     dword [plane_riding], 0
+    jne     .next_ability               ; the key of Ability 3 (V) flips the plane's view while seated
+.use_ability:
     mov     edi, ebx
     lea     rsi, [rsp + F_EYE]
     lea     rdx, [rsp + F_DIR]
@@ -1812,6 +1854,11 @@ game_frame:
     inc     ebx
     cmp     ebx, 4
     jb      .ability
+    cmp     dword [frame_input + FRAMEINPUT.vehicle_view], 0
+    je      .combat_done
+    cmp     dword [plane_riding], 0
+    je      .combat_done
+    xor     dword [plane_view], 1       ; third person <-> cockpit
     jmp     .combat_done
 .no_combat:
     xor     edi, edi
@@ -1896,6 +1943,34 @@ game_frame:
     mov     dword [brk_y], -1
     jmp     .place
 .no_boat_break:
+    cmp     dword [frame_input + FRAMEINPUT.lmb_pressed], 0
+    je      .no_plane_break             ; a click on a plane nearer than the block and mob hits
+    mov     eax, [rsp + F_PLANE]        ; breaks it (not the one the player flies)
+    test    eax, eax
+    js      .no_plane_break
+    lea     ecx, [rax + 1]
+    cmp     ecx, [plane_riding]
+    je      .no_plane_break
+    cmp     dword [rsp + F_PLR], 0      ; a player nearer than the plane takes the click
+    jl      .plane_no_player
+    movss   xmm0, [rsp + F_TPLANE]
+    comiss  xmm0, [rsp + F_TPLR]
+    jae     .no_plane_break
+.plane_no_player:
+    cmp     dword [rsp + F_MOB], 0
+    jl      .plane_first
+    movss   xmm0, [rsp + F_TPLANE]
+    comiss  xmm0, [rsp + F_TMOB]
+    jae     .no_plane_break             ; the mob is nearer
+.plane_first:
+    mov     edi, eax
+    call    planes_break
+    call    swing_hand
+    mov     dword [game_heavy_s], __float32__(-1.0)
+    mov     dword [game_break_progress], 0
+    mov     dword [brk_y], -1
+    jmp     .place
+.no_plane_break:
     mov     edi, [rsp + F_MOB]
     lea     rsi, [rsp + F_DIR]
     movss   xmm0, [rsp + F_DT]
@@ -2162,6 +2237,35 @@ game_frame:
     call    inv_consume_held
     jmp     .pick
 .no_boat_click:
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .no_plane_click             ; a plane is boarded or put down by a fresh click only
+    cmp     dword [boat_riding], 0
+    jne     .no_plane_click
+    cmp     dword [plane_riding], 0     ; a plane in front (nearer than the block hit) is boarded,
+    jne     .plane_item                 ; even with a plane in hand
+    mov     eax, [rsp + F_PLANE]
+    test    eax, eax
+    js      .plane_item
+    mov     edi, eax
+    call    planes_board
+    jmp     .pick
+.plane_item:
+    call    held_id
+    cmp     eax, PLANE
+    jne     .no_plane_click
+    cmp     dword [game_has_target], 0
+    je      .no_plane_click
+    lea     rdi, [game_target]
+    call    planes_place
+    test    eax, eax
+    jz      .no_plane_click             ; no room on the block's top: the click goes on as an ordinary use
+    call    swing_hand
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .pick
+    mov     edi, 1
+    call    inv_consume_held
+    jmp     .pick
+.no_plane_click:
     cmp     dword [game_has_target], 0
     jne     .use
     call    try_potion
@@ -2546,7 +2650,8 @@ sim_step:
     sub     rsp, 56                     ; [rsp] INPUT copy, [rsp+20] was_on_ground,
                                         ; [rsp+24] x0, [rsp+28] z0, [rsp+32] dist,
                                         ; [rsp+36] landed fall distance, [rsp+40] sprinting
-                                        ; (drains stamina), [rsp+44] 1 when the step began in a boat
+                                        ; (drains stamina), [rsp+44] 1 when the step began in a boat or
+                                        ; a plane, [rsp+48] 1 when it began in a plane
     call    rpg_recompute               ; the character first: gear, ranks and attributes may have changed
     lea     rsi, [frame_input + FRAMEINPUT.move]
     mov     rdi, rsp
@@ -2564,9 +2669,13 @@ sim_step:
 .wake:
     call    sleep_cancel
 .awake:
-    xor     eax, eax                    ; in a boat the boat does the moving: no sprinting
-    cmp     dword [boat_riding], 0
+    xor     eax, eax                    ; in a boat or a plane the vehicle does the moving: no sprinting
+    cmp     dword [plane_riding], 0
     setne   al
+    mov     [rsp + 48], eax             ; 1 when the step began in a plane
+    cmp     dword [boat_riding], 0
+    setne   cl
+    or      al, cl
     mov     [rsp + 44], eax
     test    eax, eax
     jz      .afoot
@@ -2611,7 +2720,13 @@ sim_step:
     jmp     .stepped
 .ride:
     mov     rdi, rsp
+    cmp     dword [rsp + 48], 0
+    jne     .fly
     call    boats_step                  ; the boat sails on and carries the player with it
+    jmp     .ridden
+.fly:
+    call    planes_step                 ; the plane flies on and carries the player with it
+.ridden:
     xorps   xmm0, xmm0
 .stepped:
     movss   [rsp + 36], xmm0            ; landed fall distance
@@ -2707,12 +2822,20 @@ sim_step:
     call    combat_step
     call    abilities_step
     call    dmgnum_step
-    cmp     dword [rsp + 44], 0         ; the boats the player does not ride sail on too (the host's job)
-    jne     .boats_done
     test    ebx, ebx
     jnz     .boats_done
+    cmp     dword [rsp + 44], 0         ; the vehicles the player does not ride move on too (the host's job)
+    je      .step_boats
+    cmp     dword [rsp + 48], 0
+    je      .step_planes                ; a boat rider: the boats have moved
+.step_boats:
     mov     rdi, rsp
     call    boats_step
+.step_planes:
+    cmp     dword [rsp + 48], 0
+    jne     .boats_done                 ; a pilot: the planes have moved
+    mov     rdi, rsp
+    call    planes_step
 .boats_done:
     call    check_region                ; the site cache follows the player across regions
     test    ebx, ebx

@@ -30,7 +30,7 @@ extern screen_trade, screen_dialog, screen_skills, screen_character
 extern screen_shrine, screen_leader, screen_event
 extern debug_poll, debug_frame
 extern rpg_begin, rpg_reset, combat_reset, dmgnum_clear, light_update
-extern boats_clear
+extern boats_clear, planes_clear, plane_view_cam, plane_riding, plane_view
 extern stream_begin, stream_end, stream_update, stream_area_ready, gen_find_spawn
 extern dir_remove_tree
 extern screen_mp_join, screen_mp_host, screen_chat
@@ -568,6 +568,7 @@ load_panorama:
     call    fx_clear
     call    dmgnum_clear
     call    boats_clear
+    call    planes_clear
     call    rpg_reset
     call    combat_reset
     mov     dword [game_aim], 0
@@ -1037,7 +1038,8 @@ draw_frame:
     lea     rdi, [panorama_cam]
     cmp     dword [app_in_world], 0
     je      .cam
-    lea     rdi, [player]
+    call    plane_view_cam              ; the player, or the third-person camera of a plane he flies
+    mov     rdi, rax
 .cam:
     mov     esi, [fb_w]
     mov     edx, [fb_h]
@@ -1080,6 +1082,11 @@ draw_frame:
     jne     .ui
 .in_view:
     mov     ebx, 1
+    cmp     dword [plane_riding], 0
+    je      .hand
+    cmp     dword [plane_view], 0
+    jne     .ui                         ; the pilot's own hand is not drawn in third person
+.hand:
     mov     edi, [fb_w]
     mov     esi, [fb_h]
     movss   xmm0, [frame_dt]

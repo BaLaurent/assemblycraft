@@ -141,6 +141,15 @@ recipes:
     db 3, 1, RIFLED_BARREL, 1, I, I, DIAMOND, 0, 0, 0, 0, 0, 0
     db 3, 1, COMPENSATOR, 1, FLINT, I, FLINT, 0, 0, 0, 0, 0, 0
 %undef I
+    ; 0.13: the plane's five components and the plane itself (about 35 iron ingots in all)
+%define I IRON_INGOT
+    db 3, 3, PLANE_ENGINE, 1, GUNPOWDER, I, 0, I, IRON_BLOCK, I, 0, I, COAL
+    db 3, 3, PLANE_WING, 1, I, I, I, I, WOOL, WOOL, I, WOOL, WOOL
+    db 3, 3, PLANE_FUSELAGE, 1, I, I, I, GLASS, GLASS, GLASS, I, I, I
+    db 3, 3, PLANE_PROP, 1, 0, I, 0, I, STICK, I, 0, STICK, 0
+    db 3, 3, PLANE_TAIL, 1, WOOL, WOOL, WOOL, I, STICK, I, 0, I, 0
+%undef I
+    db 3, 3, PLANE, 1, 0, PLANE_PROP, 0, PLANE_WING, PLANE_ENGINE, PLANE_WING, 0, PLANE_FUSELAGE, PLANE_TAIL
 recipes_end:
 
 section .data

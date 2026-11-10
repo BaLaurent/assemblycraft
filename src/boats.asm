@@ -9,7 +9,7 @@ default rel
 
 global boats, boat_riding, boat_rider
 global boats_clear, boats_step, boats_render, boats_place, boats_raycast, boats_mount
-global boats_dismount, boats_break, boats_save, boats_load, boats_shift
+global boats_dismount, boats_break, boats_save, boats_load, boats_shift, coord_ok, meshable
 
 extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready

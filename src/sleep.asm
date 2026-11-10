@@ -16,7 +16,7 @@ extern game_time, sky_is_night
 extern mobs, mob_is_hostile
 extern player, hud_banner
 extern dir_dx, dir_dz
-extern boats_dismount
+extern boats_dismount, planes_leave
 extern net_role, net_all_asleep
 
 %define BANNER_INFO    RGBA(255, 255, 255, 255)
@@ -279,6 +279,7 @@ sleep_use_bed:
     mov     dword [sleep_timer], 0
     mov     dword [sleep_fade], 0
     call    boats_dismount
+    call    planes_leave
     cvtsi2ss xmm0, dword [rsp]
     addss   xmm0, [c_half]
     cvtsi2ss xmm1, dword [rsp + 4]

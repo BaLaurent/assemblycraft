@@ -18,7 +18,7 @@ global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, 
 extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
 extern settings, sky_brightness, sky_color, sky_angle, sincos_deg
-extern mobs_render, boats_render, drops_render, arrows_render, tnt_render, peers_render
+extern mobs_render, boats_render, planes_render, drops_render, arrows_render, tnt_render, peers_render
 extern fire_render, fx_render, fx_shake_yaw, fx_shake_pitch, game_aim
 extern light_lut_build, light_bind_index, block_sel_bounds
 extern columns, world_origin_x, world_origin_z, world_column, world_column_slot, stream_rdist, stream_ccx, stream_ccz
@@ -1289,6 +1289,7 @@ render_world:
     call    mobs_render
     call    peers_render
     call    boats_render
+    call    planes_render
     call    drops_render
     call    arrows_render
     call    tnt_render

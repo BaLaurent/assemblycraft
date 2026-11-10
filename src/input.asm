@@ -56,8 +56,9 @@ prev_reload:    resd 1
 prev_skills:    resd 1
 prev_dodge:     resd 1
 prev_ability:   resd 4
-cap_edges:      resd 7                 ; dodge, ability 1..4 edges, chat edge, player-list held until the captured branch
+cap_edges:      resd 8                 ; dodge, ability 1..4 edges, chat edge, player-list held, vehicle-view edge until the captured branch
 prev_chat:      resd 1
+prev_vview:     resd 1
 prev_num:       resd 9
 
 section .text
@@ -417,6 +418,9 @@ input_poll:
     mov     [cap_edges + 20], edx
     BIND    BIND_PLAYERS
     mov     [cap_edges + 24], eax
+    BIND    BIND_VEHICLE_VIEW
+    EDGE    prev_vview
+    mov     [cap_edges + 28], edx
     xor     ecx, ecx
 .num:
     push    rcx
@@ -481,6 +485,8 @@ input_poll:
     mov     [frame_input + FRAMEINPUT.chat], eax
     mov     eax, [cap_edges + 24]
     mov     [frame_input + FRAMEINPUT.players], eax
+    mov     eax, [cap_edges + 28]
+    mov     [frame_input + FRAMEINPUT.vehicle_view], eax
     ; buttons, ignoring the click that captured the mouse until both are released
     cmp     dword [suppress], 0
     je      .buttons

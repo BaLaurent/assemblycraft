@@ -847,7 +847,7 @@ test_debug_item_filter:
     lea     edi, [rbx - 1]
     lea     rsi, [t_empty]
     call    debug_item_nth
-    cmp     eax, COMPENSATOR            ; the last item
+    cmp     eax, PLANE                  ; the last item
     jne     .fail
     mov     edi, ebx
     lea     rsi, [t_empty]

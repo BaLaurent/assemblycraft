@@ -20,6 +20,8 @@ extern test_damage_invulnerability, test_starvation_floor, test_sky_day_cycle
 extern test_armor_reduces_damage
 extern test_saves_sanitize_name, test_saves_scan_rename_delete
 extern test_settings_roundtrip, test_settings_clamps_bad_values, test_settings_reload_key
+extern test_vehicleview_default_key, test_vehicleview_roundtrip
+extern test_vehicleview_missing_key, test_vehicleview_labels
 extern test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 extern test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 extern test_furnace_smelts, test_chest_spills_on_break
@@ -119,6 +121,10 @@ extern test_hud_heading_dist, test_net_event_state, test_net_event_accept
 extern test_events_wave_size, test_events_camp_flow, test_events_night_wave, test_events_leader_dies
 extern test_events_abandon, test_events_monster_strike, test_events_caravan_flow, test_events_threat_flags
 extern test_events_net
+extern test_plane_recipes, test_plane_item_tables
+extern test_planes_place, test_planes_takeoff, test_planes_stall, test_planes_landing
+extern test_planes_crashes, test_planes_governor, test_planes_save_load, test_planes_leave
+extern test_planes_camera
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -175,6 +181,10 @@ tests:
     TEST settings_roundtrip
     TEST settings_clamps_bad_values
     TEST settings_reload_key
+    TEST vehicleview_default_key
+    TEST vehicleview_roundtrip
+    TEST vehicleview_missing_key
+    TEST vehicleview_labels
     TEST furnace_smelts
     TEST chest_spills_on_break
     TEST mob_raycast_hits
@@ -414,6 +424,17 @@ tests:
     TEST events_caravan_flow
     TEST events_threat_flags
     TEST events_net
+    TEST plane_recipes
+    TEST plane_item_tables
+    TEST planes_place
+    TEST planes_takeoff
+    TEST planes_stall
+    TEST planes_landing
+    TEST planes_crashes
+    TEST planes_governor
+    TEST planes_save_load
+    TEST planes_leave
+    TEST planes_camera
     dq 0
 
 section .rodata
@@ -462,6 +483,10 @@ section .rodata
     TESTNAME settings_roundtrip
     TESTNAME settings_clamps_bad_values
     TESTNAME settings_reload_key
+    TESTNAME vehicleview_default_key
+    TESTNAME vehicleview_roundtrip
+    TESTNAME vehicleview_missing_key
+    TESTNAME vehicleview_labels
     TESTNAME furnace_smelts
     TESTNAME chest_spills_on_break
     TESTNAME mob_raycast_hits
@@ -701,6 +726,17 @@ section .rodata
     TESTNAME events_caravan_flow
     TESTNAME events_threat_flags
     TESTNAME events_net
+    TESTNAME plane_recipes
+    TESTNAME plane_item_tables
+    TESTNAME planes_place
+    TESTNAME planes_takeoff
+    TESTNAME planes_stall
+    TESTNAME planes_landing
+    TESTNAME planes_crashes
+    TESTNAME planes_governor
+    TESTNAME planes_save_load
+    TESTNAME planes_leave
+    TESTNAME planes_camera
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

@@ -1199,6 +1199,15 @@ texgen_build:
     BMP     230, mk_st_gun_bmp, pal_mk_st_gun
     BMP     231, mk_st_reload_bmp, pal_mk_st_reload
 
+    ; ---- 0.13 plane item icons (draw-free bitmaps over one shared palette): 368 engine, 369 wing,
+    ;      370 fuselage, 371 propeller, 372 tail, 373 airplane ----
+    BMP     368, icon_pengine_bmp, pal_icon_plane
+    BMP     369, icon_pwing_bmp, pal_icon_plane
+    BMP     370, icon_pfuse_bmp, pal_icon_plane
+    BMP     371, icon_pprop_bmp, pal_icon_plane
+    BMP     372, icon_ptail_bmp, pal_icon_plane
+    BMP     373, icon_plane_bmp, pal_icon_plane
+
     ; ---- font (no rng; always last): glyph c-32 at ((c-32)&15)*8, FONT_Y + ((c-32)>>4)*8
     xor     r9d, r9d                    ; glyph index 0..95
 .font_glyph:
@@ -5398,6 +5407,129 @@ icon_boat_bmp:
     db ".....hhhhhhhh..."
     db "................"
     db "................"
+
+; plane icons: grey iron parts, white wool fabric, a red marking
+pal_icon_plane:
+    PAL 'K', 20, 20, 28
+    PAL 'D', 60, 62, 76
+    PAL 'B', 100, 102, 118
+    PAL 'M', 150, 152, 168
+    PAL 'H', 205, 208, 220
+    PAL 'W', 236, 236, 242
+    PAL 'w', 188, 190, 204
+    PAL 'R', 196, 52, 40
+    PAL 'O', 232, 128, 32
+    PAL 'G', 140, 200, 236
+    PAL 'g', 80, 140, 190
+    dq 0
+; engine: three finned cylinders on a crankcase with a glowing core
+icon_pengine_bmp:
+    db "................"
+    db "..KKK.KKK.KKK..."
+    db "..KHM.KHM.KHM..."
+    db "..KMD.KMD.KMD..."
+    db "..KHM.KHM.KHM..."
+    db ".KKKKKKKKKKKKKK."
+    db ".KHMMMMMMMMMMMK."
+    db ".KMMDDDDDDDDMBK."
+    db ".KMDKKKKKKKKDBK."
+    db ".KMDKOOOOOOKDBK."
+    db ".KMDKKKKKKKKDBK."
+    db ".KMMDDDDDDDDMBK."
+    db ".KBBBBBBBBBBBBK."
+    db ".KKKKKKKKKKKKKK."
+    db "..KK........KK.."
+    db "................"
+; wing: iron leading edge and spar over ribbed wool fabric
+icon_pwing_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "..KKKKKKKKKKKK.."
+    db ".KHMMMMMMMMMMMK."
+    db ".KDDDDDDDDDDDDK."
+    db ".KWWWwWWWWwWWWK."
+    db ".KWWWwWWWWwWWWK."
+    db ".KWWWwWWWWwWWWK."
+    db ".KWWWwWWWWwWWWK."
+    db ".KWWWwWWWWwWWWK."
+    db ".KwwwwwwwwwwwwK."
+    db "..KKKKKKKKKKKK.."
+    db "................"
+    db "................"
+    db "................"
+; fuselage: side-on iron tube with three glass windows, tapering to the rear
+icon_pfuse_bmp:
+    db "................"
+    db "................"
+    db "................"
+    db "....KKKKKKKKK..."
+    db "..KKHHHHHHHHMKK."
+    db ".KHMMMMMMMMMMBKK"
+    db "KMMKGGKGGKGGMBK."
+    db "KMMKGgKGgKGgMBK."
+    db "KMMMMMMMMMMMBDK."
+    db ".KBBBBBBBBBBDDKK"
+    db "..KKDDDDDDDDDKK."
+    db "....KKKKKKKKK..."
+    db "................"
+    db "................"
+    db "................"
+    db "................"
+; propeller: two blades round an iron hub
+icon_pprop_bmp:
+    db "......KKKK......"
+    db ".....KHHMMK....."
+    db ".....KHHMMK....."
+    db ".....KHMMBK....."
+    db "......KMBK......"
+    db "......KMBK......"
+    db ".....KKKKKK....."
+    db "....KHHMMMBK...."
+    db "....KMDDDDBK...."
+    db ".....KKKKKK....."
+    db "......KMBK......"
+    db "......KMBK......"
+    db ".....KHMMBK....."
+    db ".....KHMMBK....."
+    db ".....KDDBBK....."
+    db "......KKKK......"
+; tail: a wool fin with a red stripe on an iron stub
+icon_ptail_bmp:
+    db "................"
+    db "................"
+    db "..........KKK..."
+    db "..........KWWK.."
+    db ".........KWWWK.."
+    db ".........KRRRK.."
+    db "........KRRRRK.."
+    db "........KWWWWK.."
+    db ".......KWWWWwK.."
+    db "......KWWWWWwK.."
+    db "..KKKKKMMMMMBK.."
+    db ".KMMMMMMMMMMBK.."
+    db ".KHHHMMMMMMBBK.."
+    db "..KKKKKKKKKKKK.."
+    db "................"
+    db "................"
+; airplane: top view, nose up, wool wings and a red rudder
+icon_plane_bmp:
+    db ".....KKKKKK....."
+    db "....KDDDDDDK...."
+    db ".....KKMMKK....."
+    db "......KMHK......"
+    db "......KMHK......"
+    db "KKKKKKKKKKKKKKKK"
+    db "KWWwWWWHMWWWwWWK"
+    db "KWWwWWWHMWWWwWWK"
+    db "KKKKKKKKKKKKKKKK"
+    db "......KMBK......"
+    db "......KMBK......"
+    db "....KKKMBKKK...."
+    db "....KWWMBWWK...."
+    db "....KKKKKKKK...."
+    db "......KRRK......"
+    db "......KKKK......"
 
 ; breath bubbles (9x9 HUD bitmaps): a light-blue ring with a white highlight; popping = 4 dots
 pal_bubble:

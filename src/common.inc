@@ -211,7 +211,13 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define EXTENDED_MAG   (FIRST_ITEM + 84)
 %define RIFLED_BARREL  (FIRST_ITEM + 85)
 %define COMPENSATOR    (FIRST_ITEM + 86)
-%define NUM_ITEMS      (FIRST_ITEM + 87) ; 231
+%define PLANE_ENGINE   (FIRST_ITEM + 87) ; 0.13: the plane and its five components
+%define PLANE_WING     (FIRST_ITEM + 88)
+%define PLANE_FUSELAGE (FIRST_ITEM + 89)
+%define PLANE_PROP     (FIRST_ITEM + 90)
+%define PLANE_TAIL     (FIRST_ITEM + 91)
+%define PLANE          (FIRST_ITEM + 92)
+%define NUM_ITEMS      (FIRST_ITEM + 93) ; 237
 
 ; ---- directions / block shapes ---------------------------------------------
 %define DIR_N          0                ; -z
@@ -496,6 +502,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define CAUSE_LAST      17
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
+%define MAX_PLANES      4
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -861,9 +868,10 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define BIND_ABILITY3   13
 %define BIND_SKILLS     14
 %define BIND_ABILITY4   15
-%define NUM_BINDINGS    18
+%define NUM_BINDINGS    19
 %define BIND_CHAT       16
 %define BIND_PLAYERS    17
+%define BIND_VEHICLE_VIEW 18            ; read only while seated in a vehicle (V by default); ABILITY3 only on foot
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0
@@ -1001,6 +1009,7 @@ struc FRAMEINPUT
     .ability:     resd 4
     .chat:        resd 1                ; edge of the Chat binding (captured only)
     .players:     resd 1                ; Player list binding held (captured only)
+    .vehicle_view: resd 1               ; edge of the Vehicle view binding (captured only)
 endstruc
 
 struc UIINPUT
@@ -1391,6 +1400,26 @@ struc BOATSAVE
     .yaw: resd 1
 endstruc                                ; 16 bytes
 
+; a plane: planes[MAX_PLANES] in planes.asm, local coordinates; named PLANEENT because PLANE is the item id
+struc PLANEENT
+    .body:     resb BODY_size           ; y = bottom; yaw = heading
+    .used:     resd 1
+    .speed:    resd 1                   ; float, blocks/s along the heading
+    .pitch:    resd 1                   ; float degrees, + = nose up
+    .roll:     resd 1                   ; float degrees, + = banked right (cosmetic)
+    .throttle: resd 1                   ; float 0..1
+    .vmax:     resd 1                   ; float, the streaming governor's current speed cap
+    .prop:     resd 1                   ; float degrees, propeller angle
+    .air:      resd 1                   ; 1 while off the ground (the vertical speed is BODY.vy)
+endstruc
+
+struc PLANESAVE
+    .x:   resd 1                        ; floats, local
+    .y:   resd 1
+    .z:   resd 1
+    .yaw: resd 1
+endstruc                                ; 16 bytes
+
 ; v6 world header (world.hdr); offsets are load-bearing (save files, verification patches)
 struc WORLDHDR
     .magic:      resb 8                 ; "ACRAFT06"
@@ -1421,7 +1450,10 @@ struc WORLDHDR
     .standing:   resw 8                 ; @588: int16 per faction (FAC_*), 5 used
     .champions:  resb 1                 ; @604: bit f = faction f's champion is defeated
     .cheater:    resb 1                 ; @605: 1 once the debug menu was opened in this world, never cleared
-    .pad_a:      resb 944 - 606
+    .pad_a:      resb 2                 ; @606
+    .plane_count: resd 1                ; @608
+    .planes:     resb MAX_PLANES * PLANESAVE_size ; @612
+    .pad_b:      resb 944 - 676
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
     .mob_count:  resd 1                 ; @1024
@@ -1442,6 +1474,9 @@ endstruc                                ; 32768 bytes
 %endif
 %if WORLDHDR.cheater != 605 || WORLDHDR.debug_stats != 16656 || NUM_STATS > 46
 %error "WORLDHDR debug fields drifted (cheater @605, debug_stats @16656, at most 46 stats)"
+%endif
+%if WORLDHDR.planes + MAX_PLANES * PLANESAVE_size != 676 || WORLDHDR.armor != 944
+%error "WORLDHDR plane fields drifted (planes end @676, armor @944)"
 %endif
 
 struc SETTINGS

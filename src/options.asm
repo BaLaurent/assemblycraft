@@ -9,7 +9,7 @@
 %include "gl.inc"
 default rel
 
-global screen_settings, screen_controls, key_name
+global screen_settings, screen_controls, key_name, bind_labels
 
 extern ui_w, ui_h, ui_input
 extern ui_rect, ui_panel, ui_ribbon, ui_text_ink, ui_text_ink_centered, ui_button, ui_slider
@@ -17,7 +17,7 @@ extern settings, settings_path, settings_save, settings_apply, settings_reset_ke
 extern app_goto, app_settings_parent, app_entered, app_window
 extern str_append, i32_to_str
 
-; Controls layout (GUI units): two columns of 8 rows when they fit, else one column of 16. The
+; Controls layout (GUI units): two columns of 10 rows when they fit, else one column of 19. The
 ; rows stand on a page CTRL_PAGE_PAD wider than their span, so a layout needs that much room:
 ; wide (ui_w >= 481): the 465-unit layout, labels 125 wide, 100-wide key buttons
 ; compact (ui_w >= 417): 401 units, labels 112 wide, 84-wide key buttons (the 426-wide GUI
@@ -25,7 +25,7 @@ extern str_append, i32_to_str
 %define CTRL_PAGE_PAD   16
 %define CTRL_WIDE_W     (465 + CTRL_PAGE_PAD)
 %define CTRL_COMPACT_W  (401 + CTRL_PAGE_PAD)
-%define CTRL_ROWS       9
+%define CTRL_ROWS       10
 
 section .rodata
 s_empty:        db 0
@@ -83,11 +83,12 @@ s_b_skills:     db "Grimoire", 0
 s_b_ability4:   db "Ability 4", 0
 s_b_chat:       db "Chat", 0
 s_b_players:    db "Player list", 0
+s_b_vehicle:    db "Vehicle view", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump
                 dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly, s_b_reload
                 dq s_b_dodge, s_b_ability1, s_b_ability2, s_b_ability3, s_b_skills
-                dq s_b_ability4, s_b_chat, s_b_players
+                dq s_b_ability4, s_b_chat, s_b_players, s_b_vehicle
 
 ; Names of keys that glfwGetKeyName does not report: dw key, zstr; dw 0 ends it.
 %macro KEY 2
