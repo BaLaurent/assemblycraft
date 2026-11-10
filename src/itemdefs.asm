@@ -478,7 +478,7 @@ item_legendary:
     END_TABLE item_legendary, 1, 0
 
 align 2
-; wear in uses. Only pickaxes, axes, shovels and flint and steel wear; gear (swords, daggers,
+; wear in uses. Only pickaxes, axes, shovels, flint and steel and the airplane (crashes) wear; gear (swords, daggers,
 ; hammers, spears, bows, staves, armor, jewelry) never does: its dmg word holds its rarity, tier
 ; and seed instead.
 item_durability:
@@ -491,6 +491,8 @@ item_durability:
     dw 1561, 1561, 1561, 0              ; diamond
     PAD_TO item_durability, FLINT_AND_STEEL, 2, 0
     dw 64                               ; flint and steel
+    PAD_TO item_durability, PLANE, 2, 0
+    dw 100                              ; airplane: every crash wears it (PL_CRASH_WEAR), the plane is gone at 100
     END_TABLE item_durability, 2, 0     ; every other item never wears
 
 ; fuel value in furnace steps, or 0

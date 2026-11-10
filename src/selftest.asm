@@ -126,7 +126,7 @@ extern test_events_net
 extern test_plane_recipes, test_plane_item_tables
 extern test_planes_place, test_planes_takeoff, test_planes_stall, test_planes_landing
 extern test_planes_crashes, test_planes_governor, test_planes_save_load, test_planes_leave
-extern test_planes_camera, test_planes_seats, test_planes_roles
+extern test_planes_camera, test_planes_seats, test_planes_roles, test_planes_water
 extern test_planes_hum
 extern test_gatling_cone, test_gatling_fire, test_gatling_seats
 
@@ -453,6 +453,7 @@ tests:
     TEST gatling_seats
     TEST planes_seats
     TEST planes_roles
+    TEST planes_water
     dq 0
 
 section .rodata
@@ -769,6 +770,7 @@ section .rodata
     TESTNAME gatling_seats
     TESTNAME planes_seats
     TESTNAME planes_roles
+    TESTNAME planes_water
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

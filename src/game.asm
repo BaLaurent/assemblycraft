@@ -2260,6 +2260,8 @@ game_frame:
     cmp     dword [game_has_target], 0
     je      .no_plane_click
     lea     rdi, [game_target]
+    mov     eax, [inv_sel]
+    movzx   esi, word [inv + INVENTORY.slots + rax * 4 + ITEMSTACK.dmg]    ; the item's wear goes to the plane
     call    planes_place
     test    eax, eax
     jz      .no_plane_click             ; no room on the block's top: the click goes on as an ordinary use

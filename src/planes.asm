@@ -22,11 +22,12 @@ extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready, coord_ok, meshable
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb, raycast, survival_damage
 extern block_tiles, render_box16, light_bind_at, light_bind_index
-extern audio_play_local_at
+extern audio_play_local_at, item_durability
 extern net_role, net_self, net_applying, folk_tables, mob_parts_draw, net_hurt_send_direct
 extern net_plane_place_out, net_plane_board_out, net_plane_leave_out, net_plane_break_out, net_plane_ok_out
 
 %define PL_LOOK_COLS    4               ; columns sampled ahead of the heading, 16 blocks apart
+%define PL_CRASH_WEAR   30              ; durability a crash costs the plane (item_durability[PLANE] = 100: the fourth crash ends it)
 %define PL_CRASH_DMG    12              ; HP the pilot loses in a crash (survival_damage, CAUSE_FALL)
 %define PLANE_BOXES     8               ; the boxes of plane_model
 %define HUM_STEPS       15              ; a 0.30 s engine chunk is played again every 0.25 s: the ends crossfade
@@ -54,8 +55,11 @@ c_foot:     dd 2.0                      ; a step may not enter a column more tha
 c_256:      dd 256.0
 c_prop_z:   dd -1.5                     ; the propeller hub, in front of the engine cowl
 ; ---- flight model (blocks, seconds, degrees)
-c_hum_vol:  dd 0.4                      ; the engine's volume: 0.4 at rest ...
-c_hum_span: dd 0.6                      ; ... + 0.6 x speed / top speed
+c_hum_vol:  dd 0.3                      ; the engine's volume: 0.3 at rest ...
+c_hum_span: dd 0.5                      ; ... + 0.5 x speed / top speed
+c_wet_probe: dd 0.375                    ; water is a floor: the cell looked at is floor(bottom + 0.375) and the one below
+c_wet_rest: dd 0.625                    ; a floating plane's bottom is this far over the floor of the top water cell (surface - 0.25, as a boat)
+c_wet_eps:  dd 0.002
 c_hum_hi:   dd 14.0                     ; above this speed the flat-out chunk sounds
 c_hum_near: dd 0.3333                   ; another plane's engine is heard from a third of its distance: 48 blocks, not 16
 c_vmax:     dd 24.0                     ; PL_VMAX: top speed; the streaming governor lowers it while the terrain ahead is not loaded
@@ -104,6 +108,7 @@ c_snap2:    dd 36.0                     ; farther than 6 blocks from its target 
 seat_x:     dd 0.0, -0.9, 0.9, 0.0
 seat_z:     dd 0.0, -0.1, -0.1, 1.2
 s_crash:    db "The plane crashed", 0
+s_wreck:    db "The plane is wrecked", 0
 s_many:     db "Too many planes", 0
 s_load:     db "Terrain loading", 0
 ; the boxes of the plane in model space (blocks, centre at the origin, nose towards -z):
@@ -255,7 +260,7 @@ approach:
     addss   xmm0, xmm1
     ret
 
-; planes_place(rdi RAYHIT*) -> eax 1 when a plane was put on the ground. The ray must have hit the top face
+; planes_place(rdi RAYHIT*, esi the item's wear) -> eax 1 when a plane was put on the ground. The ray must have hit the top face
 ; of a block (the cell in front of it lies directly above the block); the 3 x 3 cells around that cell, at
 ; its level and the one above, must be free and loaded (a plane overhanging a ledge is fine). It stands
 ; centred on the cell, bottom on the block, heading = the player's yaw. A full table says "Too many
@@ -270,6 +275,7 @@ planes_place:
     push    r14
     push    r15
     sub     rsp, 8
+    mov     [rsp], esi                  ; the item's wear
     mov     r12, rdi
     mov     eax, [r12 + RAYHIT.py]
     sub     eax, [r12 + RAYHIT.by]
@@ -316,6 +322,7 @@ planes_place:
     cmp     byte [net_applying], 0
     jne     .local
     mov     rdi, r12                    ; a guest: the host puts the plane down
+    mov     esi, [rsp]
     call    net_plane_place_out
     mov     eax, 1
     jmp     .out
@@ -357,6 +364,8 @@ planes_place:
     mov     [rbx + BODY.yaw], eax
     mov     eax, [c_vmax]
     mov     [rbx + PLANEENT.vmax], eax
+    mov     eax, [rsp]
+    mov     [rbx + PLANEENT.dmg], eax   ; the plane keeps the wear of its item
     mov     dword [rbx + PLANEENT.used], 1
     mov     eax, 1
     jmp     .out
@@ -473,7 +482,10 @@ plane_governor:
     pop     rbp
     ret
 
-; plane_crash(rdi plane): the plane is destroyed (it drops nothing) and every occupant takes 12 damage. The host
+; plane_crash(rdi plane): a crash. Every occupant takes 12 damage and is put out; the plane wears by PL_CRASH_WEAR and
+; stays where it is, stopped, until its wear reaches item_durability[PLANE]: then it is destroyed (it drops nothing).
+; The wear of a guest's plane is the host's business: the guest drops its copy and the next snapshot brings it back.
+; Every occupant takes 12 damage. The host
 ; hurts each guest in it (net_hurt_send_direct) and tells him he is out (net_plane_ok_out); the local player, when
 ; he sits in it, is put down at the wreck, says so and takes the damage; a guest who flew it tells the host
 ; (net_plane_break_out, crash), which does the same for the others.
@@ -488,6 +500,14 @@ plane_crash:
     mov     rbx, rdi
     call    plane_index
     mov     r12d, eax
+    mov     eax, [rbx + PLANEENT.dmg]
+    add     eax, PL_CRASH_WEAR
+    mov     [rbx + PLANEENT.dmg], eax
+    movzx   ecx, word [item_durability + PLANE * 2]
+    xor     edx, edx
+    cmp     eax, ecx
+    setae   dl
+    mov     [rsp + 4], edx              ; 1: this crash ends the plane
     cmp     byte [net_role], NET_ROLE_HOST
     jne     .own
     xor     r13d, r13d
@@ -539,6 +559,9 @@ plane_crash:
     mov     [player + BODY.fall], eax
     mov     dword [player + BODY.on_ground], 0
     lea     rdi, [s_crash]
+    lea     rax, [s_wreck]
+    cmp     dword [rsp + 4], 0
+    cmovne  rdi, rax
     mov     esi, RGBA(255, 90, 90, 255)
     call    hud_banner
     mov     edi, PL_CRASH_DMG
@@ -546,15 +569,30 @@ plane_crash:
     call    survival_damage
 .tell:
     cmp     byte [net_role], NET_ROLE_GUEST
-    jne     .free
+    jne     .judge
     mov     edi, r12d
     mov     esi, 1
-    call    net_plane_break_out         ; the host destroys it for the others
+    call    net_plane_break_out         ; the host judges the crash for the others
+    jmp     .free
+.judge:
+    cmp     dword [rsp + 4], 0
+    jne     .free
+    xor     eax, eax                    ; a wreck: stopped, level, nobody aboard
+    mov     [rbx + PLANEENT.speed], eax
+    mov     [rbx + PLANEENT.pitch], eax
+    mov     [rbx + PLANEENT.roll], eax
+    mov     [rbx + PLANEENT.throttle], eax
+    mov     [rbx + BODY.vy], eax
+    lea     rdi, [rbx + PLANEENT.occ]
+    mov     ecx, PLANE_SEATS
+    rep     stosd
+    jmp     .done
 .free:
     mov     rdi, rbx
     mov     ecx, PLANEENT_size
     xor     eax, eax
     rep     stosb
+.done:
     add     rsp, 8
     pop     r13
     pop     r12
@@ -577,17 +615,88 @@ planes_crash:
 .ret:
     ret
 
+; plane_occupied(rdi plane) -> eax non-zero when somebody sits in it
+plane_occupied:
+    mov     eax, [rdi + PLANEENT.occ]
+    or      eax, [rdi + PLANEENT.occ + 4]
+    or      eax, [rdi + PLANEENT.occ + 8]
+    or      eax, [rdi + PLANEENT.occ + 12]
+    ret
+
+; plane_water_floor(rdi plane) -> eax 1 when the plane met water and now floats on it: it looks at the cell holding
+; its bottom + 0.375 and the one below; a WATER cell with no water above it is a floor, 0.625 over its bottom (the
+; surface is 0.25 higher, as with a boat). A plane at or below that level is put on it, its vy cleared, and counts as
+; having touched ground (the landing rules of plane_update then apply as on a block). Called with the plane in the
+; air after its move.
+; r12d, r13d = the plane's cell x, z. Frame: the cell being looked at @0, cells left @4.
+plane_water_floor:
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 16
+    mov     rbx, rdi
+    movss   xmm0, [rbx + BODY.x]
+    roundss xmm0, xmm0, 9
+    cvttss2si r12d, xmm0
+    movss   xmm0, [rbx + BODY.z]
+    roundss xmm0, xmm0, 9
+    cvttss2si r13d, xmm0
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_wet_probe]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    mov     [rsp], eax
+    mov     dword [rsp + 4], 2
+.cell:
+    mov     edi, r12d
+    mov     esi, [rsp]
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    jne     .next
+    mov     edi, r12d
+    mov     esi, [rsp]
+    inc     esi
+    mov     edx, r13d
+    call    world_get
+    cmp     eax, WATER
+    je      .next                       ; not the top water cell
+    cvtsi2ss xmm0, dword [rsp]
+    addss   xmm0, [c_wet_rest]          ; the level
+    movaps  xmm2, xmm0
+    addss   xmm2, [c_wet_eps]
+    ucomiss xmm2, [rbx + BODY.y]
+    jb      .next                       ; still above it
+    movss   [rbx + BODY.y], xmm0
+    mov     dword [rbx + BODY.vy], 0
+    mov     dword [rbx + BODY.on_ground], 1
+    mov     eax, 1
+    jmp     .ret
+.next:
+    dec     dword [rsp]
+    dec     dword [rsp + 4]
+    jnz     .cell
+    xor     eax, eax
+.ret:
+    add     rsp, 16
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
 ; plane_update(rdi plane, rsi INPUT*, edx 1 when the player flies it): one fixed step of one plane.
 ; A plane whose column is not loaded, or whose next step would enter a column that is not, stands still.
-; Water or lava at the plane's bottom destroys it. The pilot: the player's pitch is held within +-35, A and D
+; Lava at the plane's bottom destroys it; water is a floor (plane_water_floor): it floats, rolls and takes off from it as from
+; ground. A crash (below) with somebody aboard is plane_crash's wear and put-out; a plane nobody sits in never crashes: it
+; only comes to rest (stopped, level). The pilot: the player's pitch is held within +-35, A and D
 ; turn his yaw by 60 degrees per second, W and S move the throttle by half a range per second; the heading
 ; follows his yaw at 60 degrees per second (on the ground only as fast as the plane rolls: speed / 4) and the
 ; bank follows the turn left to make. The speed goes towards throttle x cap (+6, -5 b/s^2). On the ground the
 ; nose settles level and pitching up at 12 b/s or more leaves it; in the air above 9 b/s the nose follows the
 ; pilot's pitch and vy closes 15% per step of the gap to speed x sin pitch; below 9 b/s the nose drops 40
 ; degrees per second down to -60 and vy -= 20 dt (at most 30 down). The plane moves speed x cos pitch along
-; the heading by x, z and then vy by y (move_axis). A wall at more than 14 b/s destroys it, a slower one
-; stops it. Touching down after being airborne destroys it when vy was below -9, the nose below -25 degrees
+; the heading by x, z and then vy by y (move_axis). A wall at more than 14 b/s crashes it, a slower one
+; stops it. Touching down (on ground or water) after being airborne crashes it when vy was below -9, the nose below -25 degrees
 ; or the speed above 14, otherwise the plane is on the ground again. Sneaking on the ground slower than
 ; 1 b/s lets the pilot out; otherwise he sits in the plane.
 ; rbx = plane, r12 = INPUT*, r13d = flown. Frame: vy before the move @0, sin yaw @8, cos yaw @12, cell x @16,
@@ -624,10 +733,8 @@ plane_update:
     mov     edi, [rsp + 16]
     mov     edx, [rsp + 20]
     call    world_get
-    cmp     eax, WATER
-    je      .crash
     cmp     eax, LAVA
-    je      .crash
+    je      .lava
     ; ---- the pilot's controls
     xorps   xmm5, xmm5                  ; commanded pitch (nose up): 0 without a pilot
     xorps   xmm0, xmm0
@@ -848,6 +955,11 @@ plane_update:
     mov     rdi, rbx
     mov     esi, 1
     call    move_axis
+    cmp     dword [rbx + BODY.on_ground], 0
+    jne     .wet_done
+    mov     rdi, rbx
+    call    plane_water_floor           ; water is a floor: a plane that meets it floats on it
+.wet_done:
     cmp     dword [rbx + BODY.blocked], 0
     je      .no_wall
     movss   xmm0, [rbx + PLANEENT.speed]
@@ -884,7 +996,21 @@ plane_update:
     jae     .out
     call    planes_leave
     jmp     .out
+.lava:
+    mov     dword [rbx + PLANEENT.dmg], 100000  ; lava ends a plane whatever its wear
+    jmp     .wreck
 .crash:
+    mov     rdi, rbx
+    call    plane_occupied
+    test    eax, eax
+    jnz     .wreck
+    xor     eax, eax                    ; nobody aboard: it only comes to rest
+    mov     [rbx + PLANEENT.speed], eax
+    mov     [rbx + PLANEENT.pitch], eax
+    mov     [rbx + PLANEENT.roll], eax
+    mov     [rbx + PLANEENT.throttle], eax
+    jmp     .out
+.wreck:
     mov     rdi, rbx
     call    plane_crash
 .out:
@@ -1232,7 +1358,7 @@ planes_break:
     jne     .free
     mov     edi, PLANE
     mov     esi, 1
-    xor     edx, edx
+    mov     edx, [rbx + PLANEENT.dmg]   ; the item keeps the plane's wear
     movss   xmm0, [rbx + BODY.x]
     movss   xmm1, [rbx + BODY.y]
     addss   xmm1, [c_pop]
@@ -1269,6 +1395,8 @@ planes_save:
     mov     [rdx + PLANESAVE.z], eax
     mov     eax, [rsi + BODY.yaw]
     mov     [rdx + PLANESAVE.yaw], eax
+    mov     eax, [rsi + PLANEENT.dmg]
+    mov     [rdi + WORLDHDR.plane_dmg + rcx * 4], eax
     add     rdx, PLANESAVE_size
     inc     ecx
 .next:
@@ -1281,6 +1409,7 @@ planes_save:
     jae     .ret
     mov     qword [rdx], 0
     mov     qword [rdx + 8], 0
+    mov     dword [rdi + WORLDHDR.plane_dmg + rcx * 4], 0
     add     rdx, PLANESAVE_size
     inc     ecx
     jmp     .zero
@@ -1344,6 +1473,15 @@ planes_load:
     movss   [rbx + BODY.yaw], xmm0
     mov     eax, [c_vmax]
     mov     [rbx + PLANEENT.vmax], eax
+    mov     rax, r14                    ; its wear: plane_dmg[the record's index]
+    sub     rax, r12
+    sub     eax, WORLDHDR.planes
+    shr     eax, 4
+    mov     eax, [r12 + WORLDHDR.plane_dmg + rax * 4]
+    movzx   ecx, word [item_durability + PLANE * 2]
+    cmp     eax, ecx
+    jae     .skip                       ; (a worn-out plane is not kept: its slot stays free)
+    mov     [rbx + PLANEENT.dmg], eax
     mov     dword [rbx + PLANEENT.used], 1
     add     rbx, PLANEENT_size
 .skip:

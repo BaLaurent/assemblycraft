@@ -5,7 +5,7 @@ default rel
 
 global test_planes_place, test_planes_takeoff, test_planes_stall, test_planes_landing
 global test_planes_crashes, test_planes_governor, test_planes_save_load, test_planes_leave
-global test_planes_camera, test_planes_seats, test_planes_roles
+global test_planes_camera, test_planes_seats, test_planes_roles, test_planes_water
 
 extern planes, plane_riding, plane_view, planes_clear, planes_step, planes_place, planes_raycast
 extern planes_board, planes_break, planes_save, planes_load, planes_shift, plane_view_cam
@@ -22,6 +22,9 @@ k_pl_h:     dd 1.2
 k_far:      dd 40.0
 k_9_99:     dd 9.99
 k_10_01:    dd 10.01
+k_10_62:    dd 10.62
+k_10_63:    dd 10.63
+k_11_0:     dd 11.0
 k_10_5:     dd 10.5
 k_5_5:      dd 5.5
 k_6_5:      dd 6.5
@@ -200,6 +203,22 @@ count_plane_drops:
     jnz     .l
     ret
 
+; plane_drop_dmg() -> eax the wear of the first PLANE drop
+plane_drop_dmg:
+    lea     rsi, [drops]
+    mov     ecx, MAX_DROPS
+.l:
+    cmp     byte [rsi + DROP.id], PLANE
+    jne     .next
+    movzx   eax, word [rsi + DROP.dmg]
+    ret
+.next:
+    add     rsi, DROP_size
+    dec     ecx
+    jnz     .l
+    mov     eax, -1
+    ret
+
 ; a RAYHIT at the top face of the block (24, 9, 24): the cell in front of it is (24, 10, 24)
 %macro TOP_HIT 1
     mov     dword [%1 + RAYHIT.bx], 24
@@ -226,9 +245,12 @@ test_planes_place:
     SETF    [player + BODY.yaw], 90.0
     TOP_HIT rsp
     mov     rdi, rsp
+    mov     esi, 45                     ; an item with 45 worn
     call    planes_place
     cmp     eax, 1
     jne     .fail
+    cmp     dword [planes + PLANEENT.dmg], 45
+    jne     .fail                       ; the plane has its wear
     cmp     dword [planes + PLANEENT.used], 1
     jne     .fail
     FEQ     [planes + BODY.x], k_24_5
@@ -268,6 +290,7 @@ test_planes_place:
     TOP_HIT rsp
     mov     byte [net_role], NET_ROLE_HOST      ; the host puts planes down as offline does
     mov     rdi, rsp
+    xor     esi, esi
     call    planes_place
     cmp     eax, 1
     jne     .fail
@@ -319,6 +342,7 @@ test_planes_place:
     mov     edi, 0                      ; Survival: breaking drops one PLANE and frees the slot
     mov     dword [plane_riding], 1
     mov     dword [game_mode], MODE_SURVIVAL
+    mov     dword [planes + PLANEENT.dmg], 45
     call    planes_break
     cmp     dword [planes + PLANEENT.used], 0
     jne     .fail
@@ -327,6 +351,9 @@ test_planes_place:
     call    count_plane_drops
     cmp     eax, 1
     jne     .fail
+    call    plane_drop_dmg
+    cmp     eax, 45
+    jne     .fail                       ; the item keeps the plane's wear
     call    drops_clear
     PLANE0  24.5, 10.0, 24.5, 0.0
     mov     dword [game_mode], MODE_CREATIVE
@@ -477,9 +504,10 @@ test_planes_landing:
     ret
 
 ; ---- crashes -----------------------------------------------------------------------------------------
-; Destroyed (slot free, pilot out of it): touching down with the nose more than 25 degrees down, falling
-; stalled onto the floor (vy below -9), water at its bottom, a wall at more than 14 b/s. A wall at 8 b/s
-; only stops it.
+; A crash (touching down on ground or water with the nose more than 25 degrees down, falling stalled onto the floor
+; with vy below -9, a wall at more than 14 b/s) with the pilot aboard wears the plane by 30 and puts him out, leaving
+; the plane there, stopped and empty; the crash that takes the wear to 100 destroys it. A plane nobody sits in never
+; crashes: it comes to rest. Lava destroys at once. A wall at 8 b/s only stops it.
 test_planes_crashes:
     push    rbp
     mov     rbp, rsp
@@ -500,17 +528,26 @@ test_planes_crashes:
 .dive:
     mov     edi, 1
     call    steps
-    cmp     dword [planes + PLANEENT.used], 0
+    cmp     dword [plane_riding], 0
     je      .dived
     dec     ebx
     jnz     .dive
     jmp     .fail
 .dived:
-    cmp     dword [plane_riding], 0
-    jne     .fail
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail                       ; the plane stays ...
+    cmp     dword [planes + PLANEENT.dmg], 30
+    jne     .fail                       ; ... 30 worn ...
+    cmp     dword [planes + PLANEENT.occ], 0
+    jne     .fail                       ; ... empty ...
+    FEQ     [planes + PLANEENT.speed], k_zero   ; ... and stopped
     call    planes_clear
-    PLANE0  24.5, 22.0, 24.5, 180.0    ; stalled, no pilot: falls 12 blocks (vy about -22)
+    PLANE0  24.5, 22.0, 24.5, 180.0    ; stalled with 70 worn: the fall (vy about -22) ends it
     mov     dword [planes + PLANEENT.air], 1
+    mov     dword [planes + PLANEENT.dmg], 70
+    xor     edi, edi
+    call    planes_board
+    SETF    [player + BODY.yaw], 180.0
     mov     ebx, 120
 .fall:
     mov     edi, 1
@@ -521,15 +558,27 @@ test_planes_crashes:
     jnz     .fall
     jmp     .fail
 .fell:
+    cmp     dword [plane_riding], 0
+    jne     .fail
+    PLANE0  24.5, 22.0, 24.5, 180.0    ; the same fall with nobody aboard: it lands, unharmed
+    mov     dword [planes + PLANEENT.air], 1
+    mov     edi, 120
+    call    steps
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
+    cmp     dword [planes + PLANEENT.dmg], 0
+    jne     .fail
+    cmp     dword [planes + PLANEENT.air], 0
+    jne     .fail
+    FRANGE  [planes + BODY.y], k_9_99, k_10_01
     call    planes_clear
-    PLANE0  24.5, 10.0, 24.5, 0.0     ; on the ground with water at its bottom cell
-    BLOCK   24, 10, 24, WATER
+    PLANE0  24.5, 10.0, 24.5, 0.0     ; on the ground with lava at its bottom cell
+    BLOCK   24, 10, 24, LAVA
     mov     edi, 1
     call    steps
     cmp     dword [planes + PLANEENT.used], 0
     jne     .fail
     BLOCK   24, 10, 24, AIR
-    call    planes_clear
     BLOCK   24, 10, 20, STONE           ; a wall across the way north (-z) from z = 30.5
     BLOCK   25, 10, 20, STONE
     BLOCK   23, 10, 20, STONE
@@ -537,26 +586,154 @@ test_planes_crashes:
     PLANE0  24.5, 10.0, 30.5, 0.0
     SETF    [planes + PLANEENT.speed], 20.0
     SETF    [planes + PLANEENT.throttle], 0.9
+    xor     edi, edi
+    call    planes_board
+    SETF    [player + BODY.yaw], 0.0
     mov     ebx, 120
 .ram:
     mov     edi, 1
     call    steps
-    cmp     dword [planes + PLANEENT.used], 0
+    cmp     dword [plane_riding], 0
     je      .rammed
     dec     ebx
     jnz     .ram
     jmp     .fail
 .rammed:
+    cmp     dword [planes + PLANEENT.dmg], 30   ; worn, there, and stopped
+    jne     .fail
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
     call    planes_clear
-    PLANE0  24.5, 10.0, 24.5, 0.0       ; 8 b/s at a wall 5 blocks ahead: stopped, not destroyed
+    PLANE0  24.5, 10.0, 24.5, 0.0       ; 8 b/s at a wall 2 blocks ahead (nobody aboard): stopped, unharmed
     SETF    [planes + PLANEENT.speed], 8.0
-    SETF    [planes + PLANEENT.throttle], 0.34
     mov     edi, 60
     call    steps
     cmp     dword [planes + PLANEENT.used], 1
     jne     .fail
+    cmp     dword [planes + PLANEENT.dmg], 0
+    jne     .fail
     FRANGE  [planes + BODY.z], k_22_4, k_22_6
     FRANGE  [planes + PLANEENT.speed], k_zero, k_9_0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    finish
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; pond(edi last): STONE at y = 9 and WATER at y = 10 for x, z in 4..last
+pond:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    mov     r13d, edi
+    mov     r12d, 4                     ; z
+.z:
+    mov     ebx, 4                      ; x
+.x:
+    mov     edi, ebx
+    mov     esi, 9
+    mov     edx, r12d
+    mov     ecx, STONE
+    call    world_set
+    mov     edi, ebx
+    mov     esi, 10
+    mov     edx, r12d
+    mov     ecx, WATER
+    call    world_set
+    inc     ebx
+    cmp     ebx, r13d
+    jbe     .x
+    inc     r12d
+    cmp     r12d, r13d
+    jbe     .z
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- water ---------------------------------------------------------------------------------------------
+; Water is a floor: a plane gliding down at 13 b/s with the nose 10 degrees down alights on it (a soft landing: it
+; stays, floats with its bottom 0.625 over the water cell's floor, y = 10.625, the pilot aboard) and takes off again
+; from it; a nobody-aboard plane stays afloat; a nose-down touchdown on water crashes like one on stone.
+test_planes_water:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    begin
+    mov     edi, 44
+    call    pond
+    PLANE0  24.5, 11.5, 12.5, 180.0
+    mov     dword [planes + PLANEENT.air], 1
+    SETF    [planes + PLANEENT.speed], 13.0
+    SETF    [planes + PLANEENT.pitch], -10.0
+    SETF    [planes + PLANEENT.throttle], 0.54
+    xor     edi, edi
+    call    planes_board
+    SETF    [player + BODY.yaw], 180.0
+    SETF    [player + BODY.pitch], 10.0
+    mov     ebx, 120
+.glide:
+    mov     edi, 1
+    call    steps
+    cmp     dword [planes + PLANEENT.air], 0
+    je      .alit
+    dec     ebx
+    jnz     .glide
+    jmp     .fail
+.alit:
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
+    cmp     dword [plane_riding], 1
+    jne     .fail
+    cmp     dword [planes + PLANEENT.dmg], 0
+    jne     .fail
+    FRANGE  [planes + BODY.y], k_10_62, k_10_63
+    SETF    [planes + PLANEENT.throttle], 1.0   ; and off again: full throttle, the view 15 degrees up
+    SETF    [player + BODY.pitch], -15.0
+    mov     edi, 60
+    call    steps
+    cmp     dword [planes + PLANEENT.air], 1
+    jne     .fail
+    FRANGE  [planes + BODY.y], k_11_0, k_far
+    call    planes_clear
+    PLANE0  24.5, 10.625, 24.5, 0.0     ; nobody aboard: it stays afloat
+    mov     edi, 30
+    call    steps
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
+    FRANGE  [planes + BODY.y], k_10_62, k_10_63
+    call    planes_clear
+    PLANE0  24.5, 16.0, 12.5, 180.0    ; a dive onto the water
+    mov     dword [planes + PLANEENT.air], 1
+    SETF    [planes + PLANEENT.speed], 13.0
+    SETF    [planes + PLANEENT.throttle], 0.54
+    xor     edi, edi
+    call    planes_board
+    SETF    [player + BODY.yaw], 180.0
+    SETF    [player + BODY.pitch], 35.0
+    mov     ebx, 150
+.dive:
+    mov     edi, 1
+    call    steps
+    cmp     dword [plane_riding], 0
+    je      .dived
+    dec     ebx
+    jnz     .dive
+    jmp     .fail
+.dived:
+    cmp     dword [planes + PLANEENT.dmg], 30
+    jne     .fail
     xor     eax, eax
     jmp     .out
 .fail:
@@ -628,6 +805,7 @@ test_planes_save_load:
     sub     rsp, 8
     call    begin
     PLANE0  5.5, 10.0, 6.5, 123.5
+    mov     dword [planes + PLANEENT.dmg], 45
     lea     rdi, [hdr_buf]
     call    planes_save
     cmp     dword [hdr_buf + WORLDHDR.plane_count], 1
@@ -643,7 +821,21 @@ test_planes_save_load:
     FEQ     [planes + BODY.z], k_6_5
     FEQ     [planes + BODY.yaw], k_123_5
     FEQ     [planes + PLANEENT.vmax], k_24_0
+    cmp     dword [planes + PLANEENT.dmg], 45
+    jne     .fail                       ; the wear is saved
     cmp     dword [plane_riding], 0
+    jne     .fail
+    mov     dword [hdr_buf + WORLDHDR.plane_dmg], 100   ; a worn-out record is not kept
+    lea     rdi, [hdr_buf]
+    call    planes_load
+    cmp     dword [planes + PLANEENT.used], 0
+    jne     .fail
+    mov     dword [hdr_buf + WORLDHDR.plane_dmg], 0     ; (a save from before the wear existed reads 0)
+    lea     rdi, [hdr_buf]
+    call    planes_load
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
+    cmp     dword [planes + PLANEENT.dmg], 0
     jne     .fail
     mov     dword [hdr_buf + WORLDHDR.plane_count], 3   ; record 0 is the plane above, 1: NaN x; 2: 2e7 away in z
     mov     dword [hdr_buf + WORLDHDR.planes + PLANESAVE_size + PLANESAVE.x], 0x7FC00000

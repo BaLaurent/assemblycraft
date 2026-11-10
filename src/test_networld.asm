@@ -2783,7 +2783,8 @@ test_net_plane_crash:
     EXPECT_CAP 2, 2, MT_HURT, 32
     EXPECT_CAP 3, 2, MT_PLANE_BOARD_OK, 3
     EXPECT_NO_CAP 4
-    EXPECT_D [planes + PLANEENT.used], 0
+    EXPECT_D [planes + PLANEENT.used], 1                    ; the plane stays, 30 worn, empty
+    EXPECT_D [planes + PLANEENT.dmg], 30
     EXPECT_D [planes + PLANEENT.occ + 4], 0
     EXPECT_D [plane_riding], 0
     mov     dword [planes + PLANEENT.used], 1       ; guest 1 pilots, guest 2 is a gunner
@@ -2807,7 +2808,9 @@ test_net_plane_crash:
     EXPECT_CAP 0, 2, MT_HURT, 32
     EXPECT_CAP 1, 2, MT_PLANE_BOARD_OK, 3
     EXPECT_NO_CAP 2                     ; (the pilot took his own damage)
-    EXPECT_D [planes + PLANEENT.used], 0
+    EXPECT_D [planes + PLANEENT.used], 1                    ; (a second crash: 60 worn)
+    EXPECT_D [planes + PLANEENT.dmg], 60
+    EXPECT_D [planes + PLANEENT.occ], 0
     xor     eax, eax
     jmp     .out
 .fail:

@@ -1421,6 +1421,7 @@ struc PLANEENT
     .prop:     resd 1                   ; float degrees, propeller angle
     .air:      resd 1                   ; 1 while off the ground (the vertical speed is BODY.vy)
     .occ:      resd 4                   ; per seat the peer slot + 1 of who sits there, 0 free (0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner)
+    .dmg:      resd 1                   ; wear from crashes: the PLANE item's ITEMSTACK.dmg, the plane is gone at item_durability[PLANE]
 endstruc
 
 struc PLANESAVE
@@ -1463,7 +1464,8 @@ struc WORLDHDR
     .pad_a:      resb 2                 ; @606
     .plane_count: resd 1                ; @608
     .planes:     resb MAX_PLANES * PLANESAVE_size ; @612
-    .pad_b:      resb 944 - 676
+    .plane_dmg:  resd MAX_PLANES        ; @676: the crash wear of the saved planes, in record order (old saves read 0)
+    .pad_b:      resb 944 - 692
     .armor:      resb 16                ; @944
     .rpg:        resb RPGSAVE_size      ; @960
     .mob_count:  resd 1                 ; @1024
@@ -1485,8 +1487,8 @@ endstruc                                ; 32768 bytes
 %if WORLDHDR.cheater != 605 || WORLDHDR.debug_stats != 16656 || NUM_STATS > 46
 %error "WORLDHDR debug fields drifted (cheater @605, debug_stats @16656, at most 46 stats)"
 %endif
-%if WORLDHDR.planes + MAX_PLANES * PLANESAVE_size != 676 || WORLDHDR.armor != 944
-%error "WORLDHDR plane fields drifted (planes end @676, armor @944)"
+%if WORLDHDR.planes + MAX_PLANES * PLANESAVE_size != 676 || WORLDHDR.plane_dmg + MAX_PLANES * 4 != 692 || WORLDHDR.armor != 944
+%error "WORLDHDR plane fields drifted (planes end @676, plane_dmg end @692, armor @944)"
 %endif
 
 struc SETTINGS

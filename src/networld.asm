@@ -63,7 +63,7 @@ extern fire_place, fire_track, fire_untrack
 extern tnt_prime
 extern boats, boat_riding, boat_rider, boats_place, boats_mount, boats_break
 extern planes, plane_riding, plane_seat, planes_place, planes_sit, planes_free_seat, planes_free_peer, planes_break, planes_crash
-extern player, game_mode, net_give_out
+extern player, game_mode, net_give_out, item_durability
 extern app_state, inv_container, game_open_cont, game_open_screen
 extern world_unload, world_column_release
 extern fires
@@ -2957,8 +2957,8 @@ plane_pose_send:
     pop     rbp
     ret
 
-; net_plane_place_out(rdi RAYHIT*) (guest): PLANE_PLACE {the centre of the block hit as an NPOS, yaw f32}: the plane
-; goes on the top of that block, heading as the guest looks
+; net_plane_place_out(rdi RAYHIT*, esi the item's wear) (guest): PLANE_PLACE {the centre of the block hit as an NPOS, yaw f32,
+; wear u32}: the plane goes on the top of that block, heading as the guest looks, with the wear of its item
 ; Frame: the message at [rsp].
 net_plane_place_out:
     push    rbp
@@ -2966,6 +2966,7 @@ net_plane_place_out:
     push    rbx
     sub     rsp, 40
     mov     rbx, rdi
+    mov     [rsp + 32], esi             ; the wear, kept for the message
     cvtsi2ss xmm0, dword [rbx + RAYHIT.bx]
     addss   xmm0, [k_half]
     cvtsi2ss xmm1, dword [rbx + RAYHIT.by]
@@ -2975,9 +2976,11 @@ net_plane_place_out:
     call    net_pos_out
     mov     eax, [player + BODY.yaw]
     mov     [rsp + 16], eax
+    mov     eax, [rsp + 32]
+    mov     [rsp + 20], eax
     mov     edi, MT_PLANE_PLACE
     mov     rsi, rsp
-    mov     edx, 20
+    mov     edx, 24
     mov     ecx, 1
     call    net_out
     add     rsp, 40
@@ -3390,7 +3393,7 @@ nw_on_plane_break:
     pop     rbp
     ret
 
-; nw_on_plane_place(edi from, esi type, rdx payload, ecx len): PLANE_PLACE {NPOS of a block's centre, yaw f32}.
+; nw_on_plane_place(edi from, esi type, rdx payload, ecx len): PLANE_PLACE {NPOS of a block's centre, yaw f32, wear u32}.
 ; Host: planes_place on the top of that block with the guest's heading (planes_place reads the host's own yaw: it
 ; is swapped for the call). A non-finite or out of range cell or heading is dropped. In Survival a plane that
 ; could not be put there (the table is full, no room) comes back to the guest as an item (GIVE).
@@ -3406,6 +3409,17 @@ nw_on_plane_place:
     jne     .out
     cmp     ecx, 20
     jb      .out
+    xor     eax, eax                    ; the wear (absent in a short message), below a worn-out plane's
+    cmp     ecx, 24
+    jb      .wear
+    mov     eax, [rdx + 20]
+.wear:
+    movzx   r8d, word [item_durability + PLANE * 2]
+    cmp     eax, r8d
+    jb      .wear_ok
+    lea     eax, [r8 - 1]
+.wear_ok:
+    mov     [rsp + 44], eax
     mov     ebx, edi
     mov     r12, rdx
     call    peer_ok
@@ -3460,6 +3474,7 @@ nw_on_plane_place:
     movzx   eax, byte [net_applying]    ; a guest's request, not the host's own click: no banner
     mov     [rsp + 28], eax
     mov     byte [net_applying], 1
+    mov     esi, [rsp + 44]             ; the wear
     mov     rdi, rsp
     call    planes_place
     mov     r12d, eax
@@ -3474,8 +3489,8 @@ nw_on_plane_place:
     mov     edi, ebx
     mov     esi, PLANE
     mov     edx, 1
-    xor     ecx, ecx
-    call    net_give_out                ; no plane could be put there: the item comes back
+    mov     ecx, [rsp + 44]
+    call    net_give_out                ; no plane could be put there: the item comes back, with its wear
 .out:
     add     rsp, 48
     pop     r12
