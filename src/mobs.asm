@@ -3334,6 +3334,16 @@ mob_damage:
     mov     eax, [rbx + MOB.type]
     test    eax, eax
     jz      .no
+    test    byte [combat_hit_flags], HF_PLAYER
+    jz      .unguarded
+    cmp     eax, MOB_FOLK
+    jne     .unguarded
+    mov     ecx, [rbx + MOB.patrol]
+    test    ecx, ecx
+    jz      .unguarded
+    test    ecx, EV_KEY_ATTACK | 1
+    jz      .no                         ; an event's defender (key with the low bits clear): the player's blow neither hurts nor provokes it
+.unguarded:
     test    r8d, r8d
     jnz     .apply
     cmp     dword [rbx + MOB.hurt], 0

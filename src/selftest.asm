@@ -114,6 +114,7 @@ extern test_net_spawn_per_centre, test_net_spawn_rotation
 extern test_evsites_camp_site, test_evsites_route, test_evsites_site_of, test_evsites_hop
 extern test_evsites_road_from
 extern test_folk_event_targets, test_folk_caravan, test_mobs_event_march, test_arrows_event_monster
+extern test_folk_defender_immune
 extern test_hud_heading_dist, test_net_event_state, test_net_event_accept
 extern test_events_wave_size, test_events_camp_flow, test_events_night_wave, test_events_leader_dies
 extern test_events_abandon, test_events_monster_strike, test_events_caravan_flow, test_events_threat_flags
@@ -400,6 +401,7 @@ tests:
     TEST folk_caravan
     TEST mobs_event_march
     TEST arrows_event_monster
+    TEST folk_defender_immune
     TEST hud_heading_dist
     TEST net_event_state
     TEST net_event_accept
@@ -686,6 +688,7 @@ section .rodata
     TESTNAME folk_caravan
     TESTNAME mobs_event_march
     TESTNAME arrows_event_monster
+    TESTNAME folk_defender_immune
     TESTNAME hud_heading_dist
     TESTNAME net_event_state
     TESTNAME net_event_accept

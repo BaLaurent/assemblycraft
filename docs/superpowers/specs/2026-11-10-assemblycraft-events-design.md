@@ -681,3 +681,7 @@ Not verified live (tracked as issues): an odd-cycle spontaneous free caravan, ev
 - #15 balance: a lone level-1 player cannot save a camp; the leader dies within ~15 s of the raiders arriving.
 - #16 no unit test for the EVK_ROAD accept path.
 - #17 spontaneous free caravan and monster-vs-guard contact not seen live.
+
+## Post-release fix: friendly fire on defenders
+
+Reported after 0.12.0: during a defence the player's own blows (melee, arrows, spells, explosions) could hurt the protected NPC and provoke its faction. `mob_damage` now ignores any player blow (HF_PLAYER) on a folk whose `MOB.patrol` is an event key with the low two bits clear (a defender): no damage, no provocation, no kill penalty. Attackers (key | 2, raiders) and road patrols (odd keys) are unchanged. Covered by `test_folk_defender_immune` (fails without the guard). A guest still sees its own swing flash locally; the host ignores it. Release assets of v0.12.0 predate this fix.

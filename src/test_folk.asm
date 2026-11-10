@@ -8,6 +8,7 @@ global test_folk_spawn_and_weapons, test_folk_targets_and_standing, test_folk_ri
 global test_folk_kill_reputation_and_drops, test_folk_projectiles, test_folk_interact_gates
 global test_folk_travellers
 global test_folk_event_targets, test_folk_caravan, test_mobs_event_march, test_arrows_event_monster
+global test_folk_defender_immune
 
 extern mobs, mobs_clear, mobs_step, mob_is_hostile, mob_strike
 extern folk_spawn, folk_make_champion, folk_interact, folk_name, folk_weapon_affix, folk_travel_tick
@@ -2539,6 +2540,92 @@ test_arrows_event_monster:
     mov     eax, 1
 .ret:
     mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; test_folk_defender_immune: a player's blow (HF_PLAYER) on an event's defender (patrol key with the low bits clear) does
+; nothing: it is not hurt, it and its faction mate are not provoked. The same blow lands and provokes on an attacker of the event
+; (key | 2, a raider) and on a road patrol (odd key).
+; rbx = the guard, r12d = the key of this round, r13d = its faction mate
+test_folk_defender_immune:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     r12d, EV_K
+.round:
+    call    world_clear
+    call    fixture
+    mov     dword [game_mode], MODE_CREATIVE
+    SETF    [player + BODY.x], 60.5
+    FOLK    FAC_VILLAGERS, ROLE_GUARD, FCLASS_BRUTE, 100.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    FOLK    FAC_VILLAGERS, ROLE_GUARD, FCLASS_ARCHER, 102.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     r13d, eax
+    mov     edi, ebx
+    mov     esi, r12d
+    call    set_patrol
+    mov     byte [combat_hit_flags], HF_PLAYER
+    mov     edi, ebx
+    mov     esi, 5
+    xorps   xmm0, xmm0
+    xorps   xmm1, xmm1
+    call    mob_strike
+    xor     r8d, r8d
+    xor     r9d, r9d
+    xor     r10d, r10d
+    mov     edi, ebx
+    call    mob_ptr
+    mov     ecx, [rax + MOB.health]
+    cmp     ecx, [rax + MOB.max_health]
+    setl    r8b                         ; hurt
+    cmp     dword [rax + MOB.provoked], 0
+    setg    r9b                         ; provoked
+    mov     edi, r13d
+    call    mob_ptr
+    cmp     dword [rax + MOB.provoked], 0
+    setg    r10b                        ; its mate provoked
+    cmp     r12d, EV_K
+    jne     .lands
+    or      r8d, r9d
+    or      r8d, r10d
+    jnz     .fail                       ; the defender took no blow
+    jmp     .next
+.lands:
+    test    r8d, r8d
+    jz      .fail
+    test    r9d, r9d
+    jz      .fail
+.next:
+    cmp     r12d, 0x4D3
+    je      .ok
+    cmp     r12d, EV_K | EV_KEY_ATTACK
+    je      .road
+    mov     r12d, EV_K | EV_KEY_ATTACK
+    jmp     .round
+.road:
+    mov     r12d, 0x4D3                 ; an odd key: a road patrol
+    jmp     .round
+.ok:
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    mov     byte [combat_hit_flags], 0
     call    cleanup
     mov     eax, ebx
     add     rsp, 8
