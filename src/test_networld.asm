@@ -9,7 +9,8 @@ default rel
 global test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
 global test_net_stale_verdict, test_net_block_overflow, test_net_cont_close_retry, test_net_fire_in_column
 global test_net_boat_double_mount, test_net_fire_guest_step, test_net_column_expiry, test_net_boat_giveback
-global test_net_edit_columns
+global test_net_edit_columns, test_net_plane_seats, test_net_plane_msgs, test_net_plane_pose, test_net_plane_rec
+global test_net_plane_leave, test_net_plane_crash, test_net_plane_place
 
 extern net_role, net_in_world, net_peers
 extern net_capture, net_captured
@@ -26,6 +27,9 @@ extern app_state, inv_container, game_open_cont, game_open_screen
 extern net_dirty_n, net_bq_n, net_edit_columns, net_block_out, net_host_columns_serve, net_cont_close_out
 extern nw_on_col_req, nw_on_block, nw_on_boat_mount, nw_on_boat_place
 extern boats, boats_clear, boat_rider
+extern planes, planes_clear, plane_riding, plane_seat, plane_tgt, planes_crash, net_handlers, plane_pose_apply
+extern nw_on_plane_place, nw_on_plane_board, nw_on_plane_board_ok, nw_on_plane_leave, nw_on_plane_pose
+extern nw_on_plane_break, nm_on_snap_planes, nm_plane_enc, nm_plane_dec
 extern fires, fire_clear, fire_place, fire_track, fire_guest_step
 extern banner_text
 extern game_mode, player, body_init, survival_reset, surv
@@ -123,6 +127,20 @@ k_11:     dd 11.0
 k_70_5:   dd 70.5
 k_22:     dd 22.0
 k_m1:     dd -1.0
+kp_nan:   dd 0x7FC00000
+kp_300:   dd 300.0
+kp_12_5:  dd 12.5
+kp_13_5:  dd 13.5
+kp_110_5: dd 110.5
+kp_10_5:  dd 10.5
+kp_20_5:  dd 20.5
+kp_90:    dd 90.0
+kp_70_5:  dd 70.5
+kp_9_5:   dd 9.5
+; the plane messages and the handlers the dispatch table must hold for them
+plane_ids: dd MT_PLANE_PLACE, MT_PLANE_BOARD, MT_PLANE_BOARD_OK, MT_PLANE_LEAVE, MT_PLANE_POSE, MT_PLANE_BREAK, MT_SNAP_PLANES
+plane_hs:  dq nw_on_plane_place, nw_on_plane_board, nw_on_plane_board_ok, nw_on_plane_leave, nw_on_plane_pose
+           dq nw_on_plane_break, nm_on_snap_planes
 
 section .bss
 alignb 16
@@ -2282,4 +2300,619 @@ test_net_edit_columns:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; ---- planes ----------------------------------------------------------------------------------------------
+; Modelled on the boat tests. The seat of a guest is the host's to give; a plane's pilot is the guest whose pose
+; messages move it.
+
+; board_plane(edi from, esi plane): PLANE_BOARD {plane} from that guest
+board_plane:
+    sub     rsp, 8
+    mov     [small_buf + 48], sil
+    mov     esi, MT_PLANE_BOARD
+    lea     rdx, [small_buf + 48]
+    mov     ecx, 1
+    call    nw_on_plane_board
+    add     rsp, 8
+    ret
+
+; pose_msg(xmm0 x, xmm1 y, xmm2 z): the payload of PLANE_POSE / PLANE_LEAVE for plane 0 at cd_buf + 1024: in the
+; air, heading 90, pitch, bank, speed and vertical speed 0
+pose_msg:
+    sub     rsp, 8
+    lea     rdi, [cd_buf + 1028]
+    call    net_pos_out
+    mov     dword [cd_buf + 1024], 0x100
+    mov     eax, [kp_90]
+    mov     [cd_buf + 1044], eax
+    mov     dword [cd_buf + 1048], 0
+    mov     dword [cd_buf + 1052], 0
+    mov     dword [cd_buf + 1056], 0
+    mov     dword [cd_buf + 1060], 0
+    add     rsp, 8
+    ret
+
+; plane_world(): no world, no planes, nobody seated
+plane_world:
+    sub     rsp, 8
+    call    world_clear
+    call    planes_clear
+    add     rsp, 8
+    ret
+
+; plane_end(): the network, the capture and the planes put away
+plane_end:
+    sub     rsp, 8
+    mov     byte [net_role], NET_ROLE_OFF
+    call    peers_free
+    call    planes_clear
+    call    cap_off
+    call    world_clear
+    add     rsp, 8
+    ret
+
+; ---- net_plane_seats ---------------------------------------------------------------------------------------
+; The host gives the first guest to board the pilot's seat, the next three the gunners' (left, right, tail) and
+; refuses a fifth; a guest who boards again is told yes again in the seat he has (nobody else gets it); boarding
+; another plane lets go of the seat he held; a plane that is not in use is refused.
+test_net_plane_seats:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    call    plane_world
+    mov     dword [planes + PLANEENT.used], 1
+    mov     dword [planes + PLANEENT_size + PLANEENT.used], 1
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 5
+    call    peers_ready
+    call    cap_on
+    mov     r12d, 1
+.board:
+    mov     edi, r12d
+    xor     esi, esi
+    call    board_plane
+    inc     r12d
+    cmp     r12d, 6
+    jb      .board
+    xor     r12d, r12d
+.answer:                                ; guest n + 1 got seat n, the fifth none
+    mov     edi, r12d
+    call    cap_rec
+    test    rax, rax
+    jz      .fail
+    lea     ecx, [r12 + 1]
+    cmp     [rax], cl
+    jne     .fail
+    cmp     byte [rax + 1], MT_PLANE_BOARD_OK
+    jne     .fail
+    cmp     word [rax + 2], 3
+    jne     .fail
+    cmp     byte [rax + 4], 0
+    jne     .fail
+    cmp     r12d, 4
+    jae     .refused
+    cmp     byte [rax + 5], r12b
+    jne     .fail
+    cmp     byte [rax + 6], 1
+    jne     .fail
+    jmp     .next
+.refused:
+    cmp     byte [rax + 5], 0
+    jne     .fail
+    cmp     byte [rax + 6], 0
+    jne     .fail
+.next:
+    inc     r12d
+    cmp     r12d, 5
+    jb      .answer
+    mov     edi, 1                      ; guest 1 clicks again
+    xor     esi, esi
+    call    board_plane
+    EXPECT_CAP 5, 1, MT_PLANE_BOARD_OK, 3
+    cmp     byte [rax + 5], 0
+    jne     .fail
+    cmp     byte [rax + 6], 1
+    jne     .fail
+    EXPECT_D [planes + PLANEENT.occ], 2
+    EXPECT_D [planes + PLANEENT.occ + 4], 3
+    EXPECT_D [planes + PLANEENT.occ + 8], 4
+    EXPECT_D [planes + PLANEENT.occ + 12], 5
+    mov     edi, 1                      ; ... and boards the other plane: his old seat is free
+    mov     esi, 1
+    call    board_plane
+    EXPECT_CAP 6, 1, MT_PLANE_BOARD_OK, 3
+    cmp     byte [rax + 4], 1
+    jne     .fail
+    cmp     byte [rax + 5], 0
+    jne     .fail
+    cmp     byte [rax + 6], 1
+    jne     .fail
+    EXPECT_D [planes + PLANEENT.occ], 0
+    EXPECT_D [planes + PLANEENT_size + PLANEENT.occ], 2
+    mov     edi, 2                      ; a plane nobody put down
+    mov     esi, 3
+    call    board_plane
+    EXPECT_CAP 7, 2, MT_PLANE_BOARD_OK, 3
+    cmp     byte [rax + 6], 0
+    jne     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_plane_msgs ------------------------------------------------------------------------------------------
+; The seven plane message ids are distinct, inside the table, and each holds its own handler.
+test_net_plane_msgs:
+    xor     ecx, ecx
+.l:
+    lea     rax, [plane_ids]
+    mov     edx, [rax + rcx * 4]
+    cmp     edx, NUM_MT
+    jae     .fail
+    lea     rax, [net_handlers]
+    mov     rax, [rax + rdx * 8]
+    lea     rsi, [plane_hs]
+    cmp     rax, [rsi + rcx * 8]
+    jne     .fail
+    xor     r8d, r8d
+.earlier:
+    cmp     r8d, ecx
+    jae     .next
+    lea     rax, [plane_ids]
+    cmp     edx, [rax + r8 * 4]
+    je      .fail
+    inc     r8d
+    jmp     .earlier
+.next:
+    inc     ecx
+    cmp     ecx, 7
+    jb      .l
+    xor     eax, eax
+    ret
+.fail:
+    mov     eax, 1
+    ret
+
+; ---- net_plane_pose ----------------------------------------------------------------------------------------
+; A pose is applied when it is finite, inside 65536 on x and z, y in 0..255 and within 64 blocks of the plane on
+; each axis (a step of 2 is; NaN, a teleport of 98 blocks and a height of 300 are not); only the plane's pilot's
+; pose messages count.
+test_net_plane_pose:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 16
+    call    plane_world
+    mov     dword [planes + PLANEENT.used], 1
+    mov     dword [planes + BODY.x], __float32__(10.5)
+    mov     dword [planes + BODY.y], __float32__(20.5)
+    mov     dword [planes + BODY.z], __float32__(10.5)
+    mov     dword [planes + PLANEENT.occ], 2
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 2
+    call    peers_ready
+    movss   xmm0, [kp_12_5]
+    movss   xmm1, [kp_20_5]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    lea     rdi, [cd_buf + 1024]
+    call    plane_pose_apply
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_D [planes + BODY.x], __float32__(12.5)
+    EXPECT_D [planes + PLANEENT.air], 1
+    EXPECT_D [planes + BODY.yaw], __float32__(90.0)
+    mov     eax, [kp_nan]
+    mov     [cd_buf + 1052], eax        ; the speed is not a number
+    lea     rdi, [cd_buf + 1024]
+    call    plane_pose_apply
+    test    eax, eax
+    jnz     .fail
+    movss   xmm0, [kp_110_5]            ; a teleport
+    movss   xmm1, [kp_20_5]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    lea     rdi, [cd_buf + 1024]
+    call    plane_pose_apply
+    test    eax, eax
+    jnz     .fail
+    movss   xmm0, [kp_12_5]             ; above the world
+    movss   xmm1, [kp_300]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    lea     rdi, [cd_buf + 1024]
+    call    plane_pose_apply
+    test    eax, eax
+    jnz     .fail
+    EXPECT_D [planes + BODY.x], __float32__(12.5)
+    movss   xmm0, [kp_13_5]             ; the pilot's message moves the plane, another guest's does not
+    movss   xmm1, [kp_20_5]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    mov     edi, 2
+    mov     esi, MT_PLANE_POSE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 40
+    call    nw_on_plane_pose
+    EXPECT_D [planes + BODY.x], __float32__(12.5)
+    movss   xmm0, [kp_13_5]
+    movss   xmm1, [kp_20_5]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    mov     edi, 1
+    mov     esi, MT_PLANE_POSE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 40
+    call    nw_on_plane_pose
+    EXPECT_D [planes + BODY.x], __float32__(13.5)
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 16
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_plane_rec -----------------------------------------------------------------------------------------
+; A PLANEREC carries the slot, the seats' occupants, the position, heading, pitch, bank, speed and vertical speed
+; and a guest's copy takes them: a new copy starts on the position, an old one only moves its target; the plane the
+; guest flies keeps his pose but learns the seats. SNAP_PLANES makes the planes it lists and drops the others (but
+; the one the guest sits in).
+test_net_plane_rec:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    plane_world
+    lea     rdi, [planes + 2 * PLANEENT_size]
+    mov     dword [rdi + PLANEENT.used], 1
+    mov     dword [rdi + BODY.x], __float32__(40.5)
+    mov     dword [rdi + BODY.y], __float32__(30.5)
+    mov     dword [rdi + BODY.z], __float32__(50.5)
+    mov     dword [rdi + BODY.yaw], __float32__(135.0)
+    mov     dword [rdi + BODY.vy], __float32__(-2.5)
+    mov     dword [rdi + PLANEENT.pitch], __float32__(12.0)
+    mov     dword [rdi + PLANEENT.roll], __float32__(-7.0)
+    mov     dword [rdi + PLANEENT.speed], __float32__(15.5)
+    mov     dword [rdi + PLANEENT.air], 1
+    mov     dword [rdi + PLANEENT.occ], 2
+    mov     dword [rdi + PLANEENT.occ + 4], 3
+    mov     dword [rdi + PLANEENT.occ + 12], 5
+    lea     rdi, [cd_buf + 2000]
+    lea     rsi, [planes + 2 * PLANEENT_size]
+    mov     edx, 2
+    call    nm_plane_enc
+    cmp     byte [cd_buf + 2000], 2     ; slot, air, the four seats
+    jne     .fail
+    cmp     byte [cd_buf + 2001], 1
+    jne     .fail
+    cmp     dword [cd_buf + 2002], 0x05000302
+    jne     .fail
+    call    planes_clear
+    lea     rdi, [cd_buf + 2000]
+    call    nm_plane_dec
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.used], 1
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.occ], 2
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.occ + 4], 3
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.occ + 8], 0
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.occ + 12], 5
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.air], 1
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.pitch], __float32__(12.0)
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.roll], __float32__(-7.0)
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.speed], __float32__(15.5)
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.vy], __float32__(-2.5)
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.x], __float32__(40.5)
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.y], __float32__(30.5)
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.z], __float32__(50.5)
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.yaw], __float32__(135.0)
+    EXPECT_D [plane_tgt + 2 * 16], __float32__(40.5)
+    EXPECT_D [plane_tgt + 2 * 16 + 12], __float32__(135.0)
+    mov     dword [planes + 2 * PLANEENT_size + BODY.x], __float32__(44.5)   ; the record of a moved plane
+    lea     rdi, [cd_buf + 2000]
+    lea     rsi, [planes + 2 * PLANEENT_size]
+    mov     edx, 2
+    call    nm_plane_enc
+    mov     dword [planes + 2 * PLANEENT_size + BODY.x], __float32__(40.5)
+    lea     rdi, [cd_buf + 2000]
+    call    nm_plane_dec
+    EXPECT_D [planes + 2 * PLANEENT_size + BODY.x], __float32__(40.5)       ; the copy stays, its target moves
+    EXPECT_D [plane_tgt + 2 * 16], __float32__(44.5)
+    mov     dword [plane_riding], 3     ; the guest flies it: his pose stays
+    mov     dword [planes + 2 * PLANEENT_size + PLANEENT.pitch], __float32__(1.0)
+    mov     dword [planes + 2 * PLANEENT_size + PLANEENT.occ], 0
+    lea     rdi, [cd_buf + 2000]
+    call    nm_plane_dec
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.pitch], __float32__(1.0)
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.occ], 2
+    mov     dword [plane_riding], 0
+    mov     dword [planes + PLANEENT.used], 1       ; SNAP_PLANES {1, the record}: plane 0 is not listed
+    mov     dword [planes + 2 * PLANEENT_size + PLANEENT.used], 0
+    mov     dword [cd_buf + 3000], 1
+    lea     rdi, [cd_buf + 3004]
+    lea     rsi, [planes + 2 * PLANEENT_size]
+    mov     edx, 2
+    call    nm_plane_enc
+    mov     byte [net_role], NET_ROLE_GUEST
+    xor     edi, edi
+    mov     esi, MT_SNAP_PLANES
+    lea     rdx, [cd_buf + 3000]
+    mov     ecx, 48
+    call    nm_on_snap_planes
+    EXPECT_D [planes + PLANEENT.used], 0
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.used], 1
+    mov     dword [planes + PLANEENT.used], 1       ; ... unless the guest sits in it
+    mov     dword [plane_riding], 1
+    xor     edi, edi
+    mov     esi, MT_SNAP_PLANES
+    lea     rdx, [cd_buf + 3000]
+    mov     ecx, 48
+    call    nm_on_snap_planes
+    EXPECT_D [planes + PLANEENT.used], 1
+    mov     ecx, 47                     ; a message too short for its count is dropped
+    mov     dword [planes + 2 * PLANEENT_size + PLANEENT.used], 0
+    xor     edi, edi
+    mov     esi, MT_SNAP_PLANES
+    lea     rdx, [cd_buf + 3000]
+    call    nm_on_snap_planes
+    EXPECT_D [planes + 2 * PLANEENT_size + PLANEENT.used], 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_plane_leave -------------------------------------------------------------------------------------------
+; A gunner who leaves frees his seat and nothing else; the pilot who leaves frees his, the plane takes the pose he
+; left it in and is pilotless (throttle 0); a guest that does not sit in the plane is ignored.
+test_net_plane_leave:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 16
+    call    plane_world
+    mov     dword [planes + PLANEENT.used], 1
+    mov     dword [planes + BODY.x], __float32__(10.5)
+    mov     dword [planes + BODY.y], __float32__(20.5)
+    mov     dword [planes + BODY.z], __float32__(10.5)
+    mov     dword [planes + PLANEENT.throttle], __float32__(0.5)
+    mov     dword [planes + PLANEENT.occ], 2
+    mov     dword [planes + PLANEENT.occ + 4], 3
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 3
+    call    peers_ready
+    movss   xmm0, [kp_12_5]
+    movss   xmm1, [kp_20_5]
+    movss   xmm2, [kp_10_5]
+    call    pose_msg
+    mov     edi, 3                      ; a guest who is not aboard
+    mov     esi, MT_PLANE_LEAVE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 40
+    call    nw_on_plane_leave
+    EXPECT_D [planes + PLANEENT.occ], 2
+    EXPECT_D [planes + PLANEENT.occ + 4], 3
+    mov     edi, 2                      ; the gunner
+    mov     esi, MT_PLANE_LEAVE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 40
+    call    nw_on_plane_leave
+    EXPECT_D [planes + PLANEENT.occ + 4], 0
+    EXPECT_D [planes + PLANEENT.occ], 2
+    EXPECT_D [planes + BODY.x], __float32__(10.5)
+    mov     edi, 1                      ; the pilot
+    mov     esi, MT_PLANE_LEAVE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 40
+    call    nw_on_plane_leave
+    EXPECT_D [planes + PLANEENT.occ], 0
+    EXPECT_D [planes + BODY.x], __float32__(12.5)
+    EXPECT_D [planes + PLANEENT.throttle], 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 16
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_plane_crash -------------------------------------------------------------------------------------------
+; A crash the host steps hurts every guest in the plane (HURT, 12 damage by falling) and lets him go (BOARD_OK
+; not ok), puts the host's own seat down and empties the plane. A guest pilot's crash report (PLANE_BREAK, crash)
+; does the same for the others in it; a report from a guest who does not pilot it is ignored.
+test_net_plane_crash:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    call    plane_world
+    mov     r12d, [game_mode]
+    lea     rsi, [banner_text]
+    lea     rdi, [save_banner]
+    mov     ecx, 64
+    rep     movsb
+    mov     dword [game_mode], MODE_CREATIVE
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 2
+    call    peers_ready
+    mov     dword [planes + PLANEENT.used], 1
+    mov     dword [planes + PLANEENT.occ], 1        ; the host pilots, guest 1 is the left gunner, guest 2 the right
+    mov     dword [planes + PLANEENT.occ + 4], 2
+    mov     dword [planes + PLANEENT.occ + 8], 3
+    mov     dword [plane_riding], 1
+    call    cap_on
+    xor     edi, edi
+    call    planes_crash
+    EXPECT_CAP 0, 1, MT_HURT, 32
+    cmp     dword [rax + 4], 12                 ; PL_CRASH_DMG
+    jne     .fail
+    cmp     byte [rax + 8], CAUSE_FALL
+    jne     .fail
+    EXPECT_CAP 1, 1, MT_PLANE_BOARD_OK, 3
+    cmp     byte [rax + 6], 0
+    jne     .fail
+    EXPECT_CAP 2, 2, MT_HURT, 32
+    EXPECT_CAP 3, 2, MT_PLANE_BOARD_OK, 3
+    EXPECT_NO_CAP 4
+    EXPECT_D [planes + PLANEENT.used], 0
+    EXPECT_D [planes + PLANEENT.occ + 4], 0
+    EXPECT_D [plane_riding], 0
+    mov     dword [planes + PLANEENT.used], 1       ; guest 1 pilots, guest 2 is a gunner
+    mov     dword [planes + PLANEENT.occ], 2
+    mov     dword [planes + PLANEENT.occ + 4], 3
+    call    cap_on
+    mov     byte [small_buf + 48], 0
+    mov     byte [small_buf + 49], 1
+    mov     edi, 2                      ; the gunner's crash report means nothing
+    mov     esi, MT_PLANE_BREAK
+    lea     rdx, [small_buf + 48]
+    mov     ecx, 2
+    call    nw_on_plane_break
+    EXPECT_NO_CAP 0
+    EXPECT_D [planes + PLANEENT.used], 1
+    mov     edi, 1
+    mov     esi, MT_PLANE_BREAK
+    lea     rdx, [small_buf + 48]
+    mov     ecx, 2
+    call    nw_on_plane_break
+    EXPECT_CAP 0, 2, MT_HURT, 32
+    EXPECT_CAP 1, 2, MT_PLANE_BOARD_OK, 3
+    EXPECT_NO_CAP 2                     ; (the pilot took his own damage)
+    EXPECT_D [planes + PLANEENT.used], 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    lea     rsi, [save_banner]
+    lea     rdi, [banner_text]
+    mov     ecx, 64
+    rep     movsb
+    mov     [game_mode], r12d
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- net_plane_place -----------------------------------------------------------------------------------------
+; PLANE_PLACE names the block a guest's ray hit: the host puts a plane on its top with the guest's heading; a
+; plane that cannot be put there (the table is full) goes back to the guest in Survival and nothing does in
+; Creative; a cell nothing stands on is refused.
+test_net_plane_place:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    call    plane_world
+    mov     r12d, [game_mode]
+    lea     rsi, [banner_text]
+    lea     rdi, [save_banner]
+    mov     ecx, 64
+    rep     movsb
+    SETB    70, 9, 70, STONE
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     edi, 1
+    call    peers_ready
+    mov     dword [game_mode], MODE_CREATIVE
+    call    cap_on
+    call    place_plane
+    EXPECT_NO_CAP 0
+    EXPECT_D [planes + PLANEENT.used], 1
+    EXPECT_D [planes + BODY.x], __float32__(70.5)
+    EXPECT_D [planes + BODY.y], __float32__(10.0)
+    EXPECT_D [planes + BODY.yaw], __float32__(90.0)
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     byte [banner_text], 0
+    xor     r13d, r13d
+.full:
+    imul    eax, r13d, PLANEENT_size
+    lea     rcx, [planes]
+    mov     dword [rcx + rax + PLANEENT.used], 1
+    inc     r13d
+    cmp     r13d, MAX_PLANES
+    jb      .full
+    call    cap_on
+    call    place_plane
+    EXPECT_CAP 0, 1, MT_GIVE, 4
+    cmp     byte [rax + 4], PLANE
+    jne     .fail
+    EXPECT_NO_CAP 1
+    cmp     byte [banner_text], 0
+    jne     .fail                       ; no banner on the host
+    call    planes_clear
+    SETB    70, 9, 70, AIR              ; nothing to stand on
+    call    cap_on
+    call    place_plane
+    EXPECT_D [planes + PLANEENT.used], 0
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    lea     rsi, [save_banner]
+    lea     rdi, [banner_text]
+    mov     ecx, 64
+    rep     movsb
+    mov     [game_mode], r12d
+    call    plane_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; place_plane(): PLANE_PLACE from guest 1: the block (70, 9, 70), heading 90
+place_plane:
+    sub     rsp, 8
+    lea     rdi, [cd_buf + 1024]
+    movss   xmm0, [kp_70_5]
+    movss   xmm1, [kp_9_5]
+    movss   xmm2, [kp_70_5]
+    call    net_pos_out
+    mov     eax, [kp_90]
+    mov     [cd_buf + 1040], eax
+    mov     edi, 1
+    mov     esi, MT_PLANE_PLACE
+    lea     rdx, [cd_buf + 1024]
+    mov     ecx, 20
+    call    nw_on_plane_place
+    add     rsp, 8
     ret

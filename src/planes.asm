@@ -4,6 +4,10 @@
 ; pitch (degrees, + = nose up), its bank, its throttle and the streaming governor's current speed cap.
 ; The pilot steers with the view: the plane's heading and pitch follow the player's yaw and pitch (the
 ; mouse; A and D turn the view), W and S move the throttle. BODY.vy is the vertical speed.
+; Seats: occ[] holds per seat (0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner) the peer slot + 1 of who
+; sits there; plane_riding / plane_seat say where the local player sits. Only the pilot flies the plane; every
+; seated player is carried to his seat each step. In multiplayer the pilot's machine steps the plane and the
+; host the pilotless ones (a guest steps only the plane he flies, the others are copies of the host's snapshots).
 %include "common.inc"
 %include "gl.inc"
 default rel
@@ -11,12 +15,15 @@ default rel
 global planes, plane_riding, plane_view
 global planes_clear, planes_step, planes_render, planes_place, planes_raycast, planes_board
 global planes_leave, planes_break, planes_save, planes_load, planes_shift, plane_view_cam
+global plane_seat, plane_tgt, planes_sit, planes_free_seat, planes_crash, planes_mirror_step
+global planes_free_peer, planes_free_guests
 
 extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready, coord_ok, meshable
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb, raycast, survival_damage
 extern block_tiles, render_box16, light_bind_at, light_bind_index
-extern net_role, folk_tables, mob_parts_draw
+extern net_role, net_self, net_applying, folk_tables, mob_parts_draw, net_hurt_send_direct
+extern net_plane_place_out, net_plane_board_out, net_plane_leave_out, net_plane_break_out, net_plane_ok_out
 
 %define PL_LOOK_COLS    4               ; columns sampled ahead of the heading, 16 blocks apart
 %define PL_CRASH_DMG    12              ; HP the pilot loses in a crash (survival_damage, CAUSE_FALL)
@@ -87,9 +94,14 @@ c_cam_gap:  dd 0.3                      ; kept this far from a block the camera 
 c_cam_min:  dd 0.4
 c_cam_tilt: dd 14.0                     ; the camera looks this far below the plane's pitch: the plane sits in the middle
 c_seat:     dd -0.4                     ; the pilot's feet in model space: the fuselage top is 0.35
+c_pivot_g:  dd 0.75                     ; a gunner's camera looks at him from this far above his feet
+c_follow:   dd 0.35                     ; a mirrored plane covers this much of the way to its target per step
+c_snap2:    dd 36.0                     ; farther than 6 blocks from its target it jumps
+; the seats in plane space (x right, z back; the nose is at -z): pilot, left gunner, right gunner, tail gunner
+seat_x:     dd 0.0, -0.9, 0.9, 0.0
+seat_z:     dd 0.0, -0.1, -0.1, 1.2
 s_crash:    db "The plane crashed", 0
 s_many:     db "Too many planes", 0
-s_net:      db "Planes are not available in multiplayer yet", 0
 s_load:     db "Terrain loading", 0
 ; the boxes of the plane in model space (blocks, centre at the origin, nose towards -z):
 ; lo xyz, hi xyz, tile set (0 iron, 1 wool, 2 coal)
@@ -110,9 +122,11 @@ section .bss
 alignb 16
 planes:       resb MAX_PLANES * PLANEENT_size
 plane_riding: resd 1                    ; 0, or the index + 1 of the plane the player flies
+plane_seat:   resd 1                    ; the local player's seat while plane_riding != 0
 plane_view:   resd 1                    ; 1 third person (the default on boarding), 0 cockpit
 plane_hint:   resd 1                    ; 1 while "Terrain loading" has been shown for the current slow-down
 plane_cam:    resb BODY_size            ; the third-person camera
+plane_tgt:    resd MAX_PLANES * 4       ; a mirrored plane's target: x, y, z, yaw (local; guests)
 plane_tiles:  resw 6 * 3                ; the six face tiles of each tile set
 
 section .text
@@ -124,6 +138,7 @@ planes_clear:
     xor     eax, eax
     rep     stosb
     mov     dword [plane_riding], 0
+    mov     dword [plane_seat], 0
     mov     dword [plane_hint], 0
     ret
 
@@ -144,13 +159,44 @@ plane_index:
     div     ecx
     ret
 
-; seat(rdi plane): the pilot sits in the plane: its x and z, feet 0.15 above its bottom, at rest
+; seat_pos(rdi plane, esi seat) -> xmm0 x, xmm1 z: where that seat of the plane is (its offset in plane space,
+; turned by the heading)
+seat_pos:
+    push    rbx
+    sub     rsp, 16
+    mov     rbx, rdi
+    mov     [rsp], esi
+    movss   xmm0, [rdi + BODY.yaw]
+    call    sincos_deg
+    mov     eax, [rsp]
+    lea     rdx, [seat_x]
+    movss   xmm2, [rdx + rax * 4]
+    lea     rdx, [seat_z]
+    movss   xmm3, [rdx + rax * 4]
+    movaps  xmm4, xmm2
+    mulss   xmm4, xmm1                  ; x cos
+    movaps  xmm5, xmm3
+    mulss   xmm5, xmm0                  ; z sin
+    subss   xmm4, xmm5
+    addss   xmm4, [rbx + BODY.x]
+    mulss   xmm2, xmm0                  ; x sin
+    mulss   xmm3, xmm1                  ; z cos
+    addss   xmm2, xmm3
+    addss   xmm2, [rbx + BODY.z]
+    movaps  xmm0, xmm4
+    movaps  xmm1, xmm2
+    add     rsp, 16
+    pop     rbx
+    ret
+
+; seat(rdi plane, esi seat): the player sits in that seat: its x and z, feet 0.15 above the plane's bottom, at rest
 seat:
-    mov     eax, [rdi + BODY.x]
-    mov     [player + BODY.x], eax
-    mov     eax, [rdi + BODY.z]
-    mov     [player + BODY.z], eax
-    movss   xmm0, [rdi + BODY.y]
+    push    rbx
+    mov     rbx, rdi
+    call    seat_pos
+    movss   [player + BODY.x], xmm0
+    movss   [player + BODY.z], xmm1
+    movss   xmm0, [rbx + BODY.y]
     addss   xmm0, [c_rider]
     movss   [player + BODY.y], xmm0
     xor     eax, eax
@@ -159,6 +205,7 @@ seat:
     mov     [player + BODY.vz], eax
     mov     [player + BODY.fall], eax
     mov     dword [player + BODY.on_ground], 1
+    pop     rbx
     ret
 
 ; wrap360(xmm0 degrees) -> xmm0 in [0, 360); clobbers xmm1
@@ -208,7 +255,7 @@ approach:
 ; of a block (the cell in front of it lies directly above the block); the 3 x 3 cells around that cell, at
 ; its level and the one above, must be free and loaded (a plane overhanging a ledge is fine). It stands
 ; centred on the cell, bottom on the block, heading = the player's yaw. A full table says "Too many
-; planes" (0). The caller consumes the item in Survival. Multiplayer has no planes yet: a banner, 0.
+; planes. A guest asks the host (net_plane_place_out) and says 1.
 ; r12 = RAYHIT, r13d = dz, r14d = dx, r15d = dy, rbx = the new plane.
 planes_place:
     push    rbp
@@ -220,13 +267,6 @@ planes_place:
     push    r15
     sub     rsp, 8
     mov     r12, rdi
-    cmp     byte [net_role], NET_ROLE_OFF
-    je      .local
-    lea     rdi, [s_net]
-    mov     esi, RGBA(255, 150, 90, 255)
-    call    hud_banner
-    jmp     .none
-.local:
     mov     eax, [r12 + RAYHIT.py]
     sub     eax, [r12 + RAYHIT.by]
     cmp     eax, 1
@@ -237,6 +277,12 @@ planes_place:
     mov     eax, [r12 + RAYHIT.pz]
     cmp     eax, [r12 + RAYHIT.bz]
     jne     .none
+    mov     edi, [r12 + RAYHIT.bx]
+    mov     esi, [r12 + RAYHIT.by]
+    mov     edx, [r12 + RAYHIT.bz]
+    call    world_is_solid
+    test    eax, eax
+    jz      .none                       ; nothing to stand on
     mov     r13d, -1
 .dz:
     mov     r14d, -1
@@ -261,6 +307,15 @@ planes_place:
     inc     r13d
     cmp     r13d, 1
     jle     .dz
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .local
+    cmp     byte [net_applying], 0
+    jne     .local
+    mov     rdi, r12                    ; a guest: the host puts the plane down
+    call    net_plane_place_out
+    mov     eax, 1
+    jmp     .out
+.local:
     lea     rbx, [planes]
     xor     r13d, r13d
 .slot:
@@ -270,6 +325,8 @@ planes_place:
     inc     r13d
     cmp     r13d, MAX_PLANES
     jb      .slot
+    cmp     byte [net_applying], 0
+    jne     .none                       ; a guest's request on the host: no banner (nw_on_plane_place gives the item back)
     lea     rdi, [s_many]
     mov     esi, RGBA(255, 150, 90, 255)
     call    hud_banner
@@ -412,15 +469,57 @@ plane_governor:
     pop     rbp
     ret
 
-; plane_crash(rdi plane): the plane is destroyed (it drops nothing). Its pilot is put down at the wreck, says
-; so and takes 12 damage.
+; plane_crash(rdi plane): the plane is destroyed (it drops nothing) and every occupant takes 12 damage. The host
+; hurts each guest in it (net_hurt_send_direct) and tells him he is out (net_plane_ok_out); the local player, when
+; he sits in it, is put down at the wreck, says so and takes the damage; a guest who flew it tells the host
+; (net_plane_break_out, crash), which does the same for the others.
+; rbx = plane, r12d = its slot, r13d = seat counter.
 plane_crash:
+    push    rbp
+    mov     rbp, rsp
     push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
     mov     rbx, rdi
     call    plane_index
-    inc     eax
+    mov     r12d, eax
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .own
+    xor     r13d, r13d
+.seat:
+    mov     eax, [rbx + r13 * 4 + PLANEENT.occ]
+    test    eax, eax
+    jz      .seat_next
+    dec     eax
+    movzx   ecx, byte [net_self]
+    cmp     eax, ecx
+    je      .seat_next                  ; the host's own seat: below
+    mov     [rsp], eax
+    mov     edi, eax
+    mov     esi, PL_CRASH_DMG
+    mov     edx, CAUSE_FALL
+    mov     ecx, 255                    ; no mob, no status
+    mov     r8d, 255
+    xor     r9d, r9d
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.z]
+    xorps   xmm2, xmm2
+    xorps   xmm3, xmm3
+    call    net_hurt_send_direct
+    mov     edi, [rsp]
+    mov     esi, r12d
+    xor     edx, edx
+    xor     ecx, ecx
+    call    net_plane_ok_out            ; not his any more
+.seat_next:
+    inc     r13d
+    cmp     r13d, PLANE_SEATS
+    jb      .seat
+.own:
+    lea     eax, [r12 + 1]
     cmp     eax, [plane_riding]
-    jne     .free
+    jne     .tell
     mov     dword [plane_riding], 0
     mov     eax, [rbx + BODY.x]
     mov     [player + BODY.x], eax
@@ -441,12 +540,37 @@ plane_crash:
     mov     edi, PL_CRASH_DMG
     mov     esi, CAUSE_FALL
     call    survival_damage
+.tell:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .free
+    mov     edi, r12d
+    mov     esi, 1
+    call    net_plane_break_out         ; the host destroys it for the others
 .free:
     mov     rdi, rbx
     mov     ecx, PLANEENT_size
     xor     eax, eax
     rep     stosb
+    add     rsp, 8
+    pop     r13
+    pop     r12
     pop     rbx
+    pop     rbp
+    ret
+
+; planes_crash(edi idx): plane idx (a used slot) is destroyed as plane_crash does it (the host, on a guest pilot's report)
+planes_crash:
+    cmp     edi, MAX_PLANES
+    jae     .ret
+    sub     rsp, 8
+    call    plane_at
+    cmp     dword [rax + PLANEENT.used], 0
+    je      .done
+    mov     rdi, rax
+    call    plane_crash
+.done:
+    add     rsp, 8
+.ret:
     ret
 
 ; plane_update(rdi plane, rsi INPUT*, edx 1 when the player flies it): one fixed step of one plane.
@@ -748,17 +872,13 @@ plane_update:
     test    r13d, r13d
     jz      .out
     cmp     dword [r12 + INPUT.down], 0
-    je      .sit
+    je      .out
     cmp     dword [rbx + PLANEENT.air], 0
-    jne     .sit
+    jne     .out
     movss   xmm0, [rbx + PLANEENT.speed]
     ucomiss xmm0, [c_leave_v]
-    jae     .sit
+    jae     .out
     call    planes_leave
-    jmp     .out
-.sit:
-    mov     rdi, rbx
-    call    seat
     jmp     .out
 .crash:
     mov     rdi, rbx
@@ -773,8 +893,9 @@ plane_update:
     pop     rbp
     ret
 
-; planes_step(rdi INPUT*): one fixed step of every plane (plane_update); the one the player flies
-; (plane_riding) is flown with the input.
+; planes_step(rdi INPUT*): one fixed step of the planes this machine steps (plane_update; the one the local
+; player pilots is flown with the input): offline all, on the host those no guest pilots, on a guest only the
+; one he flies. Then the seated local player is carried to his seat, and a gunner who sneaks steps out.
 planes_step:
     push    rbp
     mov     rbp, rsp
@@ -794,7 +915,7 @@ planes_step:
     cmp     dword [rdx + rcx + PLANEENT.used], 0
     jne     .begin
 .stale:
-    mov     dword [plane_riding], 0     ; the plane is gone: nobody flies it
+    mov     dword [plane_riding], 0     ; the plane is gone: nobody sits in it
 .begin:
     lea     rbx, [planes]
     xor     r14d, r14d
@@ -804,7 +925,22 @@ planes_step:
     lea     eax, [r14 + 1]
     xor     edx, edx
     cmp     eax, [plane_riding]
-    sete    dl
+    jne     .role
+    cmp     dword [plane_seat], 0
+    sete    dl                          ; the player pilots this one
+.role:
+    movzx   eax, byte [net_role]
+    test    eax, eax
+    jz      .step
+    cmp     eax, NET_ROLE_GUEST
+    jne     .host
+    test    edx, edx
+    jz      .next                       ; a guest steps only the plane he flies
+    jmp     .step
+.host:
+    cmp     dword [rbx + PLANEENT.occ], 1
+    ja      .next                       ; a guest pilots it: his pose messages move it
+.step:
     mov     rdi, rbx
     mov     rsi, r12
     call    plane_update
@@ -813,6 +949,24 @@ planes_step:
     inc     r14d
     cmp     r14d, MAX_PLANES
     jb      .plane
+    mov     eax, [plane_riding]
+    test    eax, eax
+    jz      .out
+    dec     eax
+    mov     edi, eax
+    call    plane_at
+    mov     rbx, rax
+    mov     esi, [plane_seat]
+    test    esi, esi
+    jz      .sit
+    cmp     dword [r12 + INPUT.down], 0
+    je      .sit
+    call    planes_leave                ; a gunner steps out where he sits, in the air too
+    jmp     .out
+.sit:
+    mov     rdi, rbx
+    call    seat
+.out:
     pop     r14
     pop     r13
     pop     r12
@@ -884,73 +1038,189 @@ planes_raycast:
     pop     rbp
     ret
 
-; planes_board(edi idx): the player flies plane idx (a used slot): he sits in it at once, in third person.
-planes_board:
+; planes_free_seat(rdi plane) -> eax its first free seat (0 pilot first, then the gunners), or -1 when it is full
+planes_free_seat:
+    xor     eax, eax
+.l:
+    cmp     dword [rdi + rax * 4 + PLANEENT.occ], 0
+    je      .ret
+    inc     eax
+    cmp     eax, PLANE_SEATS
+    jb      .l
+    mov     eax, -1
+.ret:
+    ret
+
+; planes_sit(edi idx, esi seat): the local player sits in that seat of plane idx (a used slot): the pilot in
+; third person, a gunner in his turret; he is placed at the seat at once
+planes_sit:
     cmp     edi, MAX_PLANES
     jae     .ret
+    push    rbx
+    push    r12
     sub     rsp, 8
-    mov     [rsp], edi
+    mov     ebx, edi
+    mov     r12d, esi
     call    plane_at
     cmp     dword [rax + PLANEENT.used], 0
     je      .done
-    mov     edi, [rsp]
-    inc     edi
-    mov     [plane_riding], edi
-    mov     dword [plane_view], 1
+    lea     edx, [rbx + 1]
+    mov     [plane_riding], edx
+    mov     [plane_seat], r12d
+    xor     edx, edx
+    test    r12d, r12d
+    sete    dl
+    mov     [plane_view], edx
     mov     dword [plane_hint], 0
+    movzx   edx, byte [net_self]
+    inc     edx
+    mov     [rax + r12 * 4 + PLANEENT.occ], edx
     mov     rdi, rax
+    mov     esi, r12d
     call    seat
 .done:
     add     rsp, 8
+    pop     r12
+    pop     rbx
 .ret:
     ret
 
-; planes_leave(): the pilot steps out: he stands 0.6 above the plane's bottom at its x and z, at rest.
-; Nothing happens when nobody flies.
-planes_leave:
-    sub     rsp, 8
-    mov     eax, [plane_riding]
-    test    eax, eax
-    jz      .ret
-    dec     eax
-    cmp     eax, MAX_PLANES
-    jae     .clear
-    mov     edi, eax
-    call    plane_at
-    cmp     dword [rax + PLANEENT.used], 0
-    je      .clear
-    mov     edx, [rax + BODY.x]
-    mov     [player + BODY.x], edx
-    mov     edx, [rax + BODY.z]
-    mov     [player + BODY.z], edx
-    movss   xmm0, [rax + BODY.y]
-    addss   xmm0, [c_lift]
-    movss   [player + BODY.y], xmm0
-    xor     edx, edx
-    mov     [player + BODY.vx], edx
-    mov     [player + BODY.vy], edx
-    mov     [player + BODY.vz], edx
-    mov     [player + BODY.fall], edx
-    mov     dword [player + BODY.on_ground], 0
-.clear:
-    mov     dword [plane_riding], 0
-.ret:
-    add     rsp, 8
-    ret
-
-; planes_break(edi idx): plane idx is gone; in Survival it leaves a PLANE item. A pilot is let go where he sits.
-planes_break:
-    push    rbx
+; planes_board(edi idx): the player boards plane idx (a used slot): the pilot's seat when nobody sits in it,
+; else the first free gunner seat; a full plane refuses. A guest asks the host (net_plane_board_out) and sits
+; down when the answer comes (nw_on_plane_board_ok runs planes_sit).
+planes_board:
     cmp     edi, MAX_PLANES
-    jae     .out
+    jae     .ret
+    push    rbx
     mov     ebx, edi
     call    plane_at
     cmp     dword [rax + PLANEENT.used], 0
     je      .out
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .seat
+    mov     edi, ebx
+    call    net_plane_board_out
+    jmp     .out
+.seat:
     mov     rdi, rax
-    xchg    rbx, rdi                    ; rbx = the plane, edi = its slot
-    inc     edi
-    cmp     edi, [plane_riding]
+    call    planes_free_seat
+    test    eax, eax
+    js      .out                        ; full
+    mov     edi, ebx
+    mov     esi, eax
+    call    planes_sit
+.out:
+    pop     rbx
+.ret:
+    ret
+
+; planes_leave(): the local player steps out where he sits (the seat's x and z, 0.6 above the plane's bottom), at
+; rest, and his seat is free. Nothing happens when he sits in no plane. A guest tells the host first, with the
+; plane's pose (net_plane_leave_out).
+; rbx = the plane, r12d = its slot.
+planes_leave:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    mov     eax, [plane_riding]
+    test    eax, eax
+    jz      .out
+    dec     eax
+    cmp     eax, MAX_PLANES
+    jae     .clear
+    mov     r12d, eax
+    mov     edi, eax
+    call    plane_at
+    mov     rbx, rax
+    cmp     dword [rbx + PLANEENT.used], 0
+    je      .clear
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .place
+    mov     edi, r12d
+    call    net_plane_leave_out
+.place:
+    mov     rdi, rbx
+    mov     esi, [plane_seat]
+    call    seat_pos
+    movss   [player + BODY.x], xmm0
+    movss   [player + BODY.z], xmm1
+    movss   xmm0, [rbx + BODY.y]
+    addss   xmm0, [c_lift]
+    movss   [player + BODY.y], xmm0
+    xor     eax, eax
+    mov     [player + BODY.vx], eax
+    mov     [player + BODY.vy], eax
+    mov     [player + BODY.vz], eax
+    mov     [player + BODY.fall], eax
+    mov     dword [player + BODY.on_ground], 0
+    mov     ecx, [plane_seat]
+    movzx   edx, byte [net_self]
+    inc     edx
+    cmp     [rbx + rcx * 4 + PLANEENT.occ], edx
+    jne     .clear
+    mov     dword [rbx + rcx * 4 + PLANEENT.occ], 0
+.clear:
+    mov     dword [plane_riding], 0
+.out:
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; planes_break(edi idx): plane idx is gone; in Survival it leaves a PLANE item. The player who sits in it is let
+; go where he sits. A guest asks the host to break it (net_plane_break_out); the host tells every guest who sat
+; in it (PLANE_BOARD_OK with ok = 0).
+; rbx = the plane, r12d = its slot, r13d = seat counter.
+planes_break:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    cmp     edi, MAX_PLANES
+    jae     .out
+    mov     r12d, edi
+    call    plane_at
+    mov     rbx, rax
+    cmp     dword [rbx + PLANEENT.used], 0
+    je      .out
+    movzx   eax, byte [net_role]
+    test    eax, eax
+    jz      .release                    ; offline
+    cmp     eax, NET_ROLE_GUEST
+    jne     .host
+    mov     edi, r12d
+    xor     esi, esi
+    call    net_plane_break_out         ; a guest: the host breaks it and drops the item
+    lea     eax, [r12 + 1]
+    cmp     eax, [plane_riding]
+    jne     .out
+    mov     dword [plane_riding], 0
+    jmp     .out
+.host:
+    xor     r13d, r13d
+.seat:
+    mov     eax, [rbx + r13 * 4 + PLANEENT.occ]
+    test    eax, eax
+    jz      .seat_next
+    dec     eax
+    movzx   ecx, byte [net_self]
+    cmp     eax, ecx
+    je      .seat_next
+    mov     edi, eax
+    mov     esi, r12d
+    xor     edx, edx
+    xor     ecx, ecx
+    call    net_plane_ok_out            ; "not yours any more"
+.seat_next:
+    inc     r13d
+    cmp     r13d, PLANE_SEATS
+    jb      .seat
+.release:
+    lea     eax, [r12 + 1]
+    cmp     eax, [plane_riding]
     jne     .drop
     mov     dword [plane_riding], 0
 .drop:
@@ -970,7 +1240,11 @@ planes_break:
     xor     eax, eax
     rep     stosb
 .out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
     pop     rbx
+    pop     rbp
     ret
 
 ; planes_save(rdi WORLDHDR*): the used planes' x, y, z, yaw packed into .planes, .plane_count of them;
@@ -1099,20 +1373,32 @@ planes_shift:
     add     rax, PLANEENT_size
     dec     ecx
     jnz     .l
+    lea     rax, [plane_tgt]            ; and the targets of the mirrored planes
+    mov     ecx, MAX_PLANES
+.t:
+    movss   xmm2, [rax]
+    subss   xmm2, xmm0
+    movss   [rax], xmm2
+    movss   xmm2, [rax + 8]
+    subss   xmm2, xmm1
+    movss   [rax + 8], xmm2
+    add     rax, 16
+    dec     ecx
+    jnz     .t
     ret
 
-; plane_view_cam() -> rax the BODY render_world draws from: the player, unless he flies a plane in third
-; person; then a copy of him 7 blocks behind the plane along its heading and pitch and 2.5 above, pulled in
-; to 0.3 before any block the way there meets, looking along the plane. (The real eye stays the player's:
-; targeting and shooting use it.)
+; plane_view_cam() -> rax the BODY render_world draws from: the player, unless he sits in a plane in third
+; person; then a copy of him 7 blocks behind the plane along its heading and pitch (a gunner: behind his own
+; view direction, about him) and 2.5 above, pulled in to 0.3 before any block the way there meets, looking
+; along that direction. (The real eye stays the player's: targeting and shooting use it.)
 ; rbx = the plane, r12 = the camera. Frame: pivot[3] @0, offset[3] @16, hit RAYHIT @32 (24 bytes), sin yaw @56,
-; cos yaw @60, sin pitch @64, cos pitch @68, length @72.
+; cos yaw @60, sin pitch @64, cos pitch @68, length @72, the heading @80, the pitch @84 (degrees, + = up).
 plane_view_cam:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
-    sub     rsp, 80
+    sub     rsp, 96
     mov     ecx, [plane_riding]
     test    ecx, ecx
     jz      .player
@@ -1131,14 +1417,12 @@ plane_view_cam:
     lea     rsi, [player]
     mov     ecx, BODY_size
     rep     movsb
-    movss   xmm0, [rbx + BODY.yaw]
-    call    sincos_deg
-    movss   [rsp + 56], xmm0
-    movss   [rsp + 60], xmm1
-    movss   xmm0, [rbx + PLANEENT.pitch]
-    call    sincos_deg
-    movss   [rsp + 64], xmm0
-    movss   [rsp + 68], xmm1
+    cmp     dword [plane_seat], 0
+    jne     .gunner
+    mov     eax, [rbx + BODY.yaw]       ; the pilot: the camera follows the plane
+    mov     [rsp + 80], eax
+    mov     eax, [rbx + PLANEENT.pitch]
+    mov     [rsp + 84], eax
     movss   xmm0, [rbx + BODY.x]
     movss   [rsp], xmm0
     movss   xmm0, [rbx + BODY.y]
@@ -1146,6 +1430,29 @@ plane_view_cam:
     movss   [rsp + 4], xmm0
     movss   xmm0, [rbx + BODY.z]
     movss   [rsp + 8], xmm0
+    jmp     .aim
+.gunner:                                ; a gunner: the camera follows his view, about him
+    mov     eax, [player + BODY.yaw]
+    mov     [rsp + 80], eax
+    xorps   xmm1, xmm1
+    subss   xmm1, [player + BODY.pitch] ; (his pitch is + = down)
+    movss   [rsp + 84], xmm1
+    movss   xmm0, [player + BODY.x]
+    movss   [rsp], xmm0
+    movss   xmm0, [player + BODY.y]
+    addss   xmm0, [c_pivot_g]
+    movss   [rsp + 4], xmm0
+    movss   xmm0, [player + BODY.z]
+    movss   [rsp + 8], xmm0
+.aim:
+    movss   xmm0, [rsp + 80]
+    call    sincos_deg
+    movss   [rsp + 56], xmm0
+    movss   [rsp + 60], xmm1
+    movss   xmm0, [rsp + 84]
+    call    sincos_deg
+    movss   [rsp + 64], xmm0
+    movss   [rsp + 68], xmm1
     ; offset = -forward * 7 + up * 2.5, forward = (sin yaw cos p, sin p, -cos yaw cos p)
     movss   xmm2, [c_cam_back]
     movss   xmm0, [rsp + 56]
@@ -1206,10 +1513,10 @@ plane_view_cam:
     mulss   xmm1, xmm0
     addss   xmm1, [rsp + 8]
     movss   [r12 + BODY.z], xmm1
-    mov     eax, [rbx + BODY.yaw]
+    mov     eax, [rsp + 80]
     mov     [r12 + BODY.yaw], eax
     xorps   xmm0, xmm0
-    subss   xmm0, [rbx + PLANEENT.pitch]
+    subss   xmm0, [rsp + 84]
     addss   xmm0, [c_cam_tilt]
     movss   [r12 + BODY.pitch], xmm0
     mov     rax, r12
@@ -1217,7 +1524,7 @@ plane_view_cam:
 .player:
     lea     rax, [player]
 .out:
-    add     rsp, 80
+    add     rsp, 96
     pop     r12
     pop     rbx
     pop     rbp
@@ -1260,6 +1567,8 @@ planes_render:
     lea     eax, [r12 + 1]
     cmp     eax, [plane_riding]
     jne     .draw
+    cmp     dword [plane_seat], 0
+    jne     .draw                       ; a gunner sees the plane around him
     cmp     dword [plane_view], 0
     je      .next                       ; the cockpit: the plane is around the eye
 .draw:
@@ -1320,10 +1629,15 @@ planes_render:
     lea     eax, [r12 + 1]              ; the pilot: torso and head above the fuselage (third person only, see above)
     cmp     eax, [plane_riding]
     jne     .no_pilot
+    cmp     dword [plane_view], 0
+    je      .no_pilot                   ; (first person: no avatar around the eye)
     call    glPushMatrix
-    xorps   xmm0, xmm0
+    mov     eax, [plane_seat]
+    lea     rcx, [seat_x]
+    movss   xmm0, [rcx + rax * 4]
     movss   xmm1, [c_seat]
-    xorps   xmm2, xmm2
+    lea     rcx, [seat_z]
+    movss   xmm2, [rcx + rax * 4]
     call    glTranslatef
     lea     rax, [folk_tables]
     mov     r14, [rax + FAC_VILLAGERS * 8]
@@ -1384,4 +1698,158 @@ planes_render:
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; planes_mirror_step(): once per step on a guest (nm_guest_step): every plane copy but the one he flies goes on
+; towards its snapshot target (plane_tgt): the target moves along the heading by speed x cos(pitch) (and by
+; the vertical speed in the air) between snapshots, the copy covers 35% of the way (over 6 blocks off it
+; jumps), turns the shortest way and spins its propeller with the speed.
+; rbx = plane, r12d = slot, r13 = its target. Frame: sin yaw @0, cos yaw @4.
+planes_mirror_step:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 24
+    lea     rbx, [planes]
+    xor     r12d, r12d
+.plane:
+    cmp     dword [rbx + PLANEENT.used], 0
+    je      .next
+    lea     eax, [r12 + 1]
+    cmp     eax, [plane_riding]
+    jne     .mirror
+    cmp     dword [plane_seat], 0
+    je      .next                       ; the one he flies
+.mirror:
+    mov     eax, r12d
+    shl     eax, 4
+    lea     r13, [plane_tgt]
+    add     r13, rax
+    movss   xmm0, [r13 + 12]
+    call    sincos_deg
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   xmm0, [rbx + PLANEENT.pitch]
+    call    sincos_deg                  ; xmm1 = cos pitch
+    movss   xmm2, [rbx + PLANEENT.speed]
+    mulss   xmm2, xmm1
+    mulss   xmm2, [c_dt]                ; the distance this step
+    movss   xmm0, [rsp]
+    mulss   xmm0, xmm2
+    addss   xmm0, [r13]
+    movss   [r13], xmm0
+    movss   xmm0, [rsp + 4]
+    mulss   xmm0, xmm2
+    movss   xmm1, [r13 + 8]
+    subss   xmm1, xmm0
+    movss   [r13 + 8], xmm1
+    cmp     dword [rbx + PLANEENT.air], 0
+    je      .follow
+    movss   xmm0, [rbx + BODY.vy]
+    mulss   xmm0, [c_dt]
+    addss   xmm0, [r13 + 4]
+    movss   [r13 + 4], xmm0
+.follow:
+    movss   xmm2, [c_follow]
+    movss   xmm0, [r13]
+    subss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [r13 + 8]
+    subss   xmm1, [rbx + BODY.z]
+    movss   xmm3, [r13 + 4]
+    subss   xmm3, [rbx + BODY.y]
+    movaps  xmm4, xmm0
+    mulss   xmm4, xmm4
+    movaps  xmm5, xmm1
+    mulss   xmm5, xmm5
+    addss   xmm4, xmm5
+    comiss  xmm4, [c_snap2]
+    jbe     .glide
+    mov     eax, [r13]                  ; too far off: it jumps
+    mov     [rbx + BODY.x], eax
+    mov     eax, [r13 + 4]
+    mov     [rbx + BODY.y], eax
+    mov     eax, [r13 + 8]
+    mov     [rbx + BODY.z], eax
+    jmp     .yaw
+.glide:
+    mulss   xmm0, xmm2
+    addss   xmm0, [rbx + BODY.x]
+    movss   [rbx + BODY.x], xmm0
+    mulss   xmm1, xmm2
+    addss   xmm1, [rbx + BODY.z]
+    movss   [rbx + BODY.z], xmm1
+    mulss   xmm3, xmm2
+    addss   xmm3, [rbx + BODY.y]
+    movss   [rbx + BODY.y], xmm3
+.yaw:
+    movss   xmm0, [r13 + 12]
+    subss   xmm0, [rbx + BODY.yaw]
+    call    wrap180
+    mulss   xmm0, [c_follow]
+    addss   xmm0, [rbx + BODY.yaw]
+    call    wrap360
+    movss   [rbx + BODY.yaw], xmm0
+    movss   xmm0, [rbx + PLANEENT.speed]
+    divss   xmm0, [c_vmax]
+    minss   xmm0, [c_one]
+    xorps   xmm1, xmm1
+    maxss   xmm0, xmm1
+    mulss   xmm0, [c_prop_t]
+    addss   xmm0, [c_prop_i]
+    mulss   xmm0, [c_dt]
+    addss   xmm0, [rbx + PLANEENT.prop]
+    call    wrap360
+    movss   [rbx + PLANEENT.prop], xmm0
+.next:
+    add     rbx, PLANEENT_size
+    inc     r12d
+    cmp     r12d, MAX_PLANES
+    jb      .plane
+    add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; planes_free_peer(edi slot): the guest in that slot sits in no plane any more (it left or timed out); a plane
+; it flew is pilotless, the host's to step
+planes_free_peer:
+    lea     edx, [rdi + 1]
+    lea     rax, [planes]
+    mov     ecx, MAX_PLANES
+.plane:
+    xor     esi, esi
+.seat:
+    cmp     [rax + rsi * 4 + PLANEENT.occ], edx
+    jne     .seat_next
+    mov     dword [rax + rsi * 4 + PLANEENT.occ], 0
+.seat_next:
+    inc     esi
+    cmp     esi, PLANE_SEATS
+    jb      .seat
+    add     rax, PLANEENT_size
+    dec     ecx
+    jnz     .plane
+    ret
+
+; planes_free_guests(): no guest sits in any plane (the host closed multiplayer); the host's own seat stays
+planes_free_guests:
+    lea     rax, [planes]
+    mov     ecx, MAX_PLANES
+.plane:
+    xor     esi, esi
+.seat:
+    cmp     dword [rax + rsi * 4 + PLANEENT.occ], 1
+    jbe     .seat_next
+    mov     dword [rax + rsi * 4 + PLANEENT.occ], 0
+.seat_next:
+    inc     esi
+    cmp     esi, PLANE_SEATS
+    jb      .seat
+    add     rax, PLANEENT_size
+    dec     ecx
+    jnz     .plane
     ret

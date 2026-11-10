@@ -33,6 +33,7 @@ extern arrows_clear, arrows_step, arrows_spawn, arrows_shift
 extern tnt_clear, tnt_step, tnt_prime, tnt_shift, tnt_remove_box
 extern cont_at, cont_create, cont_block_removed, conts_step
 extern gun_reset, gun_step, gun_fire, gun_reload_start, gun_index, gun_automatic
+extern gatling_step, gatling_input
 extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box, fire_guest_step
 extern fx_clear, fx_step, fx_shift
 extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_rank, rpg_stat
@@ -1692,6 +1693,7 @@ game_frame:
     movaps  xmm1, xmm2
 .look:
     call    player_look
+    call    gatling_input               ; a gunner's left button is his Gatling's, not the dig and attack code's
 
     ; 4. fixed 1/60 s steps, at most 5 per frame; a hit-stop freezes the simulation
     movss   xmm0, [combat_hitstop]
@@ -2820,6 +2822,7 @@ sim_step:
     call    tnt_step
 .no_tnt:
     call    gun_step
+    call    gatling_step
     mov     edi, [rsp + 40]
     call    combat_step
     call    abilities_step

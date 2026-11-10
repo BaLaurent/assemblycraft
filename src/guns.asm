@@ -10,7 +10,7 @@ default rel
 
 global gun_cooldown, gun_reload, gun_reload_total, gun_reload_slot, gun_kick
 global gun_index, gun_magazine, gun_shot_info, gun_ammo, gun_automatic
-global gun_reset, gun_reload_start, gun_step, gun_fire
+global gun_reset, gun_reload_start, gun_step, gun_fire, spread_unit
 
 extern inv, inv_sel, inv_count, inv_remove_one, game_mode
 extern arrows_spawn, audio_play, rng_next

@@ -503,6 +503,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
 %define MAX_PLANES      4
+%define PLANE_SEATS     4               ; 0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner
 
 %define MOB_NONE        0
 %define MOB_ZOMBIE      1
@@ -1411,6 +1412,7 @@ struc PLANEENT
     .vmax:     resd 1                   ; float, the streaming governor's current speed cap
     .prop:     resd 1                   ; float degrees, propeller angle
     .air:      resd 1                   ; 1 while off the ground (the vertical speed is BODY.vy)
+    .occ:      resd 4                   ; per seat the peer slot + 1 of who sits there, 0 free (0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner)
 endstruc
 
 struc PLANESAVE
@@ -1715,7 +1717,7 @@ endstruc
 %define NE_TIMEOUT 3
 %define NE_DISCONNECTED 4
 
-; message types (MT_*), dispatch index into net_handlers (64 entries)
+; message types (MT_*), dispatch index into net_handlers (NUM_MT entries)
 %define MT_WORLDINFO 1
 %define MT_PEER_JOIN 2
 %define MT_PEER_LEAVE 3
@@ -1749,6 +1751,10 @@ endstruc
 %define MT_BOAT_DISMOUNT 33
 %define MT_BOAT_BREAK 34
 %define MT_BOAT_POSE 35
+%define MT_PLANE_PLACE 36
+%define MT_PLANE_BOARD 37
+%define MT_PLANE_BOARD_OK 38
+%define MT_PLANE_LEAVE 39
 %define MT_SNAP_MOBS 40
 %define MT_SNAP_DROPS 41
 %define MT_SNAP_MISC 42
@@ -1773,7 +1779,10 @@ endstruc
 %define MT_QUEST_REWARD 61
 %define MT_DROP_SPAWN 62
 %define MT_GIVE 63
-%define NUM_MT 64
+%define MT_PLANE_POSE 64
+%define MT_PLANE_BREAK 65
+%define MT_SNAP_PLANES 66
+%define NUM_MT 67
 
 %define SYS_JOINED 1
 %define SYS_LEFT 2
@@ -1858,7 +1867,7 @@ struc PSTATE
     .level:  resb 1
     .arch:   resb 1                       ; rpg_archetype
     .held:   resb 1                       ; held item id
-    .pad:    resb 1
+    .seat:   resb 1                       ; seat + 1 while sitting in a plane (0 pilot ... 3 tail gunner), 0 otherwise
 endstruc                                  ; 36
 struc MOBREC
     .slot: resb 1
@@ -1912,6 +1921,18 @@ struc BOATREC
     .pos: resb NPOS_size
     .yaw: resd 1
 endstruc                                  ; 24
+struc PLANEREC
+    .slot: resb 1
+    .air: resb 1                          ; 1 off the ground
+    .occ: resb 4                          ; per seat: peer slot + 1, 0 free
+    .pad: resw 1
+    .pos: resb NPOS_size
+    .yaw: resd 1
+    .pitch: resd 1
+    .roll: resd 1
+    .speed: resd 1
+    .vy: resd 1
+endstruc                                  ; 44
 struc TNTREC
     .fuse: resw 1
     .pad: resw 1

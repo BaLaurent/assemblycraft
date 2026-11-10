@@ -107,7 +107,8 @@ extern test_net_cli_join_done
 extern test_net_edit_queue_replay, test_net_column_verdict, test_net_container_put_seq
 extern test_net_stale_verdict, test_net_block_overflow, test_net_cont_close_retry, test_net_fire_in_column
 extern test_net_boat_double_mount, test_net_fire_guest_step, test_net_column_expiry, test_net_boat_giveback
-extern test_net_edit_columns
+extern test_net_edit_columns, test_net_plane_seats, test_net_plane_msgs, test_net_plane_pose
+extern test_net_plane_rec, test_net_plane_leave, test_net_plane_crash, test_net_plane_place
 extern test_net_mob_snapshot_apply, test_net_mob_target_nearest, test_net_guest_hit_forward
 extern test_net_kill_credit, test_net_pvp_toggle
 extern test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, test_net_folk_provoker_kept
@@ -125,7 +126,8 @@ extern test_events_net
 extern test_plane_recipes, test_plane_item_tables
 extern test_planes_place, test_planes_takeoff, test_planes_stall, test_planes_landing
 extern test_planes_crashes, test_planes_governor, test_planes_save_load, test_planes_leave
-extern test_planes_camera
+extern test_planes_camera, test_planes_seats, test_planes_roles
+extern test_gatling_cone, test_gatling_fire, test_gatling_seats
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -386,6 +388,13 @@ tests:
     TEST net_column_expiry
     TEST net_boat_giveback
     TEST net_edit_columns
+    TEST net_plane_seats
+    TEST net_plane_msgs
+    TEST net_plane_pose
+    TEST net_plane_rec
+    TEST net_plane_leave
+    TEST net_plane_crash
+    TEST net_plane_place
     TEST net_mob_snapshot_apply
     TEST net_mob_target_nearest
     TEST net_guest_hit_forward
@@ -437,6 +446,11 @@ tests:
     TEST planes_save_load
     TEST planes_leave
     TEST planes_camera
+    TEST gatling_cone
+    TEST gatling_fire
+    TEST gatling_seats
+    TEST planes_seats
+    TEST planes_roles
     dq 0
 
 section .rodata
@@ -689,6 +703,13 @@ section .rodata
     TESTNAME net_column_expiry
     TESTNAME net_boat_giveback
     TESTNAME net_edit_columns
+    TESTNAME net_plane_seats
+    TESTNAME net_plane_msgs
+    TESTNAME net_plane_pose
+    TESTNAME net_plane_rec
+    TESTNAME net_plane_leave
+    TESTNAME net_plane_crash
+    TESTNAME net_plane_place
     TESTNAME net_mob_snapshot_apply
     TESTNAME net_mob_target_nearest
     TESTNAME net_guest_hit_forward
@@ -740,6 +761,11 @@ section .rodata
     TESTNAME planes_save_load
     TESTNAME planes_leave
     TESTNAME planes_camera
+    TESTNAME gatling_cone
+    TESTNAME gatling_fire
+    TESTNAME gatling_seats
+    TESTNAME planes_seats
+    TESTNAME planes_roles
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

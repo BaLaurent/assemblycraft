@@ -42,14 +42,16 @@ extern nw_on_block, nw_on_col_req, nw_on_col_data, nw_on_col_pristine, nw_on_con
 extern nw_on_cont_data, nw_on_cont_put, nw_on_cont_close, nw_on_cont_gone, nw_on_tnt_prime
 extern nw_on_boat_place, nw_on_boat_mount, nw_on_boat_mount_ok, nw_on_boat_dismount
 extern nw_on_boat_break, nw_on_boat_pose
+extern nw_on_plane_place, nw_on_plane_board, nw_on_plane_board_ok, nw_on_plane_leave, nw_on_plane_pose
+extern nw_on_plane_break, nm_on_snap_planes
 extern nm_on_snap_mobs, nm_on_snap_drops, nm_on_snap_misc, nm_on_hit, nm_on_status, nm_on_mobfx
 extern nm_on_kill, nm_on_hurt, nm_on_pvp_hit, nm_on_interact
 extern nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing
 extern nx_on_faction_add, nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump
 extern nx_on_quest_complete, nx_on_quest_reward, nx_on_drop_spawn, nx_on_give
-extern nm_snap_send, nm_shift, net_boat_tick
+extern nm_snap_send, nm_shift, net_boat_tick, net_plane_tick
 extern net_host_columns_serve, net_cont_frame, net_edits_replay
-extern boat_rider, boat_riding
+extern boat_rider, boat_riding, plane_riding, plane_seat, planes_free_peer, planes_free_guests
 extern events_state_send
 ; the game
 extern world_header, world_origin_x, world_origin_z, player, surv, surv_max_health
@@ -256,7 +258,10 @@ net_handlers:                                   ; message type -> handler(edi sl
     dq nw_on_boat_dismount                      ; 33
     dq nw_on_boat_break                         ; 34
     dq nw_on_boat_pose                          ; 35
-    dq 0, 0, 0, 0                               ; 36..39
+    dq nw_on_plane_place                        ; 36
+    dq nw_on_plane_board                        ; 37
+    dq nw_on_plane_board_ok                     ; 38
+    dq nw_on_plane_leave                        ; 39
     dq nm_on_snap_mobs                          ; 40
     dq nm_on_snap_drops                         ; 41
     dq nm_on_snap_misc                          ; 42
@@ -281,6 +286,9 @@ net_handlers:                                   ; message type -> handler(edi sl
     dq nx_on_quest_reward                       ; 61
     dq nx_on_drop_spawn                         ; 62
     dq nx_on_give                               ; 63
+    dq nw_on_plane_pose                         ; 64
+    dq nw_on_plane_break                        ; 65
+    dq nm_on_snap_planes                        ; 66
 net_handlers_end:
 %if net_handlers_end - net_handlers != 8 * NUM_MT
 %error "net_handlers has one qword per message type"
@@ -1343,6 +1351,10 @@ pstate_sanitize:
     jbe     .boat
     mov     byte [rdi + PSTATE.boat], 0
 .boat:
+    cmp     byte [rdi + PSTATE.seat], PLANE_SEATS
+    jbe     .seat
+    mov     byte [rdi + PSTATE.seat], 0
+.seat:
     and     word [rdi + PSTATE.flags], 0x3FF
     ret
 
@@ -1576,7 +1588,13 @@ net_pstate_build:
     cmovae  eax, ecx
     movzx   eax, byte [inv + INVENTORY.slots + rax*4 + ITEMSTACK.id]
     mov     [rbx + PSTATE.held], al
-    mov     byte [rbx + PSTATE.pad], 0
+    xor     eax, eax                            ; sitting in a plane: seat + 1
+    cmp     dword [plane_riding], 0
+    je      .seat
+    mov     eax, [plane_seat]
+    inc     eax
+.seat:
+    mov     [rbx + PSTATE.seat], al
     LEAVE_N 2
     ret
 
@@ -1676,6 +1694,7 @@ net_tick:
     je      .out
     call    state_send
     call    net_boat_tick
+    call    net_plane_tick
     jmp     .out
 .host:
     mov     ebx, 1
@@ -2266,6 +2285,8 @@ peer_gone:
     lea     rsi, [r13 + PEER.name]
     mov     edx, NAME_MAX
     call    str_copy
+    mov     edi, ebx                            ; the plane seat it held is free again
+    call    planes_free_peer
     lea     rcx, [boat_rider]                   ; the boat it rode is free again
     lea     edx, [rbx + 1]
     xor     eax, eax
@@ -2478,6 +2499,7 @@ net_host_close:
     inc     r12d
     cmp     r12d, NET_MAX_PEERS
     jb      .drop_one
+    call    planes_free_guests                  ; and nobody sits in a plane but the host
     lea     rdi, [boat_rider]           ; nobody rides any more: the boats are free in the next session
     mov     ecx, MAX_BOATS
     xor     eax, eax

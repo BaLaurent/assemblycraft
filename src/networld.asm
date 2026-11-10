@@ -1,5 +1,5 @@
 ; networld.asm - the world on the wire (0.11 multiplayer): block edits, column requests and replies,
-; containers, TNT and boats. The host owns all of it; a guest edits a copy and asks the host.
+; containers, TNT, boats and planes. The host owns all of it; a guest edits a copy and asks the host.
 ;
 ;  * Block edits. world_set tells net_block_out (guest: BLOCK to the host; host: BLOCK to every
 ;    accepted guest, one send each). A received BLOCK goes through nw_apply_edit with net_applying
@@ -27,6 +27,10 @@
 ;    have it open every 10 frames.
 ;  * TNT and boats are asked of the host: TNT_PRIME, BOAT_PLACE / MOUNT / DISMOUNT / BREAK, and the
 ;    pose of a ridden boat (BOAT_POSE).
+;  * Planes follow the boats, with seats: PLANE_PLACE (the block a guest's ray hit), PLANE_BOARD (the host picks
+;    the seat: the pilot's first, then the gunners'; answered by PLANE_BOARD_OK, also "not yours any more"),
+;    PLANE_LEAVE, PLANE_BREAK (also a guest pilot's crash report) and the pilot's pose (PLANE_POSE, 20 Hz). The
+;    host steps the planes no guest pilots; every machine learns the seats from SNAP_PLANES (netmobs.asm).
 ; All of it runs on the main thread. Coordinates on the wire are absolute; the handlers convert with
 ; world_origin_x/z. Every handler is called as handler(edi sender slot, esi type, rdx payload,
 ; ecx length) and checks the length it needs before reading.
@@ -40,11 +44,14 @@ global net_cont_open_out, net_cont_close_out, net_cont_frame, net_cont_removed
 global net_cont_shadow, net_cont_sent, net_cont_seq, net_cont_active
 global net_tnt_prime_out
 global net_boat_place_out, net_boat_mount_out, net_boat_dismount_out, net_boat_break_out, net_boat_tick
+global net_plane_place_out, net_plane_board_out, net_plane_break_out, net_plane_leave_out, net_plane_ok_out, net_plane_tick
 global nw_on_block, nw_on_col_req, nw_on_col_data, nw_on_col_pristine
 global nw_on_cont_open, nw_on_cont_data, nw_on_cont_put, nw_on_cont_close, nw_on_cont_gone
 global nw_on_tnt_prime
 global nw_on_boat_place, nw_on_boat_mount, nw_on_boat_mount_ok, nw_on_boat_dismount
 global nw_on_boat_break, nw_on_boat_pose
+global nw_on_plane_place, nw_on_plane_board, nw_on_plane_board_ok, nw_on_plane_leave, nw_on_plane_pose, nw_on_plane_break
+global plane_pose_apply
 
 extern net_role, net_applying, net_in_world, net_peers
 extern net_out, net_send_to, net_send_big_to, net_pos_in, net_pos_out
@@ -55,6 +62,7 @@ extern cont_at, cont_create, cont_block_removed, item_max_stack
 extern fire_place, fire_track, fire_untrack
 extern tnt_prime
 extern boats, boat_riding, boat_rider, boats_place, boats_mount, boats_break
+extern planes, plane_riding, plane_seat, planes_place, planes_sit, planes_free_seat, planes_free_peer, planes_break, planes_crash
 extern player, game_mode, net_give_out
 extern app_state, inv_container, game_open_cont, game_open_screen
 extern world_unload, world_column_release
@@ -102,6 +110,9 @@ section .rodata
 align 4
 k_bound:   dd 16777216.0                ; wire coordinates must lie inside +-2^24
 k_256:     dd 256.0
+k_half:    dd 0.5
+k_coord:   dd 65536.0                  ; a plane's pose lies inside +-65536 on x and z
+k_64:      dd 64.0                     ; ... and within 64 blocks of the plane on each axis
 k_360:     dd 360.0
 k_absmask: dd 0x7FFFFFFF
 
@@ -2890,6 +2901,581 @@ nw_on_boat_place:
     mov     edx, 1
     xor     ecx, ecx
     call    net_give_out                ; no boat could be put there (the table is full, ...): the item comes back
+.out:
+    add     rsp, 48
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- planes -----------------------------------------------------------------------------------------------
+; Modelled on the boat messages. PLANE_POSE and PLANE_LEAVE carry {slot u8, air u8, pad u16, NPOS, yaw, pitch,
+; roll, speed, vy f32} (40 bytes); the seat of a guest is the host's to give (occ[] of the plane).
+
+; plane_pose_send(edi slot, esi type, edx reliable): the pose of plane `slot` goes to the host as the message `type`
+; Frame: the message at [rsp].
+plane_pose_send:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 48
+    cmp     edi, MAX_PLANES
+    jae     .out
+    mov     ebx, esi
+    mov     r12d, edx
+    mov     [rsp], edi                  ; slot, and three zero bytes
+    imul    eax, edi, PLANEENT_size
+    lea     rcx, [planes]
+    add     rcx, rax
+    mov     eax, [rcx + PLANEENT.air]
+    mov     [rsp + 1], al
+    mov     eax, [rcx + BODY.yaw]
+    mov     [rsp + 20], eax
+    mov     eax, [rcx + PLANEENT.pitch]
+    mov     [rsp + 24], eax
+    mov     eax, [rcx + PLANEENT.roll]
+    mov     [rsp + 28], eax
+    mov     eax, [rcx + PLANEENT.speed]
+    mov     [rsp + 32], eax
+    mov     eax, [rcx + BODY.vy]
+    mov     [rsp + 36], eax
+    movss   xmm0, [rcx + BODY.x]
+    movss   xmm1, [rcx + BODY.y]
+    movss   xmm2, [rcx + BODY.z]
+    lea     rdi, [rsp + 4]
+    call    net_pos_out
+    mov     edi, ebx
+    mov     rsi, rsp
+    mov     edx, 40
+    mov     ecx, r12d
+    call    net_out
+.out:
+    add     rsp, 48
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; net_plane_place_out(rdi RAYHIT*) (guest): PLANE_PLACE {the centre of the block hit as an NPOS, yaw f32}: the plane
+; goes on the top of that block, heading as the guest looks
+; Frame: the message at [rsp].
+net_plane_place_out:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 40
+    mov     rbx, rdi
+    cvtsi2ss xmm0, dword [rbx + RAYHIT.bx]
+    addss   xmm0, [k_half]
+    cvtsi2ss xmm1, dword [rbx + RAYHIT.by]
+    cvtsi2ss xmm2, dword [rbx + RAYHIT.bz]
+    addss   xmm2, [k_half]
+    lea     rdi, [rsp]
+    call    net_pos_out
+    mov     eax, [player + BODY.yaw]
+    mov     [rsp + 16], eax
+    mov     edi, MT_PLANE_PLACE
+    mov     rsi, rsp
+    mov     edx, 20
+    mov     ecx, 1
+    call    net_out
+    add     rsp, 40
+    pop     rbx
+    pop     rbp
+    ret
+
+; net_plane_board_out(edi slot) (guest): PLANE_BOARD {slot}; the host answers PLANE_BOARD_OK
+net_plane_board_out:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+    mov     [rsp], dil
+    mov     edi, MT_PLANE_BOARD
+    mov     rsi, rsp
+    mov     edx, 1
+    mov     ecx, 1
+    call    net_out
+    leave
+    ret
+
+; net_plane_break_out(edi slot, esi crash) (guest): PLANE_BREAK {slot, crash}: the host breaks the plane (crash 0)
+; or, from the plane's pilot, destroys it as a crash (crash 1)
+net_plane_break_out:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+    mov     [rsp], dil
+    mov     [rsp + 1], sil
+    mov     edi, MT_PLANE_BREAK
+    mov     rsi, rsp
+    mov     edx, 2
+    mov     ecx, 1
+    call    net_out
+    leave
+    ret
+
+; net_plane_leave_out(edi slot) (guest): PLANE_LEAVE {slot, pose}: the plane as the guest leaves it
+net_plane_leave_out:
+    mov     esi, MT_PLANE_LEAVE
+    mov     edx, 1
+    jmp     plane_pose_send
+
+; net_plane_ok_out(edi guest, esi plane, edx seat, ecx ok) (host): PLANE_BOARD_OK {plane, seat, ok} to that guest
+net_plane_ok_out:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+    mov     [rsp], sil
+    mov     [rsp + 1], dl
+    mov     [rsp + 2], cl
+    mov     esi, MT_PLANE_BOARD_OK
+    mov     rdx, rsp
+    mov     ecx, 3
+    mov     r8d, 1
+    call    net_send_to
+    leave
+    ret
+
+; net_plane_tick(): called every SNAP_STEPS steps (net_tick). A guest that flies a plane sends its pose
+; (PLANE_POSE, unreliable): the host does not simulate that plane.
+net_plane_tick:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .ret
+    cmp     dword [plane_seat], 0
+    jne     .ret                        ; a gunner flies nothing
+    mov     edi, [plane_riding]
+    dec     edi
+    cmp     edi, MAX_PLANES
+    jae     .ret                        ; nobody sits (-1 as unsigned)
+    mov     esi, MT_PLANE_POSE
+    xor     edx, edx
+    jmp     plane_pose_send
+.ret:
+    ret
+
+; plane_pose_apply(rdi payload) -> eax 1 written / 0 refused
+; payload = {slot u8, air u8, pad u16, NPOS, yaw, pitch, roll, speed, vy f32}: plane `slot` (in use) takes the
+; pose (local coordinates), its yaw brought into [0, 360). A pose with a non-finite value, |x| or |z| of 65536 or
+; more, y outside 0..255, or more than 64 blocks from where the plane is on an axis is refused.
+; Frame: [rsp] x, y, z.
+plane_pose_apply:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 32
+    mov     r12, rdi
+    movzx   eax, byte [rdi]
+    cmp     eax, MAX_PLANES
+    jae     .no
+    imul    eax, eax, PLANEENT_size
+    lea     rbx, [planes]
+    add     rbx, rax
+    cmp     dword [rbx + PLANEENT.used], 0
+    je      .no
+    lea     rdi, [r12 + 4]
+    call    net_pos_in
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    movss   xmm1, [k_coord]
+    call    abs_below
+    test    eax, eax
+    jz      .no
+    movss   xmm0, [rsp + 8]
+    movss   xmm1, [k_coord]
+    call    abs_below
+    test    eax, eax
+    jz      .no
+    movss   xmm0, [rsp + 4]
+    xorps   xmm1, xmm1
+    ucomiss xmm0, xmm1
+    jb      .no                         ; below 0 (or NaN)
+    ucomiss xmm0, [k_256]
+    jae     .no
+    xor     ecx, ecx
+.finite:                                ; yaw, pitch, roll, speed, vy
+    movss   xmm0, [r12 + 20 + rcx * 4]
+    movss   xmm1, [k_bound]
+    call    abs_below
+    test    eax, eax
+    jz      .no
+    inc     ecx
+    cmp     ecx, 5
+    jb      .finite
+    xor     ecx, ecx
+.near:                                  ; no teleport: x, y, z within 64 blocks of the plane
+    movss   xmm0, [rsp + rcx * 4]
+    subss   xmm0, [rbx + rcx * 4 + BODY.x]
+    movss   xmm1, [k_64]
+    call    abs_below
+    test    eax, eax
+    jz      .no
+    inc     ecx
+    cmp     ecx, 3
+    jb      .near
+    movss   xmm0, [r12 + 20]            ; the heading mod 360
+    movaps  xmm1, xmm0
+    divss   xmm1, [k_360]
+    roundss xmm1, xmm1, 9
+    mulss   xmm1, [k_360]
+    subss   xmm0, xmm1
+    ucomiss xmm0, [k_360]
+    jb      .yaw_ok
+    xorps   xmm0, xmm0
+.yaw_ok:
+    movss   [rbx + BODY.yaw], xmm0
+    mov     eax, [rsp]
+    mov     [rbx + BODY.x], eax
+    mov     eax, [rsp + 4]
+    mov     [rbx + BODY.y], eax
+    mov     eax, [rsp + 8]
+    mov     [rbx + BODY.z], eax
+    mov     eax, [r12 + 24]
+    mov     [rbx + PLANEENT.pitch], eax
+    mov     eax, [r12 + 28]
+    mov     [rbx + PLANEENT.roll], eax
+    mov     eax, [r12 + 32]
+    mov     [rbx + PLANEENT.speed], eax
+    mov     eax, [r12 + 36]
+    mov     [rbx + BODY.vy], eax
+    movzx   eax, byte [r12 + 1]
+    and     eax, 1
+    mov     [rbx + PLANEENT.air], eax
+    mov     eax, 1
+    jmp     .out
+.no:
+    xor     eax, eax
+.out:
+    add     rsp, 32
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; plane_of_pilot(edi from, rdx payload) -> rax the PLANEENT of plane payload[0] when it is in use and that guest
+; pilots it, else 0 (host)
+plane_of_pilot:
+    movzx   eax, byte [rdx]
+    cmp     eax, MAX_PLANES
+    jae     .no
+    imul    eax, eax, PLANEENT_size
+    lea     rcx, [planes]
+    add     rax, rcx
+    inc     edi
+    cmp     [rax + PLANEENT.occ], edi
+    jne     .no
+    cmp     dword [rax + PLANEENT.used], 0
+    jne     .ret
+.no:
+    xor     eax, eax
+.ret:
+    ret
+
+; nw_on_plane_pose(edi from, esi type, rdx payload, ecx len): PLANE_POSE. Host: the plane that guest pilots takes
+; the pose (the host does not simulate it); anything else is dropped (an old pose after he left).
+nw_on_plane_pose:
+    sub     rsp, 8
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .ret
+    cmp     ecx, 40
+    jb      .ret
+    mov     [rsp], rdx
+    call    peer_ok
+    test    eax, eax
+    jz      .ret
+    mov     rdx, [rsp]
+    call    plane_of_pilot              ; (edi = from, still)
+    test    rax, rax
+    jz      .ret
+    mov     rdi, [rsp]
+    call    plane_pose_apply
+.ret:
+    add     rsp, 8
+    ret
+
+; nw_on_plane_leave(edi from, esi type, rdx payload, ecx len): PLANE_LEAVE {slot, pose}. Host: that guest's seat
+; in the plane is free; when it was the pilot's, the plane takes the pose he left it in and is pilotless: the
+; host steps it from now on.
+; rbx = the guest, r12 = payload, r13 = the plane.
+nw_on_plane_leave:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .out
+    cmp     ecx, 40
+    jb      .out
+    mov     ebx, edi
+    mov     r12, rdx
+    call    peer_ok
+    test    eax, eax
+    jz      .out
+    movzx   eax, byte [r12]
+    cmp     eax, MAX_PLANES
+    jae     .out
+    imul    eax, eax, PLANEENT_size
+    lea     r13, [planes]
+    add     r13, rax
+    cmp     dword [r13 + PLANEENT.used], 0
+    je      .out
+    lea     edx, [rbx + 1]
+    xor     ecx, ecx
+.find:
+    cmp     [r13 + rcx * 4 + PLANEENT.occ], edx
+    je      .found
+    inc     ecx
+    cmp     ecx, PLANE_SEATS
+    jb      .find
+    jmp     .out                        ; he does not sit in it
+.found:
+    mov     dword [r13 + rcx * 4 + PLANEENT.occ], 0
+    test    ecx, ecx
+    jnz     .out
+    mov     rdi, r12
+    call    plane_pose_apply
+    mov     dword [r13 + PLANEENT.throttle], 0
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; nw_on_plane_board(edi from, esi type, rdx payload, ecx len): PLANE_BOARD {slot}. Host: answers PLANE_BOARD_OK
+; {slot, seat, ok}. The guest gets the first free seat of a plane in use (the pilot's, then the gunners'), and lets
+; go of the seat he held before; he who sits in it already is told yes again, in the seat he has (a double
+; click); a full plane refuses.
+; rbx = the guest, r12d = the plane's slot, r13 = the plane.
+nw_on_plane_board:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .out
+    cmp     ecx, 1
+    jb      .out
+    mov     ebx, edi
+    movzx   r12d, byte [rdx]
+    call    peer_ok
+    test    eax, eax
+    jz      .out
+    xor     ecx, ecx                    ; seat 0, refused
+    xor     edx, edx
+    cmp     r12d, MAX_PLANES
+    jae     .answer
+    imul    eax, r12d, PLANEENT_size
+    lea     r13, [planes]
+    add     r13, rax
+    cmp     dword [r13 + PLANEENT.used], 0
+    je      .answer
+    lea     edx, [rbx + 1]
+    xor     ecx, ecx
+.have:
+    cmp     [r13 + rcx * 4 + PLANEENT.occ], edx
+    je      .yes
+    inc     ecx
+    cmp     ecx, PLANE_SEATS
+    jb      .have
+    mov     edi, ebx
+    call    planes_free_peer            ; the seat he held before is free
+    mov     rdi, r13
+    call    planes_free_seat
+    xor     ecx, ecx
+    xor     edx, edx
+    test    eax, eax
+    js      .answer
+    mov     ecx, eax
+    lea     edx, [rbx + 1]
+    mov     [r13 + rcx * 4 + PLANEENT.occ], edx
+.yes:
+    mov     edx, 1
+.answer:
+    mov     edi, ebx                    ; ecx = the seat, edx = ok
+    mov     esi, r12d
+    xchg    edx, ecx
+    call    net_plane_ok_out
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; nw_on_plane_board_ok(edi from, esi type, rdx payload, ecx len): PLANE_BOARD_OK {slot, seat, ok}. Guest: ok sits
+; the player in that seat of that plane (planes_sit). Not ok while the player sits in that very plane means the
+; host took it away (it was broken or crashed): he is let go where he sits.
+nw_on_plane_board_ok:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .out
+    test    edi, edi
+    jnz     .out
+    cmp     ecx, 3
+    jb      .out
+    movzx   ebx, byte [rdx]
+    cmp     ebx, MAX_PLANES
+    jae     .out
+    cmp     byte [rdx + 2], 0
+    je      .refused
+    movzx   esi, byte [rdx + 1]
+    cmp     esi, PLANE_SEATS
+    jae     .out
+    mov     edi, ebx
+    call    planes_sit
+    jmp     .out
+.refused:
+    lea     eax, [rbx + 1]
+    cmp     eax, [plane_riding]
+    jne     .out
+    mov     dword [plane_riding], 0
+.out:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; nw_on_plane_break(edi from, esi type, rdx payload, ecx len): PLANE_BREAK {slot, crash}. Host: the plane is
+; broken (planes_break: the item drops, those in it are let go); with crash, from its pilot, it is destroyed as a
+; crash (planes_crash): the others in it take the damage, the pilot took his own.
+; rbx = the guest, r12d = the plane's slot.
+nw_on_plane_break:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .out
+    cmp     ecx, 2
+    jb      .out
+    mov     ebx, edi
+    movzx   r12d, byte [rdx]
+    movzx   eax, byte [rdx + 1]
+    mov     [rsp], eax
+    call    peer_ok
+    test    eax, eax
+    jz      .out
+    mov     edi, r12d
+    cmp     dword [rsp], 0
+    je      .break
+    mov     [rsp + 4], r12b             ; the payload plane_of_pilot reads
+    lea     rdx, [rsp + 4]
+    mov     edi, ebx
+    call    plane_of_pilot
+    test    rax, rax
+    jz      .out
+    mov     dword [rax + PLANEENT.occ], 0
+    mov     edi, r12d
+    call    planes_crash
+    jmp     .out
+.break:
+    call    planes_break
+.out:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; nw_on_plane_place(edi from, esi type, rdx payload, ecx len): PLANE_PLACE {NPOS of a block's centre, yaw f32}.
+; Host: planes_place on the top of that block with the guest's heading (planes_place reads the host's own yaw: it
+; is swapped for the call). A non-finite or out of range cell or heading is dropped. In Survival a plane that
+; could not be put there (the table is full, no room) comes back to the guest as an item (GIVE).
+; rbx = sender, r12 = payload. Frame: [rsp] RAYHIT (24), [rsp + 24] the host's yaw, [rsp + 28] net_applying,
+; [rsp + 32] x, y, z of the cell.
+nw_on_plane_place:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 48
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .out
+    cmp     ecx, 20
+    jb      .out
+    mov     ebx, edi
+    mov     r12, rdx
+    call    peer_ok
+    test    eax, eax
+    jz      .out
+    mov     rdi, r12
+    call    net_pos_in
+    movss   [rsp + 32], xmm0
+    movss   [rsp + 36], xmm1
+    movss   [rsp + 40], xmm2
+    movss   xmm1, [k_coord]
+    call    abs_below
+    test    eax, eax
+    jz      .out
+    movss   xmm0, [rsp + 40]
+    movss   xmm1, [k_coord]
+    call    abs_below
+    test    eax, eax
+    jz      .out
+    movss   xmm0, [rsp + 36]
+    xorps   xmm1, xmm1
+    ucomiss xmm0, xmm1
+    jb      .out                        ; below 0 (or NaN)
+    ucomiss xmm0, [k_256]
+    jae     .out
+    movss   xmm0, [rsp + 32]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    mov     [rsp + RAYHIT.bx], eax
+    mov     [rsp + RAYHIT.px], eax
+    movss   xmm0, [rsp + 36]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    mov     [rsp + RAYHIT.by], eax
+    inc     eax
+    mov     [rsp + RAYHIT.py], eax
+    movss   xmm0, [rsp + 40]
+    roundss xmm0, xmm0, 9
+    cvttss2si eax, xmm0
+    mov     [rsp + RAYHIT.bz], eax
+    mov     [rsp + RAYHIT.pz], eax
+    mov     edx, [r12 + 16]             ; the heading
+    movd    xmm0, edx
+    movss   xmm1, [k_bound]
+    call    abs_below                   ; (keeps edx)
+    xor     ecx, ecx
+    test    eax, eax
+    cmovz   edx, ecx                    ; not a number: it heads north
+    mov     eax, [player + BODY.yaw]
+    mov     [rsp + 24], eax
+    mov     [player + BODY.yaw], edx
+    movzx   eax, byte [net_applying]    ; a guest's request, not the host's own click: no banner
+    mov     [rsp + 28], eax
+    mov     byte [net_applying], 1
+    mov     rdi, rsp
+    call    planes_place
+    mov     r12d, eax
+    mov     eax, [rsp + 28]
+    mov     [net_applying], al
+    mov     eax, [rsp + 24]
+    mov     [player + BODY.yaw], eax
+    test    r12d, r12d
+    jnz     .out
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .out                        ; (in Creative the guest's plane item was not used up)
+    mov     edi, ebx
+    mov     esi, PLANE
+    mov     edx, 1
+    xor     ecx, ecx
+    call    net_give_out                ; no plane could be put there: the item comes back
 .out:
     add     rsp, 48
     pop     r12

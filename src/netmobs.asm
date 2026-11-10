@@ -16,7 +16,7 @@ global nm_snap_send, nm_guest_step, nm_shift
 global net_nearest_target, net_slot_ok, nm_peer_ok, nm_ready_count, nm_centre
 global net_mob_hit_player, net_hurt_send, net_hurt_send_direct, net_kill_credit
 global net_players_raycast, net_mob_damage_out, net_status_out, net_mobfx_out, net_interact_out
-global nm_on_snap_mobs, nm_on_snap_drops, nm_on_snap_misc
+global nm_on_snap_planes, nm_on_snap_misc, nm_on_snap_mobs, nm_on_snap_drops, nm_plane_enc, nm_plane_dec
 global nm_on_hit, nm_on_status, nm_on_mobfx, nm_on_kill, nm_on_hurt, nm_on_pvp_hit, nm_on_interact
 
 extern net_role, net_self, net_pvp, net_applying, net_hit_peer, net_peers
@@ -29,6 +29,7 @@ extern mob_set_stun, mob_set_mark, mob_launch, mob_tgt_slot, ray_aabb
 extern status_apply_ex, rpg_on_mob_killed, dmgnum_spawn, folk_free_captive, mob_stunned_text
 extern events_accept
 extern drops, boats, boat_riding, primed, body_init, gear_rarity, boat_rider
+extern planes, plane_tgt, plane_riding, plane_seat, planes_mirror_step
 
 %define NM_MOBS_PER_MSG  24             ; MOBREC records per SNAP_MOBS (16 + 24 x 44 = 1072 <= NET_MSG_MAX)
 %define NM_DROPS_PER_MSG 45             ; DROPREC records per SNAP_DROPS
@@ -100,6 +101,8 @@ c_pl_hw:    dd 0.3                      ; a player's box: 0.6 wide, 1.8 high
 c_pl_h:     dd 1.8
 c_boat_hw:  dd 0.6                      ; a boat's box (boats.asm)
 c_boat_h:   dd 0.5
+c_plane_hw: dd 1.5                      ; a plane's box (planes.asm)
+c_plane_h:  dd 1.2
 
 section .bss
 alignb 16
@@ -1564,6 +1567,8 @@ nm_snap_send:
     lea     rdx, [nm_buf]
     xor     r8d, r8d
     call    net_send_to
+    mov     edi, ebx
+    call    snap_planes_send            ; the planes: they fly farther than the 96 blocks the rest is sent within
 .ret:
     add     rsp, 24
     pop     r15
@@ -2293,6 +2298,7 @@ nm_guest_step:
     inc     r12d
     cmp     r12d, MAX_BOATS
     jb      .boat
+    call    planes_mirror_step          ; and the plane copies (not the one he flies)
     add     rsp, 16
     pop     r12
     pop     rbx
@@ -2340,4 +2346,233 @@ nm_shift:
     add     rax, 16
     dec     ecx
     jnz     .boat
+    ret
+
+; ==== planes ==============================================================================================================
+
+; nm_plane_enc(rdi PLANEREC*, rsi plane, edx slot): the plane as one record of SNAP_PLANES: its slot, who sits in
+; which seat (peer slot + 1), the position, heading, pitch, bank, speed and vertical speed
+nm_plane_enc:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12, rsi
+    mov     [rbx + PLANEREC.slot], dl
+    mov     eax, [r12 + PLANEENT.air]
+    mov     [rbx + PLANEREC.air], al
+    xor     ecx, ecx
+.occ:
+    mov     eax, [r12 + rcx * 4 + PLANEENT.occ]
+    mov     [rbx + rcx + PLANEREC.occ], al
+    inc     ecx
+    cmp     ecx, PLANE_SEATS
+    jb      .occ
+    mov     word [rbx + PLANEREC.pad], 0
+    mov     eax, [r12 + BODY.yaw]
+    mov     [rbx + PLANEREC.yaw], eax
+    mov     eax, [r12 + PLANEENT.pitch]
+    mov     [rbx + PLANEREC.pitch], eax
+    mov     eax, [r12 + PLANEENT.roll]
+    mov     [rbx + PLANEREC.roll], eax
+    mov     eax, [r12 + PLANEENT.speed]
+    mov     [rbx + PLANEREC.speed], eax
+    mov     eax, [r12 + BODY.vy]
+    mov     [rbx + PLANEREC.vy], eax
+    lea     rdi, [rbx + PLANEREC.pos]
+    movss   xmm0, [r12 + BODY.x]
+    movss   xmm1, [r12 + BODY.y]
+    movss   xmm2, [r12 + BODY.z]
+    call    net_pos_out
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; nm_plane_dec(rdi PLANEREC*): a guest applies one record: the plane is made when its slot holds none, the seats
+; are the host's; the plane the guest flies keeps his own pose, every other copy takes the speed, vertical speed,
+; pitch and bank and the position and heading as the targets it glides to (planes_mirror_step; a new copy starts
+; on them)
+; rbx = the plane, r12 = the record, r13d = its slot; frame: [rsp] 1 for a new copy
+nm_plane_dec:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     r12, rdi
+    movzx   r13d, byte [r12 + PLANEREC.slot]
+    cmp     r13d, MAX_PLANES
+    jae     .out
+    imul    eax, r13d, PLANEENT_size
+    lea     rbx, [planes]
+    add     rbx, rax
+    xor     eax, eax
+    cmp     dword [rbx + PLANEENT.used], 0
+    sete    al
+    mov     [rsp], eax
+    test    eax, eax
+    jz      .have
+    mov     rdi, rbx
+    movss   xmm0, [c_plane_hw]
+    movss   xmm1, [c_plane_h]
+    xorps   xmm2, xmm2
+    call    body_init
+    mov     dword [rbx + PLANEENT.used], 1
+    mov     dword [rbx + PLANEENT.throttle], 0
+.have:
+    xor     ecx, ecx
+.occ:
+    movzx   eax, byte [r12 + rcx + PLANEREC.occ]
+    mov     [rbx + rcx * 4 + PLANEENT.occ], eax
+    inc     ecx
+    cmp     ecx, PLANE_SEATS
+    jb      .occ
+    lea     eax, [r13 + 1]
+    cmp     eax, [plane_riding]
+    jne     .mirror
+    cmp     dword [plane_seat], 0
+    je      .out                        ; the one he flies: his own pose
+.mirror:
+    movzx   eax, byte [r12 + PLANEREC.air]
+    mov     [rbx + PLANEENT.air], eax
+    mov     eax, [r12 + PLANEREC.pitch]
+    mov     [rbx + PLANEENT.pitch], eax
+    mov     eax, [r12 + PLANEREC.roll]
+    mov     [rbx + PLANEENT.roll], eax
+    mov     eax, [r12 + PLANEREC.speed]
+    mov     [rbx + PLANEENT.speed], eax
+    mov     eax, [r12 + PLANEREC.vy]
+    mov     [rbx + BODY.vy], eax
+    lea     rdi, [r12 + PLANEREC.pos]
+    call    net_pos_in
+    mov     eax, r13d
+    shl     eax, 4
+    lea     rcx, [plane_tgt]
+    add     rcx, rax
+    movss   [rcx], xmm0
+    movss   [rcx + 4], xmm1
+    movss   [rcx + 8], xmm2
+    mov     eax, [r12 + PLANEREC.yaw]
+    mov     [rcx + 12], eax
+    cmp     dword [rsp], 0
+    je      .out
+    movss   [rbx + BODY.x], xmm0
+    movss   [rbx + BODY.y], xmm1
+    movss   [rbx + BODY.z], xmm2
+    mov     [rbx + BODY.yaw], eax
+.out:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; snap_planes_send(edi slot): the SNAP_PLANES message for the guest in that slot: {count u8, pad[3], PLANEREC x
+; count}, every plane in use whatever the distance (planes cover more ground than the 96 blocks the other records
+; are sent within); a guest drops the planes it does not list. At most 4 x 44 + 4 bytes.
+; rbx = the guest, r12 = the plane, r13d = slot counter, r14d = records
+snap_planes_send:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    mov     ebx, edi
+    lea     r12, [planes]
+    xor     r13d, r13d
+    xor     r14d, r14d
+.plane:
+    cmp     dword [r12 + PLANEENT.used], 0
+    je      .next
+    imul    eax, r14d, PLANEREC_size
+    lea     rdi, [nm_buf + 4]
+    add     rdi, rax
+    mov     rsi, r12
+    mov     edx, r13d
+    call    nm_plane_enc
+    inc     r14d
+.next:
+    add     r12, PLANEENT_size
+    inc     r13d
+    cmp     r13d, MAX_PLANES
+    jb      .plane
+    mov     [nm_buf], r14d              ; the count and three zero bytes
+    imul    ecx, r14d, PLANEREC_size
+    add     ecx, 4
+    mov     edi, ebx
+    mov     esi, MT_SNAP_PLANES
+    lea     rdx, [nm_buf]
+    xor     r8d, r8d
+    call    net_send_to
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; nm_on_snap_planes(edi from, esi type, rdx payload, ecx len): SNAP_PLANES, host -> guest: the planes of the
+; records are written (nm_plane_dec); a plane the message does not list is gone (but the one the guest sits in,
+; which the host tells him about with PLANE_BOARD_OK)
+; rbx = payload, r12d = records left, r13 = the record being read; frame: [rsp] the mask of the slots listed
+nm_on_snap_planes:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .ret0
+    cmp     ecx, 4
+    jb      .ret0
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     rbx, rdx
+    movzx   r12d, byte [rbx]
+    cmp     r12d, MAX_PLANES
+    ja      .done
+    imul    eax, r12d, PLANEREC_size
+    add     eax, 4
+    cmp     eax, ecx
+    ja      .done
+    lea     r13, [rbx + 4]
+    mov     dword [rsp], 0
+.rec:
+    test    r12d, r12d
+    jz      .gone
+    dec     r12d
+    movzx   eax, byte [r13 + PLANEREC.slot]
+    cmp     eax, MAX_PLANES
+    jae     .skip
+    bts     dword [rsp], eax
+    mov     rdi, r13
+    call    nm_plane_dec
+.skip:
+    add     r13, PLANEREC_size
+    jmp     .rec
+.gone:
+    lea     rdx, [planes]
+    xor     ecx, ecx
+.slot:
+    bt      dword [rsp], ecx
+    jc      .keep
+    lea     eax, [rcx + 1]
+    cmp     eax, [plane_riding]
+    je      .keep
+    mov     dword [rdx + PLANEENT.used], 0
+.keep:
+    add     rdx, PLANEENT_size
+    inc     ecx
+    cmp     ecx, MAX_PLANES
+    jb      .slot
+.done:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+.ret0:
     ret

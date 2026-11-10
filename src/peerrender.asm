@@ -108,6 +108,10 @@ peers_render:
     call    sincos_deg
     mulss   xmm0, [f_swing]
     movss   [rsp], xmm0                 ; swing = sin(walk) * 30 degrees
+    cmp     byte [r12 + PEER.ps + PSTATE.seat], 0
+    je      .swing_set
+    mov     dword [rsp], 0              ; sitting in a plane: the limbs hang still
+.swing_set:
     lea     rax, [rbx + rbx*2]
     lea     rcx, [peer_colors]
     lea     rcx, [rcx + rax*4]
