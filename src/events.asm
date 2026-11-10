@@ -11,7 +11,7 @@ default rel
 global events_reset, events_step, events_shift, events_accept, events_offer_kind, events_on_ev
 global events_net_apply, events_state_send, events_spawn_camp, events_spawn_caravan
 global events_force_threat, events_skip, events_finish, events_status, ev_wave_size
-global ev_hud, ev_kind_waves, ev_kind_rep
+global ev_hud, ev_kind_waves, ev_kind_rep, ev_loot, ev_gear
 
 extern mobs, player, game_time, game_mode, settings, rpg_state, world_origin_x, world_origin_z
 extern net_role, nm_ready_count, nm_centre, net_event_out, net_out, net_send_to
@@ -2110,17 +2110,16 @@ ev_item_roll:
     dec     ecx
     jnz     .walk
 .hit:
-    movzx   edi, word [r13 + 4]
-    movzx   eax, word [r13 + 6]
-    movzx   ecx, word [r13 + 2]
+    movzx   ecx, word [r13 + 4]         ; min
+    movzx   eax, word [r13 + 6]         ; max
     mov     r12d, ecx
     sub     eax, ecx
     inc     eax
     mov     edi, eax
     call    ev_rnd
     add     eax, r12d
-    mov     esi, eax
-    movzx   edi, word [r13 + 4]
+    mov     esi, eax                    ; count = min + rnd(max - min + 1)
+    movzx   edi, word [r13 + 2]         ; item
     xor     edx, edx
     movss   xmm0, [rbx]
     movss   xmm1, [rbx + 4]

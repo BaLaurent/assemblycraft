@@ -10,7 +10,7 @@ global test_events_wave_size, test_events_camp_flow, test_events_night_wave, tes
 global test_events_abandon, test_events_monster_strike, test_events_caravan_flow, test_events_threat_flags
 global test_events_net
 
-extern mobs, mobs_clear, mobs_shift, mob_spawn, drops, drops_clear, arrows_clear
+extern mobs, mobs_clear, mobs_shift, mob_spawn, drops, drops_clear, arrows_clear, ev_loot, ev_gear
 extern player, body_init, rng_seed, world_clear, world_set, world_origin_x, world_origin_z
 extern game_mode, game_time, settings, surv, survival_reset, inv_clear, rpg_reset, rpg_state
 extern combat_reset, combat_hit_flags, world_header, banner_text, site_count, gen_seed, worldgen_set_seed
@@ -434,6 +434,75 @@ drop_kinds:
     jnz     .l
     ret
 
+; loot_ok(edi faction) -> eax 1 when every drop on the ground is a gold coin, one of the faction's two gear items (count 1) or the
+; item of one of its ev_loot rows with a count within the row's min..max, and there is at least one drop of each of the three
+; kinds (leaf but for rbx)
+loot_ok:
+    push    rbx
+    xor     r8d, r8d                    ; coins
+    xor     r9d, r9d                    ; gear
+    xor     r10d, r10d                  ; loot rows
+    mov     eax, edi
+    lea     rdx, [ev_gear]
+    lea     rdx, [rdx + rax * 4]        ; its two gear items
+    shl     eax, 5
+    lea     rsi, [ev_loot]
+    add     rsi, rax                    ; its four rows
+    lea     rcx, [drops]
+    mov     r11d, MAX_DROPS
+.l:
+    movzx   eax, byte [rcx + DROP.id]
+    test    eax, eax
+    jz      .n
+    cmp     eax, GOLD_COIN
+    jne     .not_coin
+    inc     r8d
+    jmp     .n
+.not_coin:
+    movzx   ebx, byte [rcx + DROP.count]
+    cmp     ax, [rdx]
+    je      .gear
+    cmp     ax, [rdx + 2]
+    jne     .rows
+.gear:
+    cmp     ebx, 1
+    jne     .bad
+    inc     r9d
+    jmp     .n
+.rows:
+    xor     edi, edi
+.row:
+    cmp     ax, [rsi + rdi * 8 + 2]
+    jne     .next_row
+    cmp     bx, [rsi + rdi * 8 + 4]
+    jb      .bad
+    cmp     bx, [rsi + rdi * 8 + 6]
+    ja      .bad
+    inc     r10d
+    jmp     .n
+.next_row:
+    inc     edi
+    cmp     edi, 4
+    jb      .row
+    jmp     .bad
+.n:
+    add     rcx, DROP_size
+    dec     r11d
+    jnz     .l
+    test    r8d, r8d
+    jz      .bad
+    test    r9d, r9d
+    jz      .bad
+    test    r10d, r10d
+    jz      .bad
+    mov     eax, 1
+    pop     rbx
+    ret
+.bad:
+    xor     eax, eax
+    pop     rbx
+    ret
+
 ; camp_up() -> eax the leader's slot of a camp that was offered and accepted, or -1. The event is stepped once (OFFERED
 ; seen), then the leader accepts: COUNTDOWN with its 600 steps still to run
 camp_up:
@@ -717,6 +786,10 @@ test_events_camp_flow:
     call    drop_kinds
     cmp     eax, 3
     jb      .fail
+    mov     edi, r12d
+    call    loot_ok                     ; every drop is a coin, a gear item or a loot row's item in range, one of each kind
+    test    eax, eax
+    jz      .fail
     mov     eax, [rpg_state + RPGSAVE.xp]
     movzx   ecx, byte [rpg_state + RPGSAVE.level]
     cmp     eax, [t_xp]
