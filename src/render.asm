@@ -13,7 +13,7 @@
 default rel
 
 global render_init, render_update_chunks, render_column_freed, render_world
-global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, frustum_test, tex_id, atlas
+global render_box, render_box16, render_box_px, render_box_px16, frustum_setup, frustum_test, tex_id, atlas, face_corners
 
 extern texgen_build, mesh_chunk, mesh_scratch, mesh_face_uv
 extern game_target, game_has_target, game_time, game_break_progress
@@ -33,7 +33,10 @@ d_far:      dq 300.0
 d_ns:       dq 1.0e9                     ; seconds -> nanoseconds
 align 4
 f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units (u, 256 px)
-f_texscale_v: dd 0.0001220703125        ; 1/8192: v over the 512 px atlas height
+%if ATLAS_H != 4096
+%error "f_texscale_v assumes ATLAS_H 4096"
+%endif
+f_texscale_v: dd 0.0000152587890625     ; 1/65536: v over the 4096 px atlas height
 f_one:      dd 1.0
 f_aim_zoom: dd 0.3                     ; fully aimed the FOV narrows by 30 %
 f_two:      dd 2.0

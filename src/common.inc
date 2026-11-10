@@ -286,9 +286,103 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_CHUNK_VERTS    196608       ; cubes need <= 98304; shaped blocks use the rest
 %define VERTEX_SIZE        16
 %define ATLAS_W            256
-%define ATLAS_H            512
+%define ATLAS_H            4096
 %define TILE_PX            16
-%define TEX_UNITS_PER_TILE 256          ; texcoords in 1/16 px; atlas = 4096 x 8192 units
+%define TEX_UNITS_PER_TILE 256          ; texcoords in 1/16 px; atlas = 4096 x 65536 units
+
+; ---- 0.13 looks: item icons, model skins ------------------------------------------------------------
+%define ICON32_Y0      512              ; atlas rows 512..1023: item icon k = id - FIRST_ITEM, 32x32,
+%define ICON32_PX      32               ; at x (k & 7) * 32, y ICON32_Y0 + (k >> 3) * 32
+%define ICON32_COUNT   (NUM_ITEMS - FIRST_ITEM)
+%define SKIN_Y0        1024             ; atlas rows 1024..ATLAS_H-1: model skins (skin_build packs them)
+; skin model records: SKREC_SIZE bytes each, a bone or a part, the stream ends with SKR_END
+%define SKREC_SIZE     20
+%define SKR_END        0
+%define SKR_BONE       1
+%define SKR_PART       2
+%define SKR_TYPE       0                ; byte SKR_*
+%define SKR_KIND       1                ; bone: byte BK_*
+%define SKR_PIVY       4                ; bone: int16 pivot y, texels
+%define SKR_PIVZ       6                ; bone: int16 pivot z
+%define SKR_SWING      8                ; bone: float, limb angle = swing * walk swing degrees
+%define SKR_FLAGS      1                ; part: byte SKPF_*
+%define SKR_GROW       2                ; part: byte, inflation in 1/8 texel per side (geometry only)
+%define SKR_AS         3                ; part: byte, index of the part whose size and skin it shares
+%define SKAS_NONE      255              ;       (SKAS_NONE: its own)
+%define SKR_X0         4                ; part: int16 low corner, texels, model space
+%define SKR_Y0         6
+%define SKR_Z0         8
+%define SKR_W          10               ; part: byte sizes, texels
+%define SKR_H          11
+%define SKR_D          12
+%define SKR_U          14               ; part: uint16 unwrap origin, atlas texels (skin_build writes)
+%define SKR_V          16
+%define BK_BODY        0                ; bone kinds: the rigid root
+%define BK_HEAD        1
+%define BK_LLEG        2
+%define BK_RLEG        3
+%define BK_LARM        4
+%define BK_RARM        5                ; carries the held item at SKMODEL.hand
+%define BK_LIMB        6                ; any other swinging limb (quadruped legs, spider legs)
+%define SKPF_ACCENT    1                ; part also multiplied by SKPOSE.accent
+%define SKPF_CUTOUT    2                ; part may hold transparent texels (hair, hoods, frames)
+%define SKF_RIGHT      0                ; faces, box_draw order: +X = the model's right
+%define SKF_LEFT       1                ; -X
+%define SKF_TOP        2                ; +Y
+%define SKF_BOTTOM     3                ; -Y
+%define SKF_BACK       4                ; +Z
+%define SKF_FRONT      5                ; -Z (models face -Z)
+%define SKM_RIGHT      1
+%define SKM_LEFT       2
+%define SKM_TOP        4
+%define SKM_BOTTOM     8
+%define SKM_BACK       16
+%define SKM_FRONT      32
+%define SKM_SIDES      51               ; right, left, back, front
+%define SKM_ALL        63
+; paint ops: SKOP_SIZE bytes each, the list ends with SKO_END
+%define SKOP_SIZE      24
+%define SKO_END        0
+%define SKO_FILL       1
+%define SKO_RECT       2
+%define SKO_BMP        3
+%define SKO_GRAD       4
+%define SKOP_OP        0                ; byte SKO_*
+%define SKOP_PART      1                ; byte part index
+%define SKOP_FACES     2                ; byte: SKM_* mask (FILL, GRAD) or SKF_* face (RECT, BMP)
+%define SKOP_NOISE     3                ; byte noise mask: m = 256 - (hash & noise)
+%define SKOP_X         4                ; bytes: face-local rect (RECT) or position (BMP)
+%define SKOP_Y         5
+%define SKOP_W         6
+%define SKOP_H         7
+%define SKOP_COLOUR    8                ; dword RGBO (FILL, RECT)
+%define SKOP_TOP       8                ; GRAD: uint16 multiplier at the top row, 256 = unchanged
+%define SKOP_BOTTOM    10               ; GRAD: uint16 multiplier at the bottom row
+%define SKOP_BMP       16               ; qword SKBMP* (BMP)
+%define SKP_ARM_UP     1                ; SKPOSE.flags: right arm raised by .arm_deg
+%define SKP_SEATED     2                ; only the BK_BODY and BK_HEAD bones
+%define SKP_ARM_ONLY   4                ; only the BK_RARM bone, unrotated, no held item
+struc SKMODEL
+    .recs:  resq 1                      ; bone/part record stream
+    .ops:   resq 1                      ; paint op list
+    .tpb:   resw 1                      ; texels per block: 32 characters and vehicles, 64 guns
+    .held:  resw 1                      ; default held item id, 0 none
+    .hand:  resw 3                      ; held item origin (x, y, z), texels, in the BK_RARM bone
+    .pad:   resw 1
+endstruc                                ; 28
+struc SKPOSE
+    .flags:   resd 1                    ; SKP_*
+    .arm_deg: resd 1                    ; float, the extra right-arm angle with SKP_ARM_UP
+    .held:    resd 1                    ; item id in the right hand; 0 = SKMODEL.held
+    .accent:  resd 3                    ; float rgb for SKPF_ACCENT parts
+endstruc                                ; 24
+struc SKBMP
+    .pal:   resq 1                      ; palette: 8-byte PAL records, a zero qword ends it
+    .rows:  resq 1                      ; w * h chars, row-major; '.' and chars missing from
+    .w:     resb 1                      ; the palette are skipped (left as they are)
+    .h:     resb 1
+    .pad:   resb 6
+endstruc                                ; 24
 
 ; atlas tiles beyond the 0.1 block tiles 0..12
 %define TILE_TABLE_TOP     13

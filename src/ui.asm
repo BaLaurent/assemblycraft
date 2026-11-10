@@ -30,7 +30,10 @@ d_mone:      dq -1.0
 d_two:       dq 2.0
 align 4
 f_texscale:  dd 0.000244140625          ; 1/4096: texcoords are 1/16 px units (u, 256 px)
-f_texscale_v: dd 0.0001220703125        ; 1/8192: v over the 512 px atlas height
+%if ATLAS_H != 4096
+%error "f_texscale_v assumes ATLAS_H 4096"
+%endif
+f_texscale_v: dd 0.0000152587890625     ; 1/65536: v over the 4096 px atlas height
 f_one:       dd 1.0
 f_click_vol: dd 0.6
 s_caret:     db "_", 0

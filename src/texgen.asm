@@ -41,16 +41,12 @@
 ;   rdi  = current pixel pointer (set by TILE_BEGIN)
 ;   r8d  = per-pixel multiplier m
 %include "common.inc"
+%include "art.inc"
 default rel
 
 global texgen_build
 
 extern font8x8
-
-; packed colour: R | G<<8 | B<<16 (little-endian dword = RGBA bytes, A in bits 24..31)
-%define RGB(r, g, b) ((r) | ((g) << 8) | ((b) << 16))
-; opaque packed colour for the icon tiles (alpha 255)
-%define RGBO(r, g, b) ((r) | ((g) << 8) | ((b) << 16) | 0xFF000000)
 
 section .rodata
 half:   dd 0.5
@@ -2033,17 +2029,6 @@ apple_pts:
     PT 10, 1, RGBO(60,140,40)
     PT 0xFF, 0, 0
 
-; HUD palettes: db char, 0, 0, 0 ; dd colour; char 0 ends
-%macro PAL 4
-    db %1, 0, 0, 0
-    dd RGBO(%2, %3, %4)
-%endmacro
-; GBMP palette entry: PALN char, r, g, b, noise mask [, alpha 255]; db char, mask, 0, 0 ; dd RGBA;
-; char 0 ends the palette
-%macro PALN 5-6 255
-    db %1, %5, 0, 0
-    dd (%2) | ((%3) << 8) | ((%4) << 16) | ((%6) << 24)
-%endmacro
 ; 0.10.2: the 9x9 HUD icons keep their layout; the palette is the grimoire's (ink outline RGB(58,38,24),
 ; the 'd' shade on the lower right is new)
 heart_pal_full:
