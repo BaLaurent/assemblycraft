@@ -106,10 +106,13 @@ peers_render:
     movss   [rsp + 4], xmm0
     movss   [rsp + 8], xmm1
     movss   [rsp + 12], xmm2
-    xor     eax, eax                    ; the pose: the right arm raised while the player attacks,
+    xor     eax, eax                    ; the pose: the right arm raised while the player attacks, or seated
     mov     ecx, SKP_ARM_UP
     test    r13d, PS_SWING
     cmovnz  eax, ecx
+    mov     ecx, SKP_SEATED             ; sitting in a plane: the torso and the head only, as the local pilot
+    cmp     byte [r12 + PEER.ps + PSTATE.seat], 0
+    cmovne  eax, ecx
     mov     [rsp + 16 + SKPOSE.flags], eax
     movss   xmm0, [f_arm_up]
     movss   [rsp + 16 + SKPOSE.arm_deg], xmm0

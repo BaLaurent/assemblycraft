@@ -13,7 +13,7 @@ default rel
 global item_model_draw, item_model_is_block, held_item_draw
 
 extern render_box16, render_box_px16, atlas, block_tiles, block_shape, item_icon, item_max_stack
-extern shape_boxes, gun_index, gun_model_draw
+extern shape_boxes, gun_index, gun_model_draw, item_tool
 
 section .rodata
 align 4
@@ -35,6 +35,9 @@ f_hold_blk_s:     dd 0.3                ;   scaled
 f_hold_item_ang:  dd 90.0               ; other items: the icon plane turned about Y,
 f_hold_item_s:    dd 0.55               ;   scaled,
 f_hold_item_t:    dd 0.3                ;   its lower-left grip moved to the hand (x and y)
+f_hold_axe_ang:   dd -120.0             ; an axe is turned 120 degrees about its grip so its head hangs toward the ground
+f_hold_axe_g:     dd -0.3               ;   the grip, x and y in the icon plane
+f_hold_axe_ng:    dd 0.3
 
 section .bss
 alignb 4
@@ -370,6 +373,8 @@ held_item_draw:
     call    glTranslatef
 .model:
     mov     edi, ebx
+    call    hold_orient
+    mov     edi, ebx
     movss   xmm0, [rsp]
     call    item_model_draw
 .pop:
@@ -377,6 +382,35 @@ held_item_draw:
     add     rsp, 8
     pop     rbx
     pop     rbp
+    ret
+
+; hold_orient(edi id): how an item is turned in a holder's hand, applied right before item_model_draw. An axe is
+; carried head down: the sprite is turned clockwise in the icon plane (the head that pointed up and forward then
+; points forward and down toward the ground) about the grip, the point (-0.3, -0.3) near the lower left end of
+; the shaft, which is where held_item_draw puts the hand. Every other item is left as it is. The first-person
+; hand does not use it: its pose places the model centre and keeps the head up, as before.
+hold_orient:
+    sub     rsp, 8
+    cmp     edi, FIRST_ITEM
+    jb      .done
+    movzx   eax, byte [item_tool + rdi]
+    cmp     eax, TOOL_AXE
+    jne     .done
+    movss   xmm0, [f_hold_axe_g]
+    movaps  xmm1, xmm0
+    xorps   xmm2, xmm2
+    call    glTranslatef
+    movss   xmm0, [f_hold_axe_ang]
+    xorps   xmm1, xmm1
+    movaps  xmm2, xmm1
+    movss   xmm3, [f_one]
+    call    glRotatef
+    movss   xmm0, [f_hold_axe_ng]
+    movaps  xmm1, xmm0
+    xorps   xmm2, xmm2
+    call    glTranslatef
+.done:
+    add     rsp, 8
     ret
 
 ; sprite_source(edi id): chooses the atlas rect the sprite path extrudes for item id and stores it with
