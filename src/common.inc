@@ -503,6 +503,12 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define MAX_BREATH      600             ; steps of air under water
 %define MAX_BOATS       16
 %define MAX_PLANES      4
+; the folk model of mobrender.asm (one part record per box; folk_parts_*): legs 0-1, body 2, left arm 3, right arm 4, head 5
+%define FOLK_PART_SIZE  48
+%define FOLK_PARTS      6
+%define FOLK_BODY       2
+%define FOLK_ARM_R      4
+%define FOLK_HEAD       5
 %define PLANE_SEATS     4               ; 0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner
 
 %define MOB_NONE        0

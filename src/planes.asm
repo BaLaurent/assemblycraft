@@ -28,9 +28,6 @@ extern net_plane_place_out, net_plane_board_out, net_plane_leave_out, net_plane_
 %define PL_LOOK_COLS    4               ; columns sampled ahead of the heading, 16 blocks apart
 %define PL_CRASH_DMG    12              ; HP the pilot loses in a crash (survival_damage, CAUSE_FALL)
 %define PLANE_BOXES     8               ; the boxes of plane_model
-%define PART_SIZE       48              ; a part record of mobrender.asm
-%define PART_BODY       2               ; the folk model's torso and head (mobrender.asm)
-%define PART_HEAD       5
 
 section .rodata
 align 4
@@ -1641,7 +1638,7 @@ planes_render:
     call    glTranslatef
     lea     rax, [folk_tables]
     mov     r14, [rax + FAC_VILLAGERS * 8]
-    lea     rdi, [r14 + PART_BODY * PART_SIZE]
+    lea     rdi, [r14 + FOLK_BODY * FOLK_PART_SIZE]
     xor     esi, esi
     mov     edx, 1
     xorps   xmm0, xmm0
@@ -1649,7 +1646,7 @@ planes_render:
     movaps  xmm2, xmm1
     movaps  xmm3, xmm1
     call    mob_parts_draw
-    lea     rdi, [r14 + PART_HEAD * PART_SIZE]
+    lea     rdi, [r14 + FOLK_HEAD * FOLK_PART_SIZE]
     xor     esi, esi
     mov     edx, 1
     xorps   xmm0, xmm0

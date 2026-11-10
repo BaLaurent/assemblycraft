@@ -17,10 +17,6 @@ extern folk_tables, mob_parts_draw
 extern sincos_deg, light_bind_at, light_bind_index
 extern world_to_ui, ui_text_centered, ui_text_width, ui_rect, bar_px
 
-%define PART_SIZE       48              ; a part record of mobrender.asm
-%define AVATAR_PARTS    6               ; the folk model: legs, body, left arm, right arm, head
-%define PART_ARM_R      4
-%define PART_HEAD       5
 
 section .rodata
 align 4
@@ -153,25 +149,25 @@ peers_render:
     jnz     .attack
     mov     rdi, [rsp + 16]
     xor     esi, esi
-    mov     edx, AVATAR_PARTS
+    mov     edx, FOLK_PARTS
     PARTS_ARGS
     call    mob_parts_draw
     jmp     .drawn
 .attack:
     mov     rdi, [rsp + 16]             ; legs, body and left arm swing with the walk
     xor     esi, esi
-    mov     edx, PART_ARM_R
+    mov     edx, FOLK_ARM_R
     PARTS_ARGS
     call    mob_parts_draw
     mov     rdi, [rsp + 16]             ; the right arm alone, raised on top of its walk swing
-    add     rdi, PART_ARM_R * PART_SIZE
+    add     rdi, FOLK_ARM_R * FOLK_PART_SIZE
     xor     esi, esi
     mov     edx, 1
     PARTS_ARGS
     addss   xmm0, [f_arm_up]
     call    mob_parts_draw
     mov     rdi, [rsp + 16]             ; and the head
-    add     rdi, PART_HEAD * PART_SIZE
+    add     rdi, FOLK_HEAD * FOLK_PART_SIZE
     xor     esi, esi
     mov     edx, 1
     PARTS_ARGS

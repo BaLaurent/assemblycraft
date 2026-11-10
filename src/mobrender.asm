@@ -17,7 +17,7 @@ extern mobs, render_box16, sincos_deg, light_bind_at, light_bind_index
 
 ; part record: box (lo xyz, hi xyz), tile per face (+X -X +Y -Y +Z -Z, 16-bit atlas ids), pivot y,
 ; pivot z, swing factor (limb angle = factor * walk swing; 0 = rigid)
-%define PART_SIZE 48
+%define PART_SIZE FOLK_PART_SIZE
 %define P_BOX     0
 %define P_TILES   24
 %define P_PIVOT_Y 36
@@ -148,7 +148,6 @@ elder_parts:
 %macro FOLK_SKIN 1
     FOLK TILE_FOLK0 + 4 * %1 + TILE_FOLK_HEAD, TILE_FOLK0 + 4 * %1 + TILE_FOLK_FACE, TILE_FOLK0 + 4 * %1 + TILE_FOLK_TUNIC, TILE_FOLK0 + 4 * %1 + TILE_FOLK_PANTS
 %endmacro
-%define FOLK_PARTS 6
 folk_parts_villagers:
     FOLK_SKIN FAC_VILLAGERS
 folk_parts_bandits:
