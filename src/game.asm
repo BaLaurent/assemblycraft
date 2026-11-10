@@ -2213,6 +2213,8 @@ game_frame:
     jz      .pick
     cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
     je      .no_boat_click              ; a boat is boarded or put down by a fresh click only
+    cmp     dword [plane_riding], 0
+    jne     .no_boat_click              ; a pilot boards and places nothing but what the plane branch allows
     cmp     dword [boat_riding], 0      ; a boat in front (nearer than the block hit) is boarded,
     jne     .boat_item                  ; even with a boat in hand
     mov     eax, [rsp + F_BOAT]

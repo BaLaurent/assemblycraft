@@ -85,6 +85,7 @@ extern test_ability_bar_binding, test_archetype_titles, test_web_view_mapping
 extern test_sheet_sections
 extern test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter
 extern test_marksman_path_and_dex, test_marksman_abilities, test_bullet_damage_pipeline
+extern test_planes_view
 extern test_gun_attachment_effects, test_new_guns_fire, test_attach_craft
 extern test_skill_arrows_ignore_hurt_window, test_grenade_and_rocket_blasts
 extern test_debug_f12_detector, test_debug_cheater_mark_roundtrip, test_debug_world_list_flag
@@ -329,6 +330,7 @@ tests:
     TEST audio_caps_jitter_limiter
     TEST marksman_path_and_dex
     TEST marksman_abilities
+    TEST planes_view
     TEST bullet_damage_pipeline
     TEST gun_attachment_effects
     TEST new_guns_fire
@@ -631,6 +633,7 @@ section .rodata
     TESTNAME audio_caps_jitter_limiter
     TESTNAME marksman_path_and_dex
     TESTNAME marksman_abilities
+    TESTNAME planes_view
     TESTNAME bullet_damage_pipeline
     TESTNAME gun_attachment_effects
     TESTNAME new_guns_fire

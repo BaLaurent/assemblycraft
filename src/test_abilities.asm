@@ -9,7 +9,7 @@ default rel
 
 global test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
 global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn, test_new_abilities
-global test_ability_bar_binding, test_marksman_abilities
+global test_ability_bar_binding, test_marksman_abilities, test_planes_view
 
 extern abilities_cd, abilities_cd_total, abilities_bolt_cd, abilities_reset, abilities_step
 extern abilities_use, abilities_staff_bolt, ab_flash_at
@@ -26,6 +26,8 @@ extern gear_powers
 extern combat_mana, combat_stamina, combat_reset
 extern combat_warcry_t, combat_stealth_t, combat_crit_next_t, combat_bullseye_t, combat_fanhammer_t
 extern combat_step
+extern game_frame, frame_input, input_captured, game_open_screen, game_heavy_s, game_break_progress, brk_y
+extern planes, plane_riding, plane_view, planes_clear, planes_board, boats, boat_riding, boats_clear
 
 ; ability ids, (archetype - 1) * 4 + slot: what the ability bar holds and the index of abilities_cd
 %define AB_CHARGE       0
@@ -2435,3 +2437,172 @@ knife_exp:                              ; x y z vx vy vz of knife k, facing -z f
     dd 16.5, 12.12, 16.5,  -30.0,     0.0,   0.0
     dd 16.5, 12.12, 16.5,  -21.2132,  0.0, -21.2132
 abil_off: db 7, 9, 15                   ; the node of ability slot 1, 2, 3 within an archetype's 18
+
+; ---- the vehicle keys in game_frame ---------------------------------------------------------------------
+section .text
+
+
+; frame_state(): what game_frame needs: by day in Peaceful, the cursor captured, no screen open, no button down
+frame_state:
+    sub     rsp, 8
+    mov     dword [game_time], 6007
+    mov     dword [settings + SETTINGS.difficulty], DIFF_PEACEFUL
+    lea     rdi, [frame_input]
+    mov     ecx, FRAMEINPUT_size
+    xor     eax, eax
+    rep     stosb
+    mov     dword [frame_input + FRAMEINPUT.slot], -1
+    mov     dword [input_captured], 1
+    mov     dword [game_open_screen], 0
+    mov     dword [game_heavy_s], __float32__(-1.0)
+    mov     dword [game_break_progress], 0
+    mov     dword [brk_y], -1
+    add     rsp, 8
+    ret
+
+; frames(edi n >= 1): n times game_frame(1/60 s), which runs exactly one sim_step
+frames:
+    push    rbx
+    mov     ebx, edi
+.l:
+    movss   xmm0, [k_frame_dt]
+    call    game_frame
+    dec     ebx
+    jnz     .l
+    pop     rbx
+    ret
+
+; A Warrior with Whirlwind (the key of Ability 3 is bar slot 2) beside a ground plane and a boat 2.5 blocks
+; ahead of his eye. On foot the vehicle view key changes nothing, the Ability 3 key casts (cooldown 1800) and
+; a right click boards the boat. Seated in the plane the Ability 3 key casts nothing, the vehicle view key flips
+; plane_view each time, and a right click on the boat boards nothing: the pilot stays in the plane.
+test_planes_view:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    mov     edi, ARCH_WARRIOR
+    mov     esi, 5
+    call    set_path
+    mov     edi, AB_WHIRL
+    call    learn
+    mov     edi, IRON_SWORD
+    call    hold
+    call    planes_clear
+    call    boats_clear
+    call    frame_state
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [planes]
+    movss   xmm0, [k_plane_hw]
+    movss   xmm1, [k_plane_h]
+    xorps   xmm2, xmm2
+    call    body_init
+    SETF    [planes + BODY.x], 16.5
+    SETF    [planes + BODY.y], 11.0
+    SETF    [planes + BODY.z], 16.5
+    SETF    [planes + PLANEENT.vmax], 24.0
+    mov     dword [planes + PLANEENT.used], 1
+    mov     dword [plane_view], 1
+    mov     dword [frame_input + FRAMEINPUT.vehicle_view], 1    ; on foot: nothing flips
+    mov     edi, 1
+    call    frames
+    cmp     dword [plane_view], 1
+    jne     .fail
+    mov     dword [frame_input + FRAMEINPUT.vehicle_view], 0
+    mov     dword [frame_input + FRAMEINPUT.ability + 8], 1     ; the Ability 3 key casts
+    mov     edi, 1
+    call    frames
+    cmp     dword [abilities_cd + AB_WHIRL * 4], 0
+    jle     .fail
+    mov     dword [frame_input + FRAMEINPUT.ability + 8], 0
+    lea     rdi, [boats]                ; a boat in front of the eye (eye at y 12.62: the boat's box 12.3..12.8)
+    movss   xmm0, [k_boat_hw]
+    movss   xmm1, [k_boat_h]
+    xorps   xmm2, xmm2
+    call    body_init
+    SETF    [boats + BODY.x], 16.5
+    SETF    [boats + BODY.y], 12.3
+    SETF    [boats + BODY.z], 14.0
+    mov     dword [boats + BOATENT.used], 1
+    mov     dword [frame_input + FRAMEINPUT.rmb_pressed], 1
+    mov     dword [frame_input + FRAMEINPUT.rmb_held], 1
+    mov     edi, 1
+    call    frames
+    cmp     dword [boat_riding], 1      ; on foot the click boards the boat
+    jne     .fail
+    call    boats_clear                 ; ---- seated in the plane
+    call    abilities_reset
+    SETF    [combat_stamina], 100.0
+    lea     rdi, [player]
+    movss   xmm0, [k_p_hw]
+    movss   xmm1, [k_p_h]
+    movss   xmm2, [k_p_speed]
+    call    body_init
+    SETF    [player + BODY.x], 16.5
+    SETF    [player + BODY.y], 11.0
+    SETF    [player + BODY.z], 16.5
+    xor     edi, edi
+    call    planes_board
+    cmp     dword [plane_riding], 1
+    jne     .fail
+    lea     rdi, [boats]
+    movss   xmm0, [k_boat_hw]
+    movss   xmm1, [k_boat_h]
+    xorps   xmm2, xmm2
+    call    body_init
+    SETF    [boats + BODY.x], 16.5
+    SETF    [boats + BODY.y], 12.3
+    SETF    [boats + BODY.z], 14.0
+    mov     dword [boats + BOATENT.used], 1
+    mov     edi, 1                      ; (the click is still down)
+    call    frames
+    cmp     dword [boat_riding], 0
+    jne     .fail
+    cmp     dword [plane_riding], 1
+    jne     .fail
+    mov     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    mov     dword [frame_input + FRAMEINPUT.rmb_held], 0
+    mov     dword [frame_input + FRAMEINPUT.ability + 8], 1     ; the Ability 3 key casts nothing
+    mov     edi, 1
+    call    frames
+    cmp     dword [abilities_cd + AB_WHIRL * 4], 0
+    jne     .fail
+    mov     dword [frame_input + FRAMEINPUT.ability + 8], 0
+    mov     dword [frame_input + FRAMEINPUT.vehicle_view], 1    ; the view key flips the view, each press
+    mov     edi, 1
+    call    frames
+    cmp     dword [plane_view], 0
+    jne     .fail
+    mov     edi, 1
+    call    frames
+    cmp     dword [plane_view], 1
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .done
+.fail:
+    mov     ebx, 1
+.done:
+    lea     rdi, [frame_input]
+    mov     ecx, FRAMEINPUT_size
+    xor     eax, eax
+    rep     stosb
+    call    planes_clear
+    call    boats_clear
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+section .rodata
+align 4
+k_frame_dt: dd 0.016666668
+k_plane_hw: dd 1.5
+k_plane_h:  dd 1.2
+k_boat_hw:  dd 0.6
+k_boat_h:   dd 0.5
+k_p_hw:     dd 0.3
+k_p_h:      dd 1.8
+k_p_speed:  dd 4.317
