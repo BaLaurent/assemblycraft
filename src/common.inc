@@ -16,12 +16,12 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define COL_CHUNKS     16
 %define MAX_COLUMNS    4096
 %define CHUNK_BYTES    8192             ; 4096 block bytes, then 4096 packed-light bytes
-%define POOL_CHUNKS    32768
+%define POOL_CHUNKS    49152            ; >= COL_CHUNKS * 53^2 = 44944: every column of the largest keep radius full to y 255
 %define REGION_COLS    32               ; 32x32 columns per region file
 %define SEA_LEVEL      96
 %define REBASE_AT      1024
 %define REBASE_STEP    512
-%define MAX_RENDER_DIST 16
+%define MAX_RENDER_DIST 24              ; keep radius MAX + 2 must fit MAX_COLUMNS: (2 * 26 + 1)^2 = 2809 <= 4096
 %define COL_FREE       0                ; COLUMN.state
 %define COL_PENDING    1
 %define COL_BLOCKS     2
@@ -1548,7 +1548,7 @@ endstruc                                ; 32768 bytes
 struc SETTINGS
     .fov:          resd 1               ; 50..110, default 70
     .sensitivity:  resd 1               ; 10..300 %, 100
-    .render_dist:  resd 1               ; 2..16 chunks, 8
+    .render_dist:  resd 1               ; 2..24 chunks, 8
     .volume:       resd 1               ; 0..100, 100
     .difficulty:   resd 1               ; 0..3, 2
     .invert_mouse: resd 1               ; 0/1, 0

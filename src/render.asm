@@ -29,7 +29,7 @@ extern player, player_eye_in_water
 section .rodata
 align 8
 d_near:     dq 0.05
-d_far:      dq 300.0
+d_far:      dq 450.0                     ; beyond the fog end + 8 at MAX_RENDER_DIST (24 * 16 + 8 = 392)
 d_ns:       dq 1.0e9                     ; seconds -> nanoseconds
 align 4
 f_texscale: dd 0.000244140625           ; 1/4096: texcoords are 1/16 px units (u, 256 px)

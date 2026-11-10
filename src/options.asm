@@ -132,7 +132,7 @@ slider_fov:     dq settings + SETTINGS.fov, s_fov, s_empty
 slider_sens:    dq settings + SETTINGS.sensitivity, s_sens, s_pct
                 dd 10, 300
 slider_render:  dq settings + SETTINGS.render_dist, s_render, s_chunks
-                dd 2, 16
+                dd 2, 24
 slider_volume:  dq settings + SETTINGS.volume, s_volume, s_pct
                 dd 0, 100
 capturing:      dd -1                   ; binding row waiting for a key, or -1

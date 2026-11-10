@@ -8,7 +8,7 @@
 ; A column whose install does not fit (world_install: the container table or the pool is full) holds back
 ; only itself: it is tried again BACKOFF_FRAMES frames later and every other column carries on.
 ;
-; Radii: R = stream_rdist() (settings.render_dist clamped to 2..16, capped by net_rdist_cap while hosting);
+; Radii: R = stream_rdist() (settings.render_dist clamped to 2..MAX_RENDER_DIST, capped by net_rdist_cap while hosting);
 ; columns within Chebyshev R + 1 of the centre column are loaded, columns beyond R + 2 are unloaded (saved
 ; first when modified or holding containers). A hosting peer also loads the columns within MP_SIM_R + 1 of
 ; every remote player's column (net_stream_centres) and keeps those within MP_SIM_R + 2; and it loads, lights
@@ -38,8 +38,8 @@ extern pthread_create, pthread_join, pthread_mutex_lock, pthread_mutex_unlock
 extern pthread_cond_wait, pthread_cond_signal, pthread_cond_broadcast
 extern net_role, net_in_world, net_rdist_cap, net_stream_centres, net_edit_columns, net_column_verdict, net_column_take, net_column_forget
 
-%define SPIRAL_R        18              ; offsets -18..18: 37 x 37 = 1369 entries
-%define SPIRAL_MAX      (37 * 37)
+%define SPIRAL_R        (MAX_RENDER_DIST + 2)   ; offsets -SPIRAL_R..SPIRAL_R: the keep radius of the largest R
+%define SPIRAL_MAX      ((2 * SPIRAL_R + 1) * (2 * SPIRAL_R + 1))
 %define BACKOFF_FRAMES  60              ; frames until a column whose install did not fit is tried again
 %define MAX_READS       4               ; region columns decoded per stream_update
 %define MAX_INLINE      4               ; columns generated inline per stream_update
@@ -86,7 +86,7 @@ section .text
 
 ; ---- the spiral -------------------------------------------------------------------------------------------
 
-; sp_ensure(): build stream_spiral once - every (dx, dz) with |dx|, |dz| <= 18 sorted by dx^2 + dz^2,
+; sp_ensure(): build stream_spiral once - every (dx, dz) with |dx|, |dz| <= SPIRAL_R sorted by dx^2 + dz^2,
 ; then dz, then dx. Clobbers rax, rcx, rdx, rsi, r8, r9.
 sp_ensure:
     cmp     dword [stream_spiral_n], 0

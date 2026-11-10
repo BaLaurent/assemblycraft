@@ -39,7 +39,7 @@ align 8
 settings_table:
     SETENT "fov",             SETTINGS.fov,          50, 110, 0
     SETENT "sensitivity",     SETTINGS.sensitivity,  10, 300, 0
-    SETENT "render_distance", SETTINGS.render_dist,   2,  16, 0
+    SETENT "render_distance", SETTINGS.render_dist,   2,  24, 0
     SETENT "volume",          SETTINGS.volume,        0, 100, 0
     SETENT "difficulty",      SETTINGS.difficulty,    0,   3, 0
     SETENT "invert_mouse",    SETTINGS.invert_mouse,  0,   1, 0
