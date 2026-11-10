@@ -182,8 +182,8 @@ sfx_info:
     SINFO  4249,  80, 1,  20            ; 57 KNIVES
     SINFO  4856,   0, 1,  80            ; 58 LOOT_RARE
     SINFO  6113,   0, 1, 100            ; 59 LEGENDARY
-    SINFO  3300,  40, 3,   0            ; 60 ENGINE
-    SINFO  3500,  40, 3,   0            ; 61 ENGINE_HIGH
+    SINFO  3300,  40, 5,   0            ; 60 ENGINE (a cap of 5: two planes in range, two chunks each while they crossfade)
+    SINFO  3500,  40, 5,   0            ; 61 ENGINE_HIGH
 %if $ - sfx_info != NUM_SOUNDS * SFXINFO_size
     %error "sfx_info must hold NUM_SOUNDS rows"
 %endif

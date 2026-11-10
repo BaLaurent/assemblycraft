@@ -57,6 +57,7 @@ c_prop_z:   dd -1.5                     ; the propeller hub, in front of the eng
 c_hum_vol:  dd 0.4                      ; the engine's volume: 0.4 at rest ...
 c_hum_span: dd 0.6                      ; ... + 0.6 x speed / top speed
 c_hum_hi:   dd 14.0                     ; above this speed the flat-out chunk sounds
+c_hum_near: dd 0.3333                   ; another plane's engine is heard from a third of its distance: 48 blocks, not 16
 c_vmax:     dd 24.0                     ; PL_VMAX: top speed; the streaming governor lowers it while the terrain ahead is not loaded
 c_takeoff:  dd 12.0                     ; PL_TAKEOFF: speed from which pitching up leaves the ground
 c_stall:    dd 9.0                      ; PL_STALL: below it in the air there is no lift
@@ -1895,6 +1896,23 @@ planes_hum:
     movss   xmm1, [rbx + BODY.y]
     addss   xmm1, [c_center]
     movss   xmm2, [rbx + BODY.z]
+    lea     eax, [r12 + 1]
+    cmp     eax, [plane_riding]
+    je      .go                         ; the plane he sits in: at its own place, full volume
+    movss   xmm4, [player + BODY.x]     ; another: its place pulled towards the listener (the pan stays)
+    subss   xmm0, xmm4
+    mulss   xmm0, [c_hum_near]
+    addss   xmm0, xmm4
+    movss   xmm4, [player + BODY.y]
+    addss   xmm4, [c_eye]
+    subss   xmm1, xmm4
+    mulss   xmm1, [c_hum_near]
+    addss   xmm1, xmm4
+    movss   xmm4, [player + BODY.z]
+    subss   xmm2, xmm4
+    mulss   xmm2, [c_hum_near]
+    addss   xmm2, xmm4
+.go:
     call    audio_play_local_at
     jmp     .next
 .quiet:
