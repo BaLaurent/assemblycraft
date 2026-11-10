@@ -1,4 +1,4 @@
-; sfx.asm - procedural chip sound effects: the 60 game sounds rendered once into one int16 pool.
+; sfx.asm - procedural chip sound effects: the 62 game sounds rendered once into one int16 pool.
 ; Each sound is the sum of a few chip-instrument layers: band-limited pulse (variable duty) and saw,
 ; a 2A03-style 32-step triangle and a 15-bit LFSR noise channel (long or short mode), with a
 ; per-32-sample pitch tick (glide, tracker arpeggio, delayed vibrato), one-pole high/low-pass and an
@@ -182,6 +182,8 @@ sfx_info:
     SINFO  4249,  80, 1,  20            ; 57 KNIVES
     SINFO  4856,   0, 1,  80            ; 58 LOOT_RARE
     SINFO  6113,   0, 1, 100            ; 59 LEGENDARY
+    SINFO  3300,  40, 3,   0            ; 60 ENGINE
+    SINFO  3500,  40, 3,   0            ; 61 ENGINE_HIGH
 %if $ - sfx_info != NUM_SOUNDS * SFXINFO_size
     %error "sfx_info must hold NUM_SOUNDS rows"
 %endif
@@ -1114,6 +1116,67 @@ layers:
     LAYER SND_LEGENDARY, W_NOISE93, 1.04, 0.05, 0.25, 96.0, 96.0, 0.0
     ENV 0.0015, 0.012, 0.0, 0.02
     FILT 0.0, 4000.0
+    LEND
+; 60 ENGINE: a plane's engine at idle, a 0.30 s chunk played again every 0.25 s so that the ends crossfade:
+; a saw and a triangle drone under four dull cylinder puffs
+    LAYER SND_ENGINE, W_SAW, 0.0, 0.30, 0.55, 40.0, 40.0, 0.0
+    ENV 0.045, 0.0, 1.0, 0.05
+    FILT 800.0, 0.0
+    LEND
+    LAYER SND_ENGINE, W_TRI, 0.0, 0.30, 0.7, 28.0, 28.0, 0.0
+    ENV 0.045, 0.0, 1.0, 0.05
+    LEND
+    LAYER SND_ENGINE, W_NOISE93, 0.02, 0.045, 0.5, 62.0, 62.0, 0.0
+    ENV 0.002, 0.02, 0.0, 0.02
+    FILT 1800.0, 150.0
+    LEND
+    LAYER SND_ENGINE, W_NOISE93, 0.095, 0.045, 0.5, 62.0, 62.0, 0.0
+    ENV 0.002, 0.02, 0.0, 0.02
+    FILT 1800.0, 150.0
+    LEND
+    LAYER SND_ENGINE, W_NOISE93, 0.17, 0.045, 0.5, 62.0, 62.0, 0.0
+    ENV 0.002, 0.02, 0.0, 0.02
+    FILT 1800.0, 150.0
+    LEND
+    LAYER SND_ENGINE, W_NOISE93, 0.235, 0.045, 0.5, 62.0, 62.0, 0.0
+    ENV 0.002, 0.02, 0.0, 0.02
+    FILT 1800.0, 150.0
+    LEND
+; 61 ENGINE_HIGH: the same engine flat out, an octave up and twice as many puffs
+    LAYER SND_ENGINE_HIGH, W_SAW, 0.0, 0.30, 0.55, 52.0, 52.0, 0.0
+    ENV 0.045, 0.0, 1.0, 0.05
+    FILT 1400.0, 0.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_TRI, 0.0, 0.30, 0.7, 40.0, 40.0, 0.0
+    ENV 0.045, 0.0, 1.0, 0.05
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.02, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.0575, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.095, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.1325, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.17, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.2075, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
+    LEND
+    LAYER SND_ENGINE_HIGH, W_NOISE93, 0.245, 0.03, 0.45, 66.0, 66.0, 0.0
+    ENV 0.002, 0.012, 0.0, 0.012
+    FILT 2600.0, 200.0
     LEND
 layers_end:
 

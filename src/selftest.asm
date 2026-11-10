@@ -127,6 +127,7 @@ extern test_plane_recipes, test_plane_item_tables
 extern test_planes_place, test_planes_takeoff, test_planes_stall, test_planes_landing
 extern test_planes_crashes, test_planes_governor, test_planes_save_load, test_planes_leave
 extern test_planes_camera, test_planes_seats, test_planes_roles
+extern test_planes_hum
 extern test_gatling_cone, test_gatling_fire, test_gatling_seats
 
 %macro TEST 1
@@ -446,6 +447,7 @@ tests:
     TEST planes_save_load
     TEST planes_leave
     TEST planes_camera
+    TEST planes_hum
     TEST gatling_cone
     TEST gatling_fire
     TEST gatling_seats
@@ -761,6 +763,7 @@ section .rodata
     TESTNAME planes_save_load
     TESTNAME planes_leave
     TESTNAME planes_camera
+    TESTNAME planes_hum
     TESTNAME gatling_cone
     TESTNAME gatling_fire
     TESTNAME gatling_seats

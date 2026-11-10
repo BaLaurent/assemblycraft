@@ -941,7 +941,9 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define SND_KNIVES      57
 %define SND_LOOT_RARE   58
 %define SND_LEGENDARY   59
-%define NUM_SOUNDS      60
+%define SND_ENGINE      60              ; a plane's engine: idle chunk and flat-out chunk (planes_hum)
+%define SND_ENGINE_HIGH 61
+%define NUM_SOUNDS      62
 %define W_PULSE   0                     ; SFXLAYER.wave
 %define W_TRI     1                     ; 2A03 32-step triangle
 %define W_SAW     2

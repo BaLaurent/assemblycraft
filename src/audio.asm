@@ -9,7 +9,7 @@
 %include "common.inc"
 default rel
 
-global audio_init, audio_update, audio_play, audio_play_at, audio_shutdown
+global audio_init, audio_update, audio_play, audio_play_at, audio_play_local_at, audio_shutdown
 global audio_mix, audio_reset, audio_enabled, voices
 
 extern pa_simple_new, pa_simple_write, pa_simple_free
@@ -359,9 +359,9 @@ audio_mix:
 ; message is being applied (net_applying): a sound heard from another peer is not sent on.
 audio_play_at:
     cmp     byte [net_role], NET_ROLE_OFF
-    je      .local
+    je      audio_play_local_at
     cmp     byte [net_applying], 0
-    jne     .local
+    jne     audio_play_local_at
     sub     rsp, 24
     mov     [rsp + 16], edi
     movss   [rsp], xmm0
@@ -375,7 +375,9 @@ audio_play_at:
     movss   xmm2, [rsp + 8]
     movss   xmm3, [rsp + 12]
     add     rsp, 24
-.local:
+; audio_play_local_at(edi snd, xmm0 x, xmm1 y, xmm2 z, xmm3 vol): audio_play_at for a sound every machine makes for itself
+; (a plane's engine, heard from the plane each machine sees): it is not sent to the other peers
+audio_play_local_at:
     cmp     dword [audio_enabled], 0
     je      .off
     push    rbp

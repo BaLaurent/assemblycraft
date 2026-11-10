@@ -16,18 +16,20 @@ global planes, plane_riding, plane_view
 global planes_clear, planes_step, planes_render, planes_place, planes_raycast, planes_board
 global planes_leave, planes_break, planes_save, planes_load, planes_shift, plane_view_cam
 global plane_seat, plane_tgt, planes_sit, planes_free_seat, planes_crash, planes_mirror_step
-global planes_free_peer, planes_free_guests
+global planes_free_peer, planes_free_guests, planes_hum
 
 extern body_init, move_axis, sincos_deg
 extern world_get, world_is_solid, world_column_ready, coord_ok, meshable
 extern player, game_mode, hud_banner, drops_spawn, ray_aabb, raycast, survival_damage
 extern block_tiles, render_box16, light_bind_at, light_bind_index
+extern audio_play_local_at
 extern net_role, net_self, net_applying, folk_tables, mob_parts_draw, net_hurt_send_direct
 extern net_plane_place_out, net_plane_board_out, net_plane_leave_out, net_plane_break_out, net_plane_ok_out
 
 %define PL_LOOK_COLS    4               ; columns sampled ahead of the heading, 16 blocks apart
 %define PL_CRASH_DMG    12              ; HP the pilot loses in a crash (survival_damage, CAUSE_FALL)
 %define PLANE_BOXES     8               ; the boxes of plane_model
+%define HUM_STEPS       15              ; a 0.30 s engine chunk is played again every 0.25 s: the ends crossfade
 
 section .rodata
 align 4
@@ -52,6 +54,9 @@ c_foot:     dd 2.0                      ; a step may not enter a column more tha
 c_256:      dd 256.0
 c_prop_z:   dd -1.5                     ; the propeller hub, in front of the engine cowl
 ; ---- flight model (blocks, seconds, degrees)
+c_hum_vol:  dd 0.4                      ; the engine's volume: 0.4 at rest ...
+c_hum_span: dd 0.6                      ; ... + 0.6 x speed / top speed
+c_hum_hi:   dd 14.0                     ; above this speed the flat-out chunk sounds
 c_vmax:     dd 24.0                     ; PL_VMAX: top speed; the streaming governor lowers it while the terrain ahead is not loaded
 c_takeoff:  dd 12.0                     ; PL_TAKEOFF: speed from which pitching up leaves the ground
 c_stall:    dd 9.0                      ; PL_STALL: below it in the air there is no lift
@@ -121,6 +126,7 @@ planes:       resb MAX_PLANES * PLANEENT_size
 plane_riding: resd 1                    ; 0, or the index + 1 of the plane the player flies
 plane_seat:   resd 1                    ; the local player's seat while plane_riding != 0
 plane_view:   resd 1                    ; 1 third person (the default on boarding), 0 cockpit
+hum_cd:       resb MAX_PLANES               ; steps until the plane's engine chunk is played again
 plane_hint:   resd 1                    ; 1 while "Terrain loading" has been shown for the current slow-down
 plane_cam:    resb BODY_size            ; the third-person camera
 plane_tgt:    resd MAX_PLANES * 4       ; a mirrored plane's target: x, y, z, yaw (local; guests)
@@ -1849,4 +1855,56 @@ planes_free_guests:
     add     rax, PLANEENT_size
     dec     ecx
     jnz     .plane
+    ret
+
+; planes_hum(): once a step, on every machine: each plane with a pilot (occ[0]) sounds its engine from where it is, a chunk
+; every 15 steps (the idle chunk, the flat-out one above 14 b/s), louder as the speed rises. The sound is made locally:
+; every machine hears the planes it sees, so nothing is sent. A plane nobody pilots is silent (it glides) and starts at
+; once when a pilot sits down.
+; rbx = plane, r12d = slot counter
+planes_hum:
+    push    rbx
+    push    r12
+    push    r13
+    lea     rbx, [planes]
+    xor     r12d, r12d
+.plane:
+    lea     r13, [hum_cd]
+    add     r13, r12
+    cmp     dword [rbx + PLANEENT.used], 0
+    je      .quiet
+    cmp     dword [rbx + PLANEENT.occ], 0
+    je      .quiet
+    cmp     byte [r13], 0
+    je      .play
+    dec     byte [r13]
+    jmp     .next
+.play:
+    mov     byte [r13], HUM_STEPS - 1
+    movss   xmm3, [rbx + PLANEENT.speed]
+    divss   xmm3, [c_vmax]
+    minss   xmm3, [c_one]
+    mulss   xmm3, [c_hum_span]
+    addss   xmm3, [c_hum_vol]
+    mov     edi, SND_ENGINE
+    mov     eax, SND_ENGINE_HIGH
+    movss   xmm0, [rbx + PLANEENT.speed]
+    ucomiss xmm0, [c_hum_hi]
+    cmova   edi, eax
+    movss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + BODY.y]
+    addss   xmm1, [c_center]
+    movss   xmm2, [rbx + BODY.z]
+    call    audio_play_local_at
+    jmp     .next
+.quiet:
+    mov     byte [r13], 0
+.next:
+    add     rbx, PLANEENT_size
+    inc     r12d
+    cmp     r12d, MAX_PLANES
+    jb      .plane
+    pop     r13
+    pop     r12
+    pop     rbx
     ret

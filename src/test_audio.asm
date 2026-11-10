@@ -4,11 +4,12 @@
 %include "common.inc"
 default rel
 
-global test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter
+global test_sfx_clean_edges, test_audio_pan, test_audio_caps_jitter_limiter, test_planes_hum
 
 extern sfx_build, sfx_table, sfx_pool
 extern audio_mix, audio_reset, audio_enabled, audio_play, audio_play_at, voices
 extern settings, player, rng_seed, rng_next
+extern planes, planes_clear, planes_hum
 
 ; SETF mem, float literal
 %macro SETF 2
@@ -427,6 +428,82 @@ test_audio_caps_jitter_limiter:
     pop     r14
     pop     r13
     pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- a plane's engine ---------------------------------------------------------------------------------------
+
+; engine_voices(edi snd) -> eax how many voices are playing that sound
+engine_voices:
+    lea     rcx, [voices]
+    xor     eax, eax
+    mov     edx, VOICES
+.l:
+    cmp     dword [rcx + VOICE.len], 0
+    je      .next
+    cmp     [rcx + VOICE.snd], edi
+    jne     .next
+    inc     eax
+.next:
+    add     rcx, VOICE_size
+    dec     edx
+    jnz     .l
+    ret
+
+; planes_hum: a plane with a pilot starts its engine chunk at once (the flat-out one above 14 b/s, the idle one
+; below) and again every 15 steps, one voice each time; a plane nobody pilots, or one that does not exist, is silent.
+; The sound is local: with a session open nothing is sent (audio_play_local_at), so it plays on the host too.
+test_planes_hum:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    mix_setup
+    call    planes_clear
+    SETF    [player + BODY.x], 0.5
+    SETF    [player + BODY.y], 10.0
+    SETF    [player + BODY.z], 0.5
+    SETF    [planes + BODY.x], 0.5
+    SETF    [planes + BODY.y], 10.0
+    SETF    [planes + BODY.z], 2.5
+    SETF    [planes + PLANEENT.speed], 20.0
+    mov     dword [planes + PLANEENT.used], 1
+    call    planes_hum                  ; no pilot: silent
+    mov     edi, SND_ENGINE_HIGH
+    call    engine_voices
+    test    eax, eax
+    jnz     .fail
+    mov     dword [planes + PLANEENT.occ], 1
+    call    planes_hum                  ; a pilot: the flat-out chunk, at once
+    mov     edi, SND_ENGINE_HIGH
+    call    engine_voices
+    cmp     eax, 1
+    jne     .fail
+    mov     ebx, 14
+.wait:
+    call    planes_hum                  ; 14 more steps: nothing new
+    dec     ebx
+    jnz     .wait
+    mov     edi, SND_ENGINE_HIGH
+    call    engine_voices
+    cmp     eax, 1
+    jne     .fail
+    SETF    [planes + PLANEENT.speed], 5.0
+    call    planes_hum                  ; the 16th step: the next chunk, the idle one below 14 b/s
+    mov     edi, SND_ENGINE
+    call    engine_voices
+    cmp     eax, 1
+    jne     .fail
+    xor     ebx, ebx
+    jmp     .out
+.fail:
+    mov     ebx, 1
+.out:
+    call    planes_clear
+    call    mix_teardown
+    mov     eax, ebx
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret
