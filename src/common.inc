@@ -516,7 +516,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ROLE_CHAMPION   6
 %define ROLE_PATROL     7
 %define ROLE_TRAVELLER  8
-%define NUM_ROLES       9
+%define ROLE_CARAVAN    9               ; an event's merchant: walks its route (events.asm), trades once the event is won
+%define NUM_ROLES       10
 %define FCLASS_NONE     0               ; MOB.fclass of a fighter
 %define FCLASS_ARCHER   1
 %define FCLASS_BRUTE    2
@@ -526,6 +527,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define FF_ASLEEP       1               ; MOB.fflags
 %define FF_RAGE         2
 %define FF_FOLKDOT      4               ; the burn or poison it suffers came from a folk: nobody's kill
+%define FF_HELP         8               ; offers an event: gold plate, right-click opens ST_EVENT
+%define FF_HALT         16              ; a caravan merchant stands still
 %define TIER_HATED      0               ; faction_tier
 %define TIER_HOSTILE    1
 %define TIER_NEUTRAL    2
@@ -839,6 +842,7 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define ST_MP_JOIN      22              ; multiplayer: join screen (mpmenu.asm)
 %define ST_MP_HOST      23              ; multiplayer: host screen (mpmenu.asm)
 %define ST_CHAT         24              ; multiplayer: chat input (mpmenu.asm)
+%define ST_EVENT        25              ; an event offer: Accept / Decline (rpgscreens.asm)
 
 ; ---- key bindings (index into SETTINGS.keys) -----------------------------
 %define BIND_FORWARD    0
@@ -1693,6 +1697,7 @@ endstruc
 %define MT_DIED 14
 %define MT_BLOB_PART 15                   ; transport-internal (net.asm)
 %define MT_SAVE_ACK 16
+%define MT_EVENT_STATE 17                 ; host -> guests, reliable: one EVHUD
 %define MT_BLOCK 20
 %define MT_COL_REQ 21
 %define MT_COL_DATA 22
@@ -1757,8 +1762,33 @@ endstruc
 %define HM_HIT 0                          ; MT_HURT.mode: player_take_hit
 %define HM_DIRECT 1                       ;               survival_damage (explosions)
 %define IA_FREE_CAPTIVE 1
+%define IA_EVENT_ACCEPT 2
 %define EV_DUNGEON_CLEARED 1
 %define EV_BOSS_KILLED 2
+%define EV_EVENT_OFFER 3                  ; events.asm; arg = kind | faction<<8
+%define EV_EVENT_START 4                  ;   kind | faction<<8 | waves<<16
+%define EV_EVENT_WAVE 5                   ;   kind | wave<<8 | waves<<16 | night<<24
+%define EV_EVENT_WON 6                    ;   kind | faction<<8
+%define EV_EVENT_LOST 7                   ;   kind | faction<<8 | reason<<16
+%define EVK_NONE 0                        ; event kinds
+%define EVK_CAMP 1                        ; temporary camp
+%define EVK_SITE 2                        ; existing camp or village under threat
+%define EVK_CARAVAN 3                     ; free caravan
+%define EVK_ROAD 4                        ; road caravan
+%define EVS_NONE 0                        ; event states
+%define EVS_OFFERED 1
+%define EVS_COUNTDOWN 2
+%define EVS_WAVE 3
+%define EVS_BREAK 4
+%define EVS_TRAVEL 5
+%define EVS_AMBUSH 6
+%define EVS_CLEANUP 7
+%define EVL_DIED 0                        ; loss reasons
+%define EVL_ABANDONED 1
+%define EVL_BLOCKED 2
+%define EV_KEY_BASE 0x40000000            ; MOB.patrol of event mobs: BASE | serial<<2, | EV_KEY_ATTACK for attackers
+%define EV_KEY_ATTACK 2
+%define EHF_WAIT 1                        ; EVHUD.flags: the caravan waits for a player
 %define FXN_EXPLOSION 0
 %define FXN_BURST 1
 %define PEER_FREE 0
@@ -1813,6 +1843,24 @@ struc MOBREC
     .peer: resb 1
     .mag: resd 1                          ; packed magnitudes the tint/plate read (MG_* in netmobs.asm)
 endstruc                                  ; 44
+; the EVHUD (events.asm) is the MT_EVENT_STATE payload: the host's one running event, as every client's HUD shows it
+struc EVHUD
+    .kind:    resb 1                      ; EVK_*
+    .state:   resb 1                      ; EVS_*
+    .wave:    resb 1                      ; current wave / ambush (1-based), 0 before the first
+    .waves:   resb 1                      ; total waves / ambushes
+    .faction: resb 1                      ; defended faction
+    .left:    resb 1                      ; live attackers
+    .protect: resb 1                      ; mob slot of the protected NPC, 255 none
+    .flags:   resb 1                      ; EHF_WAIT
+    .secs:    resw 1                      ; countdown / break seconds left (ceil(steps/60)), else 0
+    .pad:     resw 1
+    .ax:      resd 1                      ; absolute cell x: camp centre, or caravan destination
+    .az:      resd 1
+endstruc                                  ; 20
+%if EVHUD_size != 20
+%error "EVHUD is the MT_EVENT_STATE payload (20 bytes)"
+%endif
 struc DROPREC
     .slot: resb 1
     .id: resb 1
