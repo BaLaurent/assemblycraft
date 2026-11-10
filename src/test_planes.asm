@@ -27,6 +27,7 @@ k_10_63:    dd 10.63
 k_11_0:     dd 11.0
 k_10_5:     dd 10.5
 k_5_5:      dd 5.5
+k_9_5:      dd 9.5
 k_6_5:      dd 6.5
 k_12_0:     dd 12.0
 k_12_4:     dd 12.4
@@ -836,6 +837,29 @@ test_planes_save_load:
     cmp     dword [planes + PLANEENT.used], 1
     jne     .fail
     cmp     dword [planes + PLANEENT.dmg], 0
+    jne     .fail
+    mov     dword [planes + PLANEENT.dmg], 20          ; two planes: each keeps its own wear, whatever its record
+    mov     dword [planes + PLANEENT_size + PLANEENT.used], 1
+    SETF    [planes + PLANEENT_size + BODY.x], 9.5
+    SETF    [planes + PLANEENT_size + BODY.y], 10.0
+    SETF    [planes + PLANEENT_size + BODY.z], 6.5
+    mov     dword [planes + PLANEENT_size + PLANEENT.dmg], 60
+    lea     rdi, [hdr_buf]
+    call    planes_save
+    call    planes_clear
+    lea     rdi, [hdr_buf]
+    call    planes_load
+    cmp     dword [planes + PLANEENT.dmg], 20
+    jne     .fail
+    cmp     dword [planes + PLANEENT_size + PLANEENT.dmg], 60
+    jne     .fail
+    FEQ     [planes + PLANEENT_size + BODY.x], k_9_5
+    mov     dword [hdr_buf + WORLDHDR.plane_dmg + 4], 100   ; the second record is worn out: the first stays
+    lea     rdi, [hdr_buf]
+    call    planes_load
+    cmp     dword [planes + PLANEENT.used], 1
+    jne     .fail
+    cmp     dword [planes + PLANEENT_size + PLANEENT.used], 0
     jne     .fail
     mov     dword [hdr_buf + WORLDHDR.plane_count], 3   ; record 0 is the plane above, 1: NaN x; 2: 2e7 away in z
     mov     dword [hdr_buf + WORLDHDR.planes + PLANESAVE_size + PLANESAVE.x], 0x7FC00000
