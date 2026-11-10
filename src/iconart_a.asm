@@ -790,44 +790,45 @@ SKBMP ib_kings_blade, kblade_rows, 32, 32, kblade_pal
 
 ; --------------------------------------------------------------------------------------------------------------------
 ; hammer: ib_iron_hammer, ib_diamond_hammer. hammer_rows is the bitmap of both tiers
-;   A maul head: 1 lit top, 2 face, 3 shaded underside, between two flanges in the trim ramp v w x y (iron:
-;   blackened steel, diamond: gold), with rivets and glints; the handle is a stick with a leather wrap e f g h and
-;   a trim collar and butt cap.
+;   A war hammer, 27 px across: a 12-tall block head (1 lit top, 2 body, 3 shaded underside, rivets and glints) between
+;   two flanges in the trim ramp v w x y (iron: blackened steel, diamond: gold), a striking face on the right (a trim
+;   rim around a 1 / 2 plate) and a tapering poll spike on the left; a trim collar, a thick stick handle with a leather
+;   wrap e f g h and a trim butt cap, 29 px along the diagonal.
 ; --------------------------------------------------------------------------------------------------------------------
 ;          0         1         2         3
 ;          01234567890123456789012345678901
 SKROWS hammer_rows, 32, 32
     SKROW "................................"  ; 00
-    SKROW ".................yy......yy....."  ; 01
-    SKROW "................ywwo4444yxxo...."  ; 02
-    SKROW "...............yvww111111xxxo..."  ; 03
-    SKROW "...............yvxx1ss111yyyo..."  ; 04
-    SKROW "...............yvsx222222yyyo..."  ; 05
-    SKROW "...............yvxx222222yvyo..."  ; 06
-    SKROW "...............yvxx222222yyyo..."  ; 07
-    SKROW "...............yvvx222222yyyo..."  ; 08
-    SKROW "...............yvxx333333yyyo..."  ; 09
-    SKROW "...............yvyy333333yyyo..."  ; 10
-    SKROW "................oyyooooooyyo...."  ; 11
-    SKROW ".................oowxyo..oo....."  ; 12
-    SKROW ".................yxyyo.........."  ; 13
-    SKROW "................dacco..........."  ; 14
-    SKROW "...............dabco............"  ; 15
-    SKROW "..............dabco............."  ; 16
-    SKROW ".............dabco.............."  ; 17
-    SKROW "............dacco..............."  ; 18
-    SKROW "...........hefgo................"  ; 19
-    SKROW "..........hefgo................."  ; 20
-    SKROW ".........hfgho.................."  ; 21
-    SKROW "........hfgho..................."  ; 22
-    SKROW ".......hefgo...................."  ; 23
-    SKROW "......hefgo....................."  ; 24
-    SKROW ".....hfgho......................"  ; 25
-    SKROW "....dacco......................."  ; 26
-    SKROW "...ywxyo........................"  ; 27
-    SKROW "..ywxyo........................."  ; 28
-    SKROW "...ooo.........................."  ; 29
-    SKROW "................................"  ; 30
+    SKROW "................................"  ; 01
+    SKROW "..........yyy444444444444yyyyyo."  ; 02
+    SKROW "..........yvv1ss111111111vvvvvo."  ; 03
+    SKROW "..........ysv1s1111111111svws1o."  ; 04
+    SKROW ".......444yvv222222222222vvws1o."  ; 05
+    SKROW "......4111yww222222222222www11o."  ; 06
+    SKROW "....41s222yww223222222322www11o."  ; 07
+    SKROW "....o33333yww222222222222www22o."  ; 08
+    SKROW ".....oo333yww333333333333www22o."  ; 09
+    SKROW ".......oooyxx333333333333xxw22o."  ; 10
+    SKROW "..........yyx333333333333xyw32o."  ; 11
+    SKROW "..........yxx333333333333xxxxxo."  ; 12
+    SKROW "..........ooooooooooooooooooooo."  ; 13
+    SKROW "................yvwwwxxo........"  ; 14
+    SKROW "...............ywwwxxyo........."  ; 15
+    SKROW "...............dacbco..........."  ; 16
+    SKROW "..............dabbco............"  ; 17
+    SKROW ".............dacbco............."  ; 18
+    SKROW "............hefffo.............."  ; 19
+    SKROW "...........hfffgo..............."  ; 20
+    SKROW "..........hhhhgo................"  ; 21
+    SKROW ".........hfffgo................."  ; 22
+    SKROW "........hefffo.................."  ; 23
+    SKROW ".......hhhhgo..................."  ; 24
+    SKROW "......hefffo...................."  ; 25
+    SKROW ".....dabbco....................."  ; 26
+    SKROW "...yvwwxyo......................"  ; 27
+    SKROW "..ywwxxyo......................."  ; 28
+    SKROW "..ywxxyo........................"  ; 29
+    SKROW "...oooo........................."  ; 30
     SKROW "................................"  ; 31
 SKROWS_END
 align 8
