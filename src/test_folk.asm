@@ -7,10 +7,12 @@ default rel
 global test_folk_spawn_and_weapons, test_folk_targets_and_standing, test_folk_rivals_fight
 global test_folk_kill_reputation_and_drops, test_folk_projectiles, test_folk_interact_gates
 global test_folk_travellers
+global test_folk_event_targets, test_folk_caravan, test_mobs_event_march, test_arrows_event_monster
 
 extern mobs, mobs_clear, mobs_step, mob_is_hostile, mob_strike
 extern folk_spawn, folk_make_champion, folk_interact, folk_name, folk_weapon_affix, folk_travel_tick
 extern folk_hit_by, folk_strike_mob, mob_blow_raw
+extern folk_find_target, folk_target_at, mob_spawn, arrows_spawn
 extern arrows, arrows_clear, arrows_step, explode_magic
 extern drops, drops_clear
 extern player, body_init, rng_seed, world_clear, world_set
@@ -2005,6 +2007,532 @@ test_folk_travellers:
     jz      .fail
     cmp     byte [rax + MOB.faction], FAC_STONEKIN
     jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- 0.12 events ---------------------------------------------------------------------------------
+
+%define EV_K    (EV_KEY_BASE + 16)      ; an event's key: its defenders carry it, its attackers EV_K | EV_KEY_ATTACK
+%define EV_K2   (EV_KEY_BASE + 32)      ; another event's
+
+section .bss
+align 4
+ev_out: resd 4                          ; folk_target_at's out
+section .rodata
+align 16
+k_absmask: dd 0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff
+k_16:     dd 16.0
+k_80_5:   dd 80.5
+k_4:      dd 4.0
+k_half:   dd 0.5
+k_86:     dd 86.0
+k_100_5:  dd 100.5
+k_11_5:   dd 11.5
+n_stone_merchant: db "Stonekin Merchant", 0
+section .text
+
+; MOBAT type, x, z: mob_spawn of that monster at (x, 11, z) -> eax slot or -1
+%macro MOBAT 3
+    mov     edi, %1
+    mov     eax, __float32__(%2)
+    movd    xmm0, eax
+    mov     eax, __float32__(11.0)
+    movd    xmm1, eax
+    mov     eax, __float32__(%3)
+    movd    xmm2, eax
+    call    mob_spawn
+%endmacro
+
+; set_patrol(edi slot, esi key): the mob in that slot gets MOB.patrol = key
+set_patrol:
+    mov     r8d, esi
+    call    mob_ptr
+    mov     [rax + MOB.patrol], r8d
+    ret
+
+; found(edi guard slot) -> eax folk_find_target of that folk
+found:
+    sub     rsp, 8
+    call    mob_ptr
+    mov     rdi, rax
+    call    folk_find_target
+    add     rsp, 8
+    ret
+
+; kept(edi guard slot, esi target code) -> eax folk_target_at of that folk with MOB.target = code; ev_out
+; holds the feet it found
+kept:
+    sub     rsp, 8
+    mov     r8d, esi
+    call    mob_ptr
+    mov     [rax + MOB.target], r8d
+    mov     rdi, rax
+    lea     rsi, [ev_out]
+    call    folk_target_at
+    add     rsp, 8
+    ret
+
+; near_dest(edi slot) -> eax 1 when that mob stands within 4 blocks of its dest (horizontally)
+near_dest:
+    call    mob_ptr
+    movss   xmm0, [rax + MOB.dest_x]
+    subss   xmm0, [rax + BODY.x]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rax + MOB.dest_z]
+    subss   xmm1, [rax + BODY.z]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    xor     eax, eax
+    comiss  xmm0, [k_16]
+    setbe   al
+    ret
+
+; The defenders' rule: a guard whose patrol key has the low bits 0 (an event's defender) finds the
+; monster that carries key | 2 within 16 blocks (folk_find_target gives 2 + its slot) and keeps it as its
+; target (folk_target_at, with its feet in out). Not a monster with another event's key or with the bare
+; defender key, not when the guard has no key or is itself an attacker (key | 2: low bits 2), not a dead
+; monster and not one 20 blocks away.
+; rbx = the guard, r12d = the zombie, r13d = the target code of the zombie
+test_folk_event_targets:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 24
+    call    world_clear
+    call    fixture
+    mov     dword [game_mode], MODE_CREATIVE
+    SETF    [player + BODY.x], 60.5
+    FOLK    FAC_VILLAGERS, ROLE_GUARD, FCLASS_BRUTE, 100.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    MOBAT   MOB_ZOMBIE, 108.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     r12d, eax
+    lea     r13d, [r12 + 2]
+    mov     edi, ebx
+    mov     esi, EV_K
+    call    set_patrol
+    mov     edi, r12d
+    mov     esi, EV_K | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    cmp     eax, r13d
+    jne     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [ev_out], __float32__(108.5)
+    jne     .fail
+    mov     edi, r12d                   ; another event's attackers: no enemies of this guard
+    mov     esi, EV_K2 | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    test    eax, eax
+    jnz     .fail
+    mov     edi, r12d                   ; the bare defender key is no attacker
+    mov     esi, EV_K
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    test    eax, eax
+    jnz     .fail
+    mov     edi, r12d
+    mov     esi, EV_K | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx                    ; a guard without a key hunts no event monster
+    xor     esi, esi
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx                    ; an attacker (low bits 2) is no defender
+    mov     esi, EV_K | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx                    ; defender again: the baseline finds it once more
+    mov     esi, EV_K
+    call    set_patrol
+    mov     edi, ebx
+    call    found
+    cmp     eax, r13d
+    jne     .fail
+    mov     edi, r12d
+    call    mob_ptr
+    mov     dword [rax + MOB.health], 0 ; a dead monster is no target
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    mov     edi, ebx
+    mov     esi, r13d
+    call    kept
+    test    eax, eax
+    jnz     .fail
+    mov     edi, r12d
+    call    mob_ptr
+    mov     dword [rax + MOB.health], 5
+    mov     dword [rax + BODY.x], __float32__(121.5)    ; 21 blocks away: beyond the 16 a fighter sees
+    mov     edi, ebx
+    call    found
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 24
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; An event merchant (ROLE_CARAVAN): with FF_HALT clear and its dest 20 blocks east it walks at least 4
+; blocks in 180 steps and its blocked count (ai_timer) stays 0 while it walks free; with FF_HALT it
+; stays within half a block; behind a 3-high wall it stands and the blocked count passes 120. Its name
+; is "<Member> Merchant"; FF_HELP makes folk_interact give ST_EVENT, without it a Stonekin merchant trades
+; at standing 0 (ST_TRADE) and not at -1; it drops 3 coins.
+; rbx = the merchant, r12d = scratch (wall cells / start x)
+test_folk_caravan:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    mov     dword [game_mode], MODE_CREATIVE
+    SETF    [player + BODY.x], 60.5
+    FOLK    FAC_STONEKIN, ROLE_CARAVAN, FCLASS_NONE, 80.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 100.5
+    mov     edi, 180
+    call    steps
+    mov     edi, ebx
+    call    mob_ptr
+    movss   xmm0, [rax + BODY.x]
+    subss   xmm0, [k_80_5]
+    comiss  xmm0, [k_4]
+    jb      .fail                       ; it walked at least 4 blocks east
+    cmp     dword [rax + MOB.ai_timer], 0
+    jne     .fail                       ; (never blocked: the count restarts every free step)
+    call    mobs_clear                  ; halted: it stays
+    FOLK    FAC_STONEKIN, ROLE_CARAVAN, FCLASS_NONE, 80.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 100.5
+    or      byte [rax + MOB.fflags], FF_HALT
+    mov     edi, 180
+    call    steps
+    mov     edi, ebx
+    call    mob_ptr
+    movss   xmm0, [rax + BODY.x]
+    subss   xmm0, [k_80_5]
+    andps   xmm0, [k_absmask]
+    comiss  xmm0, [k_half]
+    jae     .fail
+    call    mobs_clear                  ; a wall (x = 86, y 11..13, z 96..104) across its road
+    mov     r12d, 96
+.wall_z:
+    mov     r13d, 11
+.wall_y:
+    mov     edi, 86
+    mov     esi, r13d
+    mov     edx, r12d
+    mov     ecx, STONE
+    call    world_set
+    inc     r13d
+    cmp     r13d, 13
+    jbe     .wall_y
+    inc     r12d
+    cmp     r12d, 104
+    jbe     .wall_z
+    FOLK    FAC_STONEKIN, ROLE_CARAVAN, FCLASS_NONE, 80.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 100.5
+    mov     edi, 420
+    call    steps
+    mov     edi, ebx
+    call    mob_ptr
+    cmp     dword [rax + MOB.ai_timer], 120
+    jl      .fail                       ; blocked: the count passed 120
+    movss   xmm0, [rax + BODY.x]
+    comiss  xmm0, [k_86]
+    jae     .fail                       ; and it never got through
+    mov     edi, ebx                    ; its name
+    call    mob_ptr
+    mov     rdi, rax
+    lea     rsi, [n_stone_merchant]
+    call    name_is
+    test    eax, eax
+    jz      .fail
+    mov     edi, ebx                    ; FF_HELP: the event offer screen, at any standing
+    call    mob_ptr
+    or      byte [rax + MOB.fflags], FF_HELP | FF_HALT
+    mov     edi, ebx
+    call    folk_interact
+    cmp     eax, ST_EVENT
+    jne     .fail
+    mov     edi, ebx                    ; no offer: it trades like a traveller, at standing 0 or better
+    call    mob_ptr
+    and     byte [rax + MOB.fflags], ~FF_HELP
+    mov     dword [screen_faction], 0
+    mov     edi, ebx
+    call    folk_interact
+    cmp     eax, ST_TRADE
+    jne     .fail
+    cmp     dword [screen_faction], FAC_STONEKIN
+    jne     .fail
+    mov     edi, FAC_STONEKIN
+    mov     esi, -1
+    call    set_standing
+    mov     edi, ebx
+    call    folk_interact
+    test    eax, eax
+    jnz     .fail
+    lea     rdi, [s_stone_no]
+    call    banner_is
+    test    eax, eax
+    jz      .fail
+    call    drops_clear
+    mov     dword [game_mode], MODE_SURVIVAL
+    mov     edi, ebx
+    call    kill_folk
+    test    eax, eax
+    jz      .fail
+    mov     edi, GOLD_COIN
+    call    drop_count
+    cmp     eax, 3
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; A monster with MOB.patrol != 0 and no player to hunt (Creative, at night) walks to its dest: from 20
+; blocks west it stands within 4 blocks of it after 600 steps, and a monster within 2 blocks of its dest
+; stops (INPUT.fwd = 0 after a step). A monster without a patrol key does not march there.
+; rbx = the monster, r12d = the second one
+test_mobs_event_march:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    mov     dword [game_mode], MODE_CREATIVE
+    mov     dword [game_time], 54001    ; night, off every cadence
+    SETF    [player + BODY.x], 60.5
+    MOBAT   MOB_ZOMBIE, 80.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    mov     esi, EV_K | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 100.5
+    MOBAT   MOB_ZOMBIE, 80.5, 120.5     ; the same walk without a patrol key
+    test    eax, eax
+    js      .fail
+    mov     r12d, eax
+    mov     edi, r12d
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 120.5
+    mov     edi, 600
+    call    steps
+    mov     edi, ebx
+    call    near_dest
+    test    eax, eax
+    jz      .fail
+    mov     edi, r12d
+    call    near_dest
+    test    eax, eax
+    jnz     .fail                       ; (a wanderer does not make the 20 blocks)
+    call    mobs_clear
+    MOBAT   MOB_ZOMBIE, 98.5, 100.5     ; 2 blocks from its dest: it stops
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    mov     esi, EV_K | EV_KEY_ATTACK
+    call    set_patrol
+    mov     edi, ebx
+    call    mob_ptr
+    SETF    [rax + MOB.dest_x], 100.5
+    SETF    [rax + MOB.dest_z], 100.5
+    mov     dword [rax + MOB.input + INPUT.fwd], 1
+    mov     edi, 1
+    call    steps
+    mov     edi, ebx
+    call    mob_ptr
+    cmp     dword [rax + MOB.input + INPUT.fwd], 0
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; A folk's arrow (owner OWNER_FOLK + a faction) that meets a monster with an attacker key (patrol & 3 == 2)
+; hurts it; one that meets a monster with no key, or the bare defender key, flies on and leaves it unhurt.
+; rbx = the zombie
+test_arrows_event_monster:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    xor     r12d, r12d                  ; the zombie's patrol key of this round
+.round:
+    call    world_clear
+    call    fixture
+    mov     dword [game_mode], MODE_CREATIVE
+    SETF    [player + BODY.x], 60.5
+    MOBAT   MOB_ZOMBIE, 106.5, 100.5
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    mov     esi, r12d
+    call    set_patrol
+    movss   xmm0, [k_100_5]             ; from (100.5, 11.5, 100.5) at 30 blocks/s along +x
+    movss   xmm1, [k_11_5]
+    movss   xmm2, [k_100_5]
+    movss   xmm3, [k_30]
+    xorps   xmm4, xmm4
+    xorps   xmm5, xmm5
+    mov     edi, OWNER_FOLK + FAC_VILLAGERS
+    mov     esi, 5
+    xor     edx, edx
+    mov     ecx, PROJ_ARROW
+    xor     r8d, r8d
+    call    arrows_spawn
+    test    eax, eax
+    js      .fail
+    mov     r13d, 30
+.fly:
+    call    arrows_step
+    dec     r13d
+    jnz     .fly
+    mov     edi, ebx
+    call    mob_ptr
+    mov     ecx, [rax + MOB.health]
+    cmp     ecx, [rax + MOB.max_health]
+    mov     eax, 1                      ; (mov does not touch the flags)
+    jl      .hurt
+    xor     eax, eax
+.hurt:
+    test    r12d, r12d
+    jz      .plain                      ; round 0: no key, the arrow must not hurt
+    cmp     r12d, EV_K
+    je      .plain
+    test    eax, eax                    ; the attacker key: it must
+    jz      .fail
+    jmp     .next
+.plain:
+    test    eax, eax
+    jnz     .fail
+.next:
+    call    arrows_clear
+    cmp     r12d, EV_K | EV_KEY_ATTACK
+    je      .ok
+    cmp     r12d, EV_K
+    je      .attackers
+    mov     r12d, EV_K                  ; round 1: the bare defender key
+    jmp     .round
+.attackers:
+    mov     r12d, EV_K | EV_KEY_ATTACK  ; round 2: the attacker key
+    jmp     .round
+.ok:
     xor     eax, eax
     jmp     .ret
 .fail:

@@ -7,6 +7,7 @@ default rel
 
 global test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
 global test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
+global test_net_event_state, test_net_event_accept
 
 extern net_role, net_self, net_pvp, net_applying, net_peers, net_capture, net_captured, net_pos_out
 extern rpg_state, rpg_stats, inv, inv_clear, inv_count, world_header
@@ -18,6 +19,8 @@ extern arrows, arrow_net, arrows_clear, arrows_spawn, arrows_step, nx_on_proj, n
 extern mobs, mobs_clear, mob_spawn, world_clear, world_set, world_get
 extern player, game_mode, surv, survival_reset
 extern nx_on_sound, nx_on_fx, nx_on_give, nx_clock_ns, fx_clear, dmgnum_clear
+extern ev_hud, events_reset, events_step, nx_on_event_state, nm_on_interact, net_handlers
+extern folk_spawn
 
 %define CAP_SIZE    4096
 
@@ -1429,6 +1432,272 @@ test_net_relay_limit:
     call    net_end
     mov     eax, r12d
     pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- the running event on the wire, and a guest's accept --------------------------------------------------------------------
+
+section .rodata
+align 4
+ev_payload:                             ; one EVHUD: a caravan travelling, waiting for a player
+    db EVK_CARAVAN, EVS_TRAVEL, 1, 2, FAC_BEASTFOLK, 0, 7, EHF_WAIT
+    dw 25, 0
+    dd 1234, -567
+ev_none:                                ; events_reset's EVHUD
+    db 0, 0, 0, 0, 0, 0, 255, 0
+    times EVHUD_size - 8 db 0
+
+section .bss
+alignb 4
+ev_keep:     resb EVHUD_size            ; ev_hud kept while a test runs
+
+section .text
+
+; ev_is_payload() -> eax 1 when ev_hud is ev_payload (leaf)
+ev_is_payload:
+    lea     rsi, [ev_hud]
+    lea     rdi, [ev_payload]
+    mov     ecx, EVHUD_size
+    repe cmpsb
+    sete    al
+    movzx   eax, al
+    ret
+
+; ev_is_none() -> eax 1 when ev_hud is what events_reset leaves: all zero but no protected NPC (slot 255) (leaf)
+ev_is_none:
+    lea     rsi, [ev_hud]
+    lea     rdi, [ev_none]
+    mov     ecx, EVHUD_size
+    repe cmpsb
+    sete    al
+    movzx   eax, al
+    ret
+
+; ev_save() / ev_restore(): ev_hud, kept in ev_keep
+ev_save:
+    lea     rsi, [ev_hud]
+    lea     rdi, [ev_keep]
+    mov     ecx, EVHUD_size
+    rep movsb
+    ret
+ev_restore:
+    lea     rsi, [ev_keep]
+    lea     rdi, [ev_hud]
+    mov     ecx, EVHUD_size
+    rep movsb
+    ret
+
+; nx_on_event_state(MT_EVENT_STATE, one EVHUD): a guest takes the host's running event; the host, anyone offline, a payload under
+; 20 bytes and a role other than guest leave ev_hud alone; a longer payload still gives the first 20 bytes; row 17 of the handler
+; table is this handler
+test_net_event_state:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    net_begin
+    call    ev_save
+    call    events_reset
+    lea     rsi, [ev_payload]
+    lea     rdi, [msg]
+    mov     ecx, EVHUD_size
+    rep movsb
+    mov     dword [msg + EVHUD_size], 0
+    mov     byte [net_role], NET_ROLE_GUEST
+    xor     edi, edi
+    mov     esi, MT_EVENT_STATE
+    lea     rdx, [msg]
+    mov     ecx, EVHUD_size
+    call    nx_on_event_state
+    call    ev_is_payload
+    test    eax, eax
+    jz      .fail                       ; a guest takes it
+    call    events_reset
+    mov     byte [net_role], NET_ROLE_HOST
+    xor     edi, edi
+    mov     esi, MT_EVENT_STATE
+    lea     rdx, [msg]
+    mov     ecx, EVHUD_size
+    call    nx_on_event_state
+    call    ev_is_none
+    test    eax, eax
+    jz      .fail                       ; the host owns the event: it takes nothing
+    mov     byte [net_role], NET_ROLE_OFF
+    xor     edi, edi
+    mov     esi, MT_EVENT_STATE
+    lea     rdx, [msg]
+    mov     ecx, EVHUD_size
+    call    nx_on_event_state
+    call    ev_is_none
+    test    eax, eax
+    jz      .fail
+    mov     byte [net_role], NET_ROLE_GUEST
+    xor     edi, edi
+    mov     esi, MT_EVENT_STATE
+    lea     rdx, [msg]
+    mov     ecx, EVHUD_size - 1
+    call    nx_on_event_state
+    call    ev_is_none
+    test    eax, eax
+    jz      .fail                       ; 19 bytes are no EVHUD
+    xor     edi, edi
+    mov     esi, MT_EVENT_STATE
+    lea     rdx, [msg]
+    mov     ecx, EVHUD_size + 4
+    call    nx_on_event_state
+    call    ev_is_payload
+    test    eax, eax
+    jz      .fail                       ; 24 bytes: the first 20 are the event
+    lea     rax, [net_handlers]
+    lea     rcx, [nx_on_event_state]
+    cmp     [rax + MT_EVENT_STATE * 8], rcx
+    jne     .fail
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    ev_restore
+    call    net_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ea_setup() -> eax the slot of a Stonekin leader that offers an event (FF_HELP), alone in the mob table, no event; -1 on failure
+ea_setup:
+    sub     rsp, 8
+    call    mobs_clear
+    call    events_reset
+    mov     edi, FAC_STONEKIN
+    mov     esi, ROLE_LEADER
+    xor     edx, edx
+    movss   xmm0, [k_10_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_12]
+    call    folk_spawn
+    test    eax, eax
+    js      .ret
+    imul    ecx, eax, MOB_size
+    lea     rdx, [mobs]
+    or      byte [rdx + rcx + MOB.fflags], FF_HELP
+.ret:
+    add     rsp, 8
+    ret
+
+; ea_feed(edi slot, esi action, edx type, ecx len) -> eax ev_hud.state after the host got that INTERACT from guest 2 and
+; stepped the events once
+ea_feed:
+    sub     rsp, 8
+    mov     [msg], dil
+    mov     [msg + 1], sil
+    mov     [msg + 2], dl
+    mov     byte [msg + 3], 0
+    mov     edi, 2
+    mov     esi, MT_INTERACT
+    lea     rdx, [msg]
+    call    nm_on_interact
+    call    events_step
+    movzx   eax, byte [ev_hud + EVHUD.state]
+    add     rsp, 8
+    ret
+
+%macro EA_NONE 4                        ; slot reg, action, payload type, length: no event starts
+    mov     edi, %1
+    mov     esi, %2
+    mov     edx, %3
+    mov     ecx, %4
+    call    ea_feed
+    cmp     eax, EVS_NONE
+    jne     .fail
+%endmacro
+
+; The host, on a guest's INTERACT with IA_EVENT_ACCEPT for a folk that offers an event (FF_HELP): the event starts (state
+; COUNTDOWN, that folk the protected NPC). No event starts for a folk that offers none, a payload that does not name a folk, a
+; mob that is no folk (even one flagged FF_HELP), a message from a role other than the host, or a short message.
+test_net_event_accept:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    net_begin
+    call    ev_save
+    mov     eax, [game_mode]
+    mov     [mode_keep], eax
+    mov     dword [game_mode], MODE_CREATIVE
+    call    cap_on
+    mov     byte [net_role], NET_ROLE_HOST
+    mov     byte [net_self], 0
+    call    ea_setup                    ; the folk that offers one is accepted
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     edi, ebx
+    mov     esi, IA_EVENT_ACCEPT
+    mov     edx, MOB_FOLK
+    mov     ecx, 4
+    call    ea_feed
+    cmp     eax, EVS_COUNTDOWN
+    jne     .fail
+    movzx   eax, byte [ev_hud + EVHUD.protect]
+    cmp     eax, ebx
+    jne     .fail
+    call    ea_setup                    ; a folk that offers nothing
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    imul    ecx, ebx, MOB_size
+    lea     rdx, [mobs]
+    and     byte [rdx + rcx + MOB.fflags], ~FF_HELP
+    EA_NONE ebx, IA_EVENT_ACCEPT, MOB_FOLK, 4
+    call    ea_setup                    ; a payload that names no folk
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    EA_NONE ebx, IA_EVENT_ACCEPT, MOB_ZOMBIE, 4
+    call    mobs_clear                  ; a zombie flagged FF_HELP is no folk
+    call    events_reset
+    mov     edi, MOB_ZOMBIE
+    movss   xmm0, [k_10_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_12]
+    call    mob_spawn
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    imul    ecx, ebx, MOB_size
+    lea     rdx, [mobs]
+    or      byte [rdx + rcx + MOB.fflags], FF_HELP
+    EA_NONE ebx, IA_EVENT_ACCEPT, MOB_FOLK, 4
+    call    ea_setup                    ; a guest's own game does not run it
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    mov     byte [net_role], NET_ROLE_GUEST
+    EA_NONE ebx, IA_EVENT_ACCEPT, MOB_FOLK, 4
+    mov     byte [net_role], NET_ROLE_HOST
+    call    ea_setup                    ; a message under 4 bytes
+    test    eax, eax
+    js      .fail
+    mov     ebx, eax
+    EA_NONE ebx, IA_EVENT_ACCEPT, MOB_FOLK, 3
+    xor     eax, eax
+    jmp     .out
+.fail:
+    mov     eax, 1
+.out:
+    mov     ebx, eax
+    call    mobs_clear
+    call    events_reset
+    call    ev_restore
+    mov     eax, [mode_keep]
+    mov     [game_mode], eax
+    call    net_end
+    mov     eax, ebx
+    add     rsp, 8
     pop     rbx
     pop     rbp
     ret

@@ -43,6 +43,7 @@ extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
 extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
 extern dmgnum_clear, dmgnum_step, dmgnum_shift
 extern structures_reset, structures_step, structures_refresh, structures_shift
+extern events_reset, events_shift
 extern boats_clear, boats_step, boats_raycast, boats_place, boats_mount, boats_dismount
 extern boats_break, boats_save, boats_load, boats_shift, boat_riding
 extern sleep_use_bed, sleep_step, sleep_cancel, sleep_respawn_target, sleep_place_at_bed, sleep_active
@@ -114,7 +115,7 @@ alignb 8
 game_open_cont:  resq 1                 ; CONTAINER* of the furnace/chest to open
 game_target:     resb RAYHIT_size
 game_has_target: resd 1
-game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE, ST_CHEST, ST_TRADE, ST_DIALOG, ST_SHRINE, ST_LEADER
+game_open_screen: resd 1                ; 0, ST_CRAFTING, ST_FURNACE, ST_CHEST, ST_TRADE, ST_DIALOG, ST_SHRINE, ST_LEADER, ST_EVENT
 game_open_npc:   resd 1                 ; mob index of the folk whose screen opens
 game_bow_charge: resd 1                 ; float seconds drawn, 0 = not drawing
 step_accum:      resd 1
@@ -304,6 +305,7 @@ game_new:
     call    boats_clear
     mov     qword [inv_container], 0
     call    structures_reset
+    call    events_reset
     mov     dword [pending_new], 1
     mov     dword [pending_respawn], 0
     call    reset_session
@@ -389,6 +391,7 @@ game_load:
     mov     rdi, rbx
     call    boats_load
     call    structures_reset
+    call    events_reset
     mov     qword [inv_container], 0
     mov     dword [pending_new], 0
     mov     dword [pending_respawn], 0
@@ -791,6 +794,7 @@ game_join:
     call    fx_clear
     call    boats_clear
     call    structures_reset
+    call    events_reset
     mov     qword [inv_container], 0
     mov     dword [pending_new], 0
     xor     eax, eax                    ; a fresh character is stood on the ground at the spawn column
@@ -1004,6 +1008,7 @@ game_shift_origin:
     sub     [brk_z], r12d
 .no_dig:
     SHIFT_CALL structures_shift
+    SHIFT_CALL events_shift
     SHIFT_CALL net_shift
     pop     r12
     pop     rbx
@@ -1011,7 +1016,7 @@ game_shift_origin:
     ret
 
 ; game_unload_box(edi x0, esi z0, edx x1, ecx z1): a column is going away (local cell box, inclusive).
-; An open trade, dialog or leader screen whose folk stands in it closes first; then the mobs, drops,
+; An open trade, dialog, leader or event-offer screen whose folk stands in it closes first; then the mobs, drops,
 ; primed TNT and fires inside the box are removed.
 game_unload_box:
     push    rbp
@@ -1030,6 +1035,8 @@ game_unload_box:
     cmp     eax, ST_DIALOG
     je      .talking
     cmp     eax, ST_LEADER
+    je      .talking
+    cmp     eax, ST_EVENT
     jne     .remove
 .talking:
     mov     eax, [game_open_npc]

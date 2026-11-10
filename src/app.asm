@@ -27,7 +27,7 @@ extern mobs_clear, inv, inv_sel, inv_close_screen, craft_size, surv, item_names
 extern inv_container, hand_render, drops_clear, arrows_clear, tnt_clear
 extern fire_clear, fx_clear, game_aim, game_heavy_s
 extern screen_trade, screen_dialog, screen_skills, screen_character
-extern screen_shrine, screen_leader
+extern screen_shrine, screen_leader, screen_event
 extern debug_poll, debug_frame
 extern rpg_begin, rpg_reset, combat_reset, dmgnum_clear, light_update
 extern boats_clear
@@ -89,7 +89,7 @@ screens:
     dq screen_settings, screen_controls, 0, screen_pause, screen_inventory
     dq screen_crafting, screen_death, 0, screen_furnace, screen_chest
     dq screen_trade, screen_dialog, screen_skills, screen_character
-    dq screen_shrine, screen_leader, debug_frame, screen_mp_join, screen_mp_host, screen_chat
+    dq screen_shrine, screen_leader, debug_frame, screen_mp_join, screen_mp_host, screen_chat, screen_event
 
 section .data
 align 4
@@ -898,6 +898,8 @@ update_state:
     je      .screen
     cmp     eax, ST_LEADER
     je      .screen
+    cmp     eax, ST_EVENT
+    je      .screen
     cmp     eax, ST_CHAT
     je      .screen                     ; the chat line: the world keeps running
     cmp     byte [net_role], NET_ROLE_OFF
@@ -977,6 +979,8 @@ update_state:
     cmp     edi, ST_SHRINE
     je      .open
     cmp     edi, ST_LEADER
+    je      .open
+    cmp     edi, ST_EVENT
     je      .open
 .container:
     mov     rax, [game_open_cont]
@@ -1066,6 +1070,8 @@ draw_frame:
     je      .in_view
     cmp     eax, ST_LEADER
     je      .in_view
+    cmp     eax, ST_EVENT
+    je      .in_view
     cmp     eax, ST_DEBUG
     je      .in_view
     cmp     eax, ST_MP_HOST
@@ -1087,7 +1093,7 @@ draw_frame:
     call    hud_draw
 .screen:
     mov     eax, [app_state]
-    cmp     eax, ST_CHAT
+    cmp     eax, ST_EVENT
     ja      .ret
     mov     rax, [screens + rax*8]
     test    rax, rax

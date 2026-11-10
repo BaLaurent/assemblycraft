@@ -111,6 +111,13 @@ extern test_net_drop_slot63, test_net_kill_authority, test_net_fang_kill_reset, 
 extern test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
 extern test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
 extern test_net_spawn_per_centre, test_net_spawn_rotation
+extern test_evsites_camp_site, test_evsites_route, test_evsites_site_of, test_evsites_hop
+extern test_evsites_road_from
+extern test_folk_event_targets, test_folk_caravan, test_mobs_event_march, test_arrows_event_monster
+extern test_hud_heading_dist, test_net_event_state, test_net_event_accept
+extern test_events_wave_size, test_events_camp_flow, test_events_night_wave, test_events_leader_dies
+extern test_events_abandon, test_events_monster_strike, test_events_caravan_flow, test_events_threat_flags
+extern test_events_net
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -384,6 +391,27 @@ tests:
     TEST net_relay_limit
     TEST net_spawn_per_centre
     TEST net_spawn_rotation
+    TEST evsites_camp_site
+    TEST evsites_route
+    TEST evsites_site_of
+    TEST evsites_hop
+    TEST evsites_road_from
+    TEST folk_event_targets
+    TEST folk_caravan
+    TEST mobs_event_march
+    TEST arrows_event_monster
+    TEST hud_heading_dist
+    TEST net_event_state
+    TEST net_event_accept
+    TEST events_wave_size
+    TEST events_camp_flow
+    TEST events_night_wave
+    TEST events_leader_dies
+    TEST events_abandon
+    TEST events_monster_strike
+    TEST events_caravan_flow
+    TEST events_threat_flags
+    TEST events_net
     dq 0
 
 section .rodata
@@ -649,6 +677,27 @@ section .rodata
     TESTNAME net_relay_limit
     TESTNAME net_spawn_per_centre
     TESTNAME net_spawn_rotation
+    TESTNAME evsites_camp_site
+    TESTNAME evsites_route
+    TESTNAME evsites_site_of
+    TESTNAME evsites_hop
+    TESTNAME evsites_road_from
+    TESTNAME folk_event_targets
+    TESTNAME folk_caravan
+    TESTNAME mobs_event_march
+    TESTNAME arrows_event_monster
+    TESTNAME hud_heading_dist
+    TESTNAME net_event_state
+    TESTNAME net_event_accept
+    TESTNAME events_wave_size
+    TESTNAME events_camp_flow
+    TESTNAME events_night_wave
+    TESTNAME events_leader_dies
+    TESTNAME events_abandon
+    TESTNAME events_monster_strike
+    TESTNAME events_caravan_flow
+    TESTNAME events_threat_flags
+    TESTNAME events_net
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0

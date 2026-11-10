@@ -37,6 +37,7 @@ extern combat_player_status, combat_attacker, combat_kb_mult, status_speed_mult,
 extern gear_drop_from_mob
 extern folk_ai, folk_hostile, folk_class_health, folk_base_speed, folk_is_fighter
 extern folk_on_player_hit, folk_on_death, folk_drops, folk_scare, folk_travel_tick
+extern events_step
 extern status_apply
 extern nm_ready_count, nm_centre, net_role, net_self, net_hit_peer, net_applying
 extern net_nearest_target, net_nearest_dist2, net_mob_hit_player, net_mob_damage_out, net_kill_credit
@@ -179,6 +180,7 @@ c_one:      dd 1.0
 ; creeper
 c_ignite2:  dd 9.0                      ; the fuse lights within 3 blocks
 c_stop2:    dd 4.0                      ; it stops walking within 2
+c_march2:   dd 9.0                      ; an event's monster walks on until it is within 3 blocks of its dest
 c_calm2:    dd 49.0                     ; the fuse burns on while the player is within 7
 c_chest:    dd 0.9                      ; player centre above his feet
 c_mid:      dd 0.85                     ; creeper centre above its feet
@@ -675,7 +677,8 @@ yaw_from:
 ; spiders hunt within 16 blocks (ai_creeper, ai_skeleton, ai_spider); the Fallen King hunts within
 ; 48 blocks and sees through smoke (ai_boss); folk follow folk_ai (folk.asm: fighters hunt, patrol and
 ; guard, the rest stroll around home, turn to a player within 4 or run when scared); a panicking pig
-; or chicken runs along its heading; everything else wanders in
+; or chicken runs along its heading; a hostile monster with MOB.patrol != 0 (an event's) that has nobody to
+; hunt walks to its dest until it is within 3 blocks of it (.march); everything else wanders in
 ; 1-4 s legs. At the end (.jump) a mob in a liquid holds jump (it floats up and drifts) and one in LAVA
 ; also burns (mob_lava_burn; a mob that burns to death is gone: eax 0 with MOB.type MOB_NONE); one that
 ; would step into water or lava (WATER or LAVA 0.7 blocks ahead at its feet or just below that) turns
@@ -833,12 +836,31 @@ mob_ai:
     jmp     .jump
 .idle:                                  ; not hunting: a lit fuse dies down while it wanders
     mov     dword [rbx + MOB.windup], 0 ; a lost target breaks the telegraph
+    cmp     dword [rbx + MOB.patrol], 0
+    jne     .march                      ; an event's monster: it walks to dest (the protected NPC) while it has nobody to hunt
     cmp     dword [rbx + MOB.type], MOB_BOSS
     je      .stand                      ; the Fallen King guards his crypt, he never strolls off
     cmp     dword [rbx + MOB.fuse], 0
     jle     .wander
     dec     dword [rbx + MOB.fuse]
     jmp     .wander
+.march:                                 ; dest is a local float pair; within 3 blocks of it the monster stands and waits
+    movss   xmm0, [rbx + MOB.dest_x]
+    subss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + MOB.dest_z]
+    subss   xmm1, [rbx + BODY.z]
+    movaps  xmm2, xmm0
+    mulss   xmm2, xmm2
+    movaps  xmm3, xmm1
+    mulss   xmm3, xmm3
+    addss   xmm2, xmm3
+    comiss  xmm2, [c_march2]
+    jbe     .stand
+    call    yaw_from
+    movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    mov     dword [rsp + 12], 1         ; purposeful: it halts at a shore instead of turning about
+    jmp     .jump
 .passive:
     mov     eax, [rbx + MOB.type]
     cmp     dword [rbx + MOB.panic], 0
@@ -2923,6 +2945,7 @@ mobs_step:
     jb      .loop
     call    mobs_spawn_tick
     call    folk_travel_tick            ; the travelling trader
+    call    events_step                 ; the faction events' state machine (events.asm)
     pop     r12
     pop     rbx
     pop     rbp

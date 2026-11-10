@@ -44,12 +44,13 @@ extern nw_on_boat_place, nw_on_boat_mount, nw_on_boat_mount_ok, nw_on_boat_dismo
 extern nw_on_boat_break, nw_on_boat_pose
 extern nm_on_snap_mobs, nm_on_snap_drops, nm_on_snap_misc, nm_on_hit, nm_on_status, nm_on_mobfx
 extern nm_on_kill, nm_on_hurt, nm_on_pvp_hit, nm_on_interact
-extern nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_standing
+extern nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing
 extern nx_on_faction_add, nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump
 extern nx_on_quest_complete, nx_on_quest_reward, nx_on_drop_spawn, nx_on_give
 extern nm_snap_send, nm_shift, net_boat_tick
 extern net_host_columns_serve, net_cont_frame, net_edits_replay
 extern boat_rider, boat_riding
+extern events_state_send
 ; the game
 extern world_header, world_origin_x, world_origin_z, player, surv, surv_max_health
 extern inv, inv_sel, inv_close_screen, rpg_level, rpg_archetype, rpg_state
@@ -237,7 +238,8 @@ net_handlers:                                   ; message type -> handler(edi sl
     dq ns_on_died                               ; 14 MT_DIED
     dq 0                                        ; 15 MT_BLOB_PART (the transport's own)
     dq ns_on_save_ack                           ; 16 MT_SAVE_ACK
-    dq 0, 0, 0                                  ; 17..19
+    dq nx_on_event_state                        ; 17 MT_EVENT_STATE
+    dq 0, 0                                     ; 18..19
     dq nw_on_block                              ; 20
     dq nw_on_col_req                            ; 21
     dq nw_on_col_data                           ; 22
@@ -1986,6 +1988,8 @@ host_welcome:
 .standing:
     mov     edi, ebx
     call    standing_send
+    mov     edi, ebx
+    call    events_state_send
     LEAVE_N 4
     ret
 
@@ -2187,11 +2191,13 @@ peer_try_ready:
     cmp     r13d, NET_MAX_PEERS
     jb      .loop
     mov     edi, ebx                    ; what changed while it downloaded the world (its handlers drop those
-    call    standing_send               ; messages before game_join): the standings, the quest chain and the PvP
-    mov     edi, ebx                    ; rule as they are now
+    call    standing_send               ; messages before game_join): the standings, the quest chain, the PvP
+    mov     edi, ebx                    ; rule and the running event as they are now
     call    quest_sync_send
     mov     edi, ebx
     call    pvp_send
+    mov     edi, ebx
+    call    events_state_send
 .out:
     LEAVE_N 3
     ret

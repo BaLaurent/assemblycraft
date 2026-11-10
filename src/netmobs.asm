@@ -27,6 +27,7 @@ extern player_take_hit, survival_damage, combat_player_status, combat_kb_mult, c
 extern mobs, mob_hurt, mob_strike, mob_index, mob_replica_init, mob_affix_status
 extern mob_set_stun, mob_set_mark, mob_launch, mob_tgt_slot, ray_aabb
 extern status_apply_ex, rpg_on_mob_killed, dmgnum_spawn, folk_free_captive, mob_stunned_text
+extern events_accept
 extern drops, boats, boat_riding, primed, body_init, gear_rarity, boat_rider
 
 %define NM_MOBS_PER_MSG  24             ; MOBREC records per SNAP_MOBS (16 + 24 x 44 = 1072 <= NET_MSG_MAX)
@@ -1137,14 +1138,18 @@ nm_on_mobfx:
     ret
 
 ; nm_on_interact(edi from, esi type, rdx payload, ecx len): INTERACT, guest -> host: IA_FREE_CAPTIVE frees the captive folk in
-; that slot (folk_free_captive: the standing and the camp's record), when it is still one
+; that slot (folk_free_captive: the standing and the camp's record), when it is still one; IA_EVENT_ACCEPT accepts the event
+; that folk offers (events_accept, which checks the offer itself)
 nm_on_interact:
     cmp     byte [net_role], NET_ROLE_HOST
     jne     .ret
     cmp     ecx, NM_INTERACT_LEN
     jb      .ret
+    cmp     byte [rdx + 1], IA_EVENT_ACCEPT
+    je      .slot
     cmp     byte [rdx + 1], IA_FREE_CAPTIVE
     jne     .ret
+.slot:
     movzx   edi, byte [rdx]
     cmp     edi, MAX_MOBS
     jae     .ret
@@ -1154,6 +1159,8 @@ nm_on_interact:
     lea     rcx, [mobs]
     cmp     dword [rcx + rax + MOB.type], MOB_FOLK
     jne     .ret
+    cmp     byte [rdx + 1], IA_EVENT_ACCEPT
+    je      events_accept
     jmp     folk_free_captive
 .ret:
     ret

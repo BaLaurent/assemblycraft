@@ -260,6 +260,8 @@ folk_model:
     lea     rdx, [extra_pack]
     cmp     r8d, ROLE_TRAVELLER
     je      .done
+    cmp     r8d, ROLE_CARAVAN
+    je      .done                       ; an event's merchant carries the traveller's pack
     cmp     r8d, ROLE_TRADER
     jne     .none
     test    ecx, ecx

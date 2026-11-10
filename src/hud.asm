@@ -1,7 +1,8 @@
 ; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, stealth tint, health bars,
 ; levels, status pips and name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and
 ; level, ten hearts with the health number / armor / food, mana and stamina bars, player status pips,
-; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, banner and
+; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, the running event's
+; bar and note, banner and
 ; the F3 debug lines. In a multiplayer session (net_role != OFF) also the other players' name plates
 ; (peerrender.asm), the chat log at the bottom left, the player list while Tab is held and a Net line
 ; on F3. GUI units; hud_draw runs after ui_begin. The hotbar sits at x0 = ui_w/2 - 91,
@@ -22,7 +23,7 @@ default rel
 %define PL_ROW          11
 
 global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
-global hud_bubble_tiles, banner_text, hud_biome_name, bar_px
+global hud_bubble_tiles, banner_text, hud_biome_name, bar_px, hud_heading_dist
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
 extern ui_item_icon, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
@@ -43,6 +44,7 @@ extern mob_affix_name
 extern folk_name, faction_tier_color, faction_standing, faction_names, faction_short
 extern sleep_fade, world_biome_at, stream_stats, world_origin_x, world_origin_z
 extern debug_is_cheater
+extern ev_hud
 extern frame_input, net_role, net_self, net_peers, net_cfg_name, net_room_code
 extern net_ep, net_ep_rtt_ms, net_ep_is_relay, net_chat_line
 extern net_stat_block_rx, net_stat_block_tx, peers_hud, peer_slot_rgba
@@ -59,6 +61,8 @@ f_25:       dd 25.0                     ; the stamina bar turns red below this
 f_24sq:     dd 576.0                    ; health bars: hostile mobs within 24 blocks
 f_10sq:     dd 100.0                    ; name plates: folk within 10 blocks
 f_48sq:     dd 2304.0                   ; boss bar: a boss within 48 blocks
+f_64sq:     dd 4096.0                   ; the event bar: the protected NPC within 64 blocks
+f_32sq:     dd 1024.0                   ; the event note names the camp's heading from 32 blocks away
 f_bar_up:   dd 0.35                     ; a mob's health bar floats this far over its head
 f_tag_up:   dd 0.5                      ; and its name tag this far
 f_22_5:     dd 22.5
@@ -76,7 +80,7 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
-s_dbg_title: db "AssemblyCraft 0.11.0  ", 0
+s_dbg_title: db "AssemblyCraft 0.12.0  ", 0
 s_cheater:  db "CHEATER", 0
 s_cheat_mark: db "[C]", 0
 s_dbg_fps:  db " fps", 0
@@ -120,6 +124,20 @@ s_ammo_inf: db "  [inf]", 0
 s_quest:    db "Quest: ", 0
 s_metres:   db "m", 0
 s_boss:     db "The Fallen King", 0
+s_help:     db " - Help!", 0            ; a folk that offers an event
+s_ev_defend: db "Defend the ", 0
+s_ev_camp:  db " camp", 0
+s_ev_village: db "Defend the village", 0
+s_ev_escort: db "Escort the ", 0
+s_ev_caravan: db " caravan", 0
+s_ev_off:   db "Setting off in ", 0
+s_ev_wave:  db "Wave ", 0
+s_ev_in:    db " in ", 0
+s_ev_s:     db "s", 0
+s_ev_left:  db " left", 0
+s_ev_colon: db ": ", 0
+s_ev_ambush: db "Ambush! ", 0
+s_ev_waits: db "Caravan waits", 0
 headings:   db "N", 0, 0, "NE", 0, "E", 0, 0, "SE", 0, "S", 0, 0, "SW", 0, "W", 0, 0, "NW", 0   ; 3 bytes each
 s_biome:    db "Biome: ", 0
 s_unknown:  db "unknown", 0
@@ -180,6 +198,7 @@ banner_text: resb 64
 dbg_buf:    resb 128
 quest_buf:  resb 128
 plate_buf:  resb 48                     ; a folk's name plate text
+event_buf:  resb 160                    ; the event note: line one, NUL, line two
 
 section .text
 
@@ -247,10 +266,12 @@ hud_draw:
     mov     esi, r12d
     call    hud_gun
     call    hud_boss
-    mov     edi, 4                      ; quest tracker: top left, under the boss bar when it is up,
-    test    eax, eax
-    jz      .tracker_y
-    mov     edi, 26
+    mov     r13d, eax                   ; r13d = 1 when the boss bar is up (22 units tall)
+    imul    edi, eax, 22
+    call    hud_event_bar               ; the event's protected NPC under it (or at the top)
+    imul    edi, eax, 22
+    imul    ecx, r13d, 22
+    lea     edi, [rdi + rcx + 4]        ; quest tracker: top left, under the bars that are up,
 .tracker_y:
     cmp     dword [app_show_debug], 0
     je      .tracker
@@ -263,7 +284,9 @@ hud_draw:
     cmp     byte [net_role], NET_ROLE_OFF
     cmovne  edi, ecx                    ; and one more for the Net line
 .tracker:
-    call    hud_quest
+    call    hud_quest                   ; eax = the y under the quest note
+    mov     edi, eax
+    call    hud_event                   ; the event note under it
     call    hud_banner_draw
     cmp     byte [net_role], NET_ROLE_OFF
     je      .no_net
@@ -1615,12 +1638,21 @@ hud_mobs:
     lea     rsi, [s_asleep]
     call    str_append
 .named:
+    test    byte [rbx + MOB.fflags], FF_HELP
+    jz      .no_help
+    mov     rdi, rax                    ; "<name> - Help!": it offers an event
+    lea     rsi, [s_help]
+    call    str_append
+.no_help:
     mov     byte [rax], 0
     movzx   edi, byte [rbx + MOB.faction]
     call    faction_tier_color
-    mov     ecx, RGBA(255, 215, 60, 255) ; a champion's name is gold whatever the standing
+    mov     ecx, RGBA(255, 215, 60, 255) ; a champion's name and an offer of help are gold whatever the standing
+    test    byte [rbx + MOB.fflags], FF_HELP
+    jnz     .plate_color
     cmp     byte [rbx + MOB.role], ROLE_CHAMPION
     cmovne  ecx, eax
+.plate_color:
     lea     rdi, [plate_buf]
     mov     esi, [rsp + 16]
     mov     edx, [rsp + 20]
@@ -1674,10 +1706,30 @@ hud_boss:
     xor     eax, eax
     jmp     .ret
 .found:
-    lea     rdi, [s_boss]
+    mov     rdi, rbx
+    lea     rsi, [s_boss]
+    xor     edx, edx                    ; the ribbon hangs from the top edge
+    call    hud_mob_bar
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_mob_bar(rdi mob, rsi name, edx top): the name on a ribbon hanging 14 units from `top` over a framed red
+; health bar (182 x 5) at top + 15, centred on the screen
+; rbx = the mob, r12d = top
+hud_mob_bar:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12d, edx
+    mov     rdi, rsi
     mov     esi, [ui_w]
     shr     esi, 1
-    xor     edx, edx                    ; the ribbon hangs from the top edge
+    mov     edx, r12d
     call    ui_ribbon
     cvtsi2ss xmm0, dword [rbx + MOB.health]
     cvtsi2ss xmm1, dword [rbx + MOB.max_health]
@@ -1688,14 +1740,59 @@ hud_boss:
     mov     edi, [ui_w]
     shr     edi, 1
     sub     edi, 91
-    mov     esi, 15                     ; the frame starts under the 14-high ribbon
+    lea     esi, [r12 + 15]             ; the frame starts under the 14-high ribbon
     mov     edx, 182
     mov     ecx, 5
     mov     r9d, C_BLOOD
     call    bar_draw
-    mov     eax, 1
-.ret:
     add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; hud_event_bar(edi top) -> eax 1 when the protected NPC's bar is up: an event is running (COUNTDOWN..AMBUSH), its
+; protected folk lives and is within 64 blocks; its name on a ribbon over its red bar, from `top` down
+; rbx = the mob, r12d = top; frame: the name (48 bytes)
+hud_event_bar:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 48
+    mov     r12d, edi
+    movzx   eax, byte [ev_hud + EVHUD.state]
+    sub     eax, EVS_COUNTDOWN
+    cmp     eax, EVS_AMBUSH - EVS_COUNTDOWN
+    ja      .none
+    movzx   eax, byte [ev_hud + EVHUD.protect]
+    cmp     eax, MAX_MOBS
+    jae     .none
+    imul    eax, eax, MOB_size
+    lea     rbx, [mobs]
+    add     rbx, rax
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .none
+    cmp     dword [rbx + MOB.health], 0
+    jle     .none
+    mov     rdi, rbx
+    call    mob_dist_sq
+    comiss  xmm0, [f_64sq]
+    ja      .none
+    mov     rdi, rbx
+    mov     rsi, rsp
+    call    folk_name
+    mov     byte [rax], 0
+    mov     rdi, rbx
+    mov     rsi, rsp
+    mov     edx, r12d
+    call    hud_mob_bar
+    mov     eax, 1
+    jmp     .ret
+.none:
+    xor     eax, eax
+.ret:
+    add     rsp, 48
+    pop     r12
     pop     rbx
     pop     rbp
     ret
@@ -1968,11 +2065,63 @@ hud_players:
     pop     rbp
     ret
 
-; hud_quest(edi y): the accepted quest on a pinned paper note at (4, y): "Quest: <title>" and under it
-; "p/c"; for the dungeon and boss quests also the compass heading and distance to the nearest site left
-; to clear, "p/c  NE 120m"
-; rbx = QUESTINFO*, r12 = write cursor into quest_buf, r13d = y, r14 = heading name, then the width of
-; line one; [rsp] dx, dz, [rsp+8] line two (the second string in quest_buf)
+; hud_heading_dist(xmm0 dx, xmm1 dz, rdi dst) -> rax end: "  NE 120m" (two spaces, the compass heading of the
+; offset (dx east, dz south) in 45-degree sectors centred on the compass points, a space, the horizontal distance
+; in whole blocks, "m") appended at dst; the NUL is the caller's
+; rbx = dst, then the end; frame: [rsp] dx, [rsp+4] dz, [rsp+8] the heading name
+hud_heading_dist:
+    push    rbx
+    sub     rsp, 16
+    mov     rbx, rdi
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    xorps   xmm2, xmm2
+    subss   xmm2, xmm1
+    movss   xmm1, xmm2                  ; north is -z
+    call    atan2_deg                   ; xmm0 = atan2(dx, -dz): degrees clockwise from north
+    addss   xmm0, [f_22_5]              ; headings are 45 degrees wide, centred on the compass points
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jae     .sector
+    addss   xmm0, [f_360]
+.sector:
+    divss   xmm0, [f_45]
+    cvttss2si eax, xmm0
+    and     eax, 7
+    lea     eax, [rax + rax*2]          ; 3 bytes per heading name
+    lea     rcx, [headings]
+    add     rcx, rax
+    mov     [rsp + 8], rcx
+    mov     rdi, rbx
+    lea     rsi, [s_gap]
+    call    str_append
+    mov     rdi, rax
+    mov     rsi, [rsp + 8]
+    call    str_append
+    mov     rdi, rax
+    lea     rsi, [s_space]
+    call    str_append
+    movss   xmm0, [rsp]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsp + 4]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0
+    cvttss2si edi, xmm0
+    mov     rsi, rax
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_metres]
+    call    str_append
+    add     rsp, 16
+    pop     rbx
+    ret
+
+; hud_quest(edi y) -> eax the y under its note (y + 30 when it drew one, else y): the accepted quest on a pinned
+; paper note at (4, y): "Quest: <title>" and under it "p/c"; for the dungeon and boss quests also the compass
+; heading and distance to the nearest site left to clear (hud_heading_dist), "p/c  NE 120m"
+; rbx = QUESTINFO*, r12 = write cursor into quest_buf, r13d = y, r14d = the width of line one;
+; [rsp+8] line two (the second string in quest_buf)
 hud_quest:
     push    rbp
     mov     rbp, rsp
@@ -2027,45 +2176,8 @@ hud_quest:
     subss   xmm0, [player + BODY.x]
     cvtsi2ss xmm1, dword [rax + SITE.z]
     subss   xmm1, [player + BODY.z]
-    movss   [rsp], xmm0                 ; dx
-    movss   [rsp + 4], xmm1             ; dz
-    xorps   xmm2, xmm2
-    subss   xmm2, xmm1
-    movss   xmm1, xmm2                  ; north is -z
-    call    atan2_deg                   ; xmm0 = atan2(dx, -dz): degrees clockwise from north
-    addss   xmm0, [f_22_5]              ; headings are 45 degrees wide, centred on the compass points
-    xorps   xmm1, xmm1
-    comiss  xmm0, xmm1
-    jae     .sector
-    addss   xmm0, [f_360]
-.sector:
-    divss   xmm0, [f_45]
-    cvttss2si eax, xmm0
-    and     eax, 7
-    lea     eax, [rax + rax*2]          ; 3 bytes per heading name
-    lea     r14, [headings]
-    add     r14, rax
     mov     rdi, r12
-    lea     rsi, [s_gap]
-    call    str_append
-    mov     rdi, rax
-    mov     rsi, r14
-    call    str_append
-    mov     rdi, rax
-    lea     rsi, [s_space]
-    call    str_append
-    movss   xmm0, [rsp]
-    mulss   xmm0, xmm0
-    movss   xmm1, [rsp + 4]
-    mulss   xmm1, xmm1
-    addss   xmm0, xmm1
-    sqrtss  xmm0, xmm0
-    cvttss2si edi, xmm0
-    mov     rsi, rax
-    call    i32_to_str
-    mov     rdi, rax
-    lea     rsi, [s_metres]
-    call    str_append
+    call    hud_heading_dist
     mov     r12, rax
 .draw:
     mov     byte [r12], 0
@@ -2096,7 +2208,9 @@ hud_quest:
     mov     ecx, C_INK
     mov     r8d, 1
     call    ui_text_ink
+    add     r13d, 30                    ; the note is 26 high, and 4 of gap under it
 .ret:
+    mov     eax, r13d
     add     rsp, 16
     pop     r14
     pop     r13
@@ -2306,6 +2420,206 @@ debug_emit:
 %macro EMIT 0                           ; ... in white
     EMIT_RGBA WHITE
 %endmacro
+
+; hud_event(edi y): the running event (ev_hud, COUNTDOWN..AMBUSH) on a pinned paper note at (4, y), as hud_quest draws
+; its quest: line one "Defend the <Faction> camp" / "Defend the village" / "Escort the <Faction> caravan", line two the
+; state: "Wave 1/3 in 10s", "Wave 2/3: 4 left", "Wave 3/3 in 20s", "Setting off in 10s", "Ambush! 3 left", the caravan's
+; heading and distance to its destination, or "Caravan waits" and the heading and distance to the merchant; a camp
+; kind's line also names the camp's heading and distance once the player is more than 32 blocks from it
+; rbx = write cursor into event_buf, r12d = heading: 0 none, 1 to (ax, az), 2 to the protected NPC, 3 to (ax, az) when
+; far, r13d = y, r14d = the faction, then the width of line one; frame: [rsp] dx, [rsp+4] dz, [rsp+8] line two
+hud_event:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 16
+    mov     r13d, edi
+    movzx   eax, byte [ev_hud + EVHUD.state]
+    sub     eax, EVS_COUNTDOWN
+    cmp     eax, EVS_AMBUSH - EVS_COUNTDOWN
+    ja      .ret
+    lea     rbx, [event_buf]
+    movzx   r14d, byte [ev_hud + EVHUD.faction]
+    cmp     r14d, NUM_FACTIONS
+    jb      .faction_ok
+    xor     r14d, r14d                  ; (a wild value from the wire reads as the Villagers)
+.faction_ok:
+    movzx   ecx, byte [ev_hud + EVHUD.kind]
+    cmp     ecx, EVK_CARAVAN
+    jae     .escort
+    test    r14d, r14d
+    jnz     .camp
+    cmp     ecx, EVK_SITE
+    jne     .camp
+    APPEND_STR s_ev_village             ; the village elder's event
+    jmp     .line_two
+.camp:
+    APPEND_STR s_ev_defend
+    lea     rax, [faction_names]
+    mov     rdi, rbx
+    mov     rsi, [rax + r14*8]
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_ev_camp
+    jmp     .line_two
+.escort:
+    APPEND_STR s_ev_escort
+    lea     rax, [faction_names]
+    mov     rdi, rbx
+    mov     rsi, [rax + r14*8]
+    call    str_append
+    mov     rbx, rax
+    APPEND_STR s_ev_caravan
+.line_two:
+    mov     byte [rbx], 0               ; line one is done; line two goes after its NUL
+    inc     rbx
+    mov     [rsp + 8], rbx
+    xor     r12d, r12d
+    movzx   eax, byte [ev_hud + EVHUD.state]
+    movzx   ecx, byte [ev_hud + EVHUD.kind]
+    cmp     eax, EVS_COUNTDOWN
+    je      .countdown
+    cmp     eax, EVS_WAVE
+    je      .wave
+    cmp     eax, EVS_BREAK
+    je      .break
+    cmp     eax, EVS_TRAVEL
+    je      .travel
+    APPEND_STR s_ev_ambush              ; EVS_AMBUSH
+    movzx   eax, byte [ev_hud + EVHUD.left]
+    APPEND_EAX
+    APPEND_STR s_ev_left
+    jmp     .heading
+.countdown:
+    cmp     ecx, EVK_CARAVAN
+    jae     .set_off
+    mov     r14d, 1                     ; "Wave 1/n in Ns"
+    jmp     .wave_in
+.set_off:
+    APPEND_STR s_ev_off
+    movzx   eax, word [ev_hud + EVHUD.secs]
+    APPEND_EAX
+    APPEND_STR s_ev_s
+    jmp     .heading
+.break:
+    movzx   r14d, byte [ev_hud + EVHUD.wave]
+    inc     r14d                        ; "Wave w+1/n in Ns"
+.wave_in:
+    APPEND_STR s_ev_wave
+    APPEND_INT r14d
+    APPEND_STR s_slash
+    movzx   eax, byte [ev_hud + EVHUD.waves]
+    APPEND_EAX
+    APPEND_STR s_ev_in
+    movzx   eax, word [ev_hud + EVHUD.secs]
+    APPEND_EAX
+    APPEND_STR s_ev_s
+    mov     r12d, 3
+    jmp     .heading
+.wave:
+    APPEND_STR s_ev_wave                ; "Wave w/n: k left"
+    movzx   eax, byte [ev_hud + EVHUD.wave]
+    APPEND_EAX
+    APPEND_STR s_slash
+    movzx   eax, byte [ev_hud + EVHUD.waves]
+    APPEND_EAX
+    APPEND_STR s_ev_colon
+    movzx   eax, byte [ev_hud + EVHUD.left]
+    APPEND_EAX
+    APPEND_STR s_ev_left
+    mov     r12d, 3
+    jmp     .heading
+.travel:
+    mov     r12d, 1
+    test    byte [ev_hud + EVHUD.flags], EHF_WAIT
+    jz      .heading
+    APPEND_STR s_ev_waits
+    mov     r12d, 2
+.heading:
+    test    r12d, r12d
+    jz      .draw
+    cmp     r12d, 2
+    je      .to_npc
+    mov     eax, [ev_hud + EVHUD.ax]    ; the destination or camp centre: absolute cell, to local
+    sub     eax, [world_origin_x]
+    cvtsi2ss xmm0, eax
+    subss   xmm0, [player + BODY.x]
+    mov     eax, [ev_hud + EVHUD.az]
+    sub     eax, [world_origin_z]
+    cvtsi2ss xmm1, eax
+    subss   xmm1, [player + BODY.z]
+    jmp     .have_delta
+.to_npc:
+    movzx   eax, byte [ev_hud + EVHUD.protect]
+    cmp     eax, MAX_MOBS
+    jae     .draw
+    imul    eax, eax, MOB_size
+    lea     rcx, [mobs]
+    movss   xmm0, [rcx + rax + BODY.x]
+    subss   xmm0, [player + BODY.x]
+    movss   xmm1, [rcx + rax + BODY.z]
+    subss   xmm1, [player + BODY.z]
+.have_delta:
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    cmp     r12d, 3
+    jne     .head_go
+    mulss   xmm0, xmm0
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    comiss  xmm0, [f_32sq]
+    jbe     .draw                       ; near the camp: no heading
+.head_go:
+    xor     r14d, r14d
+    cmp     rbx, [rsp + 8]
+    sete    r14b                        ; a line that is only the heading starts past its two-space gap
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    mov     rdi, rbx
+    call    hud_heading_dist
+    mov     rbx, rax
+    lea     r14d, [r14 + r14]
+    add     [rsp + 8], r14
+.draw:
+    mov     byte [rbx], 0
+    lea     rdi, [event_buf]
+    mov     esi, 1
+    call    ui_text_width
+    mov     r14d, eax
+    mov     rdi, [rsp + 8]
+    mov     esi, 1
+    call    ui_text_width
+    cmp     eax, r14d
+    cmovl   eax, r14d                   ; the wider of the two lines
+    lea     ecx, [rax + 7]              ; the note is the ink width + 8 (the advance counts a trailing gap)
+    mov     edi, NINE_NOTE
+    mov     esi, 4
+    mov     edx, r13d
+    mov     r8d, 26                     ; two lines of 10, and 6 for the margins
+    call    ui_nine
+    lea     rdi, [event_buf]
+    mov     esi, 8
+    lea     edx, [r13 + 3]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    mov     rdi, [rsp + 8]
+    mov     esi, 8
+    lea     edx, [r13 + 13]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+.ret:
+    add     rsp, 16
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
 
 ; hud_biome_name(edi biome) -> rax the name of that BIOME_* as a C string; "unknown" for any other value
 ; (-1 from world_biome_at: the column is not loaded) (leaf)

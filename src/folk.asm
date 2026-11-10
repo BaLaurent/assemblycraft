@@ -12,6 +12,7 @@ default rel
 global folk_spawn, folk_init, folk_make_champion, folk_ai, folk_interact, folk_hostile
 global folk_on_player_hit, folk_on_death, folk_drops, folk_hit_by, folk_name, folk_travel_tick
 global folk_weapon_affix, folk_class_health, folk_base_speed, folk_is_fighter, folk_scare, folk_free_captive
+global folk_find_target, folk_target_at
 
 extern mobs, mob_spawn, mob_scale, make_elite, mob_level_for, yaw_from
 extern mob_blow, mob_melee_hit, mob_arrow_flags, knock_player, mob_reel, mob_stunned_text
@@ -110,6 +111,7 @@ s_elder:    db "Elder", 0
 s_merchant: db "Merchant", 0
 s_chief:    db " Chief", 0
 s_trader:   db " Trader", 0
+s_caravan:  db " Merchant", 0
 s_worker:   db " Worker", 0
 s_captive:  db "Captive ", 0
 s_travelling: db "Travelling ", 0
@@ -779,7 +781,7 @@ folk_drop_weapon:
 ; slew (tagged) its weapon, the gear of the Fallen King's kind (gear_drop_from_mob: his class's
 ; legendary, 3 boss rolls and a jewel one time in four) and 20 + level coins, one that died some
 ; other way (it comes back) a guard's; a leader 5 + level / 5 coins; a trader or traveller 3; a
-; worker or captive nothing.
+; worker or captive nothing; an event merchant (ROLE_CARAVAN) 3 like a trader.
 folk_drops:
     push    rbp
     mov     rbp, rsp
@@ -798,6 +800,8 @@ folk_drops:
     cmp     eax, ROLE_TRADER
     je      .trade
     cmp     eax, ROLE_TRAVELLER
+    je      .trade
+    cmp     eax, ROLE_CARAVAN
     jne     .ret
 .trade:
     mov     edx, 3
@@ -848,7 +852,8 @@ folk_drops:
 ; folk_name(rdi mob, rsi out) -> rax the end of the name written at out (no NUL): a champion its own
 ; name; the Villagers' leader "Elder" and trader "Merchant"; another leader "<Member> Chief", trader
 ; "<Member> Trader", a fighter "<Member> <Class>", a worker "<Member> Worker", a captive "Captive
-; <Member>", a traveller "Travelling <Member>" (Member: Villager, Bandit, Cultist, Beastkin, Stonekin)
+; <Member>", an event's merchant "<Member> Merchant", a traveller "Travelling <Member>" (Member:
+; Villager, Bandit, Cultist, Beastkin, Stonekin)
 ; rbx = the mob, r12 = the end of the line, r13d = the faction
 folk_name:
     push    rbp
@@ -881,6 +886,8 @@ folk_name:
     je      .captive
     cmp     eax, ROLE_TRAVELLER
     je      .traveller
+    cmp     eax, ROLE_CARAVAN
+    je      .caravan
     jmp     .member
 .champion:
     lea     rcx, [champion_names]
@@ -929,6 +936,10 @@ folk_name:
 .captive:
     APPEND  s_captive
     jmp     .member
+.caravan:
+    call    folk_member
+    APPEND  s_caravan
+    jmp     .done
 .traveller:
     APPEND  s_travelling
 .member:
@@ -986,7 +997,10 @@ folk_ai:
 ; the pace of folk_base_speed. A traveller whose time is up (timer_a) and who stands more than 24
 ; blocks from the player is gone. A captive stands and turns to a player within 4. A scared one
 ; (MOB.panic) runs from the player (target 1) or straight on at 1.5 x its speed. Otherwise: the 0.9
-; rule, it walks home from beyond 6 blocks, turns to a player within 4 and else wanders.
+; rule, it walks home from beyond 6 blocks, turns to a player within 4 and else wanders. An event's
+; merchant (ROLE_CARAVAN, after the panic check) turns to a player within 4 or stands while FF_HALT is
+; set, else walks to dest like a patrol and counts the steps it is blocked in ai_timer (0 whenever it
+; moves free; events.asm reads it).
 ; Frame: [rsp] to the player dx, dz, distance^2; [rsp+12] to home dx, dz, distance^2
 folk_npc:
     push    rbp
@@ -1046,6 +1060,8 @@ folk_npc:
     mov     eax, 1
     jmp     .ret
 .calm:
+    cmp     byte [rbx + MOB.role], ROLE_CARAVAN
+    je      .caravan                    ; (a scared merchant ran above: the panic stays first)
     movss   xmm0, [rbx + MOB.home_x]
     subss   xmm0, [rbx + BODY.x]
     movss   [rsp + 12], xmm0
@@ -1080,6 +1096,36 @@ folk_npc:
     jmp     .ret
 .wander:
     mov     eax, 2
+    jmp     .ret
+.caravan:                               ; an event's merchant: it stands (FF_HALT) or walks to dest like a patrol
+    test    byte [rbx + MOB.fflags], FF_HALT
+    jz      .c_walk
+    movss   xmm0, [rsp + 8]
+    comiss  xmm0, [c_talk2]
+    jb      .face                       ; a player within 4: it turns to him (and restarts the blocked count)
+    mov     dword [rbx + MOB.input + INPUT.fwd], 0
+    mov     dword [rbx + MOB.ai_timer], 0
+    xor     eax, eax
+    jmp     .ret
+.c_walk:                                ; ai_timer counts the steps in a row it was blocked (events.asm reads it)
+    cmp     dword [rbx + BODY.blocked], 0
+    jne     .c_stuck
+    cmp     dword [rbx + MOB.input + INPUT.fwd], 0
+    jne     .c_free                     ; (it sets 1 every step it walks)
+.c_stuck:
+    inc     dword [rbx + MOB.ai_timer]
+    jmp     .c_steer
+.c_free:
+    mov     dword [rbx + MOB.ai_timer], 0
+.c_steer:
+    movss   xmm0, [rbx + MOB.dest_x]
+    subss   xmm0, [rbx + BODY.x]
+    movss   xmm1, [rbx + MOB.dest_z]
+    subss   xmm1, [rbx + BODY.z]
+    call    yaw_from
+    movss   [rbx + BODY.yaw], xmm0
+    mov     dword [rbx + MOB.input + INPUT.fwd], 1
+    mov     eax, 1
 .ret:
     add     rsp, 40
     pop     rbx
@@ -1088,7 +1134,8 @@ folk_npc:
 
 ; folk_find_target(rdi mob) -> eax the nearest enemy within 16 blocks (3 dimensions): 1 for the
 ; player when this fighter wants him for one (folk_wants_player), 2 + slot for a folk of a rival
-; faction that is no captive; 0 for none.
+; faction that is no captive, and for a defender (patrol != 0 with the low two bits 0, an event's) also
+; a non-folk mob that is alive and carries patrol | 2 (EV_KEY_ATTACK: the same event's attacker); 0 for none.
 ; rbx = the mob, r12 = the folk looked at, r13d = its slot; frame: [rsp] best distance^2, [rsp+4] best code
 folk_find_target:
     push    rbp
@@ -1154,7 +1201,7 @@ folk_find_target:
     xor     r13d, r13d
 .loop:
     cmp     dword [r12 + MOB.type], MOB_FOLK
-    jne     .next
+    jne     .nonfolk
     cmp     r12, rbx
     je      .next
     cmp     byte [r12 + MOB.role], ROLE_CAPTIVE
@@ -1164,6 +1211,7 @@ folk_find_target:
     call    faction_enemies
     test    eax, eax
     jz      .next
+.measure:
     movss   xmm0, [r12 + BODY.x]
     subss   xmm0, [rbx + BODY.x]
     mulss   xmm0, xmm0
@@ -1180,6 +1228,21 @@ folk_find_target:
     movss   [rsp], xmm0
     lea     eax, [r13 + 2]
     mov     [rsp + 4], eax
+    jmp     .next
+.nonfolk:                               ; an event monster of the attackers' key (patrol | 2) is an enemy of a defender (patrol key, low bits 0)
+    cmp     dword [r12 + MOB.type], MOB_NONE
+    je      .next
+    cmp     dword [r12 + MOB.health], 0
+    jle     .next
+    mov     eax, [rbx + MOB.patrol]
+    test    eax, eax
+    jz      .next
+    test    al, 3
+    jnz     .next
+    or      eax, EV_KEY_ATTACK
+    cmp     [r12 + MOB.patrol], eax
+    jne     .next
+    jmp     .measure
 .next:
     add     r12, MOB_size
     inc     r13d
@@ -1196,7 +1259,7 @@ folk_find_target:
 ; folk_target_at(rdi mob, rsi out float[3]) -> eax 1 and out = the feet of the mob's target when
 ; that target still counts: the player while folk_wants_player says so, another mob while it is a
 ; folk of an enemy faction and no captive; and it stands within 24 blocks (horizontally). 0, out
-; untouched, otherwise.
+; untouched, otherwise. A non-folk target counts by the same event rule as folk_find_target.
 ; rbx = the mob, r12 = out, r13 = the BODY looked at
 folk_target_at:
     push    rbp
@@ -1217,7 +1280,7 @@ folk_target_at:
     lea     r13, [mobs]
     add     r13, rax
     cmp     dword [r13 + MOB.type], MOB_FOLK
-    jne     .none
+    jne     .nonfolk
     cmp     byte [r13 + MOB.role], ROLE_CAPTIVE
     je      .none
     movzx   edi, byte [rbx + MOB.faction]
@@ -1225,6 +1288,20 @@ folk_target_at:
     call    faction_enemies
     test    eax, eax
     jz      .none
+    jmp     .measure
+.nonfolk:                               ; the same event-monster rule as folk_find_target
+    cmp     dword [r13 + MOB.type], MOB_NONE
+    je      .none
+    cmp     dword [r13 + MOB.health], 0
+    jle     .none
+    mov     eax, [rbx + MOB.patrol]
+    test    eax, eax
+    jz      .none
+    test    al, 3
+    jnz     .none
+    or      eax, EV_KEY_ATTACK
+    cmp     [r13 + MOB.patrol], eax
+    jne     .none
     jmp     .measure
 .player:
     cmp     byte [net_role], NET_ROLE_OFF
@@ -1880,7 +1957,8 @@ folk_fight:
 ; else "<Faction> won't trade with you yet"; a captive, unless an awake fighter of its captor stands
 ; within 12 blocks ("Its guards are watching"), is freed: +25 with its faction, its camp's record
 ; marked (structures_mark_freed), "Freed a <Member> captive (+25)", the folk leaves in a burst of
-; magic. Anyone else, an empty slot or a bad one: 0.
+; magic. A folk with FF_HELP (an event offer) opens ST_EVENT whatever its role; an event merchant
+; (ROLE_CARAVAN) without it trades like a traveller. Anyone else, an empty slot or a bad one: 0.
 ; rbx = the folk, r12d = its faction; frame: [rsp] the banner line
 folk_interact:
     push    rbp
@@ -1899,12 +1977,19 @@ folk_interact:
     movzx   r12d, byte [rbx + MOB.faction]
     cmp     r12d, NUM_FACTIONS
     jae     .ret
+    test    byte [rbx + MOB.fflags], FF_HELP
+    jz      .no_help
+    mov     eax, ST_EVENT
+    jmp     .ret
+.no_help:
     movzx   eax, byte [rbx + MOB.role]
     cmp     eax, ROLE_LEADER
     je      .leader
     cmp     eax, ROLE_TRADER
     je      .trader
     cmp     eax, ROLE_TRAVELLER
+    je      .traveller
+    cmp     eax, ROLE_CARAVAN
     je      .traveller
     cmp     eax, ROLE_CAPTIVE
     je      .captive

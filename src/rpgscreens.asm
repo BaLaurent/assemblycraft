@@ -21,7 +21,7 @@
 default rel
 
 global screen_skills, screen_character, screen_trade, screen_dialog
-global screen_shrine, screen_leader, web_node_xy, web_pick, sheet_build, sheet_section, sheet_sec
+global screen_shrine, screen_leader, screen_event, web_node_xy, web_pick, sheet_build, sheet_section, sheet_sec
 
 extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
 extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
@@ -41,6 +41,8 @@ extern trade_offer, trade_can, trade_execute, trade_count, trade_title
 extern screen_faction, faction_names, faction_standing, faction_tier, faction_tier_color
 extern faction_rivals, faction_champion_defeated, faction_tribute, faction_wanted
 extern tier_names, champion_names
+extern mobs, net_role, net_interact_out, game_open_npc
+extern events_accept, events_offer_kind, ev_kind_waves, ev_kind_rep
 
 ; ---- colours: the palette is theme.inc's; these are what this file adds ----------------------
 %define TINT_FAINT  RGBA(255, 255, 255, 205)    ; a web node nothing links to: its frame and icon
@@ -189,9 +191,27 @@ s_tr_i1:        db "1 item: +1", 0
 s_tr_i10:       db "10 items: +10", 0
 s_pack_coins:   db "Coins ", 0
 s_pack_items:   db ", items ", 0
+s_merchant_sfx: db " Merchant", 0
+s_decline:      db "Decline", 0
+s_ev_l1_camp:   db "Raiders are coming for our camp.", 0
+s_ev_l1_site:   db "Our camp is under threat.", 0
+s_ev_l1_village: db "The village is under threat.", 0
+s_ev_l1_caravan: db "Escort my caravan to safety.", 0
+s_ev_l1_road:   db "Escort my caravan along the road.", 0
+s_ev_l2_camp:   db "Hold them off for ", 0
+s_ev_l2_site:   db "Help us hold it for ", 0
+s_ev_l2_expect: db "Expect ", 0
+s_ev_waves:     db " waves.", 0
+s_ev_ambushes:  db " ambushes on the way.", 0
+s_ev_reward:    db "Reward: +", 0
+s_ev_reward_sfx: db " standing, loot", 0
 
 align 8
 leader_greetings: dq s_greet_neutral, s_greet_friendly, s_greet_allied    ; by tier from Neutral up
+; the offer screen's lines by EVK_* (0 = none): line one, the start of line two and its end after the count
+ev_line1:       dq 0, s_ev_l1_camp, s_ev_l1_site, s_ev_l1_caravan, s_ev_l1_road
+ev_line2a:      dq 0, s_ev_l2_camp, s_ev_l2_site, s_ev_l2_expect, s_ev_l2_expect
+ev_line2b:      dq 0, s_ev_waves, s_ev_waves, s_ev_ambushes, s_ev_ambushes
 ; the shrine's four tribute buttons: label, x, y (panel relative), kind (0 coins, 1 the wanted
 ; item) and the units paid (faction_tribute's kind and units)
 tribute_rows:
@@ -2716,6 +2736,123 @@ screen_leader:
     BTN     s_leave, r12, (DL_W - 100) / 2, r13, 118, 100
     test    eax, eax
     jz      .ret
+    mov     edi, ST_PLAYING
+    call    app_goto
+.ret:
+    LEAVE_FRAME 24
+
+; screen_event(): ST_EVENT, the offer of the folk in game_open_npc (it has FF_HELP): "<Faction> Leader" (camps and
+; sites) or "<Faction> Merchant" (caravans) over what it asks, what it promises, and Accept / Decline. Accept starts the
+; event (events_accept; a guest asks the host with IA_EVENT_ACCEPT) and both close the screen. The screen closes at once
+; when the folk is gone, no longer offers, or events_offer_kind knows no event for it.
+; rbx = the mob, r14d = its faction, r15 = write cursor, r12d, r13d = panel origin; frame: [rsp] EVK_*, [rsp+4] the slot
+screen_event:
+    ENTER_FRAME 24
+    call    close_check
+    test    eax, eax
+    jnz     .ret
+    mov     eax, [game_open_npc]
+    mov     [rsp + 4], eax
+    cmp     eax, MAX_MOBS
+    jae     .close
+    imul    eax, eax, MOB_size
+    lea     rbx, [mobs]
+    add     rbx, rax
+    cmp     dword [rbx + MOB.type], MOB_FOLK
+    jne     .close
+    test    byte [rbx + MOB.fflags], FF_HELP
+    jz      .close
+    mov     edi, [rsp + 4]
+    call    events_offer_kind
+    mov     [rsp], eax
+    sub     eax, EVK_CAMP
+    cmp     eax, EVK_ROAD - EVK_CAMP
+    ja      .close
+    movzx   r14d, byte [rbx + MOB.faction]
+    cmp     r14d, NUM_FACTIONS
+    jb      .faction_ok
+    xor     r14d, r14d
+.faction_ok:
+    lea     r15, [hdr_buf]              ; "<Faction> Leader" / "<Faction> Merchant"
+    lea     rax, [faction_names]
+    APPP    [rax + r14*8]
+    lea     rsi, [s_leader_sfx]
+    lea     rdx, [s_merchant_sfx]
+    cmp     dword [rsp], EVK_CARAVAN
+    cmovae  rsi, rdx
+    mov     rdi, r15
+    call    str_append
+    mov     r15, rax
+    mov     byte [r15], 0
+    mov     edi, DL_W
+    mov     esi, DL_H
+    lea     rdx, [hdr_buf]
+    call    panel_begin
+    mov     r12d, [s_px]
+    mov     r13d, [s_py]
+    mov     eax, [rsp]                  ; line one: what it asks
+    lea     rcx, [ev_line1]
+    mov     rdi, [rcx + rax*8]
+    lea     rdx, [s_ev_l1_village]
+    test    r14d, r14d
+    jnz     .line1
+    cmp     eax, EVK_SITE
+    cmove   rdi, rdx                    ; the village elder's own words
+.line1:
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 24]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    lea     r15, [row_buf]              ; line two: "Hold them off for 3 waves." / "Expect 2 ambushes on the way."
+    mov     eax, [rsp]
+    lea     rcx, [ev_line2a]
+    APPP    [rcx + rax*8]
+    mov     eax, [rsp]
+    lea     rcx, [ev_kind_waves]
+    movzx   eax, byte [rcx + rax]
+    APPN    eax
+    mov     eax, [rsp]
+    lea     rcx, [ev_line2b]
+    APPP    [rcx + rax*8]
+    mov     byte [r15], 0
+    lea     rdi, [row_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 40]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    lea     r15, [row_buf]              ; the promise: "Reward: +40 standing, loot"
+    APPZ    s_ev_reward
+    mov     eax, [rsp]
+    lea     rcx, [ev_kind_rep]
+    movzx   eax, byte [rcx + rax]
+    APPN    eax
+    APPZ    s_ev_reward_sfx
+    mov     byte [r15], 0
+    lea     rdi, [row_buf]
+    lea     esi, [r12 + 8]
+    lea     edx, [r13 + 64]
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    BTN     s_accept, r12, 16, r13, 118, 100
+    test    eax, eax
+    jz      .decline
+    mov     edi, [rsp + 4]
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .accept_here
+    mov     esi, IA_EVENT_ACCEPT        ; a guest asks the host to start it
+    call    net_interact_out
+    jmp     .close
+.accept_here:
+    call    events_accept
+    jmp     .close
+.decline:
+    BTN     s_decline, r12, DL_W - 116, r13, 118, 100
+    test    eax, eax
+    jz      .ret
+.close:
     mov     edi, ST_PLAYING
     call    app_goto
 .ret:

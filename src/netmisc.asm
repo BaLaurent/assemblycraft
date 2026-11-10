@@ -8,7 +8,7 @@
 %include "common.inc"
 default rel
 
-global nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_standing, nx_on_faction_add
+global nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing, nx_on_faction_add
 global nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump, nx_on_quest_complete, nx_on_quest_reward
 global nx_on_drop_spawn, nx_on_give
 global net_proj_out, net_proj_end_out, net_sound_out, net_fx_out, net_event_out, net_standing_out
@@ -21,6 +21,7 @@ extern net_hurt_send_direct
 extern arrows, arrow_net, arrows_spawn
 extern audio_play_at, audio_play, fx_explosion, fx_burst
 extern structures_dungeon_reward, structures_boss_reward
+extern events_on_ev, events_net_apply
 extern world_header, faction_add, faction_set_from_net
 extern rpg_state, quests_current, quests_accept, quests_bump, quests_settle, quests_reward, quests_refund
 extern drops, drops_spawn, inv_add_dmg, player
@@ -758,9 +759,13 @@ net_event_out:
     pop     rbp
     ret
 
-; event_apply(ebx code, r12d arg) -> the player's own half of the event: the XP and the banner (structures.asm)
+; event_apply(ebx code, r12d arg) -> the player's own half of the event: the XP and the banner (structures.asm), or for the
+; events of events.asm (EV_EVENT_OFFER..EV_EVENT_LOST) its banner, sound and XP
 event_apply:
     sub     rsp, 8
+    lea     eax, [rbx - EV_EVENT_OFFER]
+    cmp     eax, EV_EVENT_LOST - EV_EVENT_OFFER
+    jbe     .event
     mov     edi, r12d
     cmp     ebx, EV_DUNGEON_CLEARED
     jne     .boss
@@ -770,6 +775,11 @@ event_apply:
     cmp     ebx, EV_BOSS_KILLED
     jne     .ret
     call    structures_boss_reward
+    jmp     .ret
+.event:
+    mov     edi, ebx
+    mov     esi, r12d
+    call    events_on_ev
 .ret:
     add     rsp, 8
     ret
@@ -793,6 +803,18 @@ nx_on_event:
     pop     r13
     pop     r12
     pop     rbx
+    ret
+
+; nx_on_event_state(edi slot, esi type, rdx payload, ecx len): a guest takes the host's running event (one EVHUD, 20 bytes)
+nx_on_event_state:
+    cmp     byte [net_role], NET_ROLE_GUEST
+    jne     .ret
+    cmp     ecx, 20
+    jb      .ret
+    mov     rdi, rdx
+    mov     esi, ecx
+    jmp     events_net_apply
+.ret:
     ret
 
 ; net_standing_out(): the host sends every guest the standings and the champion bits (STANDING)

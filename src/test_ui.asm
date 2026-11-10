@@ -1,10 +1,11 @@
-; test_ui.asm - the pure geometry of the nine-slice frames (ui_nine_layout).
+; test_ui.asm - the pure geometry of the nine-slice frames (ui_nine_layout) and the compass text of the quest and event
+; notes (hud_heading_dist).
 %include "common.inc"
 default rel
 
-global test_ui_nine_layout
+global test_ui_nine_layout, test_hud_heading_dist
 
-extern ui_nine_layout
+extern ui_nine_layout, hud_heading_dist, str_eq
 
 %define COV_MAX 30000
 
@@ -181,5 +182,89 @@ test_ui_nine_layout:
     ret
 .fail:
     mov     eax, 1
+    pop     rbp
+    ret
+
+; ---- hud_heading_dist --------------------------------------------------------------------------------------------------------
+
+section .rodata
+align 8
+; offset (dx east, dz south) as floats, then the text hud_heading_dist appends: two spaces, the heading, a space, the whole
+; blocks, "m". The headings are 45-degree sectors centred on the compass points: every offset here is mid-sector.
+hd_cases:
+    dd 0.0, -100.0
+    dq hd_n
+    dd 100.0, 0.0
+    dq hd_e
+    dd 70.72, 70.72                     ; 100.01 blocks: truncated to 100
+    dq hd_se
+    dd 0.0, 100.0
+    dq hd_s
+    dd -100.0, 0.0
+    dq hd_w
+    dd -70.72, -70.72
+    dq hd_nw
+    dd 0.0, -5.9                        ; truncated, not rounded
+    dq hd_n5
+    dd 30.0, -40.0                      ; north-east, 50 blocks
+    dq hd_ne
+HD_N equ 8
+hd_n:   db "  N 100m", 0
+hd_e:   db "  E 100m", 0
+hd_se:  db "  SE 100m", 0
+hd_s:   db "  S 100m", 0
+hd_w:   db "  W 100m", 0
+hd_nw:  db "  NW 100m", 0
+hd_n5:  db "  N 5m", 0
+hd_ne:  db "  NE 50m", 0
+
+section .bss
+hd_buf: resb 32
+
+section .text
+
+; hud_heading_dist(dx, dz, dst) appends "  <heading> <distance>m" at dst and returns the end: every case of hd_cases gives its
+; text exactly (a NUL written at the returned end ends the very string compared, so a wrong end or length fails), and the byte
+; before dst is untouched
+; rbx = the case row, r12d = the case number
+test_hud_heading_dist:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    sub     rsp, 16
+    lea     rbx, [hd_cases]
+    xor     r12d, r12d
+.case:
+    cmp     r12d, HD_N
+    jae     .pass
+    lea     rdi, [hd_buf]
+    mov     ecx, 32
+    mov     al, 0x7F
+    rep stosb
+    movss   xmm0, [rbx]
+    movss   xmm1, [rbx + 4]
+    lea     rdi, [hd_buf + 4]
+    call    hud_heading_dist
+    mov     byte [rax], 0
+    lea     rdi, [hd_buf + 4]
+    mov     rsi, [rbx + 8]
+    call    str_eq
+    test    eax, eax
+    jz      .fail
+    cmp     byte [hd_buf + 3], 0x7F
+    jne     .fail
+    add     rbx, 16
+    inc     r12d
+    jmp     .case
+.pass:
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    add     rsp, 16
+    pop     r12
+    pop     rbx
     pop     rbp
     ret

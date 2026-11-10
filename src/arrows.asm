@@ -459,13 +459,20 @@ arrows_step:
     lea     rdx, [mobs]
     add     rdx, rcx                    ; the nearest mob
     cmp     dword [rdx + MOB.type], MOB_FOLK
-    jne     .player_arrow
+    je      .folk_target
+    mov     ecx, [rdx + MOB.patrol]     ; a monster: only an event's attacker (patrol & 3 == 2) is an enemy of a folk's arrow
+    and     ecx, 3
+    cmp     ecx, 2
+    je      .hit_folk_shot
+    jmp     .player_arrow
+.folk_target:
     mov     edi, [rbx + ARROWENT.owner]
     sub     edi, OWNER_FOLK             ; the shooter's faction
     movzx   esi, byte [rdx + MOB.faction]
     call    faction_enemies
     test    eax, eax
     jz      .player_arrow               ; a friend: the shot flies on
+.hit_folk_shot:
     HIT_POINT
     mov     edi, [rsp + S_IDX]
     mov     esi, [rbx + ARROWENT.damage]

@@ -11,7 +11,8 @@
 ;            list of every stat with a flat debug bonus (debug_stat_bonus, added by rpg_recompute after the
 ;            caps, saved in WORLDHDR.debug_stats)
 ;   Items    a name filter over every item, +1 / +16 / +64 of the selected one, the four gun attachments
-;   Enemies  a type, a level, elite or not and a count spawn in front of the player; kill all, heal all
+;   Enemies  a type, a level, elite or not and a count spawn in front of the player; kill all, heal all; the events
+;            (events.asm): a temporary camp, a free caravan, a threat on the nearest camp, skip a wave, win
 ;   World    time of day, teleport (X Y Z, spawn, bed), faction standing, reset cooldowns, clear drops
 ;
 ; Every action is a plain function below (debug_give, debug_spawn, ...) so that the selftests drive them
@@ -45,6 +46,8 @@ extern ui_rect, ui_frame, ui_panel, ui_nine, ui_ribbon
 extern ui_text_ink, ui_text_ink_centered, ui_text_width, ui_textfield, ui_item_icon
 extern item_names, item_max_stack, gun_index
 extern str_append, str_copy, str_len, i32_to_str
+extern events_status, events_spawn_camp, events_spawn_caravan, events_force_threat, events_skip, events_finish
+extern structures_nearest
 extern net_role
 
 %define DEBUG_GAP_STEPS   60            ; F12 presses at most this many fixed steps apart (1.0 s)
@@ -1100,6 +1103,21 @@ s_no_room:      db "No room in front of you", 0
 s_n_killed:     db "Every mob removed", 0
 s_n_healed:     db "Every mob healed", 0
 s_hint_spawn:   db "Mobs appear 4 to 8 blocks in front of you", 0
+s_events:       db "Events", 0
+s_ev_camp:      db "Camp", 0
+s_ev_caravan:   db "Caravan", 0
+s_ev_threat:    db "Threat", 0
+s_ev_wave:      db "Wave", 0
+s_ev_win:       db "Win", 0
+s_ev_started:   db "Event started", 0
+s_ev_noroom:    db "No room for an event", 0
+s_ev_done:      db "Done", 0
+s_ev_no_camp:   db "No camp within 96 blocks", 0
+s_ev_idle:      db "No event to skip", 0
+s_nearest:      db "Nearest camp: ", 0
+s_nearest_none: db "Nearest camp: none", 0
+s_ev_space:     db " ", 0
+s_ev_comma:     db ", ", 0
 s_day:          db "Day ", 0
 s_colon:        db ":", 0
 s_gap:          db "   ", 0
@@ -2038,7 +2056,9 @@ tab_items:
 
 ; ---- the Enemies tab ---------------------------------------------------------------------------------
 ; The type (a grid of toggles), the level (0 = the player's), elite or not, the count, then Spawn, Kill all
-; and Heal all. r12d = the player's level, r13d = a level step; frame: [rsp] button width, [rsp+4] spawned
+; and Heal all. Under them the Events rows (y 128, 140, 158; the page leaves 174 above its footer): the running event's
+; status, its five buttons (Camp, Caravan, Threat, Wave, Win) and the nearest camp's faction and absolute cell.
+; r12d = the player's level, r13d = a level step; frame: [rsp] button width, [rsp+4] spawned
 tab_enemies:
     ENTER_FRAME 24
     movzx   r12d, byte [rpg_state + RPGSAVE.level]
@@ -2213,6 +2233,86 @@ tab_enemies:
     APPZ    s_passive
     SHOWBUF 0, 100, C_INK
     DTXT    s_hint_spawn, 0, 116, C_INK_SOFT
+    DTXT    s_events, 0, 128, C_RUBRIC
+    lea     rdi, [dbg_buf]
+    call    events_status               ; rax = the end of the status text
+    mov     r15, rax
+    SHOWBUF 52, 128, C_INK
+    DBTN    s_ev_camp, 0, 140, 50, 1, 0
+    test    eax, eax
+    jz      .ev_caravan
+    lea     rdi, [player]
+    call    events_spawn_camp
+    lea     rdi, [s_ev_started]
+    lea     rsi, [s_ev_noroom]
+    test    eax, eax
+    cmovz   rdi, rsi
+    call    dnote
+.ev_caravan:
+    DBTN    s_ev_caravan, 52, 140, 62, 1, 0
+    test    eax, eax
+    jz      .ev_threat
+    lea     rdi, [player]
+    call    events_spawn_caravan
+    lea     rdi, [s_ev_started]
+    lea     rsi, [s_ev_noroom]
+    test    eax, eax
+    cmovz   rdi, rsi
+    call    dnote
+.ev_threat:
+    DBTN    s_ev_threat, 116, 140, 56, 1, 0
+    test    eax, eax
+    jz      .ev_wave
+    call    events_force_threat
+    lea     rdi, [s_ev_done]
+    lea     rsi, [s_ev_no_camp]
+    test    eax, eax
+    cmovz   rdi, rsi
+    call    dnote
+.ev_wave:
+    DBTN    s_ev_wave, 174, 140, 50, 1, 0
+    test    eax, eax
+    jz      .ev_win
+    call    events_skip
+    lea     rdi, [s_ev_done]
+    lea     rsi, [s_ev_idle]
+    test    eax, eax
+    cmovz   rdi, rsi
+    call    dnote
+.ev_win:
+    DBTN    s_ev_win, 226, 140, 46, 1, 0
+    test    eax, eax
+    jz      .ev_camp_line
+    mov     edi, 1
+    call    events_finish
+    lea     rdi, [s_ev_done]
+    call    dnote
+.ev_camp_line:
+    mov     edi, SITE_CAMP
+    xor     esi, esi
+    call    structures_nearest
+    test    rax, rax
+    jz      .ev_no_camp
+    mov     rbx, rax
+    lea     r15, [dbg_buf]              ; "Nearest camp: Bandits 1200, -340" (absolute cell)
+    APPZ    s_nearest
+    mov     eax, [rbx + SITE.index]
+    lea     rcx, [faction_names]
+    mov     rsi, [rcx + rax*8]
+    APPP
+    APPZ    s_ev_space
+    mov     eax, [rbx + SITE.x]
+    add     eax, [world_origin_x]
+    APPN    eax
+    APPZ    s_ev_comma
+    mov     eax, [rbx + SITE.z]
+    add     eax, [world_origin_z]
+    APPN    eax
+    SHOWBUF 0, 158, C_INK_SOFT
+    jmp     .ev_done
+.ev_no_camp:
+    DTXT    s_nearest_none, 0, 158, C_INK_SOFT
+.ev_done:
     LEAVE_FRAME 24
 
 ; ---- the World tab -----------------------------------------------------------------------------------
