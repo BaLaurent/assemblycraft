@@ -29,5 +29,5 @@ build/win/c_%.o: win/%.c win/win.h | build/win ; $(DOCKER_MINGW) $(WINC) -O2 -st
 build/win: ; mkdir -p build/win
 windows-image: ; docker build -t ac-mingw win
 windows-zip: build/win/assemblycraft.exe
-	rm -rf build/win/pkg && mkdir -p build/win/pkg/AssemblyCraft && cp build/win/assemblycraft.exe build/win/pkg/AssemblyCraft/ && cp win/README-WINDOWS.txt win/THIRD-PARTY.txt build/win/pkg/AssemblyCraft/ && cd build/win/pkg && zip -qr ../AssemblyCraft-0.12.0-win64.zip AssemblyCraft
+	rm -rf build/win/pkg && mkdir -p build/win/pkg/AssemblyCraft && cp build/win/assemblycraft.exe build/win/pkg/AssemblyCraft/ && cp win/README-WINDOWS.txt win/THIRD-PARTY.txt build/win/pkg/AssemblyCraft/ && cd build/win/pkg && zip -qr ../AssemblyCraft-0.12.1-win64.zip AssemblyCraft
 .PHONY: all test run clean relay windows windows-image windows-zip

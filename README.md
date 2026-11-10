@@ -39,7 +39,7 @@ A native 64-bit Windows `.exe` is cross-built on Linux: the game's assembly is a
 ```sh
 make windows-image   # once: builds the ac-mingw docker image (gcc-mingw-w64)
 make windows         # build/win/assemblycraft.exe
-make windows-zip     # build/win/AssemblyCraft-0.12.0-win64.zip (exe + README-WINDOWS.txt + licenses)
+make windows-zip     # build/win/AssemblyCraft-0.12.1-win64.zip (exe + README-WINDOWS.txt + licenses)
 ```
 
 The full selftest suite runs under Wine: `wine build/win/assemblycraft.exe --selftest`. Windows and Linux builds play together in the same multiplayer world.
