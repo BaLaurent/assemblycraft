@@ -129,6 +129,7 @@ extern test_planes_crashes, test_planes_governor, test_planes_save_load, test_pl
 extern test_planes_camera, test_planes_seats, test_planes_roles, test_planes_water
 extern test_planes_hum
 extern test_gatling_cone, test_gatling_fire, test_gatling_seats
+extern test_skin_uv, test_skin_pack, test_icons_paint
 
 %macro TEST 1
     dq test_%1, name_%1
@@ -454,6 +455,9 @@ tests:
     TEST planes_seats
     TEST planes_roles
     TEST planes_water
+    TEST skin_uv
+    TEST skin_pack
+    TEST icons_paint
     dq 0
 
 section .rodata
@@ -771,6 +775,9 @@ section .rodata
     TESTNAME planes_seats
     TESTNAME planes_roles
     TESTNAME planes_water
+    TESTNAME skin_uv
+    TESTNAME skin_pack
+    TESTNAME icons_paint
 s_ok:     db "ok ", 0
 s_fail:   db "FAIL ", 0
 s_nl:     db 10, 0
