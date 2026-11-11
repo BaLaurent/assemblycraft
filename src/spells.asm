@@ -1008,8 +1008,9 @@ sp_nova:
 
 ; sp_phase_plan(rdi eye float[3], rsi dir float[3], rdx out float[3]) -> eax 1 when the player can teleport at
 ; least a block: marches along dir in quarter-block steps up to 8 blocks, the candidate feet being
-; eye + dir * s - (0, 1.62, 0). A candidate whose box is not free is lifted in quarter blocks, up to two blocks, to
-; the first height where it is (the floor under a ray that points at the ground, a ledge): none free ends the march.
+; eye + dir * s - (0, 1.62, 0). A candidate whose box is not free is lifted in quarter blocks, up to 1.5 blocks (the eye
+; height: no further than a ray at the ground meets it), to the first height where it is (the floor, a one block ledge):
+; none free ends the march.
 ; out = the last free candidate
 ; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3], lifts left @12
 sp_phase_plan:
@@ -1045,7 +1046,7 @@ sp_phase_plan:
     call    ab_box_free
     test    eax, eax
     jnz     .free
-    mov     dword [rsp + 12], 8
+    mov     dword [rsp + 12], 6
 .lift:
     movss   xmm1, [rsp + 4]
     addss   xmm1, [k_quarter]

@@ -54,8 +54,7 @@ k_13_5:   dd 13.5
 k_x18_5:  dd 18.5
 k_pitch90: dd 90.0
 k_pitch30: dd 30.0
-k_z14:     dd 14.0
-k_z12:     dd 12.0
+k_z14_5:   dd 14.5
 
 ; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
 ; (only the answer is compared for an answer of 0)
@@ -690,10 +689,28 @@ test_spell_phase:
     jne     .fail
     EXPECT_NEAR [player + BODY.y], 11.0
     movss   xmm0, [player + BODY.z]
-    comiss  xmm0, [k_z14]
-    jae     .fail                       ; it went more than 2.5 blocks ahead (the ray meets the floor 3.2 blocks away)
-    comiss  xmm0, [k_z12]
-    jbe     .fail                       ; ... and not past it
+    comiss  xmm0, [k_z14_5]
+    jae     .fail                       ; it lands where the ray meets the floor (3 blocks along the ray, 2.6 ahead), ...
+    comiss  xmm0, [k_13_5]
+    jbe     .fail                       ; ... not past it
+    call    cleanup                     ; ---- a one block ledge ahead is crossed: the full 8 blocks
+    call    fixture
+%assign x 15
+%rep 3
+    mov     edi, x
+    mov     esi, 11
+    mov     edx, 14
+    mov     ecx, STONE
+    call    world_set
+%assign x x + 1
+%endrep
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [player + BODY.z], 8.5
     xor     eax, eax
     jmp     .ret
 .fail:
