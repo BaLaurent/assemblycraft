@@ -10,7 +10,7 @@ default rel
 
 global test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
 global test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
-global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview, test_spell_phase_rider
+global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview, test_spell_phase_rider, test_spell_dash_rider
 
 extern world_clear, world_set, mobs, mobs_clear, mob_spawn
 extern arrows, arrows_clear, arrows_step
@@ -80,7 +80,11 @@ vectors:
     VEC R(BALL) | R(PHASE), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE), 0, 0, 27, 270, 6      ; Phase rides the Ball: not inert
     VEC R(LASER) | R(PHASE), ALL_RUNES, 1, RUNE_LASER, 0, R(PHASE), 0, 0, 34, 330, 5
     VEC R(NOVA) | R(PHASE), ALL_RUNES, 1, RUNE_NOVA, 0, R(PHASE), 0, 0, 36, 480, 5
-    VEC R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_PHASE, 0, 0, R(DASH), 0, 25, 360, 4        ; two movements: the first wins
+    VEC R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_PHASE, 0, R(DASH), 0, 0, 25, 360, 4        ; Dash rides the Phase
+    VEC R(BALL) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(DASH), 0, 0, 20, 150, 6
+    VEC R(LASER) | R(DASH), ALL_RUNES, 1, RUNE_LASER, 0, R(DASH), 0, 0, 27, 210, 5
+    VEC R(NOVA) | R(DASH), ALL_RUNES, 1, RUNE_NOVA, 0, R(DASH), 0, 0, 29, 360, 5
+    VEC R(BALL) | R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE) | R(DASH), 0, 0, 41, 390, 6
     VEC R(LASER) | R(FIRE), R(BALL) | R(FIRE), 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 30, 8   ; a locked rune is ignored, not dropped
 vectors_end:
 
@@ -1391,6 +1395,90 @@ test_spell_phase_rider:
     cmp     dword [spells_cd], 270
     jne     .fail                       ; it was cast and paid ...
     EXPECT_NEAR [player + BODY.z], 16.5 ; ... but nothing took you 56 blocks into the air
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; Dash rides the other deliveries: a shove of 18 b/s along -z (kbz -18) and 20 untouchable steps. Ball + Dash: nothing at the
+; cast, the shove when the Ball hits the zombie (which is hurt); a Ball that only runs out of time shoves nothing.
+; Laser + Dash: the zombie is hurt and the shove is on at the cast. Nova + Dash: the same with a zombie 4 ahead.
+; Phase + Dash: you land 8 blocks ahead and surge on.
+test_spell_dash_rider:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    mov     edi, R(BALL) | R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [player + BODY.kbz], 0.0 ; the Ball is still in flight
+    call    fly
+    HURT    0
+    jge     .fail
+    EXPECT_NEAR [player + BODY.kbz], -18.0
+    EXPECT_NEAR [player + BODY.kbx], 0.0
+    cmp     dword [surv + SURVIVAL.invuln], 20
+    jne     .fail
+    call    cleanup                     ; ---- a Ball that runs out of time shoves nothing
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(BALL) | R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    mov     dword [arrows + ARROWENT.age], 119
+    call    fly
+    EXPECT_NEAR [player + BODY.kbz], 0.0
+    call    cleanup                     ; ---- Laser + Dash
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    mov     edi, R(LASER) | R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    HURT    0
+    jge     .fail
+    EXPECT_NEAR [player + BODY.kbz], -18.0
+    call    cleanup                     ; ---- Nova + Dash
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z12_5
+    mov     edi, R(NOVA) | R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    HURT    0
+    jge     .fail
+    EXPECT_NEAR [player + BODY.kbz], -18.0
+    call    cleanup                     ; ---- Phase + Dash
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(PHASE) | R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [player + BODY.z], 8.5
+    EXPECT_NEAR [player + BODY.kbz], -18.0
     xor     eax, eax
     jmp     .ret
 .fail:

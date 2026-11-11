@@ -144,8 +144,10 @@ section .text
 ;   but is not counted against the cap); else -1, a self cast: elements and modifiers are inert and
 ;   without a boon there is nothing to cast. With a delivery d: the other deliveries are inert, elems =
 ;   the element runes, mods = the modifiers spell_applies lists for d (the rest are inert). Phase carried by a Ball,
-;   Laser or Nova is not inert: it joins mods and teleports the caster to where the spell ended (the Ball's last
-;   impact, the beam followed for Phase's 8 blocks, the Nova's centre: you arrive first, then it bursts).
+;   Laser or Nova, and Dash carried by any of Ball, Laser, Nova or Phase, are not inert: they join mods. Phase
+;   teleports the caster to where the spell ended (the Ball's last impact, the beam followed for Phase's 8 blocks, the
+;   Nova's centre: you arrive first, then it bursts); Dash shoves the caster along the spell's direction (the Ball's
+;   flight at its impact, the look for the others) after the rest, Dash alone being the shove and its blast.
 ;   cost = (sum of the mana) * (100 + 15 (n - 1)) / 100 for n kept runes, cd = the sum of the
 ;   cooldowns, dmg = d's base damage + 2 per element (0 for a self cast).
 ; r8 = out, r9d = unlocked, r10d = stack & unlocked, r11d = kept, ebx = delivery
@@ -216,8 +218,15 @@ spells_resolve:
     not     ecx
     and     eax, ecx                    ; the modifiers this delivery cannot use
     or      [r8 + SPELLPLAN.inert], eax
+    cmp     ebx, RUNE_DASH
+    je      .phase_rider                ; Dash as the delivery has nothing to ride
+    bt      r11d, RUNE_DASH
+    jnc     .phase_rider
+    btr     dword [r8 + SPELLPLAN.inert], RUNE_DASH
+    bts     dword [r8 + SPELLPLAN.mods], RUNE_DASH
+.phase_rider:
     cmp     ebx, RUNE_NOVA
-    ja      .boons                      ; a Phase or Dash delivery carries nothing
+    ja      .boons                      ; a Phase delivery carries no Phase
     bt      r11d, RUNE_PHASE
     jnc     .boons
     btr     dword [r8 + SPELLPLAN.inert], RUNE_PHASE
@@ -938,6 +947,11 @@ sp_laser:
     mov     rdi, [rsp + 80]
     call    sp_teleport                 ; Phase carried by the beam: you follow it
 .no_warp:
+    test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_DASH
+    jz      .no_dash
+    mov     rdi, r13
+    call    sp_shove                    ; Dash carried by the beam: you surge along it
+.no_dash:
     add     rsp, 88
     pop     r15
     pop     r14
@@ -959,6 +973,7 @@ sp_nova:
     push    r13
     sub     rsp, 24
     mov     rbx, rdi
+    mov     [rsp + 8], rdx              ; the look, for a carried Dash
     mov     r12d, ecx
     shl     r12d, 8                     ; HITF_CRIT
     test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_PHASE
@@ -1023,6 +1038,11 @@ sp_nova:
 .sound:
     movss   xmm0, [k_vol]
     call    audio_play
+    test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_DASH
+    jz      .no_dash
+    mov     rdi, [rsp + 8]
+    call    sp_shove                    ; Dash carried by the Nova: it bursts where you stood, you surge on
+.no_dash:
     add     rsp, 24
     pop     r13
     pop     r12
@@ -1251,13 +1271,16 @@ sp_phase:
     push    r13
     sub     rsp, 24
     mov     rbx, rdi
+    mov     [rsp + 8], rdx              ; the look, for a carried Dash
     mov     r12, r8
     mov     r13d, ecx
     shl     r13d, 8                     ; HITF_CRIT
     mov     rdi, r12
     call    sp_teleport
     mov     eax, [rbx + SPELLPLAN.elems]
-    or      eax, [rbx + SPELLPLAN.mods]
+    mov     ecx, [rbx + SPELLPLAN.mods]
+    and     ecx, 1 << RUNE_BURST        ; (the mods may carry a Dash: that is no blast)
+    or      eax, ecx
     jz      .ret
     movss   xmm0, [player + BODY.x]
     movss   xmm1, [player + BODY.y]
@@ -1273,11 +1296,38 @@ sp_phase:
     mov     edx, r13d
     call    sp_burst_at
 .ret:
+    test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_DASH
+    jz      .done
+    mov     rdi, [rsp + 8]
+    call    sp_shove                    ; Dash carried by the Phase: you arrive, then surge on
+.done:
     add     rsp, 24
     pop     r13
     pop     r12
     pop     rbx
     pop     rbp
+    ret
+
+; sp_shove(rdi dir float[3]): a horizontal shove of 18 b/s along dir (none when dir points straight up or down),
+; untouchable for 20 steps (or what is left of a longer one), the fall forgotten, sparks of magic
+sp_shove:
+    sub     rsp, 8
+    call    sp_hunit
+    mulss   xmm0, [k_dash_v]
+    movss   [player + BODY.kbx], xmm0
+    mulss   xmm1, [k_dash_v]
+    movss   [player + BODY.kbz], xmm1
+    mov     eax, [surv + SURVIVAL.invuln]
+    mov     ecx, 20
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     [surv + SURVIVAL.invuln], eax
+    mov     dword [player + BODY.fall], 0
+    movss   xmm0, [k_2]
+    mov     edi, FX_MAGIC
+    mov     esi, 10
+    call    ab_burst
+    add     rsp, 8
     ret
 
 ; sp_dash: a horizontal shove of 18 b/s along dir, untouchable for 20 steps, the fall forgotten; with an element
@@ -1293,21 +1343,7 @@ sp_dash:
     mov     r13d, ecx
     shl     r13d, 8                     ; HITF_CRIT
     mov     rdi, rdx
-    call    sp_hunit
-    mulss   xmm0, [k_dash_v]
-    movss   [player + BODY.kbx], xmm0
-    mulss   xmm1, [k_dash_v]
-    movss   [player + BODY.kbz], xmm1
-    mov     eax, [surv + SURVIVAL.invuln]
-    mov     ecx, 20
-    cmp     eax, ecx
-    cmovl   eax, ecx
-    mov     [surv + SURVIVAL.invuln], eax   ; untouchable for 20 steps, or what is left of a longer one
-    mov     dword [player + BODY.fall], 0
-    movss   xmm0, [k_2]
-    mov     edi, FX_MAGIC
-    mov     esi, 10
-    call    ab_burst
+    call    sp_shove
     mov     eax, [rbx + SPELLPLAN.elems]
     or      eax, [rbx + SPELLPLAN.mods]
     jz      .ret
@@ -1567,6 +1603,11 @@ spells_proj_hit:
     lea     rdi, [rsp + 40]
     call    sp_teleport                 ; Phase carried by the Ball: you arrive where it last hit
 .gone:
+    bt      r14d, RUNE_DASH
+    jnc     .no_dash
+    lea     rdi, [rbx + ARROWENT.vx]
+    call    sp_shove                    ; Dash carried by the Ball: you surge along its flight
+.no_dash:
     xor     eax, eax
 .ret:
     add     rsp, 56
@@ -1632,6 +1673,13 @@ spells_proj_end:
     lea     rdi, [rsp + 16]
     call    sp_teleport                 ; Phase carried by the Ball: you arrive where it ended
 .no_warp:
+    bt      r12d, RUNE_DASH
+    jnc     .no_dash
+    cmp     dword [rsp + 12], 0
+    je      .no_dash
+    lea     rdi, [rbx + ARROWENT.vx]
+    call    sp_shove                    ; Dash carried by the Ball: you surge along its flight (when it met a block)
+.no_dash:
     add     rsp, 32
     pop     r12
     pop     rbx
