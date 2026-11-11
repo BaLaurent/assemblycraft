@@ -1,6 +1,6 @@
 ; hud.asm - in-world overlay on top of the ui.asm toolkit: hurt flash, stealth tint, health bars,
-; levels, status pips and name tags pinned to mobs, damage numbers, crosshair, hotbar, XP bar and
-; level, ten hearts with the health number / armor / food, mana and stamina bars, player status pips,
+; levels, status pips and name tags pinned to mobs, damage numbers, crosshair, hotbar, XP vial and
+; level, the health, mana and stamina vials (counters inside) with armor / food, player status pips,
 ; ability bar, held-item name, firearm ammunition and reload bar, boss bar, quest tracker, the running event's
 ; bar and note, banner and
 ; the F3 debug lines. In a multiplayer session (net_role != OFF) also the other players' name plates
@@ -22,7 +22,7 @@ default rel
 %define PL_Y            28
 %define PL_ROW          11
 
-global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_ability_pos
+global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_counter, hud_ability_pos
 global hud_bubble_tiles, banner_text, hud_biome_name, bar_px, hud_heading_dist
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
@@ -81,6 +81,12 @@ pip_tab:
     dd MOB.poison_t, RGBA(110, 220, 70, 255)
     dd MOB.bleed_t, RGBA(210, 30, 30, 255)
 f_feet_eps: dd 0.001                    ; the feet cell: a body resting on a floor may sit a hair under it
+; vial palettes: the surface highlight, the body and the shaded underside of the liquid (the bodies are the theme's colours)
+pal_health:  dd RGBA(255, 132, 124, 255), C_BLOOD, RGBA(116, 18, 32, 255)
+pal_mana:    dd RGBA(158, 186, 255, 255), C_MANA, RGBA(32, 50, 138, 255)
+pal_stamina: dd RGBA(255, 234, 148, 255), C_STAMINA, RGBA(138, 98, 22, 255)
+pal_stamina_low: dd RGBA(255, 156, 116, 255), C_STAMINA_LOW, RGBA(108, 24, 18, 255)
+pal_xp:      dd RGBA(206, 250, 156, 255), C_XP, RGBA(50, 108, 36, 255)
 s_dbg_title: db "AssemblyCraft 0.12.1  ", 0
 s_cheater:  db "CHEATER", 0
 s_cheat_mark: db "[C]", 0
@@ -205,7 +211,7 @@ section .text
 
 ; hud_draw(): everything the player sees on top of the world
 ; ebx = x0, r12d = y0, r13d = y of the held item's name, r14d = y of the top of the left stack over the
-; hotbar (the hearts, mana bar and armor row; the XP bar in creative)
+; hotbar (the vials and armor row; the XP vial in creative)
 hud_draw:
     push    rbp
     mov     rbp, rsp
@@ -232,8 +238,8 @@ hud_draw:
     mov     edi, ebx
     mov     esi, r12d
     call    hud_hotbar
-    lea     r13d, [r12 - 15]            ; the held name sits over the hotbar; clear of the XP bar's frame
-    lea     r14d, [r12 - 6]             ; without hearts the XP bar's frame is the top of the stack
+    lea     r13d, [r12 - 26]            ; the held name sits over the hotbar; clear of the XP vial
+    lea     r14d, [r12 - 14]            ; without the survival vials the XP vial's top is the top of the stack
     cmp     dword [game_mode], MODE_SURVIVAL
     jne     .progress
     mov     edi, ebx
@@ -246,10 +252,7 @@ hud_draw:
     mov     esi, r12d
     call    hud_bars                    ; eax = top of the left stack
     mov     r14d, eax
-    lea     edx, [r12 - 21]
-    cmp     eax, edx
-    cmovg   eax, edx                    ; or of the stamina bar, whichever is higher
-    lea     r13d, [rax - 12]            ; over the bars in survival
+    lea     r13d, [rax - 12]            ; over the vials in survival
 .progress:
     mov     edi, ebx
     mov     esi, r12d
@@ -568,34 +571,18 @@ bar_tile:
 .ret:
     ret
 
-; hud_heart_level(edi i 0..9, esi health, edx max health) -> eax 2 full, 1 half, 0 empty: heart i is
-; full when health >= (i + 1) * max / 10 and half when health >= (i + 0.5) * max / 10
-hud_heart_level:
-    lea     eax, [rdi + 1]
-    imul    eax, edx
-    imul    ecx, esi, 10
-    cmp     ecx, eax
-    jge     .full
-    lea     eax, [rdi + rdi + 1]
-    imul    eax, edx
-    imul    ecx, esi, 20
-    cmp     ecx, eax
-    jge     .half
-    xor     eax, eax
-    ret
-.half:
-    mov     eax, 1
-    ret
-.full:
-    mov     eax, 2
-    ret
+; vials: the HUD gauges are glass tubes (VIAL_W x 11) with brass caps, a liquid that rises with the value, a counter written
+; inside; the XP vial is as wide as the hotbar
+%define VIAL_W          90
+%define VIAL_GLASS_W    82              ; VIAL_W - 8: what the liquid can fill
+%define XP_VIAL_W       182
+%define XP_GLASS_W      174
 
 ; hud_bars(edi x0, esi y0) -> eax y of the top of the left stack
-; Ten hearts at the left (each full, half or empty by its tenth of the maximum health) with the
-; "health/max" number right-aligned just left of them, food icons at the right, then stacked over the
-; hearts the mana bar (when the character has mana) and the armor row (worn armor plus the skill-web
-; bonus); the stamina bar sits over the food.
-; r12d = x0, r13d = y0, ebx = icon, r15d = top of the stack; [rsp] armor points, [rsp+8] health text
+; Over the hotbar, from the XP vial up: the health vial at the left with the food icons at the right, then the mana
+; vial (when the character has mana) at the left and the stamina vial at the right, then the armor row (worn armor
+; plus the skill-web bonus). Each vial carries its "value/max" counter inside.
+; r12d = x0, r13d = y0, ebx = icon, r15d = top of the stack; [rsp] armor points, [rsp+4] a maximum, [rsp+8] counter text
 hud_bars:
     push    rbp
     mov     rbp, rsp
@@ -606,45 +593,21 @@ hud_bars:
     sub     rsp, 48
     mov     r12d, edi
     mov     r13d, esi
-    xor     ebx, ebx
-.heart:
-    cmp     ebx, 10
-    jge     .number
-    mov     edi, ebx
-    mov     esi, [surv + SURVIVAL.health]
-    mov     edx, [surv_max_health]
-    call    hud_heart_level
-    mov     edi, eax
-    mov     esi, TILE_HEART_FULL
-    call    bar_tile
-    mov     edi, eax
-    lea     esi, [r12 + rbx*8]
-    lea     edx, [r13 - 15]
-    call    ui_icon9
-    inc     ebx
-    jmp     .heart
-.number:
     mov     edi, [surv + SURVIVAL.health]
-    lea     rsi, [rsp + 8]
-    call    i32_to_str
-    mov     rdi, rax
-    lea     rsi, [s_slash]
-    call    str_append
-    mov     edi, [surv_max_health]
-    mov     rsi, rax
-    call    i32_to_str
-    mov     byte [rax], 0
-    lea     rdi, [rsp + 8]
-    mov     esi, 1
-    call    ui_text_width
-    mov     esi, r12d
-    sub     esi, 3
-    sub     esi, eax                    ; right-aligned, ending 3 left of the first heart
-    lea     rdi, [rsp + 8]
-    lea     edx, [r13 - 15]
-    mov     ecx, C_CREAM
-    mov     r8d, 1
-    call    ui_text
+    mov     esi, [surv_max_health]
+    lea     rdx, [rsp + 8]
+    call    hud_counter
+    cvtsi2ss xmm0, dword [surv + SURVIVAL.health]
+    cvtsi2ss xmm1, dword [surv_max_health]
+    mov     edi, VIAL_GLASS_W
+    call    bar_px
+    mov     ecx, eax
+    mov     edi, r12d
+    lea     esi, [r13 - 27]
+    mov     edx, VIAL_W
+    lea     r8, [pal_health]
+    lea     r9, [rsp + 8]
+    call    vial_draw
     xor     ebx, ebx
 .food_icon:
     mov     edi, [surv + SURVIVAL.food]
@@ -657,28 +620,32 @@ hud_bars:
     lea     eax, [rbx*8]
     sub     esi, eax
     add     esi, r12d
-    lea     edx, [r13 - 15]
+    lea     edx, [r13 - 26]
     call    ui_icon9
     inc     ebx
     cmp     ebx, 10
     jb      .food_icon
-    lea     r15d, [r13 - 15]            ; the top of the hearts
+    lea     r15d, [r13 - 40]            ; the third row is the top of the stack
     call    combat_max_mana
     xorps   xmm1, xmm1
     comiss  xmm0, xmm1
     jbe     .armor
-    movss   xmm1, xmm0
+    movss   [rsp + 4], xmm0
+    cvttss2si edi, dword [combat_mana]
+    cvttss2si esi, dword [rsp + 4]
+    lea     rdx, [rsp + 8]
+    call    hud_counter
+    movss   xmm1, [rsp + 4]
     movss   xmm0, [combat_mana]
-    mov     edi, 80
+    mov     edi, VIAL_GLASS_W
     call    bar_px
-    mov     r8d, eax
+    mov     ecx, eax
     mov     edi, r12d
-    lea     esi, [r15 - 6]
-    mov     edx, 80
-    mov     ecx, 4
-    mov     r9d, C_MANA
-    call    bar_draw
-    sub     r15d, 6
+    mov     esi, r15d
+    mov     edx, VIAL_W
+    lea     r8, [pal_mana]
+    lea     r9, [rsp + 8]
+    call    vial_draw
 .armor:
     call    armor_effective
     test    eax, eax
@@ -701,21 +668,26 @@ hud_bars:
     sub     r15d, 10
 .stamina:
     call    combat_max_stamina
-    movss   xmm1, xmm0
+    movss   [rsp + 4], xmm0
+    cvttss2si edi, dword [combat_stamina]
+    cvttss2si esi, dword [rsp + 4]
+    lea     rdx, [rsp + 8]
+    call    hud_counter
+    movss   xmm1, [rsp + 4]
     movss   xmm0, [combat_stamina]
-    mov     edi, 80
+    mov     edi, VIAL_GLASS_W
     call    bar_px
-    mov     r8d, eax
-    mov     r9d, C_STAMINA
-    mov     ecx, C_STAMINA_LOW
+    mov     ecx, eax
+    lea     r8, [pal_stamina]
+    lea     rax, [pal_stamina_low]
     movss   xmm0, [combat_stamina]
     comiss  xmm0, [f_25]
-    cmovb   r9d, ecx                    ; red once it runs low
-    lea     edi, [r12 + 102]
-    lea     esi, [r13 - 21]
-    mov     edx, 80
-    mov     ecx, 4
-    call    bar_draw
+    cmovb   r8, rax                     ; red once it runs low
+    lea     edi, [r12 + 92]
+    lea     esi, [r13 - 40]
+    mov     edx, VIAL_W
+    lea     r9, [rsp + 8]
+    call    vial_draw
     mov     eax, r15d
     add     rsp, 48
     pop     r15
@@ -738,7 +710,7 @@ hud_bars:
 %%skip:
 %endmacro
 
-; hud_status_pips(edi x0, esi y0): over the stamina bar, one 6 x 6 square, 8 px apart, for each
+; hud_status_pips(edi x0, esi y0): over the stamina vial, one 6 x 6 square, 8 px apart, for each
 ; active player status: burn (orange), chill (blue), poison (green); 10 px higher while the breath
 ; bubbles are shown
 ; ebx = x0, r12d = y0, r13d = pips drawn, r14d = their y
@@ -752,7 +724,7 @@ hud_status_pips:
     mov     ebx, edi
     mov     r12d, esi
     xor     r13d, r13d
-    lea     r14d, [r12 - 29]
+    lea     r14d, [r12 - 48]
     cmp     dword [surv + SURVIVAL.breath], MAX_BREATH
     jge     .pips
     sub     r14d, 10                    ; the bubbles take the row under them
@@ -813,8 +785,8 @@ hud_bubble_tiles:
     jb      .bubble
     ret
 
-; hud_bubbles(edi x0, esi y0): the air bubbles over the food icons (bubble i at x0 + 173 - 8 i,
-; y0 - 31) while the breath is below MAX_BREATH
+; hud_bubbles(edi x0, esi y0): the air bubbles over the stamina vial (bubble i at x0 + 173 - 8 i,
+; y0 - 50) while the breath is below MAX_BREATH
 ; ebx = x0, r12d = y0, r13d = bubble; [rsp] the ten tiles
 hud_bubbles:
     push    rbp
@@ -839,7 +811,7 @@ hud_bubbles:
     lea     eax, [r13*8]
     sub     esi, eax
     add     esi, ebx
-    lea     edx, [r12 - 31]
+    lea     edx, [r12 - 50]
     call    ui_icon9
 .next:
     inc     r13d
@@ -1104,10 +1076,164 @@ bar_draw:
     pop     rbp
     ret
 
-; hud_xp(edi x0, esi y0): the XP bar just over the hotbar and "Level N" right of the hotbar, followed
-; by " (<skills key>)" while skill or attribute points are unspent
-; ebx = x0, r12d = y0, r13d = level, then the x right of the hotbar; r14 = end of the level text, where
-; the hint starts; [rsp] level text (64)
+; hud_counter(edi value, esi max, rdx buf): "value/max" and a NUL into buf
+; r12d = max
+hud_counter:
+    push    r12
+    mov     r12d, esi
+    mov     rsi, rdx
+    call    i32_to_str
+    mov     rdi, rax
+    lea     rsi, [s_slash]
+    call    str_append
+    mov     edi, r12d
+    mov     rsi, rax
+    call    i32_to_str
+    mov     byte [rax], 0
+    pop     r12
+    ret
+
+; VRECT xoff, yoff, w, h, rgba: ui_rect over the vial at (ebx, r12d)
+%macro VRECT 5
+    lea     edi, [rbx + %1]
+    lea     esi, [r12 + %2]
+    mov     edx, %3
+    mov     ecx, %4
+    mov     r8d, %5
+    call    ui_rect
+%endmacro
+
+; VRECTR fromright, yoff, w, h, rgba: the same with x = vial x + width - fromright
+%macro VRECTR 5
+    mov     eax, [rsp + 4]
+    lea     edi, [rbx + rax - %1]
+    lea     esi, [r12 + %2]
+    mov     edx, %3
+    mov     ecx, %4
+    mov     r8d, %5
+    call    ui_rect
+%endmacro
+
+; vial_draw(edi x, esi y, edx w, ecx fill px, r8 palette (light, body, shade), r9 counter text): a horizontal glass vial,
+; w x 11 at (x, y): a dark outline with rounded corners, a brass cap and a divider at each end, the glass between them
+; (w - 8 wide) with the liquid from the left (a bright surface row on top, the body, a shaded underside, a lit meniscus
+; at its end), a gloss row over glass and liquid, graduation marks at a quarter, a half and three quarters, and the
+; counter centred inside in white with a dark outline so it reads on any liquid
+; ebx = x, r12d = y, r13d = fill (then the text x), r14 = palette, r15 = text; [rsp] glass width, [rsp+4] w
+vial_draw:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     [rsp + 4], edx
+    lea     eax, [rdx - 8]
+    mov     [rsp], eax
+    mov     r13d, ecx
+    mov     r14, r8
+    mov     r15, r9
+    VRECT   4, 1, [rsp], 9, C_VIAL_GLASS
+    test    r13d, r13d
+    jle     .glass
+    VRECT   4, 1, r13d, 1, [r14]
+    VRECT   4, 2, r13d, 4, [r14 + 4]
+    VRECT   4, 6, r13d, 4, [r14 + 8]
+    lea     edi, [rbx + r13 + 3]        ; the meniscus: the last column of the liquid, lit
+    lea     esi, [r12 + 2]
+    mov     edx, 1
+    mov     ecx, 8
+    mov     r8d, [r14]
+    call    ui_rect
+.glass:
+    VRECT   4, 2, [rsp], 1, RGBA(255, 255, 255, 48)
+%assign k 1
+%rep 3
+    mov     eax, [rsp]
+    imul    eax, eax, k
+    shr     eax, 2
+    lea     edi, [rbx + rax + 4]
+    lea     esi, [r12 + 7]
+    mov     edx, 1
+    mov     ecx, 3
+    mov     r8d, RGBA(0, 0, 0, 120)
+    call    ui_rect
+%assign k k + 1
+%endrep
+    lea     edi, [rbx + 1]              ; the outline: top and bottom, then both ends
+    mov     esi, r12d
+    mov     edx, [rsp + 4]
+    sub     edx, 2
+    mov     ecx, 1
+    mov     r8d, C_VIAL_EDGE
+    call    ui_rect
+    lea     edi, [rbx + 1]
+    lea     esi, [r12 + 10]
+    mov     edx, [rsp + 4]
+    sub     edx, 2
+    mov     ecx, 1
+    mov     r8d, C_VIAL_EDGE
+    call    ui_rect
+    VRECT   0, 1, 1, 9, C_VIAL_EDGE
+    VRECTR  1, 1, 1, 9, C_VIAL_EDGE
+    VRECT   3, 1, 1, 9, C_VIAL_EDGE     ; the dividers between the caps and the glass
+    VRECTR  4, 1, 1, 9, C_VIAL_EDGE
+    VRECT   1, 1, 2, 9, C_GOLD          ; the brass caps: body, lit top row, shaded foot
+    VRECT   1, 1, 2, 1, C_GOLD_TEXT
+    VRECT   1, 8, 2, 2, C_GOLD_DEEP
+    VRECTR  3, 1, 2, 9, C_GOLD
+    VRECTR  3, 1, 2, 1, C_GOLD_TEXT
+    VRECTR  3, 8, 2, 2, C_GOLD_DEEP
+    mov     rdi, r15
+    mov     esi, 1
+    call    ui_text_width
+    mov     ecx, [rsp]
+    sub     ecx, eax
+    sar     ecx, 1
+    lea     r13d, [rbx + rcx + 4]       ; the counter's x, centred in the glass
+    lea     esi, [r13 - 1]              ; its outline: left, right, up, down, then the drop
+    lea     edx, [r12 + 2]
+    call    .outline
+    lea     esi, [r13 + 1]
+    lea     edx, [r12 + 2]
+    call    .outline
+    mov     esi, r13d
+    lea     edx, [r12 + 1]
+    call    .outline
+    mov     esi, r13d
+    lea     edx, [r12 + 3]
+    call    .outline
+    lea     esi, [r13 + 1]
+    lea     edx, [r12 + 3]
+    call    .outline
+    mov     rdi, r15
+    mov     esi, r13d
+    lea     edx, [r12 + 2]
+    mov     ecx, WHITE
+    mov     r8d, 1
+    call    ui_text_ink
+    add     rsp, 8
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+.outline:                               ; the counter in the outline colour at (esi, edx)
+    mov     rdi, r15
+    mov     ecx, C_VIAL_OUTLINE
+    mov     r8d, 1
+    jmp     ui_text_ink
+
+; hud_xp(edi x0, esi y0): the XP vial just over the hotbar (with "xp/need" inside, "MAX" on the last level) and "Level N"
+; right of the hotbar, followed by " (<skills key>)" while skill or attribute points are unspent
+; ebx = x0, r12d = y0, r13d = level, then the x right of the hotbar; r14d = the xp needed, then r14 = end of the level text,
+; where the hint starts; [rsp] level text (64), [rsp+64] counter (32), [rsp+96] fill
 hud_xp:
     push    rbp
     mov     rbp, rsp
@@ -1115,30 +1241,43 @@ hud_xp:
     push    r12
     push    r13
     push    r14
-    sub     rsp, 64
+    sub     rsp, 112
     mov     ebx, edi
     mov     r12d, esi
     call    rpg_level
     mov     r13d, eax
     mov     edi, eax
     call    rpg_xp_need
-    mov     r8d, 180                    ; the last level shows a full bar
-    test    eax, eax
-    jz      .have_fill
-    mov     ecx, eax
+    mov     r14d, eax                   ; xp needed for the next level, 0 on the last
+    mov     dword [rsp + 96], XP_GLASS_W ; the last level shows a full vial
+    test    r14d, r14d
+    jz      .counter
     mov     eax, [rpg_state + RPGSAVE.xp]
-    imul    eax, eax, 180
+    imul    eax, eax, XP_GLASS_W
     xor     edx, edx
-    div     ecx
-    cmp     eax, r8d
-    cmovb   r8d, eax                    ; min(180, 180 * xp / need)
-.have_fill:
-    lea     edi, [rbx + 1]
-    lea     esi, [r12 - 5]
-    mov     edx, 180
-    mov     ecx, 3
-    mov     r9d, C_XP
-    call    bar_draw
+    div     r14d
+    mov     ecx, XP_GLASS_W
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     [rsp + 96], eax             ; min(glass, glass * xp / need)
+.counter:
+    test    r14d, r14d
+    jnz     .count_xp
+    mov     dword [rsp + 64], 0x0058414D ; "MAX"
+    jmp     .vial
+.count_xp:
+    mov     edi, [rpg_state + RPGSAVE.xp]
+    mov     esi, r14d
+    lea     rdx, [rsp + 64]
+    call    hud_counter
+.vial:
+    mov     edi, ebx
+    lea     esi, [r12 - 14]
+    mov     edx, XP_VIAL_W
+    mov     ecx, [rsp + 96]
+    lea     r8, [pal_xp]
+    lea     r9, [rsp + 64]
+    call    vial_draw
     mov     rdi, rsp
     lea     rsi, [s_level_l]
     call    str_append
@@ -1203,7 +1342,7 @@ hud_xp:
     mov     ecx, C_GOLD_TEXT
     call    hud_text_clamped
 .done:
-    add     rsp, 64
+    add     rsp, 112
     pop     r14
     pop     r13
     pop     r12
@@ -1246,7 +1385,7 @@ hud_text_clamped:
 
 ; hud_ability_pos(edi x0, esi y0, edx top) -> eax x, edx y of the first ability slot (20 x 20), ecx 1 when
 ; the bar sits above the left stack. The slots go left of the hotbar at (x0 - 93, y0 + 1) unless that
-; starts under 2 (a narrow GUI), then in a row above the left stack of hearts, mana and armor (top =
+; starts under 2 (a narrow GUI), then in a row above the left stack of vials and armor (top =
 ; y of its top; the XP bar when there is none) with their key labels 9 above: (x0, top - 22)
 hud_ability_pos:
     lea     eax, [rdi - 93]

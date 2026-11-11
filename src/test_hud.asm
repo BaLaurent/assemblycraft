@@ -10,7 +10,7 @@ global test_sheet_sections
 extern world_clear, player, body_init, player_eye, player_forward
 extern settings, game_aim, ui_w, ui_h, world_to_ui
 extern dmgnum_clear, dmgnum_spawn, dmgnum_text, dmgnum_step, dmgnum_count, dmgnum_list, dmgnum_style
-extern hud_heart_level, hud_ability_pos
+extern hud_counter, hud_ability_pos, str_eq
 extern web_node_xy, web_pick, rpg_web_node
 extern sheet_build, sheet_section, sheet_sec, rpg_stats
 
@@ -74,26 +74,23 @@ ability_rows:
     dd 94, 218, 203, 94, 181, 1
     dd 79, 218, 187, 79, 165, 1
 
-; hud_heart_level cases: heart index, health, max health, expected 2 full / 1 half / 0 empty
-%define HEART_ROWS 14
-heart_rows:
-    dd 0, 2, 20, 2
-    dd 0, 1, 20, 1
-    dd 0, 0, 20, 0
-    dd 4, 9, 20, 1
-    dd 4, 10, 20, 2
-    dd 0, 1, 10, 2
-    dd 9, 10, 10, 2
-    dd 9, 9, 10, 0
-    dd 2, 25, 100, 1
-    dd 2, 30, 100, 2
-    dd 2, 24, 100, 0
-    dd 1, 5, 40, 0
-    dd 1, 6, 40, 1
-    dd 9, 44, 44, 2
+; hud_counter cases: value, max, the text inside a vial
+%define COUNTER_ROWS 5
+counter_rows:
+    dq 20, 20, c_20_20
+    dq 0, 20, c_0_20
+    dq 7, 100, c_7_100
+    dq 1234, 5678, c_1234
+    dq 0, 0, c_0_0
+c_20_20: db "20/20", 0
+c_0_20:  db "0/20", 0
+c_7_100: db "7/100", 0
+c_1234:  db "1234/5678", 0
+c_0_0:   db "0/0", 0
 
 section .bss
 alignb 4
+t_counter: resb 32
 t_eye:  resd 3
 t_fwd:  resd 3
 t_p:    resd 3
@@ -424,7 +421,7 @@ test_dmgnum_rises_and_expires:
     call    check_dmgnum_styles
     test    eax, eax
     jnz     .out
-    call    check_heart_levels
+    call    check_counters
     test    eax, eax
     jnz     .out
     call    check_ability_pos
@@ -586,9 +583,9 @@ check_ability_pos:
     pop     rbp
     ret
 
-; check_heart_levels() -> eax 0, else 400 + the failing heart_rows row
+; check_counters() -> eax 0, else 400 + the failing counter_rows row
 ; ebx = row, r12 = row pointer
-check_heart_levels:
+check_counters:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -596,17 +593,20 @@ check_heart_levels:
     sub     rsp, 16
     xor     ebx, ebx
 .row:
-    cmp     ebx, HEART_ROWS
+    cmp     ebx, COUNTER_ROWS
     jae     .ok
-    imul    eax, ebx, 16
-    lea     r12, [heart_rows]
+    imul    eax, ebx, 24
+    lea     r12, [counter_rows]
     add     r12, rax
     mov     edi, [r12]
-    mov     esi, [r12 + 4]
-    mov     edx, [r12 + 8]
-    call    hud_heart_level
-    cmp     eax, [r12 + 12]
-    jne     .bad
+    mov     esi, [r12 + 8]
+    lea     rdx, [t_counter]
+    call    hud_counter
+    lea     rdi, [t_counter]
+    mov     rsi, [r12 + 16]
+    call    str_eq
+    test    eax, eax
+    jz      .bad
     inc     ebx
     jmp     .row
 .bad:

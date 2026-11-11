@@ -20,3 +20,6 @@
 %define C_STAMINA_LOW   RGBA(200, 60, 40, 255)      ; stamina below 25
 %define C_XP            RGBA(120, 200, 70, 255)
 %define C_BLOOD         RGBA(200, 40, 40, 255)      ; boss bar fill
+%define C_VIAL_EDGE     RGBA(28, 16, 10, 255)       ; the dark outline of a HUD vial
+%define C_VIAL_GLASS    RGBA(10, 8, 16, 215)        ; its empty glass
+%define C_VIAL_OUTLINE  RGBA(8, 5, 3, 255)          ; the outline around the counter text inside a vial
