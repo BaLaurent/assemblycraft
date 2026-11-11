@@ -646,6 +646,7 @@ endstruc                                ; 24
 %define AF_ELEM_SHIFT   8               ; ARROWENT.flags bits 8..10 = element (ELEM_*)
 %define PROJ_KNIFE      5
 %define PROJ_GRENADE    6               ; lobbed powder charge
+%define PROJ_SPELL      7               ; rune spell orb (ARROWENT.kind); spells.asm owns its side tables
 %define MAX_PRIMED      32              ; primed TNT
 %define MAX_FIRES       1024
 %define MAX_PARTICLES   768
@@ -656,6 +657,7 @@ endstruc                                ; 24
 %define FX_MAGIC        5
 %define FX_GOLD         6
 %define FX_FROST        7
+%define FX_POISON       8
 
 ; ---- RPG ------------------------------------------------------------------
 %define ARCH_NONE       0               ; archetypes (the five sectors of the skill web)
@@ -672,6 +674,7 @@ endstruc                                ; 24
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
 %define NODE_PATH       3               ; archetype path node
+%define NODE_RUNE       4               ; teaches a rune (stat = rune id)
 %define NUM_ABILITIES   20              ; ability id = (archetype-1)*4 + slot
 %define ABIL_GRENADE    16
 %define ABIL_BULLSEYE   17
@@ -683,6 +686,33 @@ endstruc                                ; 24
 %define WEB_MAX         128             ; RPGEXT.web capacity
 %define KIT_COMMON_BIT  0x80            ; RPGEXT.kits: bit a-1 = archetype a's kit was given
 %define DEBUG_BONUS_MAX 5000            ; the debug menu's stat bonus is kept within +-this (rpg_load clamps a save to it)
+
+; ---- Runes (spells.asm) ----------------------------------------------------
+%define NUM_RUNES       16              ; rune id = bit in a rune mask; the id order is canonical
+%define RUNE_BALL       0
+%define RUNE_LASER      1
+%define RUNE_NOVA       2
+%define RUNE_PHASE      3
+%define RUNE_DASH       4
+%define RUNE_FIRE       5
+%define RUNE_FROST      6
+%define RUNE_SHOCK      7
+%define RUNE_POISON     8
+%define RUNE_BURST      9
+%define RUNE_PIERCE     10
+%define RUNE_SEEK       11
+%define RUNE_CHAIN      12
+%define RUNE_HEAL       13
+%define RUNE_HASTE      14
+%define RUNE_FEATHER    15
+%define RUNES_DELIVERY  0x001F
+%define RUNES_ELEMENT   0x01E0          ; element rune r deals ELEM_* = r - 4
+%define RUNES_MOD       0x1E00
+%define RUNES_BOON      0xE000
+%define MAGE_PATH_RUNES ((1 << RUNE_BALL) | (1 << RUNE_FIRE)) ; taught by the Mage path
+%define SPELL_MAX_RUNES 4               ; runes kept in one cast
+%define SPELL_ARM_STEPS 45              ; fixed steps a tapped rune stays armed
+%define RUNE_FIRST      (FIRST_ITEM + 93) ; the 16 Rune items (ids 237..252; NUM_ITEMS grows to cover them)
 
 %define ATTR_STR        0
 %define ATTR_DEX        1
@@ -1073,6 +1103,9 @@ struc FRAMEINPUT
     .chat:        resd 1                ; edge of the Chat binding (captured only)
     .players:     resd 1                ; Player list binding held (captured only)
     .vehicle_view: resd 1               ; edge of the Vehicle view binding (captured only)
+    .runes_held:  resd 1                ; bit r = rune r's binding is down (captured only)
+    .runes_down:  resd 1                ; bit r = rune r's binding rose this frame (captured only)
+    .cast:        resd 1                ; edge of the Cast binding (captured only)
 endstruc
 
 struc UIINPUT
@@ -1289,10 +1322,45 @@ struc RPGEXT
     .web:     resb WEB_MAX              ; rank of web node i (0..NUM_WEB_NODES-1)
     .bonus_sp: resw 1                   ; debug menu: skill points granted on top of the level
     .bonus_ap: resw 1                   ; ... and attribute points
-    .pad2:    resb 76
+    .runes:   resw 1                    ; runes learned from Rune items (bit r = rune r); the web's are derived
+    .pad2:    resb 74
 endstruc
 %if RPGEXT_size != 256
 %error "RPGEXT must be 256 bytes"
+%endif
+%if RPGEXT.runes != 180
+%error "RPGEXT.runes is at +180"
+%endif
+
+; spells.asm rune table record
+struc RUNEINFO
+    .name: resq 1
+    .desc: resq 1
+    .cost: resd 1                       ; mana
+    .cd:   resd 1                       ; fixed steps
+    .dmg:  resd 1                       ; base damage of a delivery rune, 0 otherwise
+    .pad:  resd 1
+endstruc
+%if RUNEINFO_size != 32
+%error "RUNEINFO must be 32 bytes"
+%endif
+
+; spells_resolve output: runes are rune bitmasks, delivery is a rune id or -1
+struc SPELLPLAN
+    .runes:    resd 1                   ; kept runes (+ the implicit Ball)
+    .dropped:  resd 1                   ; over the SPELL_MAX_RUNES cap
+    .delivery: resd 1
+    .elems:    resd 1
+    .nelem:    resd 1
+    .mods:     resd 1                   ; modifiers that apply to the delivery
+    .inert:    resd 1                   ; kept runes that do nothing here
+    .boons:    resd 1
+    .cost:     resd 1                   ; mana
+    .cd:       resd 1                   ; steps
+    .dmg:      resd 1
+endstruc
+%if SPELLPLAN_size != 44
+%error "SPELLPLAN must be 44 bytes"
 %endif
 
 ; rpg_stat_info record: display data of one stat
