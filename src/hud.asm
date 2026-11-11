@@ -26,7 +26,7 @@ global hud_draw, hud_dt, hud_banner, hud_banner_paint, hud_heart_level, hud_abil
 global hud_bubble_tiles, banner_text, hud_biome_name, bar_px, hud_heading_dist
 
 extern ui_w, ui_h, ui_rect, ui_frame, ui_text, ui_text_width, ui_text_centered
-extern ui_item_icon, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
+extern ui_item_icon, ui_item_icon_tint, ui_icon9, ui_tile_icon, ui_text_ink, ui_nine, ui_nine_tint, ui_ribbon
 extern game_mode, game_time, game_target, game_has_target
 extern app_state, app_show_debug, app_fps
 extern surv, surv_max_health, inv, inv_sel, player, mobs, mob_count_kind, mob_is_hostile
@@ -1413,7 +1413,7 @@ hud_abilities:
 ; short). Nothing is drawn with no rune.
 ; ebx = rune, r12d = the runes the character has, r13d = cells per row, r14d = cells so far, r15d = x0
 ; frame: text @0 (192), key label @192 (8), cells @200, rows @204, row @208, column @212, cell x @216, cell y @220,
-; ink width @224, held | armed @228
+; ink width @224, held | armed @228, the opacity as the alpha byte of a colour @232, the cooldown sweep's colour @236
 hud_spells:
     push    rbp
     mov     rbp, rsp
@@ -1422,7 +1422,7 @@ hud_spells:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 232
+    sub     rsp, 248
     mov     r15d, edi
     call    rpg_runes
     mov     r12d, eax
@@ -1456,6 +1456,20 @@ hud_spells:
     xor     edx, edx
     div     r13d
     mov     [rsp + 204], eax
+    mov     eax, [settings + SETTINGS.rune_alpha]   ; the opacity setting, 10..100 %
+    imul    ecx, eax, 255
+    imul    esi, eax, 170               ; the cooldown sweep is 170 / 255 of black at full opacity
+    mov     eax, ecx
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    shl     eax, 24
+    mov     [rsp + 232], eax
+    mov     eax, esi
+    xor     edx, edx
+    div     ecx
+    shl     eax, 24
+    mov     [rsp + 236], eax
     mov     eax, [spells_held]
     or      eax, [spells_armed]
     mov     [rsp + 228], eax
@@ -1498,21 +1512,27 @@ hud_spells:
     dec     edx
     mov     ecx, 16
     mov     r8d, 16
-    call    ui_nine
+    mov     r9d, [rsp + 232]
+    or      r9d, 0xFFFFFF
+    call    ui_nine_tint
 .backing:
     mov     edi, NINE_RUNE
     mov     esi, [rsp + 216]
     mov     edx, [rsp + 220]
     mov     ecx, 14
     mov     r8d, 14
-    call    ui_nine
+    mov     r9d, [rsp + 232]
+    or      r9d, 0xFFFFFF
+    call    ui_nine_tint
     lea     edi, [rbx + RUNE_FIRST]
     mov     esi, [rsp + 216]
     inc     esi
     mov     edx, [rsp + 220]
     inc     edx
     mov     ecx, 12
-    call    ui_item_icon
+    mov     r8d, [rsp + 232]
+    or      r8d, 0xFFFFFF
+    call    ui_item_icon_tint
     mov     eax, [spells_cd]            ; the cooldown sweeps down every cell
     mov     ecx, [spells_cd_total]
     test    eax, eax
@@ -1531,7 +1551,7 @@ hud_spells:
     mov     esi, [rsp + 220]
     inc     esi
     mov     edx, 12
-    mov     r8d, RGBA(0, 0, 0, 170)
+    mov     r8d, [rsp + 236]
     call    ui_rect
 .label:
     lea     eax, [rbx + BIND_RUNE0]
@@ -1554,7 +1574,9 @@ hud_spells:
     sub     edx, 9
     mov     ecx, [rsp + 224]
     mov     r8d, 9
-    call    ui_nine
+    mov     r9d, [rsp + 232]
+    or      r9d, 0xFFFFFF
+    call    ui_nine_tint
     mov     eax, [rsp + 224]
     shr     eax, 1
     neg     eax
@@ -1564,6 +1586,8 @@ hud_spells:
     mov     edx, [rsp + 220]
     sub     edx, 8
     mov     ecx, C_INK
+    and     ecx, 0xFFFFFF
+    or      ecx, [rsp + 232]
     mov     r8d, 1
     call    ui_text_ink
     inc     r14d
@@ -1589,6 +1613,8 @@ hud_spells:
 .red:
     mov     ecx, RGBA(255, 90, 90, 255)
 .write:
+    and     ecx, 0xFFFFFF
+    or      ecx, [rsp + 232]
     mov     ebx, ecx
     lea     rdi, [rsp]
     mov     esi, 1
@@ -1607,7 +1633,7 @@ hud_spells:
     mov     r8d, 1
     call    ui_text
 .ret:
-    add     rsp, 232
+    add     rsp, 248
     pop     r15
     pop     r14
     pop     r13

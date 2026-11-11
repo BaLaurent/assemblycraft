@@ -47,6 +47,7 @@ s_chunks:       db " chunks", 0
 s_volume:       db "Volume: ", 0
 s_difficulty:   db "Difficulty: ", 0
 s_gui_scale:    db "GUI Scale: ", 0
+s_rune_alpha:   db "Rune Opacity: ", 0
 s_invert:       db "Invert Mouse: ", 0
 s_vsync:        db "VSync: ", 0
 s_fullscreen:   db "Fullscreen: ", 0
@@ -159,6 +160,8 @@ slider_render:  dq settings + SETTINGS.render_dist, s_render, s_chunks
                 dd 2, 24
 slider_volume:  dq settings + SETTINGS.volume, s_volume, s_pct
                 dd 0, 100
+slider_rune:    dq settings + SETTINGS.rune_alpha, s_rune_alpha, s_pct
+                dd 10, 100
 capturing:      dd -1                   ; binding row waiting for a key, or -1
 ctrl_page:      dd 0                    ; Controls page: 0 the general bindings, 1 the rune keys
 
@@ -325,6 +328,7 @@ screen_settings:
     mov     rdi, [app_window]
     call    settings_apply
 .fs_done:
+    SLIDER  slider_rune, -155, 5
     lea     rdi, [s_controls_btn]
     lea     esi, [r12 + 5]
     mov     edx, 36 + 24*4

@@ -1626,6 +1626,7 @@ struc SETTINGS
     .vsync:        resd 1               ; 0/1, 1
     .fullscreen:   resd 1               ; 0/1, 0
     .gui_scale:    resd 1               ; 0 = auto, 1..4
+    .rune_alpha:   resd 1               ; opacity of the rune strip, 10..100 %, 100
     .keys:         resd NUM_BINDINGS    ; GLFW key codes, 32..348
 endstruc
 

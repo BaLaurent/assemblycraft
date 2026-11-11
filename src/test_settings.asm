@@ -17,7 +17,7 @@ new_cfg:  db "key_reload=75", 10, 0
 ; every field at a non-default, in-range value
 align 4
 alt_img:
-    dd 95, 250, 12, 30, 1, 1, 0, 1, 3
+    dd 95, 250, 12, 30, 1, 1, 0, 1, 3, 40
     dd 81, 82, 83, 84, 74, 259, 260, 261, 262, 263
     dd 264, 265, 266, 267, 268, 269
     dd 270, 271, 272

@@ -9,9 +9,9 @@ global settings_load, settings_save, settings_apply
 extern parse_u32, str_eq, str_append, i32_to_str
 extern file_read, file_write_atomic
 
-; fov sensitivity render_dist volume difficulty invert vsync fullscreen gui_scale, then NUM_BINDINGS keys
+; fov sensitivity render_dist volume difficulty invert vsync fullscreen gui_scale rune_alpha, then NUM_BINDINGS keys
 %macro SETTINGS_IMAGE 0
-    dd 70, 100, 8, 100, 2, 0, 1, 0, 0
+    dd 70, 100, 8, 100, 2, 0, 1, 0, 0, 100
     dd 87, 83, 65, 68, 32, 340, 341, 69, 70, 82 ; W S A D Space LShift LCtrl E F R
     dd 67, 81, 71, 86, 75, 88           ; C Q G V K X
     dd 84, 258, 86, 344                 ; T (chat), Tab (player list), V (vehicle view), Right Shift (cast)
@@ -47,6 +47,7 @@ settings_table:
     SETENT "vsync",           SETTINGS.vsync,         0,   1, 0
     SETENT "fullscreen",      SETTINGS.fullscreen,    0,   1, 0
     SETENT "gui_scale",       SETTINGS.gui_scale,     0,   4, 0
+    SETENT "rune_opacity",    SETTINGS.rune_alpha,   10, 100, 0
     SETENT "key_forward",     SETTINGS.keys + 4 * BIND_FORWARD,   32, 348, 1
     SETENT "key_back",        SETTINGS.keys + 4 * BIND_BACK,      32, 348, 1
     SETENT "key_left",        SETTINGS.keys + 4 * BIND_LEFT,      32, 348, 1
