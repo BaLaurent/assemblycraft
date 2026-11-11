@@ -1485,7 +1485,7 @@ hud_spells:
     mov     eax, [rsp + 208]
     imul    eax, eax, 24
     mov     ecx, [ui_h]
-    sub     ecx, 16
+    sub     ecx, 36                     ; the bottom row sits over the hotbar's top edge, clear of the level and ammo text
     sub     ecx, eax
     mov     [rsp + 220], ecx            ; cell y
     mov     eax, [rsp + 228]
@@ -1600,7 +1600,7 @@ hud_spells:
     dec     eax
     imul    eax, eax, 24
     mov     edx, [ui_h]
-    sub     edx, 37                     ; 9 over the top row's tab and 12 over that
+    sub     edx, 57                     ; 9 over the top row's tab and 12 over that
     sub     edx, eax
     lea     rdi, [rsp]
     mov     ecx, ebx
