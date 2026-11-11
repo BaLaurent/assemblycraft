@@ -87,6 +87,7 @@ pal_mana:    dd RGBA(158, 186, 255, 255), C_MANA, RGBA(32, 50, 138, 255)
 pal_stamina: dd RGBA(255, 234, 148, 255), C_STAMINA, RGBA(138, 98, 22, 255)
 pal_stamina_low: dd RGBA(255, 156, 116, 255), C_STAMINA_LOW, RGBA(108, 24, 18, 255)
 pal_xp:      dd RGBA(206, 250, 156, 255), C_XP, RGBA(50, 108, 36, 255)
+pal_hunger:  dd RGBA(244, 178, 104, 255), C_HUNGER, RGBA(104, 56, 22, 255)
 s_dbg_title: db "AssemblyCraft 0.12.1  ", 0
 s_cheater:  db "CHEATER", 0
 s_cheat_mark: db "[C]", 0
@@ -579,7 +580,7 @@ bar_tile:
 %define XP_GLASS_W      174
 
 ; hud_bars(edi x0, esi y0) -> eax y of the top of the left stack
-; Over the hotbar, from the XP vial up: the health vial at the left with the food icons at the right, then the mana
+; Over the hotbar, from the XP vial up: the health vial at the left and the hunger vial at the right, then the mana
 ; vial (when the character has mana) at the left and the stamina vial at the right, then the armor row (worn armor
 ; plus the skill-web bonus). Each vial carries its "value/max" counter inside.
 ; r12d = x0, r13d = y0, ebx = icon, r15d = top of the stack; [rsp] armor points, [rsp+4] a maximum, [rsp+8] counter text
@@ -608,23 +609,22 @@ hud_bars:
     lea     r8, [pal_health]
     lea     r9, [rsp + 8]
     call    vial_draw
-    xor     ebx, ebx
-.food_icon:
     mov     edi, [surv + SURVIVAL.food]
-    lea     eax, [rbx + rbx]
-    sub     edi, eax
-    mov     esi, TILE_FOOD_FULL
-    call    bar_tile
-    mov     edi, eax
-    mov     esi, 173                    ; x0 + 182 - 9 - 8 * i
-    lea     eax, [rbx*8]
-    sub     esi, eax
-    add     esi, r12d
-    lea     edx, [r13 - 26]
-    call    ui_icon9
-    inc     ebx
-    cmp     ebx, 10
-    jb      .food_icon
+    mov     esi, MAX_FOOD
+    lea     rdx, [rsp + 8]
+    call    hud_counter
+    cvtsi2ss xmm0, dword [surv + SURVIVAL.food]
+    mov     eax, MAX_FOOD
+    cvtsi2ss xmm1, eax
+    mov     edi, VIAL_GLASS_W
+    call    bar_px
+    mov     ecx, eax
+    lea     edi, [r12 + 92]             ; the hunger vial right of the health vial
+    lea     esi, [r13 - 27]
+    mov     edx, VIAL_W
+    lea     r8, [pal_hunger]
+    lea     r9, [rsp + 8]
+    call    vial_draw
     lea     r15d, [r13 - 40]            ; the third row is the top of the stack
     call    combat_max_mana
     xorps   xmm1, xmm1

@@ -562,6 +562,7 @@ endstruc                                ; 24
 %define CAUSE_PLAYER    17              ; slain by another player (multiplayer PvP)
 %define CAUSE_LAST      17
 %define MAX_BREATH      600             ; steps of air under water
+%define MAX_FOOD        20              ; the hunger vial's maximum (the food points a full stomach holds)
 %define MAX_BOATS       16
 %define MAX_PLANES      4
 %define PLANE_SEATS     4               ; 0 pilot, 1 left gunner, 2 right gunner, 3 tail gunner

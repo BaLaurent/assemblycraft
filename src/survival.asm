@@ -49,7 +49,7 @@ survival_reset:
     rep     stosb
     mov     eax, [surv_max_health]
     mov     [surv + SURVIVAL.health], eax
-    mov     dword [surv + SURVIVAL.food], 20
+    mov     dword [surv + SURVIVAL.food], MAX_FOOD
     mov     dword [surv + SURVIVAL.saturation], __float32__(5.0)
     mov     dword [surv + SURVIVAL.breath], MAX_BREATH
     ret
@@ -509,7 +509,7 @@ survival_eat_step:
     sub     rsp, 8
     test    edi, edi
     jz      .no
-    cmp     dword [surv + SURVIVAL.food], 20
+    cmp     dword [surv + SURVIVAL.food], MAX_FOOD
     jge     .no
     call    inv_held
     cmp     byte [rax + ITEMSTACK.count], 0
@@ -539,7 +539,7 @@ survival_eat_step:
     lea     rax, [item_food]
     movzx   eax, byte [rax + rbx]
     add     eax, [surv + SURVIVAL.food]
-    mov     edx, 20
+    mov     edx, MAX_FOOD
     cmp     eax, edx
     cmovg   eax, edx
     mov     [surv + SURVIVAL.food], eax

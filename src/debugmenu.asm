@@ -832,7 +832,7 @@ debug_clear_drops:
 debug_full_restore:
     mov     eax, [surv_max_health]
     mov     [surv + SURVIVAL.health], eax
-    mov     dword [surv + SURVIVAL.food], 20
+    mov     dword [surv + SURVIVAL.food], MAX_FOOD
     mov     dword [surv + SURVIVAL.saturation], __float32__(5.0)
     mov     dword [surv + SURVIVAL.exhaustion], 0
     mov     dword [surv + SURVIVAL.breath], MAX_BREATH
