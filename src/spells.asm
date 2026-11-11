@@ -1458,7 +1458,8 @@ spells_proj_end:
 ; ---- drawing a beam, and the HUD's text ---------------------------------------------------------------
 
 ; spells_beam_fx(rdi start float[3], rsi dir float[3], xmm0 length, edx element ELEM_*): a mote of the element's
-; kind every half block along the beam. Not sent to the other players (they get the beam in one message).
+; kind every half block along the beam, from one block out (the first would sit on the camera). Not sent to the other
+; players (they get the beam in one message).
 ; rbx = start, r12 = dir; frame: distance along @0, length @4, kind @8, net_applying before @12
 spells_beam_fx:
     push    rbp
@@ -1476,9 +1477,11 @@ spells_beam_fx:
     movzx   eax, byte [net_applying]
     mov     [rsp + 12], eax
     mov     byte [net_applying], 1
-    mov     dword [rsp], 0
+    mov     dword [rsp], __float32__(1.0)
 .mote:
     movss   xmm4, [rsp]
+    comiss  xmm4, [rsp + 4]
+    jae     .done                       ; a beam shorter than a block has no motes
     movss   xmm0, [r12]
     mulss   xmm0, xmm4
     addss   xmm0, [rbx]
@@ -1495,8 +1498,8 @@ spells_beam_fx:
     movss   xmm0, [rsp]
     addss   xmm0, [k_half]
     movss   [rsp], xmm0
-    comiss  xmm0, [rsp + 4]
-    jb      .mote
+    jmp     .mote
+.done:
     mov     eax, [rsp + 12]
     mov     [net_applying], al
     add     rsp, 32

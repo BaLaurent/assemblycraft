@@ -1744,7 +1744,7 @@ beam_msg:
     call    nx_on_spell
 %endmacro
 
-; A guest draws the beam another player cast: a valid one (10 blocks, frost) leaves its motes (20, one every half block); a
+; A guest draws the beam another player cast: a valid one (10 blocks, frost) leaves its motes (18: one every half block from a block out); a
 ; message that is short, has no length or one beyond 24.5 blocks, or an element above poison draws nothing. A PROJMSG of
 ; kind PROJ_SPELL becomes a ghost (AF_GHOST) with its element kept; with an element above poison it is dropped.
 test_spell_net:
@@ -1761,7 +1761,7 @@ test_spell_net:
     call    beam_msg
     BEAM_IN SPELLMSG_size
     call    fx_count
-    cmp     eax, 20
+    cmp     eax, 18
     jb      .fail
     call    fx_clear                    ; ---- what is dropped
     movss   xmm0, [k_beam_ok]
