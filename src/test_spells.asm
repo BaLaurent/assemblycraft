@@ -18,7 +18,7 @@ extern tnt_clear, drops_clear, inv_clear, inv_sel, fx_clear, fx_count
 extern abilities_reset, rpg_reset, rpg_ext, rpg_stats, rpg_keystones, gear_powers
 extern combat_reset, combat_mana, combat_haste_t, combat_feather_t, combat_speed_mult
 extern game_mode, game_time, settings, surv, surv_max_health, survival_reset
-extern player, body_init, rng_seed, player_eye, player_forward, str_eq
+extern player, body_init, rng_seed, player_eye, player_forward, str_eq, str_len
 extern spells_resolve, spells_input, spells_cast, spells_step, spells_reset, spells_preview
 extern spells_cd, spells_cd_total, spells_armed, spells_held
 
@@ -80,7 +80,8 @@ section .bss
 alignb 4
 view_buf:  resd 6                       ; eye[3], dir[3] as spells_cast takes them
 plan:      resb SPELLPLAN_size
-text:      resb 128
+text:      resb 192                    ; spells_preview's buffer ...
+canary:    resq 1                      ; ... and what must stay untouched behind it
 
 section .text
 
@@ -990,6 +991,22 @@ test_spell_preview:
     call    str_eq
     test    eax, eax
     jz      .fail
+    mov     rax, 0x5A5A5A5A5A5A5A5A     ; ---- every rune held: the longest text there is fits the buffer
+    mov     [canary], rax
+    mov     edi, ALL_RUNES
+    xor     esi, esi
+    call    spells_input
+    lea     rdi, [text]
+    call    spells_preview
+    mov     rax, 0x5A5A5A5A5A5A5A5A
+    cmp     [canary], rax
+    jne     .fail
+    lea     rdi, [text]
+    call    str_len
+    cmp     eax, 150                    ; names of four runes, three inert, twelve dropped
+    jb      .fail
+    cmp     eax, 191
+    ja      .fail
     xor     eax, eax
     jmp     .ret
 .fail:

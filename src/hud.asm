@@ -38,6 +38,7 @@ extern rpg_state, rpg_level, rpg_xp_need, rpg_stat, rpg_bar_ability, rpg_keyston
 extern rpg_title, rpg_ability_info, rpg_ability_tile, quests_current, quests_progress
 extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
 extern abilities_cd, abilities_cd_total, structures_nearest
+extern rpg_runes, spells_cd, spells_cd_total, spells_held, spells_armed, spells_preview
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
 extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_attr_points
 extern mob_affix_name
@@ -260,6 +261,9 @@ hud_draw:
     lea     ecx, [rax - 12]
     cmp     r13d, ecx
     cmovg   r13d, ecx                   ; the held name clears the ability bar
+    mov     edi, ebx
+    mov     esi, r12d
+    call    hud_spells
     mov     edi, r13d
     call    hud_held_name
     mov     edi, ebx
@@ -1393,6 +1397,217 @@ hud_abilities:
     cmp     dword [rsp + 8], 0
     cmovne  eax, ecx
     add     rsp, 56
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; hud_spells(edi x0): the runes the character casts with, bottom right: 14 x 14 carved cells, each the rune's item icon, in
+; rune order, at most as many to a row as fit right of the hotbar (x0 + 182, at least 4), the rows stacked upward 24
+; apart and right-aligned; the key that casts it on a paper tab 9 above the cell (two characters at most), a gold frame
+; on the runes held or tapped (armed), the global cooldown sweeping down every cell. While any rune is held or armed
+; the spell it makes is written above the strip, right-aligned, in cream (red when it casts nothing or the mana is
+; short). Nothing is drawn with no rune.
+; ebx = rune, r12d = the runes the character has, r13d = cells per row, r14d = cells so far, r15d = x0
+; frame: text @0 (192), key label @192 (8), cells @200, rows @204, row @208, column @212, cell x @216, cell y @220,
+; ink width @224, held | armed @228
+hud_spells:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 232
+    mov     r15d, edi
+    call    rpg_runes
+    mov     r12d, eax
+    test    eax, eax
+    jz      .ret
+    xor     ecx, ecx                    ; the number of runes
+    xor     eax, eax
+.count:
+    bt      r12d, eax
+    adc     ecx, 0
+    inc     eax
+    cmp     eax, NUM_RUNES
+    jb      .count
+    mov     [rsp + 200], ecx
+    mov     eax, [ui_w]                 ; cells to a row: what fits right of the hotbar, 4 to 16
+    sub     eax, r15d
+    sub     eax, 190
+    cdq
+    mov     ecx, 14
+    idiv    ecx
+    mov     ecx, 4
+    cmp     eax, ecx
+    cmovl   eax, ecx
+    mov     ecx, NUM_RUNES
+    cmp     eax, ecx
+    cmovg   eax, ecx
+    mov     r13d, eax
+    mov     eax, [rsp + 200]            ; rows = ceil(cells / per row)
+    add     eax, r13d
+    dec     eax
+    xor     edx, edx
+    div     r13d
+    mov     [rsp + 204], eax
+    mov     eax, [spells_held]
+    or      eax, [spells_armed]
+    mov     [rsp + 228], eax
+    xor     ebx, ebx
+    xor     r14d, r14d
+.cell:
+    bt      r12d, ebx
+    jnc     .skip
+    mov     eax, r14d
+    xor     edx, edx
+    div     r13d
+    mov     [rsp + 208], eax            ; row
+    mov     [rsp + 212], edx            ; column
+    imul    eax, r13d
+    mov     ecx, [rsp + 200]
+    sub     ecx, eax                    ; cells left from this row on
+    cmp     ecx, r13d
+    cmova   ecx, r13d                   ; in this row
+    imul    ecx, ecx, 14
+    mov     eax, [ui_w]
+    sub     eax, 4
+    sub     eax, ecx
+    mov     edx, [rsp + 212]
+    imul    edx, edx, 14
+    add     eax, edx
+    mov     [rsp + 216], eax            ; cell x
+    mov     eax, [rsp + 208]
+    imul    eax, eax, 24
+    mov     ecx, [ui_h]
+    sub     ecx, 16
+    sub     ecx, eax
+    mov     [rsp + 220], ecx            ; cell y
+    mov     eax, [rsp + 228]
+    bt      eax, ebx
+    jnc     .backing
+    mov     edi, NINE_SELECT
+    mov     esi, [rsp + 216]
+    dec     esi
+    mov     edx, [rsp + 220]
+    dec     edx
+    mov     ecx, 16
+    mov     r8d, 16
+    call    ui_nine
+.backing:
+    mov     edi, NINE_RUNE
+    mov     esi, [rsp + 216]
+    mov     edx, [rsp + 220]
+    mov     ecx, 14
+    mov     r8d, 14
+    call    ui_nine
+    lea     edi, [rbx + RUNE_FIRST]
+    mov     esi, [rsp + 216]
+    inc     esi
+    mov     edx, [rsp + 220]
+    inc     edx
+    mov     ecx, 12
+    call    ui_item_icon
+    mov     eax, [spells_cd]            ; the cooldown sweeps down every cell
+    mov     ecx, [spells_cd_total]
+    test    eax, eax
+    jle     .label
+    test    ecx, ecx
+    jle     .label
+    imul    eax, eax, 12
+    xor     edx, edx
+    div     ecx
+    mov     ecx, 12
+    cmp     eax, ecx
+    cmova   eax, ecx
+    mov     ecx, eax
+    mov     edi, [rsp + 216]
+    inc     edi
+    mov     esi, [rsp + 220]
+    inc     esi
+    mov     edx, 12
+    mov     r8d, RGBA(0, 0, 0, 170)
+    call    ui_rect
+.label:
+    lea     eax, [rbx + BIND_RUNE0]
+    lea     rcx, [settings + SETTINGS.keys]
+    mov     edi, [rcx + rax*4]
+    lea     rsi, [rsp + 192]
+    call    key_name
+    mov     byte [rsp + 194], 0         ; two characters fit over a cell
+    lea     rdi, [rsp + 192]
+    mov     esi, 1
+    call    ui_text_width
+    add     eax, 3                      ; the tab: ink width + 4 (the advance counts a trailing gap)
+    mov     [rsp + 224], eax
+    shr     eax, 1
+    neg     eax
+    mov     esi, [rsp + 216]
+    lea     esi, [rsi + rax + 7]        ; centred over the cell
+    mov     edi, NINE_NOTE
+    mov     edx, [rsp + 220]
+    sub     edx, 9
+    mov     ecx, [rsp + 224]
+    mov     r8d, 9
+    call    ui_nine
+    mov     eax, [rsp + 224]
+    shr     eax, 1
+    neg     eax
+    mov     esi, [rsp + 216]
+    lea     esi, [rsi + rax + 9]        ; the key sits 2 inside the tab
+    lea     rdi, [rsp + 192]
+    mov     edx, [rsp + 220]
+    sub     edx, 8
+    mov     ecx, C_INK
+    mov     r8d, 1
+    call    ui_text_ink
+    inc     r14d
+.skip:
+    inc     ebx
+    cmp     ebx, NUM_RUNES
+    jb      .cell
+    cmp     dword [rsp + 228], 0
+    je      .ret
+    lea     rdi, [rsp]                  ; the spell the held and tapped runes make
+    call    spells_preview
+    mov     r12d, eax                   ; 1 when it casts something
+    mov     ecx, C_CREAM
+    test    eax, eax
+    jz      .red
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .write
+    test    dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
+    jnz     .write                      ; paid in health: the bar of the abilities says when it is too dear
+    cvtsi2ss xmm0, edx
+    comiss  xmm0, [combat_mana]
+    jbe     .write
+.red:
+    mov     ecx, RGBA(255, 90, 90, 255)
+.write:
+    mov     ebx, ecx
+    lea     rdi, [rsp]
+    mov     esi, 1
+    call    ui_text_width
+    mov     esi, [ui_w]
+    sub     esi, 4
+    sub     esi, eax                    ; right-aligned
+    mov     eax, [rsp + 204]
+    dec     eax
+    imul    eax, eax, 24
+    mov     edx, [ui_h]
+    sub     edx, 37                     ; 9 over the top row's tab and 12 over that
+    sub     edx, eax
+    lea     rdi, [rsp]
+    mov     ecx, ebx
+    mov     r8d, 1
+    call    ui_text
+.ret:
+    add     rsp, 232
     pop     r15
     pop     r14
     pop     r13

@@ -1576,10 +1576,10 @@ sp_note:
     pop     rbp
     ret
 
-; spells_preview(rdi buf 96 bytes) -> eax 1 when the runes held or armed cast something. The text: the names
-; of the runes that count, " + " between them, two spaces, the mana ("Laser + Frost + Pierce  36 mana"),
-; then " (inert: ...)" for runes that do nothing here and " (dropped: ...)" for those over the cap; "Nothing to
-; cast" otherwise.
+; spells_preview(rdi buf 192 bytes) -> eax 1 when the runes held or armed cast something, edx the mana it costs.
+; The text: the names of the runes that count, " + " between them, two spaces, the mana ("Laser + Frost +
+; Pierce  36 mana"), then " (inert: ...)" for runes that do nothing here and " (dropped: ...)" for those over
+; the cap; "Nothing to cast" otherwise.
 ; rbx = buf, r12d = the answer; frame: SPELLPLAN @0
 spells_preview:
     push    rbp
@@ -1629,6 +1629,7 @@ spells_preview:
     mov     byte [rax], 0
 .ret:
     mov     eax, r12d
+    mov     edx, [rsp + SPELLPLAN.cost]
     add     rsp, 56
     pop     r13
     pop     r12
