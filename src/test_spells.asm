@@ -1473,12 +1473,15 @@ test_spell_dash_rider:
     call    fixture
     movss   xmm0, [k_yaw0]
     call    aim
+    SPAWN   k_x16_5, k_z6_5             ; 2 blocks from the arrival (a blast reaches 3)
     mov     edi, R(PHASE) | R(DASH)
     call    cast
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [player + BODY.z], 8.5
     EXPECT_NEAR [player + BODY.kbz], -18.0
+    HURT    0
+    jl      .fail                       ; a Dash that rides the Phase is no blast
     xor     eax, eax
     jmp     .ret
 .fail:
