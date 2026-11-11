@@ -10,7 +10,7 @@ default rel
 
 global test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
 global test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
-global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst
+global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview
 
 extern world_clear, world_set, mobs, mobs_clear, mob_spawn
 extern arrows, arrows_clear, arrows_step
@@ -74,6 +74,9 @@ vectors_end:
 
 s_pv_laser:   db "Laser + Frost + Pierce  36 mana", 0
 s_pv_nothing: db "Nothing to cast", 0
+s_pv_blood:   db "Laser + Frost + Pierce  8 health", 0
+s_pv_free:    db "Laser + Frost + Pierce  free", 0
+k_100f:       dd 100.0
 s_pv_inert:   db "Ball + Laser + Fire + Burst  60 mana (inert: Laser) (dropped: Seek, Heal)", 0
 
 section .bss
@@ -1007,6 +1010,27 @@ test_spell_preview:
     jb      .fail
     cmp     eax, 191
     ja      .fail
+    or      dword [rpg_keystones], 1 << KS_BLOOD_MAGIC   ; ---- Blood Magic pays ceil(36 / 5) = 8 health, not mana
+    mov     edi, R(LASER) | R(FROST) | R(PIERCE)
+    xor     esi, esi
+    call    spells_input
+    lea     rdi, [text]
+    call    spells_preview
+    lea     rdi, [text]
+    lea     rsi, [s_pv_blood]
+    call    str_eq
+    test    eax, eax
+    jz      .fail
+    mov     dword [rpg_keystones], 0    ; ---- Creative pays nothing
+    mov     dword [game_mode], MODE_CREATIVE
+    lea     rdi, [text]
+    call    spells_preview
+    lea     rdi, [text]
+    lea     rsi, [s_pv_free]
+    call    str_eq
+    test    eax, eax
+    jz      .fail
+    mov     dword [game_mode], MODE_SURVIVAL
     xor     eax, eax
     jmp     .ret
 .fail:
@@ -1076,6 +1100,92 @@ test_spell_dash_burst:
     HURT    1
     jge     .fail
     call    live
+    test    eax, eax
+    jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; cost_check(edi held, esi tapped) -> eax 0 when the mana a cast takes is exactly the number the preview announced for the
+; same stack (held, or tapped: armed): 100 mana before, the cast must succeed and leave 100 - announced
+; ebx = held, r12d = tapped, then the announced cost
+cost_check:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    call    spells_reset
+    SETF    [combat_mana], 100.0
+    mov     edi, ebx
+    mov     esi, r12d
+    call    spells_input
+    lea     rdi, [text]
+    call    spells_preview
+    test    eax, eax
+    jz      .fail
+    mov     r12d, edx
+    test    r12d, r12d
+    jz      .fail
+    lea     rdi, [view_buf]
+    lea     rsi, [view_buf + 12]
+    call    spells_cast
+    cmp     eax, 1
+    jne     .fail
+    cvtsi2ss xmm0, r12d
+    addss   xmm0, [combat_mana]
+    movss   xmm1, [k_100f]
+    call    close_to
+    test    eax, eax
+    jz      .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; What a cast takes is what the preview announced, in Survival: runes held only, tapped only, held and tapped, and a stack of
+; six runes (only four count: the preview and the cast drop the same two)
+test_spell_cost_matches_preview:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(BALL) | R(FIRE)
+    xor     esi, esi
+    call    cost_check
+    test    eax, eax
+    jnz     .fail
+    xor     edi, edi
+    mov     esi, R(LASER) | R(FROST)
+    call    cost_check
+    test    eax, eax
+    jnz     .fail
+    mov     edi, R(BALL)
+    mov     esi, R(FIRE)
+    call    cost_check
+    test    eax, eax
+    jnz     .fail
+    mov     edi, R(BALL) | R(FIRE) | R(FROST)
+    mov     esi, R(SHOCK) | R(POISON) | R(BURST)
+    call    cost_check
     test    eax, eax
     jnz     .fail
     xor     eax, eax

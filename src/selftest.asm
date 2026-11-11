@@ -40,7 +40,7 @@ extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_fr
 extern test_rpg_save_load_validates, test_rpg_v3_bar_remap, test_rune_unlocks, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
 extern test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
 extern test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
-extern test_spell_blood_magic, test_spell_preview, test_spell_dash_burst
+extern test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview
 extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
 extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
 extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_hurt_and_not_saved
@@ -242,6 +242,7 @@ tests:
     TEST spell_blood_magic
     TEST spell_preview
     TEST spell_dash_burst
+    TEST spell_cost_matches_preview
     TEST quest_chain_progress_and_rewards
     TEST trade_exchanges_items
     TEST guard_blocks_and_parries
@@ -580,6 +581,7 @@ section .rodata
     TESTNAME spell_blood_magic
     TESTNAME spell_preview
     TESTNAME spell_dash_burst
+    TESTNAME spell_cost_matches_preview
     TESTNAME quest_chain_progress_and_rewards
     TESTNAME trade_exchanges_items
     TESTNAME guard_blocks_and_parries

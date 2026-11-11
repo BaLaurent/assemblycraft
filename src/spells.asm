@@ -25,6 +25,7 @@ extern explode_magic, fx_burst
 extern ab_crit, ab_sweep, ab_burst, ab_box_free
 extern audio_play, hand_swing, net_swing_t, net_applying, net_spell_beam_out
 extern str_append, i32_to_str
+extern game_mode, rpg_keystones
 
 %define BALL_SPEED      28.0
 %define LASER_VICTIMS   8               ; mobs one beam can strike
@@ -36,6 +37,8 @@ s_nothing:  db "Nothing to cast", 0
 s_plus:     db " + ", 0
 s_gap:      db "  ", 0
 s_mana:     db " mana", 0
+s_health:   db " health", 0
+s_free:     db "free", 0
 s_inert:    db " (inert: ", 0
 s_dropped:  db " (dropped: ", 0
 s_comma:    db ", ", 0
@@ -1615,12 +1618,31 @@ spells_preview:
     mov     rdi, rax
     lea     rsi, [s_gap]
     call    str_append
-    mov     rsi, rax
+    cmp     dword [game_mode], MODE_CREATIVE
+    je      .free                       ; Creative pays nothing
+    mov     r8, rax
     mov     edi, [rsp + SPELLPLAN.cost]
+    lea     r13, [s_mana]
+    test    dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
+    jz      .amount
+    lea     eax, [rdi + 4]              ; Blood Magic pays ceil(mana / 5) health (combat_pay)
+    xor     edx, edx
+    mov     ecx, 5
+    div     ecx
+    mov     edi, eax
+    lea     r13, [s_health]
+.amount:
+    mov     rsi, r8
     call    i32_to_str
     mov     rdi, rax
-    lea     rsi, [s_mana]
+    mov     rsi, r13
     call    str_append
+    jmp     .notes
+.free:
+    mov     rdi, rax
+    lea     rsi, [s_free]
+    call    str_append
+.notes:
     mov     rdi, rax
     lea     rsi, [s_inert]
     mov     edx, [rsp + SPELLPLAN.inert]
