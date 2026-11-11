@@ -1,14 +1,14 @@
-; abilities.asm - the twenty abilities (four per archetype, taught by the skill web), the staff
-; bolt of the Path of the Mage and the timers behind them.
+; abilities.asm - the sixteen abilities (four each for the Warrior, Archer, Rogue and Marksman, taught
+; by the skill web), the staff bolt of the Path of the Mage and the timers behind them.
 ;
 ; abilities_use(slot, eye, dir) casts what the ability bar holds in that slot (rpg_bar_ability; an
-; empty slot dry-fires). The effect index and the cooldown index are the ability id,
-; (archetype - 1) * 4 + slot of its archetype, so rebinding an ability does not reset its cooldown.
-; It checks the cooldown and, for the three abilities that need one (blink, shadowstep, hunter's
+; empty slot dry-fires). The effect index and the cooldown index are the ability id, a dense index:
+; ABIL_BASE(archetype) + slot (the Mage has none: its magic is the runes of spells.asm), so rebinding
+; an ability does not reset its cooldown. It checks the cooldown and, for the two abilities that need one (shadowstep, hunter's
 ; mark), a landing spot or a target; only then does it pay through combat_pay (Blood Magic pays
 ; mana in health), start the cooldown and fire, so a failed cast costs nothing and plays the
 ; dry-fire click. Resource, cost and base cooldown come from rpg_ability_info; the COOLDOWN_RED
-; stat shortens the cooldown. The abilities that last (charge, whirlwind, meteor storm, arrow
+; stat shortens the cooldown. The abilities that last (charge, whirlwind, arrow
 ; rain) keep their state in this file and abilities_step advances it once per fixed step; Bullseye
 ; and Fan the Hammer only start a timer in combat.asm that guns.asm reads, and the Powder Grenade
 ; and the Flashbang lob a PROJ_GRENADE that arrows.asm bursts (a flash is ab_flash_at). Nothing
@@ -20,7 +20,8 @@ default rel
 
 global abilities_cd, abilities_cd_total, abilities_bolt_cd
 global abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
-global meteor_tgt, rain_tgt                 ; read by test_mobs (entities_rebase)
+global rain_tgt                             ; read by test_mobs (entities_rebase)
+global ab_crit, ab_sweep, ab_burst, ab_box_free ; the helpers spells.asm casts with
 global ab_flash_at                          ; the flashbang burst at a point (arrows.asm calls it)
 
 extern player, mobs
@@ -42,11 +43,10 @@ extern combat_bullseye_t, combat_fanhammer_t
 %error "abilities.asm: AF_CRIT must be 1 and HITF_CRIT AF_CRIT << 8"
 %endif
 
-; effect index = ability id = (archetype - 1) * 4 + slot
-%define IDX_BLINK       5               ; mage, slot 1
-%define IDX_MARK        11              ; archer, slot 3
-%define IDX_SHADOW      12              ; rogue, slot 0
-%define IDX_SMOKE       13              ; rogue, slot 1
+; effect index = ability id = ABIL_BASE(archetype) + slot
+%define IDX_MARK        7               ; archer, slot 3
+%define IDX_SHADOW      8               ; rogue, slot 0
+%define IDX_SMOKE       9               ; rogue, slot 1
 
 %define CHARGE_STEPS    15
 %define WHIRL_STEPS     90
@@ -64,15 +64,11 @@ extern combat_bullseye_t, combat_fanhammer_t
 %define SLAM_STUN_BOSS  15
 %define FLASH_STUN      60              ; a flashbang's stun; the Fallen King's is shorter
 %define FLASH_STUN_BOSS 20
-%define METEORS         8
-%define METEOR_GAP      22
 %define RAIN_ARROWS     24
 %define RAIN_GAP        5
 %define KNIVES          8
 
 ; the unscaled damage of the projectiles
-%define FIREBALL_DMG    8
-%define METEOR_DMG      12
 %define VOLLEY_DMG      6
 %define EXPLOSIVE_DMG   10
 %define RAIN_DMG        6
@@ -90,13 +86,11 @@ section .rodata
 align 4
 k_one:        dd 1.0
 k_half:       dd 0.5
-k_quarter:    dd 0.25
 k_hundred:    dd 100.0
 k_inv65536:   dd 0.000015258789
 k_tiny:       dd 0.0001
 k_abs:        dd 0x7FFFFFFF
 k_chest:      dd 0.9                    ; player centre above the feet
-k_eye_h:      dd 1.62                   ; eye above the feet
 k_contact:    dd 0.001                  ; the free-box test's slack: touching a wall is free
 k_box_xz:     dd 0.299                  ; half width 0.3 less the slack
 k_box_top:    dd 1.799                  ; height 1.8 less the slack
@@ -113,7 +107,7 @@ k_charge_hit: dd 2.0                    ; and the scale of the push on a mob it 
 k_reach:      dd 0.9                    ; strike reach beyond the mob's half width
 k_charge_dy:  dd 1.5
 k_warcry_r:   dd 6.0                    ; radii: war cry 6 blocks, whirlwind 3.5, ground slam 4,
-k_whirl_r:    dd 3.5                    ; frost nova 5 - each times 1 + AREA / 100
+k_whirl_r:    dd 3.5                    ; the flashbang 5 - each times 1 + AREA / 100
 k_whirl_dy:   dd 2.0
 k_whirl_push: dd 1.5
 k_warcry_mul: dd 1.3                    ; whirlwind damage while the war cry lasts
@@ -123,13 +117,10 @@ k_bolt_v:     dd 45.0
 k_arrow_o:    dd 0.4
 k_volley_v:   dd 40.0
 k_explode_v:  dd 45.0
-k_meteor_h:   dd 18.0
-k_meteor_v:   dd -30.0
 k_rain_h:     dd 14.0
 k_rain_v:     dd -35.0
-k_spread:     dd 4.0                    ; meteors and arrows land within +-4 blocks of the target
-k_range:      dd 40.0                   ; targeting ray of meteor storm and arrow rain
-k_meteor_far: dd 30.0                   ; ...and where they aim when it hits nothing
+k_spread:     dd 4.0                    ; arrows land within +-4 blocks of the target
+k_range:      dd 40.0                   ; targeting ray of the arrow rain
 k_rain_far:   dd 25.0
 k_shadow_rng: dd 12.0                   ; shadowstep sight, blocks
 k_shadow_gap: dd 0.8                    ; behind the mob by its half width plus this
@@ -141,10 +132,6 @@ k_slam_vy:    dd 6.0                    ; and the launch of the mob it hit, b/s
 k_slam_up:    dd 0.1                    ; the blast sits this far above the feet
 k_slam_fx:    dd 1.2                    ; its radius
 k_slam_shake: dd 0.6                    ; camera shake
-k_nova_r:     dd 5.0
-k_nova_dy:    dd 3.0                    ; frost nova: within 3 blocks in height
-k_nova_base:  dd 6.0                    ; ...6 points of frost
-k_nova_push:  dd 0.5
 k_knife_v:    dd 30.0                   ; fan of knives: speed, b/s
 k_knife_drop: dd 0.5                    ; ...thrown from this far below the eye
 k_charge_dmg: dd 10.0                   ; charge: the base damage of its strike
@@ -157,7 +144,6 @@ k_flash_vol:  dd 0.6                    ; volume of the flash's bang
 align 8
 ab_effects:                             ; by effect index; each (rdi eye*, rsi dir*, rdx plan*)
     dq ab_charge, ab_warcry, ab_whirl, ab_slam
-    dq ab_fireball, ab_blink, ab_meteor, ab_nova
     dq ab_volley, ab_explosive, ab_rain, ab_mark
     dq ab_shadowstep, ab_smoke, ab_blade, ab_knives
     dq ab_grenade, ab_bullseye, ab_fanhammer, ab_flashbang
@@ -174,9 +160,6 @@ charge_mask:  resq 1                    ; bit i = mob i was already struck by th
 charge_dx:    resd 1                    ; float: the charge's horizontal heading
 charge_dz:    resd 1
 whirl_t:      resd 1                    ; steps of whirlwind left
-meteor_n:     resd 1                    ; meteors still to fall
-meteor_t:     resd 1                    ; steps until the next
-meteor_tgt:   resd 3                    ; float: where they fall
 rain_n:       resd 1
 rain_t:       resd 1
 rain_tgt:     resd 3
@@ -192,7 +175,7 @@ abilities_reset:
     rep     stosb
     ret
 
-; abilities_step(): once per fixed step. Cooldowns tick down; the charge, whirlwind, meteor storm
+; abilities_step(): once per fixed step. Cooldowns tick down; the charge, whirlwind
 ; and arrow rain advance.
 abilities_step:
     push    rbp
@@ -213,7 +196,6 @@ abilities_step:
 .lasting:
     call    ab_charge_step
     call    ab_whirl_step
-    call    ab_meteor_step
     call    ab_rain_step
     pop     rbp
     ret
@@ -245,8 +227,6 @@ abilities_use:
     mov     edi, r13d
     call    rpg_ability_info
     mov     rbx, rax
-    cmp     r13d, IDX_BLINK
-    je      .plan_blink
     cmp     r13d, IDX_MARK
     je      .plan_mark
     cmp     r13d, IDX_SHADOW
@@ -255,12 +235,6 @@ abilities_use:
     mov     rsi, [rsp + U_DIR]
     lea     rdx, [rsp + U_PLAN]
     call    ab_shadow_plan
-    jmp     .planned
-.plan_blink:
-    mov     rdi, [rsp + U_EYE]
-    mov     rsi, [rsp + U_DIR]
-    lea     rdx, [rsp + U_PLAN]
-    call    ab_blink_plan
     jmp     .planned
 .plan_mark:
     mov     rdi, [rsp + U_EYE]
@@ -777,67 +751,6 @@ ab_box_free:
     pop     rbp
     ret
 
-; ab_blink_plan(rdi eye float[3], rsi dir float[3], rdx out float[3]) -> eax 1 when the player can
-; blink at least a block: marches along dir in quarter-block steps up to 8 blocks, the candidate
-; feet being eye + dir * s - (0, 1.62, 0), until the box is no longer free; out = the last free
-; candidate
-; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3]
-ab_blink_plan:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, 24
-    mov     rbx, rdx
-    mov     r12, rdi
-    mov     r13, rsi
-    xor     r15d, r15d
-    mov     r14d, 1
-.march:
-    cvtsi2ss xmm3, r14d
-    mulss   xmm3, [k_quarter]           ; s
-    movss   xmm0, [r13]
-    mulss   xmm0, xmm3
-    addss   xmm0, [r12]
-    movss   [rsp], xmm0
-    movss   xmm1, [r13 + 4]
-    mulss   xmm1, xmm3
-    addss   xmm1, [r12 + 4]
-    subss   xmm1, [k_eye_h]
-    movss   [rsp + 4], xmm1
-    movss   xmm2, [r13 + 8]
-    mulss   xmm2, xmm3
-    addss   xmm2, [r12 + 8]
-    movss   [rsp + 8], xmm2
-    call    ab_box_free
-    test    eax, eax
-    jz      .stop
-    mov     r15d, r14d
-    mov     eax, [rsp]
-    mov     [rbx], eax
-    mov     eax, [rsp + 4]
-    mov     [rbx + 4], eax
-    mov     eax, [rsp + 8]
-    mov     [rbx + 8], eax
-    inc     r14d
-    cmp     r14d, 32
-    jbe     .march
-.stop:
-    xor     eax, eax
-    cmp     r15d, 4                     ; best >= 1 block
-    setae   al
-    add     rsp, 24
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
-
 ; ab_sight_mob(rdi eye float[3], rsi dir float[3], xmm0 range) -> eax index of the hostile mob the
 ; look ray meets within range and nearer than the first block (which cuts the range short), or -1
 ; rbx = eye, r12 = dir; frame: RAYHIT @0, lo @24, hi @36, t @48
@@ -1154,111 +1067,6 @@ ab_slam:
     pop     rbp
     ret
 
-; Fireball: a PROJ_FIREBALL for 8, crit as rolled, at 28 b/s from half a block ahead
-; rbx = eye, r12 = dir
-ab_fireball:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    sub     rsp, 16
-    mov     rbx, rdi
-    mov     r12, rsi
-    call    ab_crit
-    mov     r8d, eax
-    mov     edx, FIREBALL_DMG
-    mov     rdi, rbx
-    mov     rsi, r12
-    movss   xmm0, [k_fireball_o]
-    movss   xmm1, [k_fireball_v]
-    mov     ecx, PROJ_FIREBALL
-    call    ab_shoot
-    mov     edi, SND_FIREBALL
-    movss   xmm0, [k_vol]
-    call    audio_play
-    add     rsp, 16
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
-
-; Blink: the player appears at the planned spot (plan), motion and fall forgotten; sparks of magic
-; at both ends
-; rbx = plan
-ab_blink:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    sub     rsp, 8
-    mov     rbx, rdx
-    movss   xmm0, [k_2]
-    mov     edi, FX_MAGIC
-    mov     esi, 20
-    call    ab_burst
-    mov     eax, [rbx]
-    mov     [player + BODY.x], eax
-    mov     eax, [rbx + 4]
-    mov     [player + BODY.y], eax
-    mov     eax, [rbx + 8]
-    mov     [player + BODY.z], eax
-    xor     eax, eax
-    mov     [player + BODY.vy], eax
-    mov     [player + BODY.kbx], eax
-    mov     [player + BODY.kbz], eax
-    mov     [player + BODY.fall], eax
-    movss   xmm0, [k_2]
-    mov     edi, FX_MAGIC
-    mov     esi, 20
-    call    ab_burst
-    mov     edi, SND_BLINK
-    movss   xmm0, [k_vol]
-    call    audio_play
-    add     rsp, 8
-    pop     rbx
-    pop     rbp
-    ret
-
-; Meteor Storm: aims at the first block in sight (40 blocks) or 30 blocks ahead, and starts 8
-; meteors falling, the first on the next step
-ab_meteor:
-    push    rbp
-    mov     rbp, rsp
-    lea     rdx, [meteor_tgt]
-    movss   xmm0, [k_range]
-    movss   xmm1, [k_meteor_far]
-    call    ab_target                   ; rdi, rsi: eye, dir
-    mov     dword [meteor_n], METEORS
-    mov     dword [meteor_t], 0
-    pop     rbp
-    ret
-
-; Frost Nova: every hostile mob within 5 blocks (times 1 + AREA / 100) and 3 in height takes 6
-; points of frost spell damage that chills it three times - the third freezes it - shoved
-; outwards at 0.5; a burst of ice around the player
-ab_nova:
-    push    rbp
-    mov     rbp, rsp
-    mov     edi, STAT_AREA
-    call    ab_mult
-    movaps  xmm1, xmm0
-    mulss   xmm1, [k_nova_r]
-    movss   xmm0, [k_nova_base]
-    movss   xmm2, [k_nova_dy]
-    movss   xmm3, [k_nova_push]
-    mov     edi, SRC_SPELL
-    mov     esi, ELEM_FROST | HITF_CHILL3
-    mov     edx, 1
-    call    ab_sweep
-    movss   xmm0, [k_6]
-    mov     edi, FX_FROST
-    mov     esi, 40
-    call    ab_burst
-    mov     edi, SND_FREEZE
-    movss   xmm0, [k_vol]
-    call    audio_play
-    pop     rbp
-    ret
-
 ; Volley: five arrows fanned at -20, -10, 0, 10 and 20 degrees of yaw (seven from -30 to 30 with
 ; Barrage), each carrying 6 and rolling its own crit, none taken from the quiver
 ; rbx = eye, r12 = dir, r13d = arrow, r14d = arrows; frame: this arrow's direction float[3]
@@ -1353,7 +1161,7 @@ ab_explosive:
     pop     rbp
     ret
 
-; Arrow Rain: aims like the meteor storm (25 blocks ahead when nothing is in sight) and starts 24
+; Arrow Rain: aims at the first block in sight (25 blocks ahead when nothing is in sight) and starts 24
 ; arrows falling, the first on the next step
 ab_rain:
     push    rbp
@@ -1821,51 +1629,6 @@ ab_whirl_pulse:
     leave
     ret
 
-; ab_meteor_step(): the next meteor falls when its wait is over (the first one at once): a
-; fireball (AF_BIG) at the target + (U(-4, 4), 18, U(-4, 4)) falling at 30 b/s; then 22 steps wait
-; frame: where it starts float[3]
-ab_meteor_step:
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 16
-    cmp     dword [meteor_n], 0
-    jle     .done
-    mov     eax, [meteor_t]
-    test    eax, eax
-    jz      .drop
-    dec     eax
-    mov     [meteor_t], eax
-    jnz     .done
-.drop:
-    movss   xmm0, [k_spread]
-    call    ab_rnd
-    addss   xmm0, [meteor_tgt]
-    movss   [rsp], xmm0
-    movss   xmm0, [meteor_tgt + 4]
-    addss   xmm0, [k_meteor_h]
-    movss   [rsp + 4], xmm0
-    movss   xmm0, [k_spread]
-    call    ab_rnd
-    addss   xmm0, [meteor_tgt + 8]
-    movss   [rsp + 8], xmm0
-    movss   xmm0, [rsp]
-    movss   xmm1, [rsp + 4]
-    movss   xmm2, [rsp + 8]
-    xorps   xmm3, xmm3
-    movss   xmm4, [k_meteor_v]
-    xorps   xmm5, xmm5
-    xor     edi, edi
-    mov     esi, METEOR_DMG
-    xor     edx, edx
-    mov     ecx, PROJ_FIREBALL
-    mov     r8d, AF_BIG
-    call    arrows_spawn
-    dec     dword [meteor_n]
-    mov     dword [meteor_t], METEOR_GAP
-.done:
-    leave
-    ret
-
 ; ab_rain_step(): the next arrow falls when its wait is over (the first one at once): at the
 ; target + (U(-4, 4), 14, U(-4, 4)) falling at 35 b/s; then 5 steps wait
 ; frame: where it starts float[3]
@@ -1912,17 +1675,11 @@ ab_rain_step:
     ret
 
 ; abilities_shift(edi dx, esi dz): the origin moved by (dx, dz) blocks: the local x and z of the
-; meteor storm's and the arrow rain's target drop by that much (exact: multiples of 512). Nothing
+; arrow rain's target drop by that much (exact: multiples of 512). Nothing
 ; else here is a position: charge_dx / charge_dz are a heading.
 abilities_shift:
     cvtsi2ss xmm0, edi
     cvtsi2ss xmm1, esi
-    movss   xmm2, [meteor_tgt]
-    subss   xmm2, xmm0
-    movss   [meteor_tgt], xmm2
-    movss   xmm2, [meteor_tgt + 8]
-    subss   xmm2, xmm1
-    movss   [meteor_tgt + 8], xmm2
     movss   xmm2, [rain_tgt]
     subss   xmm2, xmm0
     movss   [rain_tgt], xmm2

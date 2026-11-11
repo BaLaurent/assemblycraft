@@ -4,7 +4,7 @@
 default rel
 
 global test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_paths_and_ranks
-global test_rpg_save_load_validates, test_quest_chain_progress_and_rewards
+global test_rpg_save_load_validates, test_rpg_v3_bar_remap, test_rune_unlocks, test_quest_chain_progress_and_rewards
 global test_trade_exchanges_items
 global test_rpg_attributes_and_respec, test_rpg_keystones_and_caps
 global test_archetype_titles, test_marksman_path_and_dex
@@ -19,11 +19,11 @@ extern rpg_state, rpg_ext, rpg_stats, rpg_keystones, rpg_reset, rpg_migrated, rp
 extern rpg_level, rpg_points, rpg_xp_need, rpg_add_xp, rpg_can_spend, rpg_spend, rpg_rank
 extern rpg_stat, rpg_recompute, rpg_clamp_stats, rpg_ability_tile, rpg_path_tile
 extern rpg_web_node, rpg_web_linked, web_edges, web_edge_count
-extern rpg_ability_learned, rpg_ability_info, rpg_bar_ability
+extern rpg_ability_learned, rpg_ability_info, rpg_bar_ability, rpg_runes, rpg_learn_rune
 extern rpg_archetype, rpg_archetype_ranks, rpg_archetype_name, rpg_title
 extern rpg_stat_info, rpg_format_stat
 extern rpg_attr, rpg_attr_points, rpg_spend_attr, rpg_attr_info, rpg_attr_desc
-extern rpg_respec_cost, rpg_respec, rpg_keystone
+extern rpg_respec_cost, rpg_respec, rpg_respec_free, rpg_keystone
 extern rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save
 extern quests_current, quests_progress, quests_accept, quests_can_complete, quests_complete
 extern quests_on_kill, quests_on_dungeon_cleared, quests_on_boss_killed
@@ -82,11 +82,11 @@ exp_web:
     EXPW "Path of the Rogue",    3,   NODE_PATH,     ARCH_ROGUE,      1, ARCH_ROGUE,    0,  -9,  13, 1
     EXPW "Path of the Marksman", 4,   NODE_PATH,     ARCH_MARKSMAN,   1, ARCH_MARKSMAN, 0,   9,  13, 1
     EXPW "Weapon Mastery",       5,   NODE_STAT,     STAT_MELEE_DMG,  5, ARCH_WARRIOR,  6,  -9, -26, 1
-    EXPW "Blink",                30,  NODE_ABILITY,  5,               1, ARCH_MAGE,     0,  34, -11, 4
+    EXPW "Phase Rune",           30,  NODE_RUNE,     RUNE_PHASE,      1, ARCH_MAGE,     0,  34, -11, 4
     EXPW "Steady Aim",           41,  NODE_STAT,     STAT_RANGED_DMG, 5, ARCH_ARCHER,   8, -27,   1, 1
     EXPW "Iron Skin",            13,  NODE_STAT,     STAT_ARMOR_BONUS, 5, ARCH_WARRIOR, 2,   0, -45, 9
     EXPW "Blade Mastery",        63,  NODE_STAT,     STAT_MELEE_DMG,  5, ARCH_ROGUE,    8, -17,  60, 22
-    EXPW "Hunter's Mark",        56,  NODE_ABILITY,  11,              1, ARCH_ARCHER,   0, -42, -33, 15
+    EXPW "Hunter's Mark",        56,  NODE_ABILITY,  7,               1, ARCH_ARCHER,   0, -42, -33, 15
     EXPW "Assassinate",          64,  NODE_KEYSTONE, KS_ASSASSINATE,  1, ARCH_ROGUE,    0, -20,  68, 30
     EXPW "Fan the Hammer",       86,  NODE_ABILITY,  ABIL_FANHAMMER,  1, ARCH_MARKSMAN, 0,  32,  43, 15
     EXPW "Powder Keg",           94,  NODE_KEYSTONE, KS_POWDER_KEG,   1, ARCH_MARKSMAN, 0,  20,  68, 30
@@ -212,13 +212,13 @@ exp_stats_end:
 %error "exp_stats needs one record per stat"
 %endif
 
-; the plan's abilities by (class - 1) * 4 + slot: resource, cost, cooldown in seconds
+; the plan's abilities by ABIL_BASE(class) + slot (the Mage has none): resource, cost, cooldown in seconds
 exp_abil:
     db RES_STAMINA, 30, 6,  RES_STAMINA, 40, 20, RES_STAMINA, 60, 30, RES_STAMINA, 45, 12   ; Warrior
-    db RES_MANA, 25, 3,     RES_MANA, 20, 5,     RES_MANA, 70, 40,     RES_MANA, 35, 10       ; Mage
     db RES_STAMINA, 30, 6,  RES_STAMINA, 35, 10, RES_STAMINA, 60, 30, RES_STAMINA, 20, 8      ; Archer
     db RES_STAMINA, 25, 8,  RES_STAMINA, 40, 20, RES_STAMINA, 60, 35, RES_STAMINA, 35, 9      ; Rogue
     db RES_STAMINA, 30, 8,  RES_STAMINA, 20, 15, RES_STAMINA, 50, 30, RES_STAMINA, 35, 12     ; Marksman
+exp_rune_nodes: db RUNE_PHASE, RUNE_LASER, RUNE_NOVA     ; the runes of the Mage's nodes 7, 9 and 15
 
 align 4
 ; what each keystone alone does to a level 30 character of its class: two (stat, value) pairs
@@ -314,7 +314,7 @@ s_migrated_mk: db "New Marksman path: skill points refunded", 0
 s_begin_a:  db "Open your grimoire (", 0
 s_begin_b:  db ") to choose a path", 0
 s_deepmind: db "Deep Mind", 0
-s_blink:    db "Blink", 0
+s_phase_rune: db "Phase Rune", 0
 
 section .bss
 alignb 4
@@ -751,11 +751,26 @@ web_nodes_ok:
     jne     .bad
     jmp     .next
 .ability:                                   ; r15d = the slot
+    cmp     r13d, ARCH_MAGE - 1
+    je      .rune                           ; the Mage's three ability nodes teach runes
     cmp     byte [r12 + WEBNODE.kind], NODE_ABILITY
     jne     .bad
     cmp     byte [r12 + WEBNODE.max], 1
     jne     .bad
-    lea     eax, [r15 + r13*4]
+    lea     eax, [r13 - 1]                  ; ABIL_BASE(archetype) / 4: the Mage's group is not there
+    test    r13d, r13d
+    cmovz   eax, r13d
+    lea     eax, [r15 + rax*4]
+    cmp     [r12 + WEBNODE.stat], al
+    jne     .bad
+    jmp     .text
+.rune:
+    cmp     byte [r12 + WEBNODE.kind], NODE_RUNE
+    jne     .bad
+    cmp     byte [r12 + WEBNODE.max], 1
+    jne     .bad
+    lea     rcx, [exp_rune_nodes - 1]
+    movzx   eax, byte [rcx + r15]
     cmp     [r12 + WEBNODE.stat], al
     jne     .bad
     jmp     .text
@@ -1232,7 +1247,7 @@ test_rpg_levels_and_points:
     ; the other paths' kits, each with its own resources refilled
     call    reset_all
     CALL1   rpg_spend, 1, 1
-    CALL1   rpg_bar_ability, 0, 4           ; Fireball in the first bar slot
+    CALL1   rpg_bar_ability, 0, -1          ; the Mage's path teaches runes: the bar stays empty
     HAVE    STAFF, 1
     HAVE    MANA_POTION, 2
     HAVE    COOKED_PORKCHOP, 0
@@ -1242,12 +1257,12 @@ test_rpg_levels_and_points:
     EXPECT_D combat_stamina, __float32__(80.0)
     call    reset_all
     CALL1   rpg_spend, 2, 1
-    CALL1   rpg_bar_ability, 0, 8
+    CALL1   rpg_bar_ability, 0, 4
     HAVE    BOW, 1
     HAVE    ARROW, 32
     call    reset_all
     CALL1   rpg_spend, 3, 1
-    CALL1   rpg_bar_ability, 0, 12
+    CALL1   rpg_bar_ability, 0, 8
     HAVE    IRON_DAGGER, 1
     HAVE    HEALTH_POTION, 2
     EXPECT_D inv + INVENTORY.armor + 4, 0   ; only the Warrior wears a chestplate
@@ -1418,7 +1433,7 @@ test_rpg_skill_spend_rules:
     CALL1   rpg_can_spend, WEBN(1,15), 0
     CALL1   rpg_spend, WEBN(1,15), 1
     CALL1   rpg_ability_learned, 3, 1
-    CALL1   rpg_ability_learned, 4, 0       ; Mage abilities belong to the Mage's nodes
+    CALL1   rpg_ability_learned, 4, 0       ; an Archer ability belongs to the Archer's nodes
     CALL1   rpg_ability_learned, NUM_ABILITIES, 0
     CALL1   rpg_bar_ability, 3, 3
     CALL0   rpg_points, 7                   ; 22 - 15
@@ -1449,11 +1464,11 @@ test_rpg_skill_spend_rules:
     RING_CROSSING ARCH_ROGUE, ARCH_ARCHER
     RING_CROSSING ARCH_ARCHER, ARCH_WARRIOR
 
-    ; --- the first rank of a path: its ability on the bar, its kit once, the Warrior's chestplate
+    ; --- the first rank of a path: its ability on the bar (the Mage's path teaches runes: nothing), its kit once, the Warrior's chestplate
     call    reset_all
     mov     byte [R_LEVEL], 3
     CALL1   rpg_spend, 1, 1                 ; Path of the Mage
-    CALL1   rpg_bar_ability, 0, 4           ; Fireball
+    CALL1   rpg_bar_ability, 0, -1          ; no ability: the Mage casts runes
     CALL1   rpg_bar_ability, 1, -1
     HAVE    STAFF, 1
     HAVE    MANA_POTION, 2
@@ -1465,18 +1480,19 @@ test_rpg_skill_spend_rules:
     CALL1   rpg_spend, 1, 1
     HAVE    STAFF, 1                        ; ... and does not come twice
     HAVE    MANA_POTION, 2
-    CALL1   rpg_bar_ability, 0, 4
+    CALL1   rpg_bar_ability, 0, -1
     HAVE    IRON_SWORD, 0
     CALL1   rpg_spend, 0, 1                 ; Path of the Warrior as well
     HAVE    IRON_SWORD, 1
     HAVE    IRON_CHESTPLATE, 0
     EXPECT_D inv + INVENTORY.armor + 4, IRON_CHESTPLATE | (1 << 8)
-    CALL1   rpg_bar_ability, 1, 0           ; Charge into the next empty slot
+    CALL1   rpg_bar_ability, 0, 0           ; Charge into the first empty slot
+    CALL1   rpg_bar_ability, 1, -1
     EXPECT_B R_KITS, 3
     CALL1   rpg_spend, 2, 1                 ; the third path: all of it for 3 points
     CALL0   rpg_points, 0
     HAVE    BOW, 1
-    CALL1   rpg_bar_ability, 2, 8
+    CALL1   rpg_bar_ability, 1, 4           ; Volley into the next one
     TEST_END
 
 ; ---- derived stats and the description tables --------------------------------------
@@ -1515,9 +1531,9 @@ path_row_ok:
     pop     rbx
     ret
 
-; abil_node_ok(edi ability 1..3 mod 4) -> eax 0 when the web's node of that ability (node 7, 9 or 15
-; of its archetype) is an ability node of the ability's id, one rank, owned by its archetype, and
-; shares the ability's name and text
+; abil_node_ok(edi ability, not slot 0 of its archetype) -> eax 0 when the web's node of that ability
+; (node 7, 9 or 15 of its archetype) is an ability node of the ability's id, one rank, owned by its
+; archetype, and shares the ability's name and text
 abil_node_ok:
     push    rbx
     push    r12
@@ -1526,7 +1542,10 @@ abil_node_ok:
     call    rpg_ability_info
     mov     r12, rax
     mov     eax, ebx
-    shr     eax, 2
+    shr     eax, 2                      ; its group: Warrior 0, Archer 1, Rogue 2, Marksman 3
+    lea     edx, [rax + 1]
+    test    eax, eax
+    cmovnz  eax, edx                    ; archetype - 1: the Mage (1) has no abilities
     imul    eax, eax, 18
     mov     ecx, ebx
     and     ecx, 3
@@ -1547,7 +1566,10 @@ abil_node_ok:
     jne     .bad
     mov     eax, ebx
     shr     eax, 2
-    inc     eax
+    lea     edx, [rax + 1]
+    test    eax, eax
+    cmovnz  eax, edx
+    inc     eax                         ; archetype
     cmp     [r13 + WEBNODE.arch], al
     jne     .bad
     mov     rdi, [r13 + WEBNODE.name]
@@ -1777,18 +1799,31 @@ test_rpg_stats_from_paths_and_ranks:
     inc     r12d
     cmp     r12d, NUM_ABILITIES
     jb      .none
-    mov     byte [R_WEB + 1], 1             ; Path of the Mage
+    mov     byte [R_WEB + 1], 1             ; Path of the Mage: it teaches runes, no ability
+    mov     byte [R_WEB + WEBN(2,7)], 1     ; and so do its three ability nodes
+    mov     byte [R_WEB + WEBN(2,9)], 1
+    mov     byte [R_WEB + WEBN(2,15)], 1
+    xor     r12d, r12d
+.mage_none:
+    mov     edi, r12d
+    call    rpg_ability_learned
+    test    eax, eax
+    jnz     .fail
+    inc     r12d
+    cmp     r12d, NUM_ABILITIES
+    jb      .mage_none
+    mov     byte [R_WEB + 2], 1             ; Path of the Archer: Volley (4)
     CALL1   rpg_ability_learned, 4, 1
     CALL1   rpg_ability_learned, 5, 0
     CALL1   rpg_ability_learned, 6, 0
     CALL1   rpg_ability_learned, 7, 0
-    mov     byte [R_WEB + WEBN(2,9)], 1
+    mov     byte [R_WEB + WEBN(3,9)], 1     ; Arrow Rain (6)
     CALL1   rpg_ability_learned, 6, 1
     CALL1   rpg_ability_learned, 5, 0
     CALL1   rpg_ability_learned, 7, 0
-    mov     byte [R_WEB + WEBN(2,15)], 1
+    mov     byte [R_WEB + WEBN(3,15)], 1    ; Hunter's Mark (7)
     CALL1   rpg_ability_learned, 7, 1
-    mov     byte [R_WEB + WEBN(2,7)], 1
+    mov     byte [R_WEB + WEBN(3,7)], 1     ; Explosive Arrow (5)
     CALL1   rpg_ability_learned, 5, 1
     CALL1   rpg_ability_learned, 3, 0
     CALL1   rpg_ability_learned, 8, 0
@@ -1826,7 +1861,7 @@ test_rpg_stats_from_paths_and_ranks:
     mov     edi, WEBN(2,7)
     call    rpg_web_node
     mov     rax, [rax + WEBNODE.name]
-    STR_IS  s_blink
+    STR_IS  s_phase_rune
     ; the plan's ability table: resource, cost and cooldown of every ability, by ability id
     xor     r12d, r12d
 .abil:
@@ -1863,9 +1898,9 @@ test_rpg_stats_from_paths_and_ranks:
     STR_IS  s_empty
     ; the HUD and web icon of an ability follows its id: three tiles per archetype, then slot 3's
     CALL1   rpg_ability_tile, 0, TILE_ABILITY0
-    CALL1   rpg_ability_tile, 8, TILE_ABILITY0 + 6
-    CALL1   rpg_ability_tile, 10, TILE_ABILITY0 + 8
-    CALL1   rpg_ability_tile, 11, TILE_ABILITY3_0 + 2
+    CALL1   rpg_ability_tile, 4, TILE_ABILITY0 + 6
+    CALL1   rpg_ability_tile, 6, TILE_ABILITY0 + 8
+    CALL1   rpg_ability_tile, 7, TILE_ABILITY3_0 + 2
     CALL1   rpg_ability_tile, 3, TILE_ABILITY3_0
     CALL1   rpg_ability_tile, NUM_ABILITIES, 0
     ; the plan's stat table: label, format, icon and the text of a value
@@ -2499,7 +2534,7 @@ test_rpg_save_load_validates:
     EXPECT_B HWEB + 2, 1                    ; the path of the Archer
     EXPECT_B HWEB + WEBN(3,1), 1
     EXPECT_B HDRX + RPGEXT.version, RPGX_VERSION
-    EXPECT_B HDRX + RPGEXT.bar, 9           ; ability 8 + 1
+    EXPECT_B HDRX + RPGEXT.bar, 5           ; ability 4 + 1
     EXPECT_B HDRX + RPGEXT.kits, 0xFF
     call    rpg_reset
     CALL1   rpg_rank, 2, 0
@@ -2513,7 +2548,7 @@ test_rpg_save_load_validates:
     CALL1   rpg_rank, WEBN(3,1), 1
     CALL1   rpg_rank, WEBN(3,6), 1
     CALL1   rpg_rank, WEBN(3,2), 0
-    CALL1   rpg_bar_ability, 0, 8           ; the bar comes back with the web
+    CALL1   rpg_bar_ability, 0, 4           ; the bar comes back with the web
     EXPECT_B banner_text, 0                 ; nothing was refunded
     EXPECT_B R_QUEST, 3
     EXPECT_B R_QSTATE, 1
@@ -2667,9 +2702,9 @@ test_rpg_save_load_validates:
     HDR_NEW 10
     HW      0, 1
     mov     byte [HDRX + RPGEXT.bar + 0], 1     ; ability 0: Charge, taught by the path
-    mov     byte [HDRX + RPGEXT.bar + 1], 6     ; ability 5: Blink, not learned
+    mov     byte [HDRX + RPGEXT.bar + 1], 6     ; ability 5: Explosive Arrow, not learned
     mov     byte [HDRX + RPGEXT.bar + 2], 200   ; no such ability
-    mov     byte [HDRX + RPGEXT.bar + 3], 16    ; ability 15: Fan of Knives, not learned
+    mov     byte [HDRX + RPGEXT.bar + 3], 16    ; ability 15: Flashbang, not learned
     call    hdr_load
     CALL1   rpg_rank, 0, 1
     CALL1   rpg_bar_ability, 0, 0
@@ -2857,6 +2892,71 @@ test_rpg_save_load_validates:
     call    rpg_begin
     EXPECT_B banner_text, 0
     HAVE    COOKED_PORKCHOP, 4
+    TEST_END
+
+; test_rpg_v3_bar_remap: a header of version 3 (twenty abilities, the Mage's four at ids 4..7) keeps its
+; ranks and kits; its bar is remapped to the sixteen ids: the Mage's slot empties and the ids above move
+; down by 4 (stored id + 1: 5 -> 0, 9 -> 5, 13 -> 9); nothing is refunded
+test_rpg_v3_bar_remap:
+    TEST_BEGIN
+    HDR_NEW 15
+    mov     byte [HDRX + RPGEXT.version], 3
+    mov     byte [HDRX + RPGEXT.kits], KIT_COMMON_BIT | 6
+    HW      2, 1                            ; Path of the Archer: Volley
+    HW      3, 1                            ; Path of the Rogue: Shadowstep
+    HW      1, 1                            ; Path of the Mage, and its old Blink node
+    HW      WEBN(2,6), 1
+    HW      WEBN(2,7), 1
+    mov     byte [HDRX + RPGEXT.bar + 0], 5     ; old ability 4, a Mage's Fireball
+    mov     byte [HDRX + RPGEXT.bar + 1], 9     ; old ability 8, the Archer's Volley
+    mov     byte [HDRX + RPGEXT.bar + 2], 13    ; old ability 12, the Rogue's Shadowstep
+    mov     byte [HDRX + RPGEXT.bar + 3], 0
+    mov     byte [banner_text], 0
+    call    hdr_load
+    EXPECT_B rpg_ext + RPGEXT.version, RPGX_VERSION
+    CALL1   rpg_bar_ability, 0, -1
+    CALL1   rpg_bar_ability, 1, 4
+    CALL1   rpg_bar_ability, 2, ABIL_SHADOWSTEP
+    CALL1   rpg_bar_ability, 3, -1
+    CALL1   rpg_rank, WEBN(2,7), 1          ; the web is untouched
+    CALL1   rpg_rank, 2, 1
+    EXPECT_B R_KITS, KIT_COMMON_BIT | 6
+    EXPECT_B banner_text, 0
+    TEST_END
+
+; test_rune_unlocks: a fresh character casts with no rune; the Path of the Mage gives Ball and Fire; the
+; Mage's node 7 (Phase Rune) adds Phase; a Rune item's rune is new once (Poison: 1, then 0; an unknown
+; rune: 0; Ball, which the path taught: 0); the item's rune survives a save and a load and a respec, the
+; web's does not
+test_rune_unlocks:
+    TEST_BEGIN
+    call    reset_all
+    CALL0   rpg_runes, 0
+    USE_PATH 0, 15
+    CALL0   rpg_runes, 0
+    CALL1   rpg_spend, 1, 1                 ; Path of the Mage
+    CALL0   rpg_runes, MAGE_PATH_RUNES
+    CALL1   rpg_spend, WEBN(2,6), 1         ; Deep Mind, the node before Phase
+    CALL0   rpg_runes, MAGE_PATH_RUNES
+    CALL1   rpg_spend, WEBN(2,7), 1         ; Phase Rune
+    CALL0   rpg_runes, MAGE_PATH_RUNES | (1 << RUNE_PHASE)
+    CALL1   rpg_learn_rune, RUNE_POISON, 1  ; a Rune item
+    CALL1   rpg_learn_rune, RUNE_POISON, 0  ; ... only once
+    CALL1   rpg_learn_rune, NUM_RUNES, 0
+    CALL1   rpg_learn_rune, 255, 0
+    CALL1   rpg_learn_rune, RUNE_BALL, 0    ; the path taught it
+    CALL1   rpg_learn_rune, RUNE_PHASE, 0   ; and the web taught this one
+    CALL0   rpg_runes, MAGE_PATH_RUNES | (1 << RUNE_PHASE) | (1 << RUNE_POISON)
+    lea     rdi, [world_header]
+    call    rpg_save
+    cmp     word [HDRX + RPGEXT.runes], 1 << RUNE_POISON   ; only the item's rune is stored
+    jne     .fail
+    call    rpg_reset
+    CALL0   rpg_runes, 0
+    call    hdr_load
+    CALL0   rpg_runes, MAGE_PATH_RUNES | (1 << RUNE_PHASE) | (1 << RUNE_POISON)
+    call    rpg_respec_free
+    CALL0   rpg_runes, 1 << RUNE_POISON
     TEST_END
 
 ; ---- the Marksman -----------------------------------------------------------------------

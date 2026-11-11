@@ -669,18 +669,19 @@ endstruc                                ; 24
 %define NUM_ARCHETYPES  5
 %define MAX_LEVEL       50
 %define NUM_ABILITY_SLOTS 4             ; slots of the ability bar
-%define RPGX_VERSION    3
+%define RPGX_VERSION    4
 %define NODE_STAT       0               ; WEBNODE.kind
 %define NODE_ABILITY    1
 %define NODE_KEYSTONE   2
 %define NODE_PATH       3               ; archetype path node
 %define NODE_RUNE       4               ; teaches a rune (stat = rune id)
-%define NUM_ABILITIES   20              ; ability id = (archetype-1)*4 + slot
-%define ABIL_GRENADE    16
-%define ABIL_BULLSEYE   17
-%define ABIL_FANHAMMER  18
-%define ABIL_FLASHBANG  19
-%define ABIL_SHADOWSTEP 12
+%define NUM_ABILITIES   16              ; ability id = ABIL_BASE(archetype) + slot (the Mage has none: runes)
+%define ABIL_BASE(a)    ((((a) - 1) - ((a) > ARCH_MAGE)) * 4) ; Warrior 0, Archer 4, Rogue 8, Marksman 12
+%define ABIL_SHADOWSTEP 8
+%define ABIL_GRENADE    12
+%define ABIL_BULLSEYE   13
+%define ABIL_FANHAMMER  14
+%define ABIL_FLASHBANG  15
 %define NUM_KEYSTONES   15
 %define NUM_WEB_NODES   110             ; 5 paths, 5 * 18 archetype nodes, 15 bridges
 %define WEB_MAX         128             ; RPGEXT.web capacity
@@ -1298,14 +1299,14 @@ endstruc
 %error "WEBNODE must be 32 bytes"
 %endif
 
-; rpg_ability_info record: one ability (ability id = (archetype-1)*4 + slot)
+; rpg_ability_info record: one ability (ability id = ABIL_BASE(archetype) + slot)
 struc ABILINFO
     .name:     resq 1
     .desc:     resq 1
     .resource: resd 1                   ; RES_*
     .cost:     resd 1
     .cooldown: resd 1                   ; seconds
-    .pad:      resd 1
+    .tile:     resd 1                   ; atlas tile of its icon
 endstruc
 %if ABILINFO_size != 32
 %error "ABILINFO must be 32 bytes"
@@ -1315,7 +1316,7 @@ endstruc
 struc RPGEXT
     .legacy:  resb 32                   ; the 0.8..0.10.1 class ranks; always 0 now
     .attr:    resw NUM_ATTRS            ; attribute points spent
-    .version: resb 1                    ; RPGX_VERSION; 0, 1 and 2 are migrated on load
+    .version: resb 1                    ; RPGX_VERSION; 0, 1, 2 and 3 are migrated on load
     .kits:    resb 1                    ; bit a-1: archetype a's starting kit was given; KIT_COMMON_BIT: the common one
     .bar:     resb NUM_ABILITY_SLOTS    ; ability id + 1 per bar slot, 0 = empty
     .pad1:    resb 2

@@ -726,14 +726,11 @@ texgen_build:
     NBMP    60, mossy_bmp, pal_mossy, 232, 23
     ; ---- 138 gold coin: the glyph of the XP bonus, Gold find and Magic find stats ----
     BMP     138, coin_bmp, pal_coin
-    ; ---- 139..150 ability icons: Warrior Charge/War Cry/Whirlwind, Mage Fireball/Blink/Meteor Storm,
-    ; Archer Volley/Explosive Arrow/Arrow Rain, Rogue Shadowstep/Smoke Bomb/Blade Dance ----
+    ; ---- 139..150 ability icons: Warrior Charge/War Cry/Whirlwind, (142..144 are unused: the Mage's
+    ; abilities became runes), Archer Volley/Explosive Arrow/Arrow Rain, Rogue Shadowstep/Smoke Bomb/Blade Dance ----
     BMP     139, charge_bmp, pal_charge
     BMP     140, warcry_bmp, pal_warcry
     BMP     141, whirl_bmp, pal_whirl
-    BMP     142, fireball_bmp, pal_fireball
-    BMP     143, blink_bmp, pal_blink
-    BMP     144, meteor_bmp, pal_meteor
     BMP     145, volley_bmp, pal_volley
     BMP     146, explarrow_bmp, pal_explarrow
     BMP     147, arrowrain_bmp, pal_arrowrain
@@ -815,11 +812,10 @@ texgen_build:
     BMP     252, fence_icon_bmp, pal_fence_icon
     BMP     253, pane_icon_bmp, pal_pane_icon
 
-    ; ---- 0.8 art (drawn after the 0.7 art, no rng, before the font; the atlas outside these 17 tiles
+    ; ---- 0.8 art (drawn after the 0.7 art, no rng, before the font; the atlas outside these 16 tiles
     ;      is untouched) ----
-    ; 217..220 slot-3 abilities: Ground Slam, Frost Nova, Hunter's Mark, Fan of Knives
+    ; 217, 219, 220 slot-3 abilities: Ground Slam, Hunter's Mark, Fan of Knives (218 is unused)
     BMP     217, slam_bmp, pal_slam
-    BMP     218, nova_bmp, pal_nova
     BMP     219, mark_bmp, pal_mark
     BMP     220, knives_bmp, pal_knives
     ; 221..223, 232 attributes: strength, dexterity, intelligence, vitality
@@ -1656,75 +1652,6 @@ pal_whirl:
     PAL 'W', 120, 140, 180
     PAL 'Y', 255, 226, 90
     dq 0
-fireball_bmp:
-    db "..........r....."
-    db ".......rrrOrrr.."
-    db "......rrOOOOOrr."
-    db "......rOOYYYOOr."
-    db "......rOYLLYYOr."
-    db ".....rOOYLLYYOOr"
-    db "......rOYYYYYOr."
-    db ".....rrOOYYYOOr."
-    db "...rrOrrOOOOOrr."
-    db "..rrOOOrrrOrrr.."
-    db "..rOOOOrr.r....."
-    db ".rrOOOOr........"
-    db ".rOOOOr........."
-    db ".rOOOr.........."
-    db "rO.............."
-    db "................"
-pal_fireball:
-    PAL 'L', 255, 250, 210
-    PAL 'O', 255, 138, 28
-    PAL 'Y', 255, 214, 70
-    PAL 'r', 204, 40, 20
-    dq 0
-blink_bmp:
-    db "................"
-    db "........PPPPC..."
-    db ".......CP..P...."
-    db "..C....PPCCPP..."
-    db ".......P.CC.P..."
-    db ".......PCCCCP..."
-    db ".......PC..CP..."
-    db "..pppppPC..CPL.."
-    db "ppppppLLLL.CP.LL"
-    db "..pppppPC..CPL.."
-    db ".......PCCCCP..."
-    db ".......P.CC.P..."
-    db ".......PPCCPP..."
-    db "....C...P..P...."
-    db "......C.PPPP...."
-    db "............C..."
-pal_blink:
-    PAL 'C', 110, 232, 255
-    PAL 'L', 250, 250, 255
-    PAL 'P', 176, 100, 255
-    PAL 'p', 112, 60, 196
-    dq 0
-meteor_bmp:
-    db "................"
-    db "................"
-    db ".....O.........."
-    db "....O..........."
-    db ".RRO............"
-    db ".RR.......OO...."
-    db "........OOO....."
-    db ".......OOO......"
-    db "....RRROOO......"
-    db "...RYYYROL......"
-    db "...RYYYR........"
-    db "...RYYYR......O."
-    db "...RRYRR....OOL."
-    db "....RRR...RRR..."
-    db "..........RRR..."
-    db "................"
-pal_meteor:
-    PAL 'L', 255, 252, 220
-    PAL 'O', 255, 142, 30
-    PAL 'R', 214, 44, 24
-    PAL 'Y', 255, 222, 80
-    dq 0
 volley_bmp:
     db "................"
     db "................"
@@ -2519,28 +2446,6 @@ pal_slam:
     PAL 'L', 252, 214, 176
     PAL 'C', 48, 32, 32
     PAL 'O', 255, 140, 40
-    dq 0
-nova_bmp:
-    db "................"
-    db ".....BBBBBB....."
-    db "...BBB....BBB..."
-    db "..BB........BB.."
-    db "..B..W....W..B.."
-    db ".BB...I..I...BB."
-    db ".B....I.I.....B."
-    db ".B.....WW.....B."
-    db ".B..W.IWW.I.W.B."
-    db ".B....I.I.....B."
-    db ".BB...I..I...BB."
-    db "..B...W...W..B.."
-    db "..BB........BB.."
-    db "...BBB....BBB..."
-    db ".....BBBBBB....."
-    db "................"
-pal_nova:
-    PAL 'B', 60, 124, 224
-    PAL 'I', 150, 220, 255
-    PAL 'W', 244, 252, 255
     dq 0
 mark_bmp:
     db ".......OO......."

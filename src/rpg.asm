@@ -26,6 +26,7 @@ global rpg_respec_cost, rpg_respec, rpg_respec_free, rpg_keystone
 global rpg_set_level, rpg_add_bonus_points, debug_stat_bonus
 global rpg_web_node, rpg_web_linked, rpg_reachable, web_edges, web_edge_count
 global rpg_ability_learned, rpg_ability_info, rpg_ability_tile, rpg_path_tile, rpg_bar_ability, rpg_bar_set
+global rpg_runes, rpg_learn_rune
 global rpg_archetype_ranks, rpg_archetype, rpg_archetype_name, rpg_title
 global rpg_stat_info, rpg_format_stat
 global rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save, rpg_give_item
@@ -209,38 +210,34 @@ stat_tab:                               ; by stat id
 
 ; ABILINFO record; the labels let the matching skill node share the name and text, and the
 ; aname_ constant lets the path node of an archetype name the ability it teaches
-%macro ABIL 6                           ; label, name, desc, resource, cost, cooldown_s
+%macro ABIL 7                           ; label, name, desc, resource, cost, cooldown_s, tile
 %define aname_%1 %2
 section .rodata.str
 an_%1: db %2, 0
 ad_%1: db %3, 0
 section .rodata
     dq an_%1, ad_%1
-    dd %4, %5, %6, 0
+    dd %4, %5, %6, %7
 %endmacro
 
 align 8
-abil_tab:                               ; by ability id = (archetype - 1) * 4 + slot
-    ABIL charge,    "Charge",          "Rush forward, stunning foes",       RES_STAMINA, 30, 6
-    ABIL warcry,    "War Cry",         "Stun foes, empower yourself",       RES_STAMINA, 40, 20
-    ABIL whirl,     "Whirlwind",       "Spin and slash all around",         RES_STAMINA, 60, 30
-    ABIL slam,      "Ground Slam",     "Smash the ground, stunning foes",   RES_STAMINA, 45, 12
-    ABIL fireball,  "Fireball",        "Explosive fireball",                RES_MANA,    25, 3
-    ABIL blink,     "Blink",           "Teleport a short way ahead",        RES_MANA,    20, 5
-    ABIL meteor,    "Meteor Storm",    "Call down a meteor rain",           RES_MANA,    70, 40
-    ABIL nova,      "Frost Nova",      "Freeze nearby foes",                RES_MANA,    35, 10
-    ABIL volley,    "Volley",          "Fire a fan of five arrows",         RES_STAMINA, 30, 6
-    ABIL explarrow, "Explosive Arrow", "Arrow that explodes on impact",     RES_STAMINA, 35, 10
-    ABIL arrowrain, "Arrow Rain",      "Rain arrows on the target",         RES_STAMINA, 60, 30
-    ABIL mark,      "Hunter's Mark",   "Marked foe takes 30% more damage",  RES_STAMINA, 20, 8
-    ABIL shadowstp, "Shadowstep",      "Blink behind a foe, next hit crits", RES_STAMINA, 25, 8
-    ABIL smoke,     "Smoke Bomb",      "Vanish, enemies lose track",        RES_STAMINA, 40, 20
-    ABIL bladedance, "Blade Dance",    "Faster strikes that always crit",   RES_STAMINA, 60, 35
-    ABIL knives,    "Fan of Knives",   "Throw bleeding knives all around",  RES_STAMINA, 35, 9
-    ABIL grenade,   "Powder Grenade",  "Lob a grenade that bursts into flame", RES_STAMINA, 30, 8
-    ABIL bullseye,  "Bullseye",        "Shots fly true and crit more",      RES_STAMINA, 20, 15
-    ABIL fanhammer, "Fan the Hammer",  "Fire twice as fast, rounds are free", RES_STAMINA, 50, 30
-    ABIL flashbang, "Flashbang",       "Throw a flash that stuns foes",     RES_STAMINA, 35, 12
+abil_tab:                               ; by ability id = ABIL_BASE(archetype) + slot
+    ABIL charge,    "Charge",          "Rush forward, stunning foes",       RES_STAMINA, 30, 6, TILE_ABILITY0 + 0
+    ABIL warcry,    "War Cry",         "Stun foes, empower yourself",       RES_STAMINA, 40, 20, TILE_ABILITY0 + 1
+    ABIL whirl,     "Whirlwind",       "Spin and slash all around",         RES_STAMINA, 60, 30, TILE_ABILITY0 + 2
+    ABIL slam,      "Ground Slam",     "Smash the ground, stunning foes",   RES_STAMINA, 45, 12, TILE_ABILITY3_0 + 0
+    ABIL volley,    "Volley",          "Fire a fan of five arrows",         RES_STAMINA, 30, 6, TILE_ABILITY0 + 6
+    ABIL explarrow, "Explosive Arrow", "Arrow that explodes on impact",     RES_STAMINA, 35, 10, TILE_ABILITY0 + 7
+    ABIL arrowrain, "Arrow Rain",      "Rain arrows on the target",         RES_STAMINA, 60, 30, TILE_ABILITY0 + 8
+    ABIL mark,      "Hunter's Mark",   "Marked foe takes 30% more damage",  RES_STAMINA, 20, 8, TILE_ABILITY3_0 + 2
+    ABIL shadowstp, "Shadowstep",      "Blink behind a foe, next hit crits", RES_STAMINA, 25, 8, TILE_ABILITY0 + 9
+    ABIL smoke,     "Smoke Bomb",      "Vanish, enemies lose track",        RES_STAMINA, 40, 20, TILE_ABILITY0 + 10
+    ABIL bladedance, "Blade Dance",    "Faster strikes that always crit",   RES_STAMINA, 60, 35, TILE_ABILITY0 + 11
+    ABIL knives,    "Fan of Knives",   "Throw bleeding knives all around",  RES_STAMINA, 35, 9, TILE_ABILITY3_0 + 3
+    ABIL grenade,   "Powder Grenade",  "Lob a grenade that bursts into flame", RES_STAMINA, 30, 8, TILE_MK_ABIL0 + 0
+    ABIL bullseye,  "Bullseye",        "Shots fly true and crit more",      RES_STAMINA, 20, 15, TILE_MK_ABIL0 + 1
+    ABIL fanhammer, "Fan the Hammer",  "Fire twice as fast, rounds are free", RES_STAMINA, 50, 30, TILE_MK_ABIL0 + 2
+    ABIL flashbang, "Flashbang",       "Throw a flash that stuns foes",     RES_STAMINA, 35, 12, TILE_MK_ABIL0 + 3
 %if $ - abil_tab != NUM_ABILITIES * ABILINFO_size
 %error "abil_tab needs one record per ability"
 %endif
@@ -309,7 +306,15 @@ section .rodata
 ; ... an ability node (max rank 1): name and text come from the ability record; its stat is the
 ; ability id ...
 %macro ANODE 4                          ; ability label, ability slot, x, y
-    FORMER an_%1, ad_%1, NODE_ABILITY, (wb_arch - 1) * 4 + %2, 1, 0, %3, %4
+    FORMER an_%1, ad_%1, NODE_ABILITY, ABIL_BASE(wb_arch) + %2, 1, 0, %3, %4
+%endmacro
+; ... a rune node (max rank 1): a Mage node that teaches a rune; its stat is the rune id ...
+%macro RNODE 5                          ; name, description, rune, x, y
+section .rodata.str
+%%n: db %1, 0
+%%d: db %2, 0
+section .rodata
+    FORMER %%n, %%d, NODE_RUNE, %3, 1, 0, %4, %5
 %endmacro
 ; ... and a keystone (max rank 1) whose effect is coded where it applies
 %macro KNODE 5                          ; name, keystone id, description, x, y
@@ -321,11 +326,11 @@ section .rodata
 %endmacro
 
 ; the path node of the next archetype: its text is the three lines of the former class card plus
-; the ability it teaches; its stat is the archetype
-%macro PATHNODE 7                       ; name, line1, line2, line3, ability label (slot 0), x, y
+; what it teaches (an ability's name, or the Mage's runes); its stat is the archetype
+%macro PATHNODE 7                       ; name, line1, line2, line3, what it teaches (a string), x, y
 section .rodata.str
 %%n: db %1, 0
-%%d: db %2, ". ", %3, ". ", %4, ". Learns ", aname_%5, ".", 0
+%%d: db %2, ". ", %3, ". ", %4, ". Learns ", %5, ".", 0
 section .rodata
     %assign wb_arch wb_arch + 1
     WREC %%n, %%d, NODE_PATH, wb_arch, 1, wb_arch, 0, %6, %7, 1
@@ -355,11 +360,11 @@ section .rodata
 
 align 8
 web_tab:                                ; by node id
-    PATHNODE "Path of the Warrior", "Heavy armor", "Charge and cleave", "Parry master", charge, 0, -16
-    PATHNODE "Path of the Mage", "Fire and arcane", "Staff bolts", "Fragile, deadly", fireball, 15, -5
-    PATHNODE "Path of the Archer", "Bows and volleys", "Deadly at range", "Swift hunter", volley, -15, -5
-    PATHNODE "Path of the Rogue", "Daggers, stealth", "Backstab x2", "Shadowstep", shadowstp, -9, 13
-    PATHNODE "Path of the Marksman", "Guns and powder", "Dexterity raises gun damage", "Crit-hungry, fragile", grenade, 9, 13
+    PATHNODE "Path of the Warrior", "Heavy armor", "Charge and cleave", "Parry master", aname_charge, 0, -16
+    PATHNODE "Path of the Mage", "Fire and arcane", "Staff bolts", "Fragile, deadly", "the Ball and Fire runes", 15, -5
+    PATHNODE "Path of the Archer", "Bows and volleys", "Deadly at range", "Swift hunter", aname_volley, -15, -5
+    PATHNODE "Path of the Rogue", "Daggers, stealth", "Backstab x2", "Shadowstep", aname_shadowstp, -9, 13
+    PATHNODE "Path of the Marksman", "Guns and powder", "Dexterity raises gun damage", "Crit-hungry, fragile", aname_grenade, 9, 13
     ARCHETYPE 1                         ; Warrior: Blademaster, Bulwark, Endurance
     SNODE "Weapon Mastery", STAT_MELEE_DMG,     6, -9, -26
     SNODE "Precision",      STAT_CRIT_CHANCE,   3, -12, -34
@@ -387,15 +392,15 @@ web_tab:                                ; by node id
     SNODE "Static",         STAT_SHOCK_DMG,     8, 49, -38
     KNODE "Inferno",        KS_INFERNO, "Spell hits ignite; burning foes take +25% spell damage; -50% frost damage", 56, -44
     SNODE "Deep Mind",      STAT_MAX_MANA,     15, 26, -8
-    ANODE blink, 1, 34, -11
+    RNODE "Phase Rune", "Learn Phase: teleport where you look", RUNE_PHASE, 34, -11
     SNODE "Flow",           STAT_MANA_REGEN,    1, 43, -14
-    ANODE meteor, 2, 51, -17
+    RNODE "Laser Rune", "Learn Laser: a beam through your foes", RUNE_LASER, 51, -17
     SNODE "Haste",          STAT_COOLDOWN_RED,  4, 59, -19
     KNODE "Blood Magic",    KS_BLOOD_MAGIC, "Mana costs are paid with health (1 per 5 mana); +30% spell damage", 68, -22
     SNODE "Vitality",       STAT_MAX_HEALTH,    3, 27, 1
     SNODE "Frost Weaving",  STAT_FROST_DMG,     8, 36, 1
     SNODE "Arcane Reach",   STAT_AREA,          8, 45, 2
-    ANODE nova, 3, 54, 2
+    RNODE "Nova Rune", "Learn Nova: a burst all around you", RUNE_NOVA, 54, 2
     SNODE "Renewal",        STAT_LIFE_REGEN,    5, 62, 2
     KNODE "Mana Shield",    KS_MANA_SHIELD, "35% of damage taken drains mana instead (2 mana per point)", 71, 2
     ARCHETYPE 3                         ; Archer: Aim, Hunter, Survival
@@ -785,9 +790,9 @@ rpg_keystone:
 
 ; ---- ability bar ------------------------------------------------------------
 
-; rpg_ability_learned(edi ability) -> eax 1 when the ability 0..19 is taught by a ranked node: the
-; path node of its archetype (slot 0) or the ability node whose stat is its id (slots 1..3); else 0
-; (leaf)
+; rpg_ability_learned(edi ability) -> eax 1 when the ability 0..15 is taught by a ranked node: the
+; path node of its archetype (slot 0; the Mage's path teaches runes, not an ability) or the ability
+; node whose stat is its id (slots 1..3); else 0 (leaf)
 rpg_ability_learned:
     xor     eax, eax
     cmp     edi, NUM_ABILITIES
@@ -803,7 +808,13 @@ rpg_ability_learned:
     je      .cmp
     cmp     byte [rsi + WEBNODE.kind], NODE_PATH
     jne     .next
-    dec     edx                         ; a path node teaches ability (archetype - 1) * 4
+    cmp     edx, ARCH_MAGE
+    je      .next                       ; the Mage's path teaches no ability
+    dec     edx                         ; a path node teaches ability ABIL_BASE(archetype)
+    cmp     edx, ARCH_MAGE - 1
+    jb      .base
+    dec     edx                         ; the Mage's four ids are not there
+.base:
     shl     edx, 2
 .cmp:
     cmp     edx, edi
@@ -1043,7 +1054,7 @@ rpg_title:
 
 ; ---- description getters ---------------------------------------------------
 
-; rpg_ability_info(edi ability) -> rax ABILINFO* of ability 0..19; anything else -> an empty record
+; rpg_ability_info(edi ability) -> rax ABILINFO* of ability 0..15; anything else -> an empty record
 ; (leaf)
 rpg_ability_info:
     cmp     edi, NUM_ABILITIES
@@ -1060,31 +1071,64 @@ rpg_ability_info:
 %error "rpg_ability_info shifts by 5"
 %endif
 
-; rpg_ability_tile(edi ability) -> eax atlas tile of the ability's icon: with s = ability mod 4 and
-; c = ability / 4, TILE_ABILITY0 + 3c + s for slots 0..2 and TILE_ABILITY3_0 + c for slot 3 of the
-; archetypes 1..4 (c = 0..3), TILE_MK_ABIL0 + s for the Marksman's four (c = 4); 0 for another
-; ability. Leaf, clobbers ecx.
+; rpg_ability_tile(edi ability) -> eax atlas tile of the ability's icon (ABILINFO.tile); 0 for
+; another ability. Leaf, clobbers ecx.
 rpg_ability_tile:
     xor     eax, eax
     cmp     edi, NUM_ABILITIES
     jae     .ret
-    mov     ecx, edi
-    shr     ecx, 2                      ; c
     mov     eax, edi
-    and     eax, 3                      ; s
-    cmp     ecx, ARCH_MARKSMAN - 1
-    je      .marksman
-    cmp     eax, 3
-    je      .slot3
-    lea     ecx, [rcx + rcx*2]
-    lea     eax, [rax + rcx + TILE_ABILITY0]
-    ret
-.slot3:
-    lea     eax, [rcx + TILE_ABILITY3_0]
-    ret
-.marksman:
-    add     eax, TILE_MK_ABIL0          ; its four icons are one run of tiles
+    shl     eax, 5                      ; ABILINFO_size
+    lea     rcx, [abil_tab]
+    mov     eax, [rcx + rax + ABILINFO.tile]
 .ret:
+    ret
+
+; rpg_runes() -> eax the rune mask the character casts with (bit r = rune r): the runes learned from
+; Rune items (RPGEXT.runes), the Mage path's Ball and Fire, and the rune of every ranked NODE_RUNE of the
+; web. Everything but the items' runes is derived, so a respec takes it away (leaf)
+rpg_runes:
+    movzx   eax, word [rpg_ext + RPGEXT.runes]
+    cmp     byte [rpg_ext + RPGEXT.web + ARCH_MAGE - 1], 0
+    je      .nodes
+    or      eax, MAGE_PATH_RUNES
+.nodes:
+    lea     rsi, [web_tab]
+    lea     r8, [rpg_ext + RPGEXT.web]
+    xor     ecx, ecx
+.l:
+    cmp     byte [r8 + rcx], 0
+    je      .next
+    cmp     byte [rsi + WEBNODE.kind], NODE_RUNE
+    jne     .next
+    movzx   edx, byte [rsi + WEBNODE.stat]
+    bts     eax, edx
+.next:
+    add     rsi, WEBNODE_size
+    inc     ecx
+    cmp     ecx, NUM_WEB_NODES
+    jb      .l
+    ret
+
+; rpg_learn_rune(edi rune) -> eax 1 when the rune 0..15 was new and is now known (kept in RPGEXT.runes,
+; which a respec leaves alone), 0 for a rune out of range or one the character already casts with
+; ebx = rune
+rpg_learn_rune:
+    push    rbx
+    mov     ebx, edi
+    xor     eax, eax
+    cmp     ebx, NUM_RUNES
+    jae     .ret
+    call    rpg_runes
+    bt      eax, ebx
+    jc      .known
+    bts     word [rpg_ext + RPGEXT.runes], bx
+    mov     eax, 1
+    jmp     .ret
+.known:
+    xor     eax, eax
+.ret:
+    pop     rbx
     ret
 
 ; rpg_path_tile(edi archetype) -> eax atlas tile of the emblem on the path node of archetype 1..5:
@@ -1671,7 +1715,13 @@ rpg_spend:
     jne     .taught
     movzx   ecx, byte [r12 + WEBNODE.stat]
     dec     ecx                         ; archetype - 1
-    lea     r13d, [rcx*4]               ; the ability of its slot 0
+    mov     r13d, -1                    ; the Mage's path teaches no ability
+    cmp     ecx, ARCH_MAGE - 1
+    je      .path_kit
+    lea     r13d, [rcx*4]               ; the ability of its slot 0: ABIL_BASE
+    jb      .path_kit
+    sub     r13d, 4
+.path_kit:
     movzx   eax, byte [rpg_ext + RPGEXT.kits]
     bt      eax, ecx
     jc      .taught                     ; its kit was given before
@@ -2145,6 +2195,8 @@ rpg_load:
     jae     .reset
     cmp     byte [rpg_ext + RPGEXT.version], RPGX_VERSION
     jae     .current
+    cmp     byte [rpg_ext + RPGEXT.version], 3
+    je      .v3
     cmp     byte [rpg_ext + RPGEXT.version], 2
     je      .fifth_path
     movzx   ecx, byte [rpg_state + RPGSAVE.legacy_class]
@@ -2174,6 +2226,25 @@ rpg_load:
     lea     rdi, [s_migrated_mk]
     call    refund_banner
     jmp     .bars
+.v3:                                    ; version 3: the Mage's four abilities (ids 4..7) went and the
+    lea     rdx, [rpg_ext + RPGEXT.bar] ; Archer's, Rogue's and Marksman's moved down by 4; the web is unchanged
+    xor     ecx, ecx
+.v3_bar:
+    movzx   eax, byte [rdx + rcx]       ; id + 1, 0 = empty
+    cmp     eax, 5
+    jb      .v3_next                    ; empty or a Warrior ability
+    cmp     eax, 8
+    ja      .v3_shift
+    xor     eax, eax                    ; a Mage ability: its slot is emptied
+    jmp     .v3_store
+.v3_shift:
+    sub     eax, 4
+.v3_store:
+    mov     [rdx + rcx], al
+.v3_next:
+    inc     ecx
+    cmp     ecx, NUM_ABILITY_SLOTS
+    jb      .v3_bar
 .current:
     mov     byte [rpg_state + RPGSAVE.legacy_class], 0
     call    web_valid

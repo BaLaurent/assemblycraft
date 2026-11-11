@@ -1,14 +1,14 @@
 ; test_abilities.asm - the abilities of the skill web: cost, cooldown and bar rules (and the charge
-; and war cry), a fireball that explodes without breaking anything, blink stopping at walls, the
-; volley and the arrow rain; then the slot 3 abilities (ground slam, frost nova, hunter's mark, fan
-; of knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance), AREA,
-; the staff bolt and the binding of the ability bar; last the four Marksman abilities (the grenades
-; they lob, the two timers they set) and the burst of a flashbang.
+; and war cry), the volley and the arrow rain; then the slot 3 abilities (ground slam, hunter's
+; mark, fan of knives), the keystones that reach the abilities (Blood Magic, Barrage, Shadow Dance),
+; AREA, the staff bolt and the binding of the ability bar; last the four Marksman abilities (the
+; grenades they lob, the two timers they set) and the burst of a flashbang. The Mage's magic is the
+; runes of spells.asm (test_spells.asm).
 %include "common.inc"
 default rel
 
-global test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
-global test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn, test_new_abilities
+global test_ability_cost_cooldown_and_unlock
+global test_volley_and_arrow_rain_spawn, test_new_abilities
 global test_ability_bar_binding, test_marksman_abilities, test_planes_view
 
 extern abilities_cd, abilities_cd_total, abilities_bolt_cd, abilities_reset, abilities_step
@@ -29,21 +29,17 @@ extern combat_step
 extern game_frame, frame_input, input_captured, game_open_screen, game_heavy_s, game_break_progress, brk_y
 extern planes, plane_riding, plane_view, planes_clear, planes_board, boats, boat_riding, boats_clear
 
-; ability ids, (archetype - 1) * 4 + slot: what the ability bar holds and the index of abilities_cd
+; ability ids, ABIL_BASE(archetype) + slot: what the ability bar holds and the index of abilities_cd
 %define AB_CHARGE       0
 %define AB_WARCRY       1
 %define AB_WHIRL        2
 %define AB_SLAM         3
-%define AB_FIREBALL     4
-%define AB_BLINK        5
-%define AB_METEOR       6
-%define AB_NOVA         7
-%define AB_VOLLEY       8
-%define AB_EXPLARROW    9
-%define AB_RAIN         10
-%define AB_MARK         11
-%define AB_SMOKE        13
-%define AB_KNIVES       15
+%define AB_VOLLEY       4
+%define AB_EXPLARROW    5
+%define AB_RAIN         6
+%define AB_MARK         7
+%define AB_SMOKE        9
+%define AB_KNIVES       11
 
 section .rodata
 align 4
@@ -310,7 +306,7 @@ set_path:
     pop     rbp
     ret
 
-; learn(edi ability 1..19, one that is not a path's): the ability node that teaches it gets rank 1
+; learn(edi ability 1..15, one that is not a path's): the ability node that teaches it gets rank 1
 ; without the nodes before it (the stats stay as they are: an ability node adds none) and the
 ; ability goes to the bar slot of the same number, so abilities_use(slot) keeps its old meaning
 ; ebx = ability
@@ -320,7 +316,10 @@ learn:
     push    rbx
     sub     rsp, 8
     mov     ebx, edi
-    shr     edi, 2                      ; archetype - 1
+    shr     edi, 2                      ; its group: Warrior 0, Archer 1, Rogue 2, Marksman 3
+    lea     eax, [rdi + 1]
+    test    edi, edi
+    cmovnz  edi, eax                    ; archetype - 1 (the Mage, 1, has no abilities)
     imul    edi, edi, 18
     mov     eax, ebx
     and     eax, 3                      ; its slot, 1..3
@@ -376,8 +375,7 @@ count_live:
 ; 22 b/s and strikes the zombie in its way once (10 * 1.1 = 11; stunned 30 steps); a recast
 ; during the cooldown and the locked war cry cost nothing; COOLDOWN_RED shortens the cooldown;
 ; the unlocked war cry stuns hostile mobs within 6 blocks only (within 9 with AREA 50) for 40 steps.
-; Mage with 10 mana: no Fireball (nothing paid, nothing fired); with 100 it fires one (75 mana
-; left, 180 steps, the unscaled base damage 8).
+; The Mage's casts are the runes of test_spells.asm.
 ; rbx = the zombie; frame: eye[3] @0, dir[3] @12, the zombie's health before the charge @24
 test_ability_cost_cooldown_and_unlock:
     push    rbp
@@ -510,47 +508,6 @@ test_ability_cost_cooldown_and_unlock:
     cmp     dword [mobs + MOB_size + MOB.stun], 40
     jne     .fail
     mov     dword [rpg_stats + STAT_AREA * 4], 0
-    call    mobs_clear                  ; ---- Mage: short of mana
-    call    abilities_reset
-    mov     edi, ARCH_MAGE
-    mov     esi, 5
-    call    set_path
-    SETF    [combat_mana], 10.0
-    xor     edi, edi
-    lea     rsi, [rsp]
-    lea     rdx, [rsp + 12]
-    call    abilities_use
-    test    eax, eax
-    jnz     .fail
-    EXPECT_NEAR [combat_mana], 10.0
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 0
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.live], 0
-    jne     .fail
-    SETF    [combat_mana], 100.0        ; enough: a Fireball flies
-    xor     edi, edi
-    lea     rsi, [rsp]
-    lea     rdx, [rsp + 12]
-    call    abilities_use
-    cmp     eax, 1
-    jne     .fail
-    EXPECT_NEAR [combat_mana], 75.0
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.live], 1
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.kind], PROJ_FIREBALL
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.owner], 0
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.pickup], 0
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.flags], 0
-    jne     .fail
-    cmp     dword [arrows + ARROWENT.damage], 8 ; the unscaled base: the pipeline applies the 10 %
-    jne     .fail
-    EXPECT_NEAR [arrows + ARROWENT.z], 16.0
-    EXPECT_NEAR [arrows + ARROWENT.vz], -28.0
     xor     eax, eax
     jmp     .ret
 .fail:
@@ -561,179 +518,6 @@ test_ability_cost_cooldown_and_unlock:
     mov     eax, ebx
     add     rsp, 40
     pop     rbx
-    pop     rbp
-    ret
-
-; A Mage's Fireball (base damage 8, radius 2.5) flies +x into a stone wall with a pig standing in
-; front of it, beside the line of flight: the blast hurts the pig by 6 (8 * (1 - 0.5 d / 2.5) * 1.1
-; rounded, d = 1.35 to its middle), while the wall, a floor cell the blast reaches and the player's
-; health (he stands 3.5 blocks away, inside the 2r a TNT blast would hurt) are untouched.
-; rbx = the pig, r12d = steps left; frame: eye[3] @0, dir[3] @12, his health @24, the pig's @28
-test_fireball_explodes_without_breaking:
-    push    rbp
-    mov     rbp, rsp
-    push    rbx
-    push    r12
-    sub     rsp, 48
-    call    world_clear
-    call    fixture
-    mov     edi, ARCH_MAGE
-    mov     esi, 5
-    call    set_path
-    SETF    [combat_mana], 100.0
-    mov     eax, [surv + SURVIVAL.health]       ; whatever the class leaves him with (the real
-    mov     [rsp + 24], eax                     ; rpg_recompute clamps it to the Mage's 18)
-    movss   xmm0, [k_14_5]
-    movss   [player + BODY.x], xmm0
-    lea     rdi, [rsp]
-    movss   xmm0, [k_90]                ; facing +x
-    xorps   xmm1, xmm1
-    call    view
-    FILL    18, 11, 14, 18, 14, 18, STONE
-    mov     edi, MOB_PIG
-    movss   xmm0, [k_17_5]
-    movss   xmm1, [k_11]
-    movss   xmm2, [k_17]
-    call    mob_spawn
-    test    eax, eax
-    js      .fail
-    imul    ebx, eax, MOB_size
-    lea     rax, [mobs]
-    add     rbx, rax
-    mov     eax, [rbx + MOB.health]
-    mov     [rsp + 28], eax
-    xor     edi, edi
-    lea     rsi, [rsp]
-    lea     rdx, [rsp + 12]
-    call    abilities_use
-    cmp     eax, 1
-    jne     .fail
-    mov     r12d, 40
-.fly:
-    call    arrows_step
-    dec     r12d
-    jnz     .fly
-    cmp     dword [arrows + ARROWENT.live], 0
-    jne     .fail                       ; spent on the wall
-    mov     eax, [rsp + 28]             ; 6 lost
-    sub     eax, [rbx + MOB.health]
-    cmp     eax, 6
-    jne     .fail
-    call    fx_count
-    test    eax, eax
-    jz      .fail                       ; the blast was drawn
-    EXPECT_BLOCK 18, 12, 16, STONE      ; the wall where it hit
-    EXPECT_BLOCK 18, 11, 14, STONE
-    EXPECT_BLOCK 18, 14, 18, STONE
-    EXPECT_BLOCK 17, 10, 16, STONE      ; the floor, 2.2 from the blast centre
-    mov     eax, [rsp + 24]
-    cmp     [surv + SURVIVAL.health], eax
-    jne     .fail
-    EXPECT_NEAR [player + BODY.kbx], 0.0
-    xor     eax, eax
-    jmp     .ret
-.fail:
-    mov     eax, 1
-.ret:
-    mov     ebx, eax
-    call    cleanup
-    mov     eax, ebx
-    add     rsp, 48
-    pop     r12
-    pop     rbx
-    pop     rbp
-    ret
-
-; A Mage with Blink (slot 1, node 7) facing +x: a stone wall right in front leaves no room (less
-; than a block): the cast fails and costs nothing. With the wall 3.5 blocks away the march stops
-; at 3.0 blocks (the box would touch the wall at 3.25): the player is there, upright, motion and
-; fall forgotten, 20 mana and 300 steps spent, magic sparks at both ends.
-; frame: eye[3] @0, dir[3] @12
-test_blink_stops_before_wall:
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 32
-    call    world_clear
-    call    fixture
-    mov     edi, ARCH_MAGE
-    mov     esi, 5
-    call    set_path
-    mov     edi, AB_BLINK
-    call    learn
-    SETF    [combat_mana], 100.0
-    lea     rdi, [rsp]
-    movss   xmm0, [k_90]                ; facing +x
-    xorps   xmm1, xmm1
-    call    view
-    FILL    17, 11, 15, 17, 13, 17, STONE   ; ---- a wall 0.5 ahead: nowhere to go
-    mov     edi, 1
-    lea     rsi, [rsp]
-    lea     rdx, [rsp + 12]
-    call    abilities_use
-    test    eax, eax
-    jnz     .fail
-    EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [abilities_cd + AB_BLINK * 4], 0
-    jne     .fail
-    EXPECT_NEAR [player + BODY.x], 16.5
-    call    fx_count
-    test    eax, eax
-    jnz     .fail
-    FILL    17, 11, 15, 17, 13, 17, AIR     ; ---- the wall 3.5 ahead
-    FILL    20, 11, 15, 20, 13, 17, STONE
-    SETF    [player + BODY.vy], -5.0
-    SETF    [player + BODY.kbx], 3.0
-    SETF    [player + BODY.fall], 5.0
-    mov     edi, 1
-    lea     rsi, [rsp]
-    lea     rdx, [rsp + 12]
-    call    abilities_use
-    cmp     eax, 1
-    jne     .fail
-    movss   xmm0, [player + BODY.x]
-    comiss  xmm0, [k_18_5]
-    jbe     .fail                       ; moved more than 2 blocks
-    comiss  xmm0, [k_20]
-    jae     .fail                       ; and not into the wall
-    EXPECT_NEAR [player + BODY.x], 19.5
-    EXPECT_NEAR [player + BODY.y], 11.0
-    EXPECT_NEAR [player + BODY.z], 16.5
-    EXPECT_NEAR [player + BODY.vy], 0.0
-    EXPECT_NEAR [player + BODY.kbx], 0.0
-    EXPECT_NEAR [player + BODY.fall], 0.0
-    EXPECT_NEAR [combat_mana], 80.0
-    cmp     dword [abilities_cd + AB_BLINK * 4], 300
-    jne     .fail
-    mov     edi, 19                     ; his box is in free air and the wall still stands
-    mov     esi, 11
-    mov     edx, 16
-    call    world_is_solid
-    test    eax, eax
-    jnz     .fail
-    mov     edi, 19
-    mov     esi, 12
-    mov     edx, 16
-    call    world_is_solid
-    test    eax, eax
-    jnz     .fail
-    mov     edi, 20
-    mov     esi, 11
-    mov     edx, 16
-    call    world_is_solid
-    test    eax, eax
-    jz      .fail
-    call    fx_count
-    cmp     eax, 40                     ; 20 sparks at each end
-    jne     .fail
-    xor     eax, eax
-    jmp     .ret
-.fail:
-    mov     eax, 1
-.ret:
-    mov     [rsp + 24], eax
-    call    cleanup
-    mov     eax, [rsp + 24]
-    add     rsp, 32
     pop     rbp
     ret
 
@@ -1125,105 +909,6 @@ na_ground_slam:
     leave
     ret
 
-; Frost Nova. Mage L15 with ranks in nodes 12..15 only, AREA 0, crit chance 0: it costs 35 mana and
-; starts a 600 step cooldown; the zombie 4 blocks ahead loses round(6 * 1.1 * 1.08) = 7 and the
-; skeleton 4 blocks east, which resists frost by 25 %, round(6 * 1.1 * 1.08 * 0.75) = 5, and both
-; freeze (stunned 90 steps). A pig 3 blocks west (no foe) and a zombie 5.5 blocks ahead (beyond the
-; nova's 5 blocks) are untouched - until AREA 20 stretches the nova to 6 blocks. A burst of ice
-; surrounds the caster: FX_FROST flecks 0.12 to 0.2 across that live 20 to 30 steps and slow to 0.9
-; of their speed every step.
-; frame: eye[3] @0, dir[3] @12, the health of mobs 0..3 @24, @28, @32, @36, the result @40, a
-; fleck's speed after a step @44
-na_frost_nova:
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 48
-    call    world_clear
-    call    fixture
-    mov     edi, ARCH_MAGE
-    mov     esi, 15
-    call    set_path
-    mov     edi, ARCH_MAGE
-    call    tree_12_15
-    mov     dword [rpg_stats + STAT_AREA * 4], 0
-    SETF    [combat_mana], 100.0
-    lea     rdi, [rsp]
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    call    view
-    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_12_5    ; mob 0: 4 blocks ahead
-    SPAWN   MOB_SKELETON, k_20_5, k_11, k_16_5  ; mob 1: 4 blocks east
-    SPAWN   MOB_PIG, k_13_5, k_11, k_16_5       ; mob 2: 3 blocks west
-    SPAWN   MOB_ZOMBIE, k_16_5, k_11, k_11      ; mob 3: 5.5 blocks ahead
-    SAVE_HEALTH 0, 24
-    SAVE_HEALTH 1, 28
-    SAVE_HEALTH 2, 32
-    SAVE_HEALTH 3, 36
-    CAST    3, 0
-    cmp     eax, 1
-    jne     .fail
-    EXPECT_NEAR [combat_mana], 65.0
-    cmp     dword [abilities_cd + AB_NOVA * 4], 600
-    jne     .fail
-    cmp     dword [abilities_cd_total + AB_NOVA * 4], 600
-    jne     .fail
-    EXPECT_LOST 0, 24, 7
-    cmp     dword MOBF(0, MOB.stun), 90
-    jne     .fail
-    EXPECT_LOST 1, 28, 5
-    cmp     dword MOBF(1, MOB.stun), 90
-    jne     .fail
-    EXPECT_LOST 2, 32, 0
-    cmp     dword MOBF(2, MOB.stun), 0
-    jne     .fail
-    EXPECT_LOST 3, 36, 0
-    cmp     dword MOBF(3, MOB.stun), 0
-    jne     .fail
-    call    fx_count
-    cmp     eax, 40
-    jb      .fail
-    cmp     dword [fx_particles + PARTICLE.kind], FX_FROST
-    jne     .fail
-    movss   xmm0, [fx_particles + PARTICLE.size]
-    comiss  xmm0, [k_0_12]
-    jb      .fail
-    comiss  xmm0, [k_0_2]
-    jae     .fail                       ; a fleck is 0.12 to 0.2 across
-    mov     eax, [fx_particles + PARTICLE.life]
-    cmp     eax, 20
-    jb      .fail
-    cmp     eax, 30
-    ja      .fail                       ; and lives 20 to 30 steps
-    movss   xmm0, [fx_particles + PARTICLE.vx]
-    mulss   xmm0, [k_0_9]
-    movss   [rsp + 44], xmm0
-    call    fx_step
-    movss   xmm0, [fx_particles + PARTICLE.vx]
-    movss   xmm1, [rsp + 44]
-    call    close_to
-    test    eax, eax
-    jz      .fail                       ; it slows to 0.9 of its speed each step
-    call    abilities_reset             ; ---- AREA 20: 5 * 1.2 = 6 blocks
-    SETF    [combat_mana], 100.0
-    mov     dword [rpg_stats + STAT_AREA * 4], 20
-    SAVE_HEALTH 3, 36
-    CAST    3, 0
-    cmp     eax, 1
-    jne     .fail
-    EXPECT_LOST 3, 36, 7
-    cmp     dword MOBF(3, MOB.stun), 90
-    jne     .fail
-    xor     eax, eax
-    jmp     .ret
-.fail:
-    mov     eax, 1
-.ret:
-    mov     [rsp + 40], eax
-    call    cleanup
-    mov     eax, [rsp + 40]
-    leave
-    ret
-
 ; Hunter's Mark. Archer L5 with rank 1 in node 15: a zombie 6 blocks ahead behind a stone wall is
 ; no target - the cast fails and costs nothing; with the wall gone it marks the zombie for 600
 ; steps, costs 20 stamina, starts a 480 step cooldown and gold sparks fly; a pig in plain sight is
@@ -1379,69 +1064,6 @@ na_fan_of_knives:
     add     rsp, 56
     pop     rbx
     pop     rbp
-    ret
-
-; Blood Magic. Mage L5 with the keystone: the Fireball (25 mana) is paid with ceil(25 / 5) = 5
-; health (12 -> 7): the mana stays at 100, the hurt flash is 6, a PROJ_FIREBALL flies and the
-; 180 step cooldown runs. With 5 health left (not more than the cost) the cast fails and costs
-; nothing.
-; frame: eye[3] @0, dir[3] @12, the result @40
-na_blood_magic:
-    push    rbp
-    mov     rbp, rsp
-    sub     rsp, 48
-    call    world_clear
-    call    fixture
-    mov     edi, ARCH_MAGE
-    mov     esi, 5
-    call    set_path
-    or      dword [rpg_keystones], 1 << KS_BLOOD_MAGIC
-    SETF    [combat_mana], 100.0
-    mov     dword [surv + SURVIVAL.health], 12
-    lea     rdi, [rsp]
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    call    view
-    CAST    0, 0
-    cmp     eax, 1
-    jne     .fail
-    cmp     dword [surv + SURVIVAL.health], 7
-    jne     .fail
-    EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [surv + SURVIVAL.hurt_flash], 6
-    jne     .fail
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
-    jne     .fail
-    mov     edi, 1
-    mov     esi, PROJ_FIREBALL
-    mov     edx, 8
-    xor     ecx, ecx
-    call    arrows_all
-    test    eax, eax
-    jz      .fail
-    call    abilities_reset             ; ---- 5 health: not more than the cost
-    call    arrows_clear
-    mov     dword [surv + SURVIVAL.health], 5
-    CAST    0, 0
-    test    eax, eax
-    jnz     .fail
-    cmp     dword [surv + SURVIVAL.health], 5
-    jne     .fail
-    EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 0
-    jne     .fail
-    call    count_live
-    test    eax, eax
-    jnz     .fail
-    xor     eax, eax
-    jmp     .ret
-.fail:
-    mov     eax, 1
-.ret:
-    mov     [rsp + 40], eax
-    call    cleanup
-    mov     eax, [rsp + 40]
-    leave
     ret
 
 ; Barrage. Archer L5 with the keystone: the Volley (30 stamina) fires seven arrows, none of them
@@ -1791,11 +1413,9 @@ na_shadowstep:
     leave
     ret
 
-; The projectile abilities carry unscaled bases. Mage L5 with rank 1 in node 9: the Meteor Storm
-; (70 mana, a 2400 step cooldown) drops its first meteor on the next step: a PROJ_FIREBALL of the
-; player's carrying 12 and AF_BIG; the Fireball with CRIT_CHANCE 100 carries 8 and AF_CRIT.
-; Archer L5 with rank 1 in node 7: the Explosive Arrow (35 stamina, a 600 step cooldown) is a
-; PROJ_ARROW carrying 10 and AF_EXPLOSIVE, and AF_CRIT besides with CRIT_CHANCE 100.
+; The projectile abilities carry unscaled bases. Archer L5 with rank 1 in node 7: the Explosive Arrow
+; (35 stamina, a 600 step cooldown) is a PROJ_ARROW carrying 10 and AF_EXPLOSIVE, and AF_CRIT besides
+; with CRIT_CHANCE 100.
 ; frame: eye[3] @0, dir[3] @12, the result @40
 na_projectile_bases:
     push    rbp
@@ -1803,47 +1423,6 @@ na_projectile_bases:
     sub     rsp, 48
     call    world_clear
     call    fixture
-    mov     edi, ARCH_MAGE
-    mov     esi, 5
-    call    set_path
-    mov     edi, AB_METEOR
-    call    learn
-    SETF    [combat_mana], 100.0
-    lea     rdi, [rsp]
-    xorps   xmm0, xmm0
-    xorps   xmm1, xmm1
-    call    view
-    CAST    2, 0
-    cmp     eax, 1
-    jne     .fail
-    EXPECT_NEAR [combat_mana], 30.0
-    cmp     dword [abilities_cd + AB_METEOR * 4], 2400
-    jne     .fail
-    call    abilities_step              ; the first meteor
-    mov     edi, 1
-    mov     esi, PROJ_FIREBALL
-    mov     edx, 12
-    mov     ecx, AF_BIG
-    call    arrows_all
-    test    eax, eax
-    jz      .fail
-    call    count_live
-    cmp     eax, 1
-    jne     .fail
-    call    arrows_clear                ; ---- the Fireball, critical
-    call    abilities_reset
-    SETF    [combat_mana], 100.0
-    mov     dword [rpg_stats + STAT_CRIT_CHANCE * 4], 100
-    CAST    0, 0
-    cmp     eax, 1
-    jne     .fail
-    mov     edi, 1
-    mov     esi, PROJ_FIREBALL
-    mov     edx, 8
-    mov     ecx, AF_CRIT
-    call    arrows_all
-    test    eax, eax
-    jz      .fail
     call    arrows_clear                ; ---- the Explosive Arrow
     call    abilities_reset
     mov     edi, ARCH_ARCHER
@@ -1973,22 +1552,20 @@ na_stun_rules:
 %endmacro
 
 ; Every scene above in turn: 0 when all held, else the number of the first scene that failed
-; (1 ground slam, 2 frost nova, 3 hunter's mark, 4 fan of knives, 5 blood magic, 6 barrage, 7 staff
-; bolt, 8 whirlwind and smoke bomb, 9 shadowstep, 10 projectile bases, 11 stun rules)
+; (1 ground slam, 2 hunter's mark, 3 fan of knives, 4 barrage, 5 staff bolt, 6 whirlwind and smoke
+; bomb, 7 shadowstep, 8 projectile bases, 9 stun rules)
 test_new_abilities:
     push    rbp
     mov     rbp, rsp
     SCENE   na_ground_slam, 1
-    SCENE   na_frost_nova, 2
-    SCENE   na_hunters_mark, 3
-    SCENE   na_fan_of_knives, 4
-    SCENE   na_blood_magic, 5
-    SCENE   na_barrage, 6
-    SCENE   na_staff_bolt, 7
-    SCENE   na_whirl_and_smoke, 8
-    SCENE   na_shadowstep, 9
-    SCENE   na_projectile_bases, 10
-    SCENE   na_stun_rules, 11
+    SCENE   na_hunters_mark, 2
+    SCENE   na_fan_of_knives, 3
+    SCENE   na_barrage, 4
+    SCENE   na_staff_bolt, 5
+    SCENE   na_whirl_and_smoke, 6
+    SCENE   na_shadowstep, 7
+    SCENE   na_projectile_bases, 8
+    SCENE   na_stun_rules, 9
     xor     eax, eax
 .ret:
     pop     rbp
@@ -2011,14 +1588,14 @@ test_new_abilities:
     jne     .fail
 %endmacro
 
-; The ability bar. Level 5, the Path of the Mage taken by spending a point: Fireball goes into slot 0
-; (the other slots are empty); Blink cannot be bound before it is learned; Deep Mind binds nothing,
-; Blink (the next node, bought with the next point) goes into the first empty slot. Binding Fireball to
-; the empty slot 2 moves it (slot 0 empties); binding it to slot 1 swaps it with Blink. A cast from
-; slot 1 is the Fireball: 25 mana, a 180 step cooldown kept in the Fireball's own cell, not in a slot's;
-; rebound to slot 3 the cooldown is still running and a recast from slot 3 costs nothing; an empty slot
-; dry-fires at no cost; Blink from slot 2 runs its own cooldown beside it. Meteor Storm (not learned), a
-; stray ability id and a slot out of range cannot be bound; ability -1 empties a slot.
+; The ability bar. Level 5, the Path of the Warrior taken by spending a point: Charge goes into slot 0
+; (the other slots are empty); War Cry cannot be bound before it is learned; Toughness binds nothing,
+; War Cry (the next ability node, bought with the next point) goes into the first empty slot. Binding
+; Charge to the empty slot 2 moves it (slot 0 empties); binding it to slot 1 swaps it with War Cry. A
+; cast from slot 1 is the Charge: 30 stamina, a 360 step cooldown kept in the Charge's own cell, not in
+; a slot's; rebound to slot 3 the cooldown is still running and a recast from slot 3 costs nothing; an
+; empty slot dry-fires at no cost; War Cry from slot 2 runs its own cooldown beside it. Whirlwind (not
+; learned), a stray ability id and a slot out of range cannot be bound; ability -1 empties a slot.
 ; frame: eye[3] @0, dir[3] @12, the result @24
 test_ability_bar_binding:
     push    rbp
@@ -2027,35 +1604,35 @@ test_ability_bar_binding:
     call    world_clear
     call    fixture
     mov     byte [rpg_state + RPGSAVE.level], 5
-    mov     edi, ARCH_MAGE - 1          ; ---- the Path of the Mage: Fireball into slot 0
+    mov     edi, ARCH_WARRIOR - 1       ; ---- the Path of the Warrior: Charge into slot 0
     call    rpg_spend
     cmp     eax, 1
     jne     .fail
-    EXPECT_BAR 0, AB_FIREBALL
+    EXPECT_BAR 0, AB_CHARGE
     EXPECT_BAR 1, -1
     EXPECT_BAR 2, -1
     EXPECT_BAR 3, -1
-    BAR_SET 1, AB_BLINK, 0              ; ---- not learned: it cannot be bound
+    BAR_SET 1, AB_WARCRY, 0             ; ---- not learned: it cannot be bound
     EXPECT_BAR 1, -1
-    mov     edi, NUM_ARCHETYPES + 18 + 6        ; Deep Mind (the Mage's node 6): a stat node binds nothing
+    mov     edi, NUM_ARCHETYPES + 6     ; Toughness (the Warrior's node 6): a stat node binds nothing
     call    rpg_spend
     cmp     eax, 1
     jne     .fail
     EXPECT_BAR 1, -1
-    mov     edi, NUM_ARCHETYPES + 18 + 7        ; Blink (node 7): the bar takes it into its first empty slot
+    mov     edi, NUM_ARCHETYPES + 7     ; War Cry (node 7): the bar takes it into its first empty slot
     call    rpg_spend
     cmp     eax, 1
     jne     .fail
-    EXPECT_BAR 0, AB_FIREBALL
-    EXPECT_BAR 1, AB_BLINK
-    BAR_SET 2, AB_FIREBALL, 1           ; ---- onto the empty slot 2: slot 0 empties
+    EXPECT_BAR 0, AB_CHARGE
+    EXPECT_BAR 1, AB_WARCRY
+    BAR_SET 2, AB_CHARGE, 1             ; ---- onto the empty slot 2: slot 0 empties
     EXPECT_BAR 0, -1
-    EXPECT_BAR 1, AB_BLINK
-    EXPECT_BAR 2, AB_FIREBALL
-    BAR_SET 1, AB_FIREBALL, 1           ; ---- onto slot 1: the two swap
-    EXPECT_BAR 1, AB_FIREBALL
-    EXPECT_BAR 2, AB_BLINK
-    SETF    [combat_mana], 100.0        ; ---- a cast from slot 1 is the Fireball
+    EXPECT_BAR 1, AB_WARCRY
+    EXPECT_BAR 2, AB_CHARGE
+    BAR_SET 1, AB_CHARGE, 1             ; ---- onto slot 1: the two swap
+    EXPECT_BAR 1, AB_CHARGE
+    EXPECT_BAR 2, AB_WARCRY
+    SETF    [combat_stamina], 100.0     ; ---- a cast from slot 1 is the Charge
     lea     rdi, [rsp]
     xorps   xmm0, xmm0                  ; facing -z
     xorps   xmm1, xmm1
@@ -2063,49 +1640,44 @@ test_ability_bar_binding:
     CAST    1, 0
     cmp     eax, 1
     jne     .fail
-    EXPECT_NEAR [combat_mana], 75.0
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    EXPECT_NEAR [combat_stamina], 70.0
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 360
     jne     .fail
-    cmp     dword [abilities_cd + 1 * 4], 0     ; not the cell of "slot 1"
+    cmp     dword [abilities_cd + AB_WARCRY * 4], 0     ; not the cell of "slot 1"
     jne     .fail
-    cmp     dword [abilities_cd + AB_BLINK * 4], 0
-    jne     .fail
-    BAR_SET 3, AB_FIREBALL, 1           ; ---- rebound to slot 3: the cooldown stays with the ability
+    BAR_SET 3, AB_CHARGE, 1             ; ---- rebound to slot 3: the cooldown stays with the ability
     EXPECT_BAR 1, -1
-    EXPECT_BAR 3, AB_FIREBALL
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    EXPECT_BAR 3, AB_CHARGE
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 360
     jne     .fail
     CAST    3, 0
     test    eax, eax
     jnz     .fail                       ; it still cools down: nothing is paid
-    EXPECT_NEAR [combat_mana], 75.0
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    EXPECT_NEAR [combat_stamina], 70.0
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 360
     jne     .fail
     CAST    1, 0                        ; ---- an empty slot: no cast, no cost
     test    eax, eax
     jnz     .fail
-    EXPECT_NEAR [combat_mana], 75.0
-    call    count_live
-    cmp     eax, 1                      ; only the first Fireball flew
-    jne     .fail
-    CAST    2, 0                        ; ---- Blink from slot 2: its own cooldown
+    EXPECT_NEAR [combat_stamina], 70.0
+    CAST    2, 0                        ; ---- War Cry from slot 2: its own cooldown
     cmp     eax, 1
     jne     .fail
-    EXPECT_NEAR [combat_mana], 55.0
-    cmp     dword [abilities_cd + AB_BLINK * 4], 300
+    EXPECT_NEAR [combat_stamina], 30.0
+    cmp     dword [abilities_cd + AB_WARCRY * 4], 1200
     jne     .fail
-    cmp     dword [abilities_cd + AB_FIREBALL * 4], 180
+    cmp     dword [abilities_cd + AB_CHARGE * 4], 360
     jne     .fail
-    BAR_SET 0, AB_METEOR, 0             ; ---- not learned
+    BAR_SET 0, AB_WHIRL, 0              ; ---- not learned
     BAR_SET 0, AB_VOLLEY, 0             ; another archetype's
     BAR_SET 0, NUM_ABILITIES, 0         ; no such ability
     BAR_SET 0, -2, 0
-    BAR_SET 4, AB_FIREBALL, 0           ; no such slot
+    BAR_SET 4, AB_CHARGE, 0             ; no such slot
     EXPECT_BAR 0, -1
-    EXPECT_BAR 3, AB_FIREBALL
+    EXPECT_BAR 3, AB_CHARGE
     EXPECT_BAR 4, -1
-    BAR_SET 0, AB_FIREBALL, 1           ; ---- slot 0 again: slot 3 empties
-    EXPECT_BAR 0, AB_FIREBALL
+    BAR_SET 0, AB_CHARGE, 1             ; ---- slot 0 again: slot 3 empties
+    EXPECT_BAR 0, AB_CHARGE
     EXPECT_BAR 3, -1
     BAR_SET 0, -1, 1                    ; ---- -1 empties a slot
     EXPECT_BAR 0, -1

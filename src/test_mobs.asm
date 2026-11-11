@@ -23,7 +23,7 @@ extern primed, tnt_clear, tnt_shift, tnt_remove_box
 extern fires, fire_clear, fire_shift, fire_remove_box
 extern fx_particles, fx_clear, fx_shift
 extern dmgnum_clear, dmgnum_spawn, dmgnum_list, dmgnum_shift
-extern abilities_reset, abilities_shift, abilities_use, abilities_step, meteor_tgt, rain_tgt
+extern abilities_reset, abilities_shift, abilities_use, abilities_step, rain_tgt
 extern rpg_recompute, rpg_ext, combat_stamina, inv_sel, player_eye, player_forward
 extern combat_reset, combat_hit_flags, combat_guard_t
 extern rpg_state, rpg_reset
@@ -2684,9 +2684,6 @@ test_entities_rebase:
     mov     edi, 5
     xor     esi, esi
     call    dmgnum_spawn
-    SETF    [meteor_tgt], 1000.5
-    SETF    [meteor_tgt + 4], 20.0
-    SETF    [meteor_tgt + 8], -1000.5
     SETF    [rain_tgt], 1000.5
     SETF    [rain_tgt + 4], 20.0
     SETF    [rain_tgt + 8], -1000.5
@@ -2734,9 +2731,6 @@ test_entities_rebase:
     EXPECT_F [dmgnum_list], k_488_5             ; DMGNUM: x, y, z first
     EXPECT_F [dmgnum_list + 4], k_20
     EXPECT_F [dmgnum_list + 8], k_m488_5
-    EXPECT_F [meteor_tgt], k_488_5
-    EXPECT_F [meteor_tgt + 4], k_20
-    EXPECT_F [meteor_tgt + 8], k_m488_5
     EXPECT_F [rain_tgt], k_488_5
     EXPECT_F [rain_tgt + 4], k_20
     EXPECT_F [rain_tgt + 8], k_m488_5

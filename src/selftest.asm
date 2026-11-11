@@ -37,7 +37,7 @@ extern test_fire_spreads_and_burns_wood, test_fire_ignites_tnt
 extern test_fire_dies_on_stone, test_fire_hurts_player
 extern test_fx_explosion_spawns_and_expires, test_fx_debris_falls_and_bounces
 extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_paths_and_ranks
-extern test_rpg_save_load_validates, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
+extern test_rpg_save_load_validates, test_rpg_v3_bar_remap, test_rune_unlocks, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
 extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
 extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
 extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_hurt_and_not_saved
@@ -45,8 +45,8 @@ extern test_boss_phases_slam_and_summons, test_mob_kill_awards_xp_and_coins
 extern test_structure_sites_deterministic, test_dungeon_built_with_chests
 extern test_village_built_with_npcs, test_dungeon_clears_after_kills, test_crypt_spawns_boss_once
 extern test_world_to_ui_centres_forward, test_dmgnum_rises_and_expires
-extern test_ability_cost_cooldown_and_unlock, test_fireball_explodes_without_breaking
-extern test_blink_stops_before_wall, test_volley_and_arrow_rain_spawn
+extern test_ability_cost_cooldown_and_unlock
+extern test_volley_and_arrow_rain_spawn
 extern test_shapes_boxes
 extern test_light_sky_and_shadow, test_torch_light_falloff, test_light_update_on_change, test_light_lut
 extern test_step_up_slab_not_block, test_stairs_then_block, test_door_blocks_until_opened
@@ -222,6 +222,8 @@ tests:
     TEST rpg_skill_spend_rules
     TEST rpg_stats_from_paths_and_ranks
     TEST rpg_save_load_validates
+    TEST rpg_v3_bar_remap
+    TEST rune_unlocks
     TEST quest_chain_progress_and_rewards
     TEST trade_exchanges_items
     TEST guard_blocks_and_parries
@@ -241,8 +243,6 @@ tests:
     TEST world_to_ui_centres_forward
     TEST dmgnum_rises_and_expires
     TEST ability_cost_cooldown_and_unlock
-    TEST fireball_explodes_without_breaking
-    TEST blink_stops_before_wall
     TEST volley_and_arrow_rain_spawn
     TEST shapes_boxes
     TEST light_sky_and_shadow
@@ -544,6 +544,8 @@ section .rodata
     TESTNAME rpg_skill_spend_rules
     TESTNAME rpg_stats_from_paths_and_ranks
     TESTNAME rpg_save_load_validates
+    TESTNAME rpg_v3_bar_remap
+    TESTNAME rune_unlocks
     TESTNAME quest_chain_progress_and_rewards
     TESTNAME trade_exchanges_items
     TESTNAME guard_blocks_and_parries
@@ -563,8 +565,6 @@ section .rodata
     TESTNAME world_to_ui_centres_forward
     TESTNAME dmgnum_rises_and_expires
     TESTNAME ability_cost_cooldown_and_unlock
-    TESTNAME fireball_explodes_without_breaking
-    TESTNAME blink_stops_before_wall
     TESTNAME volley_and_arrow_rain_spawn
     TESTNAME shapes_boxes
     TESTNAME light_sky_and_shadow

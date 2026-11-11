@@ -27,7 +27,7 @@ extern ui_w, ui_h, ui_mx, ui_my, ui_input, frame_input, settings, app_entered
 extern ui_rect, ui_frame, ui_panel, ui_text, ui_text_width, ui_text_ink, ui_text_ink_centered
 extern ui_nine, ui_nine_tint, ui_line, ui_clip, ui_unclip, ui_ribbon, ui_book
 extern ui_button, ui_item_icon, ui_tile_icon, ui_tooltip
-extern app_goto, key_name, hud_banner_paint, audio_play, ui_icon9
+extern app_goto, key_name, hud_banner_paint, audio_play, ui_icon9, ui_item_icon_tint
 extern item_names, item_gear, inv_count, i32_to_str, str_append, armor_effective
 extern surv, surv_max_health, combat_weapon_preview, gear_tier_for_level
 extern rpg_state, rpg_stats, rpg_level, rpg_points, rpg_rank
@@ -812,7 +812,7 @@ web_centre:
     ret
 
 ; web_node_ability(edi node) -> eax the ability the node teaches: an ability node's id, a path node's
-; slot-0 ability (archetype - 1) * 4; -1 for any other node
+; slot-0 ability ABIL_BASE(archetype); -1 for any other node (the Mage's path and a rune node included)
 web_node_ability:
     sub     rsp, 8
     call    rpg_web_node
@@ -828,7 +828,12 @@ web_node_ability:
 .path:
     cmp     byte [rax + WEBNODE.kind], NODE_PATH
     jne     .ret
+    cmp     ecx, ARCH_MAGE
+    je      .ret                        ; the Mage's path teaches runes: -1
     lea     edx, [rcx - 1]
+    jb      .base
+    dec     edx                         ; the Mage's four ids are not there
+.base:
     shl     edx, 2
 .ret:
     mov     eax, edx
@@ -1156,7 +1161,7 @@ web_draw_compass:
 .ret:
     LEAVE_FRAME 24
 
-; web_draw_node(edi node): the node's frame by kind (NINE_NODE_STAT + kind: stat, ability, keystone, path), 22 x 22
+; web_draw_node(edi node): the node's frame by kind (NINE_NODE_STAT + kind: stat, ability, keystone, path; a rune node wears the ability frame), 22 x 22
 ; (path 28 x 28) with its 16 x 16 icon at zoom 1, 7 x 7 (path 10 x 10) without one at zoom 0, centred on its cell. A
 ; node that no ranked node links to is drawn faint (frame and icon tinted TINT_FAINT); a node a point could go into
 ; or that has a rank gets the 1-unit progress ring of web_ring just outside its frame (no number: the ring is the
@@ -1175,6 +1180,7 @@ web_draw_node:
     mov     edi, ebx
     call    rpg_reachable
     mov     [rsp + 28], eax
+    mov     dword [rsp + 36], 0         ; 1 when the icon is an item's (a rune node's)
     mov     ecx, WHITE
     mov     edx, TINT_FAINT
     mov     esi, [rsp]
@@ -1213,6 +1219,9 @@ web_draw_node:
 .frame:
     movzx   edi, byte [r12 + WEBNODE.kind]
     add     edi, NINE_NODE_STAT
+    mov     eax, NINE_NODE_ABIL
+    cmp     edi, NINE_NODE_STAT + NODE_RUNE
+    cmove   edi, eax
     mov     esi, [rsp + 12]
     mov     edx, [rsp + 16]
     mov     ecx, [rsp + 8]
@@ -1224,6 +1233,8 @@ web_draw_node:
     movzx   eax, byte [r12 + WEBNODE.kind]
     cmp     eax, NODE_ABILITY
     je      .t_ability
+    cmp     eax, NODE_RUNE
+    je      .t_rune
     cmp     eax, NODE_KEYSTONE
     je      .t_keystone
     cmp     eax, NODE_PATH
@@ -1239,6 +1250,11 @@ web_draw_node:
     jmp     .draw_icon
 .t_keystone:
     mov     edi, TILE_KEYSTONE
+    jmp     .draw_icon
+.t_rune:
+    movzx   edi, byte [r12 + WEBNODE.stat]      ; the rune id: its item's icon
+    add     edi, RUNE_FIRST
+    mov     dword [rsp + 36], 1
     jmp     .draw_icon
 .t_path:
     movzx   edi, byte [r12 + WEBNODE.stat]
@@ -1265,6 +1281,11 @@ web_draw_node:
     sub     edx, 8
     mov     ecx, 16
     mov     r8d, [rsp + 4]
+    cmp     dword [rsp + 36], 0
+    je      .tile
+    call    ui_item_icon_tint
+    jmp     .ret
+.tile:
     call    ui_tile_icon
 .ret:
     LEAVE_FRAME 40
