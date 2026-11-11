@@ -1917,7 +1917,9 @@ endstruc
 %define MT_PLANE_POSE 64
 %define MT_PLANE_BREAK 65
 %define MT_SNAP_PLANES 66
-%define NUM_MT 67
+%define MT_SPELL 67
+%define NUM_MT 68
+%define SPM_BEAM 0                      ; SPELLMSG.kind: a Laser beam, drawn on the other peers
 
 %define SYS_JOINED 1
 %define SYS_LEFT 2

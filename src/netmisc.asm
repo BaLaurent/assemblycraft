@@ -8,10 +8,10 @@
 %include "common.inc"
 default rel
 
-global nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing, nx_on_faction_add
+global nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing, nx_on_faction_add, nx_on_spell
 global nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump, nx_on_quest_complete, nx_on_quest_reward
 global nx_on_drop_spawn, nx_on_give
-global net_proj_out, net_proj_end_out, net_sound_out, net_fx_out, net_event_out, net_standing_out
+global net_proj_out, net_proj_end_out, net_sound_out, net_fx_out, net_event_out, net_standing_out, net_spell_beam_out
 global net_faction_add_out, net_quest_sync_out, net_explosion_players, net_drop_flush, net_give_out, net_all_asleep
 global nx_clock_ns
 
@@ -19,7 +19,7 @@ extern net_role, net_self, net_pvp, net_applying, net_peers
 extern net_out, net_send_to, net_relay, net_pos_out, net_pos_in
 extern net_hurt_send_direct
 extern arrows, arrow_net, arrows_spawn
-extern audio_play_at, audio_play, fx_explosion, fx_burst
+extern audio_play_at, audio_play, fx_explosion, fx_burst, spells_beam_fx
 extern structures_dungeon_reward, structures_boss_reward
 extern events_on_ev, events_net_apply
 extern world_header, faction_add, faction_set_from_net
@@ -33,6 +33,9 @@ extern time_mono_ns
 %define FX_RANGE        64
 %define SOUND_RATE      60              ; sounds, effects a peer sends per second
 %define FX_RATE         30
+%define SPELL_RATE      10              ; beams a peer may send per second
+%define BITS_DIR        0x3F8147AE      ; 1.01: the largest component of a unit direction
+%define BEAM_MAX_LEN    24.5            ; the longest beam (a Laser with Pierce is 24 blocks)
 %define GIVE_DELAY      120             ; steps before a stack a full inventory handed back can be picked up again
 %define AF_WIRE         0x77F           ; the AF_* bits a projectile message may carry (flags and element)
 %define BITS_V          0x447A0000      ; 1000.0: the largest |velocity| or |float| accepted from the wire, as float bits
@@ -64,6 +67,14 @@ struc FXMSG                             ; MT_FX
     .f:          resd 1                 ; radius (explosion) or speed (burst)
     .pos:        resb NPOS_size
 endstruc                                ; 24
+struc SPELLMSG                          ; MT_SPELL
+    .kind:       resb 1                 ; SPM_BEAM
+    .elem:       resb 1                 ; ELEM_*
+    .pad:        resw 1
+    .len:        resd 1                 ; float blocks
+    .dir:        resd 3                 ; float unit direction
+    .pos:        resb NPOS_size         ; where the beam starts
+endstruc                                ; 36
 struc DROPMSG                           ; MT_DROP_SPAWN
     .id:         resb 1
     .count:      resb 1
@@ -101,6 +112,7 @@ c_hop:         dd 6.0
 c_proj_range:  dd 128.0
 c_sound_range: dd 24.0
 c_fx_range:    dd 64.0
+c_beam_max:    dd BEAM_MAX_LEN
 c_pop_vol:     dd 0.35
 c_drop_y:      dd 0.5                   ; a stack that does not fit falls this far above the feet (rpg_give_item's)
 c_nan:         dd 0x7FC00000            ; "no position": net_relay sends to every guest
@@ -112,6 +124,7 @@ snd_rate:      resd 2                   ; the second, sounds sent in it
 fx_rate:       resd 2
 snd_in:        resd 2 * NET_MAX_PEERS   ; the host's limiter, per sender slot: the second, sounds taken from him in it
 fx_in:         resd 2 * NET_MAX_PEERS
+spell_in:      resd 2 * NET_MAX_PEERS   ; the host's limiter for beams, per sender slot
 
 section .text
 
@@ -303,8 +316,15 @@ nx_on_proj:
     mov     r12d, edi
     mov     r13d, ecx
     movzx   eax, byte [rbx + PROJMSG.kind]
-    cmp     eax, PROJ_GRENADE
+    cmp     eax, PROJ_SPELL
     ja      .ret
+    jne     .kind_ok
+    mov     edx, [rbx + PROJMSG.flags]  ; a rune spell's element is one of the five
+    shr     edx, AF_ELEM_SHIFT
+    and     edx, HITF_ELEM_MASK
+    cmp     edx, ELEM_POISON
+    ja      .ret
+.kind_ok:
     movzx   eax, byte [rbx + PROJMSG.owner_slot]
     cmp     eax, MAX_ARROWS
     jae     .ret
@@ -1364,6 +1384,143 @@ net_explosion_players:
 .ret:
     add     rsp, 96
     pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; net_spell_beam_out(rdi start float[3], rsi dir float[3], xmm0 length, edx element ELEM_*): a Laser beam cast here is drawn
+; on the other peers (a guest sends it to the host; the host to the guests within 64 blocks). Nothing is checked or paid
+; there: it is only the picture; the blows were struck here.
+; rbx = start; frame: SPELLMSG @0, start local @40
+net_spell_beam_out:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 56
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret
+    mov     rbx, rdi
+    mov     byte [rsp + SPELLMSG.kind], SPM_BEAM
+    mov     [rsp + SPELLMSG.elem], dl
+    mov     word [rsp + SPELLMSG.pad], 0
+    movss   [rsp + SPELLMSG.len], xmm0
+    mov     eax, [rsi]
+    mov     [rsp + SPELLMSG.dir], eax
+    mov     eax, [rsi + 4]
+    mov     [rsp + SPELLMSG.dir + 4], eax
+    mov     eax, [rsi + 8]
+    mov     [rsp + SPELLMSG.dir + 8], eax
+    movss   xmm0, [rbx]
+    movss   [rsp + 40], xmm0
+    movss   xmm1, [rbx + 4]
+    movss   [rsp + 44], xmm1
+    movss   xmm2, [rbx + 8]
+    movss   [rsp + 48], xmm2
+    lea     rdi, [rsp + SPELLMSG.pos]
+    call    net_pos_out
+    cmp     byte [net_role], NET_ROLE_HOST
+    je      .host
+    mov     edi, MT_SPELL
+    mov     rsi, rsp
+    mov     edx, SPELLMSG_size
+    xor     ecx, ecx
+    call    net_out
+    jmp     .ret
+.host:
+    mov     edi, -1
+    mov     esi, MT_SPELL
+    mov     rdx, rsp
+    mov     ecx, SPELLMSG_size
+    xor     r8d, r8d
+    movss   xmm0, [rsp + 40]
+    movss   xmm1, [rsp + 44]
+    movss   xmm2, [rsp + 48]
+    movss   xmm3, [c_fx_range]
+    call    net_relay
+.ret:
+    add     rsp, 56
+    pop     rbx
+    pop     rbp
+    ret
+
+; nx_on_spell(edi slot, esi type, rdx payload, ecx len): another peer's Laser beam is drawn here (net_applying keeps the motes
+; from being sent on) and the host passes a guest's on to the other guests within 64 blocks. Dropped: a message that is
+; short, not a beam, of an element above poison, longer than 24.5 blocks (or no length at all), with a direction component
+; beyond 1.01 or an impossible height; and, at the host, more than SPELL_RATE beams a second from one guest.
+; rbx = the message, r12d = the sender's slot, r13d = its length; frame: local position @0
+nx_on_spell:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 24
+    cmp     ecx, SPELLMSG_size
+    jb      .ret
+    cmp     byte [net_role], NET_ROLE_OFF
+    je      .ret
+    mov     rbx, rdx
+    mov     r12d, edi
+    mov     r13d, ecx
+    cmp     byte [rbx + SPELLMSG.kind], SPM_BEAM
+    jne     .ret
+    cmp     byte [rbx + SPELLMSG.elem], ELEM_POISON
+    ja      .ret
+    movss   xmm0, [rbx + SPELLMSG.len]
+    xorps   xmm1, xmm1
+    comiss  xmm0, xmm1
+    jbe     .ret                        ; no length, or not a number
+    comiss  xmm0, [c_beam_max]
+    ja      .ret
+%assign d 0
+%rep 3
+    mov     eax, [rbx + SPELLMSG.dir + d]
+    and     eax, 0x7FFFFFFF
+    cmp     eax, BITS_DIR
+    ja      .ret
+%assign d d + 4
+%endrep
+    mov     eax, [rbx + SPELLMSG.pos + NPOS.y]
+    and     eax, 0x7FFFFFFF
+    cmp     eax, BITS_Y
+    ja      .ret
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .unlimited                  ; (a guest hears the host's, which are limited at the host's end)
+    cmp     r12d, NET_MAX_PEERS
+    jae     .ret
+    lea     rdi, [spell_in]
+    lea     rdi, [rdi + r12*8]
+    mov     esi, SPELL_RATE
+    call    rate_ok
+    test    eax, eax
+    jz      .ret
+.unlimited:
+    lea     rdi, [rbx + SPELLMSG.pos]
+    call    net_pos_in
+    movss   [rsp], xmm0
+    movss   [rsp + 4], xmm1
+    movss   [rsp + 8], xmm2
+    lea     rdi, [rsp]
+    lea     rsi, [rbx + SPELLMSG.dir]
+    movss   xmm0, [rbx + SPELLMSG.len]
+    movzx   edx, byte [rbx + SPELLMSG.elem]
+    call    spells_beam_fx
+    cmp     byte [net_role], NET_ROLE_HOST
+    jne     .ret
+    mov     edi, r12d
+    mov     esi, MT_SPELL
+    mov     rdx, rbx
+    mov     ecx, r13d
+    xor     r8d, r8d
+    movss   xmm0, [rsp]
+    movss   xmm1, [rsp + 4]
+    movss   xmm2, [rsp + 8]
+    movss   xmm3, [c_fx_range]
+    call    net_relay
+.ret:
+    add     rsp, 24
     pop     r13
     pop     r12
     pop     rbx

@@ -46,7 +46,7 @@ extern nw_on_plane_place, nw_on_plane_board, nw_on_plane_board_ok, nw_on_plane_l
 extern nw_on_plane_break, nm_on_snap_planes
 extern nm_on_snap_mobs, nm_on_snap_drops, nm_on_snap_misc, nm_on_hit, nm_on_status, nm_on_mobfx
 extern nm_on_kill, nm_on_hurt, nm_on_pvp_hit, nm_on_interact
-extern nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing
+extern nx_on_proj, nx_on_proj_end, nx_on_sound, nx_on_fx, nx_on_event, nx_on_event_state, nx_on_standing, nx_on_spell
 extern nx_on_faction_add, nx_on_quest_sync, nx_on_quest_accept, nx_on_quest_bump
 extern nx_on_quest_complete, nx_on_quest_reward, nx_on_drop_spawn, nx_on_give
 extern nm_snap_send, nm_shift, net_boat_tick, net_plane_tick
@@ -289,6 +289,7 @@ net_handlers:                                   ; message type -> handler(edi sl
     dq nw_on_plane_pose                         ; 64
     dq nw_on_plane_break                        ; 65
     dq nm_on_snap_planes                        ; 66
+    dq nx_on_spell                              ; 67
 net_handlers_end:
 %if net_handlers_end - net_handlers != 8 * NUM_MT
 %error "net_handlers has one qword per message type"

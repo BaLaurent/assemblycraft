@@ -23,7 +23,7 @@ extern arrows, arrows_spawn, arrow_spell, arrow_hitmask
 extern mobs_raycast_skip, mob_is_hostile, raycast, ray_aabb
 extern explode_magic, fx_burst
 extern ab_crit, ab_sweep, ab_burst, ab_box_free
-extern audio_play, hand_swing, net_swing_t, net_applying
+extern audio_play, hand_swing, net_swing_t, net_applying, net_spell_beam_out
 extern str_append, i32_to_str
 
 %define BALL_SPEED      28.0
@@ -906,6 +906,13 @@ sp_laser:
     mov     rsi, r13
     movss   xmm0, [rsp + 48]
     call    spells_beam_fx
+    mov     edi, [rbx + SPELLPLAN.elems]
+    call    sp_elem
+    mov     edx, eax
+    mov     rdi, r12
+    mov     rsi, r13
+    movss   xmm0, [rsp + 48]
+    call    net_spell_beam_out          ; the other players see the beam too
     mov     edi, SND_SPELL
     movss   xmm0, [k_vol]
     call    audio_play

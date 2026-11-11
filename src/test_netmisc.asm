@@ -7,7 +7,7 @@ default rel
 
 global test_net_quest_shared, test_net_sleep_all, test_net_ghost_projectile
 global test_net_pvp_spells, test_net_quest_refund, test_net_proj_owner, test_net_relay_limit
-global test_net_event_state, test_net_event_accept
+global test_net_event_state, test_net_event_accept, test_spell_net
 
 extern net_role, net_self, net_pvp, net_applying, net_peers, net_capture, net_captured, net_pos_out
 extern rpg_state, rpg_stats, inv, inv_clear, inv_count, world_header
@@ -18,7 +18,7 @@ extern sleep_step, sleep_active, sleep_timer, sleep_fade, game_time, banner_text
 extern arrows, arrow_net, arrows_clear, arrows_spawn, arrows_step, nx_on_proj, nx_on_proj_end
 extern mobs, mobs_clear, mob_spawn, world_clear, world_set, world_get
 extern player, game_mode, surv, survival_reset
-extern nx_on_sound, nx_on_fx, nx_on_give, nx_clock_ns, fx_clear, dmgnum_clear
+extern nx_on_sound, nx_on_fx, nx_on_give, nx_clock_ns, fx_clear, fx_count, dmgnum_clear, nx_on_spell
 extern ev_hud, events_reset, events_step, nx_on_event_state, nm_on_interact, net_handlers
 extern folk_spawn
 
@@ -1697,6 +1697,144 @@ test_net_event_accept:
     call    ev_restore
     mov     eax, [mode_keep]
     mov     [game_mode], eax
+    call    net_end
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; ---- a rune spell on the wire -------------------------------------------------------------------------------------------------
+
+%define SPELLMSG_size 36                ; netmisc.asm's SPELLMSG and PROJMSG: kind, element, length, direction, position / owner, kind,
+%define PROJMSG_size  36                ; flags, position, velocity
+
+section .rodata
+align 4
+k_beam_ok:   dd 10.0
+k_beam_long: dd 30.0
+k_m28:       dd -28.0
+
+section .text
+
+; beam_msg(xmm0 length, edx element): msg = a beam message from (3.5, 12, 4.25) along -z
+beam_msg:
+    sub     rsp, 8
+    mov     byte [msg], SPM_BEAM
+    mov     [msg + 1], dl
+    mov     word [msg + 2], 0
+    movss   [msg + 4], xmm0
+    mov     dword [msg + 8], 0
+    mov     dword [msg + 12], 0
+    mov     dword [msg + 16], __float32__(-1.0)
+    movss   xmm0, [k_3_5]
+    movss   xmm1, [k_12]
+    movss   xmm2, [k_4_25]
+    lea     rdi, [msg + 20]
+    call    net_pos_out
+    add     rsp, 8
+    ret
+
+; BEAM_IN n: the beam message of n bytes comes in from the host (slot 0)
+%macro BEAM_IN 1
+    xor     edi, edi
+    mov     esi, MT_SPELL
+    lea     rdx, [msg]
+    mov     ecx, %1
+    call    nx_on_spell
+%endmacro
+
+; A guest draws the beam another player cast: a valid one (10 blocks, frost) leaves its motes (20, one every half block); a
+; message that is short, has no length or one beyond 24.5 blocks, or an element above poison draws nothing. A PROJMSG of
+; kind PROJ_SPELL becomes a ghost (AF_GHOST) with its element kept; with an element above poison it is dropped.
+test_spell_net:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    net_begin
+    mov     byte [net_role], NET_ROLE_GUEST
+    mov     byte [net_self], 1
+    call    fx_clear
+    movss   xmm0, [k_beam_ok]
+    mov     edx, ELEM_FROST
+    call    beam_msg
+    BEAM_IN SPELLMSG_size
+    call    fx_count
+    cmp     eax, 20
+    jb      .fail
+    call    fx_clear                    ; ---- what is dropped
+    movss   xmm0, [k_beam_ok]
+    mov     edx, ELEM_FROST
+    call    beam_msg
+    BEAM_IN SPELLMSG_size - 1           ; short
+    call    fx_count
+    test    eax, eax
+    jnz     .fail
+    xorps   xmm0, xmm0                  ; no length
+    mov     edx, ELEM_FROST
+    call    beam_msg
+    BEAM_IN SPELLMSG_size
+    call    fx_count
+    test    eax, eax
+    jnz     .fail
+    movss   xmm0, [k_beam_long]         ; 30 blocks
+    mov     edx, ELEM_FROST
+    call    beam_msg
+    BEAM_IN SPELLMSG_size
+    call    fx_count
+    test    eax, eax
+    jnz     .fail
+    movss   xmm0, [k_beam_ok]
+    mov     edx, ELEM_POISON + 1        ; an element that does not exist
+    call    beam_msg
+    BEAM_IN SPELLMSG_size
+    call    fx_count
+    test    eax, eax
+    jnz     .fail
+    call    arrows_clear                ; ---- the ghost of another player's Ball
+    mov     byte [msg], 0               ; fired by peer 0 (the host), from its slot 0
+    mov     byte [msg + 1], 0
+    mov     byte [msg + 2], PROJ_SPELL
+    mov     byte [msg + 3], 0
+    mov     dword [msg + 4], ELEM_FROST << AF_ELEM_SHIFT
+    movss   xmm0, [k_3_5]
+    movss   xmm1, [k_12]
+    movss   xmm2, [k_4_25]
+    lea     rdi, [msg + 8]
+    call    net_pos_out
+    mov     dword [msg + 24], 0
+    mov     dword [msg + 28], 0
+    movss   xmm0, [k_m28]
+    movss   [msg + 32], xmm0
+    xor     edi, edi
+    mov     esi, MT_PROJ
+    lea     rdx, [msg]
+    mov     ecx, PROJMSG_size
+    call    nx_on_proj
+    cmp     dword [arrows + ARROWENT.live], 1
+    jne     .fail
+    cmp     dword [arrows + ARROWENT.kind], PROJ_SPELL
+    jne     .fail
+    cmp     dword [arrows + ARROWENT.flags], AF_GHOST | (ELEM_FROST << AF_ELEM_SHIFT)
+    jne     .fail
+    call    arrows_clear
+    mov     dword [msg + 4], (ELEM_POISON + 1) << AF_ELEM_SHIFT
+    xor     edi, edi
+    mov     esi, MT_PROJ
+    lea     rdx, [msg]
+    mov     ecx, PROJMSG_size
+    call    nx_on_proj
+    cmp     dword [arrows + ARROWENT.live], 0
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    arrows_clear
+    call    fx_clear
     call    net_end
     mov     eax, ebx
     add     rsp, 8
