@@ -110,7 +110,7 @@ k_quarter:  dd 0.25                     ; Phase marches in quarter blocks
 k_eye_h:    dd 1.62                     ; eye above the feet
 k_chest:    dd 1.0                      ; a blast sits this far above the feet
 k_0_2:      dd 0.2                      ; a beam's mote speed
-k_0_15:     dd 0.15                     ; how much of its speed a Seek ball turns towards its foe each step
+k_0_35:     dd 0.35                     ; how much of its speed a Seek ball turns towards its foe each step
 k_chain_r2: dd 36.0                     ; Chain reaches 6 blocks
 k_seek_r2:  dd 256.0                    ; Seek sees 16 blocks
 k_m2:       dd -2.0                     ; Feather: the fastest fall
@@ -1008,8 +1008,10 @@ sp_nova:
 
 ; sp_phase_plan(rdi eye float[3], rsi dir float[3], rdx out float[3]) -> eax 1 when the player can teleport at
 ; least a block: marches along dir in quarter-block steps up to 8 blocks, the candidate feet being
-; eye + dir * s - (0, 1.62, 0), until the box is no longer free; out = the last free candidate
-; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3]
+; eye + dir * s - (0, 1.62, 0). A candidate whose box is not free is lifted in quarter blocks, up to two blocks, to
+; the first height where it is (the floor under a ray that points at the ground, a ledge): none free ends the march.
+; out = the last free candidate
+; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3], lifts left @12
 sp_phase_plan:
     push    rbp
     mov     rbp, rsp
@@ -1042,7 +1044,21 @@ sp_phase_plan:
     movss   [rsp + 8], xmm2
     call    ab_box_free
     test    eax, eax
-    jz      .stop
+    jnz     .free
+    mov     dword [rsp + 12], 8
+.lift:
+    movss   xmm1, [rsp + 4]
+    addss   xmm1, [k_quarter]
+    movss   [rsp + 4], xmm1
+    movss   xmm0, [rsp]
+    movss   xmm2, [rsp + 8]
+    call    ab_box_free
+    test    eax, eax
+    jnz     .free
+    dec     dword [rsp + 12]
+    jnz     .lift
+    jmp     .stop
+.free:
     mov     r15d, r14d
     mov     eax, [rsp]
     mov     [rbx], eax
@@ -1180,7 +1196,7 @@ sp_dash:
 ; ---- the Ball in flight (hooks of arrows.asm) --------------------------------------------------------
 
 ; spells_proj_steer(edi slot): a Ball with Seek bends towards the nearest hostile mob within 16 blocks that
-; is ahead of it and was not struck yet: v = |v| * unit(v + unit(to) * |v| * 0.15)
+; is ahead of it and was not struck yet: v = |v| * unit(v + unit(to) * |v| * 0.35)
 ; rbx = the projectile, r12d = slot, r13 = struck mask, r14d = mob index
 ; frame: best d^2 @0, best mob @4, vector to it @8, to the mob in view @24, its d^2 @36
 spells_proj_steer:
@@ -1276,8 +1292,8 @@ spells_proj_steer:
     addss   xmm1, xmm2
     sqrtss  xmm1, xmm1                  ; |v|
     movaps  xmm2, xmm1
-    mulss   xmm2, [k_0_15]
-    divss   xmm2, xmm0                  ; |v| * 0.15 / |to|
+    mulss   xmm2, [k_0_35]
+    divss   xmm2, xmm0                  ; |v| * 0.35 / |to|
     movss   xmm3, [rsp + 8]
     mulss   xmm3, xmm2
     addss   xmm3, [rbx + ARROWENT.vx]

@@ -672,9 +672,6 @@ texgen_build:
     HUD     48, heart_bmp, heart_pal_full, heart_pal_empty, 9
     HUD     49, heart_bmp, heart_pal_full, heart_pal_empty, 5
     HUD     50, heart_bmp, heart_pal_full, heart_pal_empty, 0
-    HUD     51, food_bmp, food_pal_full, food_pal_empty, 9
-    HUD     52, food_bmp, food_pal_full, food_pal_empty, 5
-    HUD     53, food_bmp, food_pal_full, food_pal_empty, 0
     HUD     54, armor_bmp, armor_pal_full, armor_pal_empty, 9
     HUD     55, armor_bmp, armor_pal_full, armor_pal_empty, 5
     HUD     56, armor_bmp, armor_pal_full, armor_pal_empty, 0
@@ -1375,20 +1372,6 @@ heart_pal_empty:
     PAL 'd', 74, 38, 36
     PAL 'w', 92, 48, 44
     dq 0
-food_pal_full:
-    PAL 'K', 58, 38, 24
-    PAL 'm', 200, 120, 50
-    PAL 'd', 150, 86, 38
-    PAL 'w', 240, 184, 112
-    PAL 'b', 244, 232, 200
-    dq 0
-food_pal_empty:
-    PAL 'K', 58, 38, 24
-    PAL 'm', 80, 56, 40
-    PAL 'd', 64, 44, 32
-    PAL 'w', 80, 56, 40
-    PAL 'b', 130, 116, 96
-    dq 0
 
 heart_bmp:
     db ".KKK.KKK."
@@ -1400,16 +1383,6 @@ heart_bmp:
     db "...KdK..."
     db "....K...."
     db "........."
-food_bmp:
-    db "....KKK.."
-    db "...KmmmK."
-    db "..KmmwmmK"
-    db "..KmmmmdK"
-    db "...KmmdK."
-    db "..KbKKK.."
-    db ".KbK....."
-    db "KbbK....."
-    db ".KK......"
 
 armor_pal_full:
     PAL 'K', 58, 38, 24

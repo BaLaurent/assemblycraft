@@ -409,9 +409,7 @@ endstruc                                ; 24
 %define TILE_HEART_FULL    48
 %define TILE_HEART_HALF    49
 %define TILE_HEART_EMPTY   50
-%define TILE_FOOD_FULL     51
-%define TILE_FOOD_HALF     52
-%define TILE_FOOD_EMPTY    53
+; tiles 51..53 were the drumstick icons of the old hunger bar (the hunger vial replaced them): unused
 %define TILE_ARMOR_FULL    54
 %define TILE_ARMOR_HALF    55
 %define TILE_ARMOR_EMPTY   56

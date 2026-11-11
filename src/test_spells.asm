@@ -53,6 +53,9 @@ k_1_3:    dd 1.3
 k_13_5:   dd 13.5
 k_x18_5:  dd 18.5
 k_pitch90: dd 90.0
+k_pitch30: dd 30.0
+k_z14:     dd 14.0
+k_z12:     dd 12.0
 
 ; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
 ; (only the answer is compared for an answer of 0)
@@ -673,6 +676,24 @@ test_spell_phase:
     EXPECT_NEAR [combat_mana], 86.0
     cmp     dword [spells_cd], 240
     jne     .fail
+    call    cleanup                     ; ---- looking 30 degrees down at the floor: it lands where the ray meets the ground
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    movss   xmm0, [k_pitch30]
+    movss   [player + BODY.pitch], xmm0
+    lea     rdi, [view_buf + 12]
+    call    player_forward
+    mov     edi, R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [player + BODY.y], 11.0
+    movss   xmm0, [player + BODY.z]
+    comiss  xmm0, [k_z14]
+    jae     .fail                       ; it went more than 2.5 blocks ahead (the ray meets the floor 3.2 blocks away)
+    comiss  xmm0, [k_z12]
+    jbe     .fail                       ; ... and not past it
     xor     eax, eax
     jmp     .ret
 .fail:
@@ -724,7 +745,8 @@ test_spell_multi_element:
     pop     rbp
     ret
 
-; Seek: a zombie 3 blocks off the line of fire is missed by a plain Ball and caught by a Ball with Seek
+; Seek: a zombie 3 blocks off the line of fire is missed by a plain Ball and caught by a Ball with Seek, also when it stands
+; 6 blocks ahead (the geometry a 15 % turn per step missed in the real game)
 test_spell_seek:
     push    rbp
     mov     rbp, rsp
@@ -754,6 +776,18 @@ test_spell_seek:
     call    fly
     HURT    0
     jge     .fail                       ; it turned towards the zombie
+    call    cleanup
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x19_5, k_z10_5
+    mov     edi, R(BALL) | R(SEEK)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    call    fly
+    HURT    0
+    jge     .fail
     xor     eax, eax
     jmp     .ret
 .fail:
