@@ -1,4 +1,6 @@
-; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts, fireballs, knives and grenades. Spawn,
+; arrows.asm - projectiles: arrows, bullets, rockets, magic bolts, fireballs, knives, grenades and the rune
+; spells (PROJ_SPELL: spells.asm steers it, resolves its hits and its end through three hooks; arrow_spell and
+; arrow_hitmask are its side tables). Spawn,
 ; flight, hits on mobs and the player, arrows sticking in blocks and the player picking his own back up,
 ; rockets, grenades and fireballs exploding on impact, drawing. Projectiles are not saved with the world; they
 ; live in local coordinates (arrows_shift follows the origin) and expire on their own, so nothing
@@ -10,7 +12,7 @@
 %include "gl.inc"
 default rel
 
-global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift, arrow_net
+global arrows, arrows_clear, arrows_spawn, arrows_step, arrows_render, arrows_shift, arrow_net, arrow_spell, arrow_hitmask
 
 extern player, raycast, ray_aabb, mobs_raycast, explode_at, explode_magic, explode_mob_mult
 extern mobs, folk_hit_by, faction_enemies, rpg_keystones, ab_flash_at
@@ -21,6 +23,7 @@ extern player_take_hit, combat_hit_mob, combat_calc, combat_player_status, comba
 extern combat_hit_player, net_players_raycast, net_hurt_send, net_explosion_players
 extern net_proj_out, net_proj_end_out, net_role, net_applying, net_peers, explode_pvp
 extern glIsEnabled
+extern spells_proj_steer, spells_proj_hit, spells_proj_end, mobs_raycast_skip, spell_fx
 
 %define STUCK_MOB_STEPS 60              ; a skeleton's arrow stays in the block 1 s
 %define STUCK_OWN_STEPS 1200            ; the player's arrow stays 20 s
@@ -72,7 +75,7 @@ c_src_t:     dd 0.1                     ; a mob's arrow "comes from" 0.1 s back 
 c_trail_v:   dd 0.3                     ; speed of a trail particle
 c_burst_v:   dd 1.0                     ; speed of the sparks where a bolt ends
 ; flying steps before a projectile is gone (a rocket, grenade or fireball explodes then), by kind
-max_age:     dd 600, 120, 300, 90, 120, 20, 120 ; ARROW, BULLET, ROCKET, BOLT, FIREBALL, KNIFE, GRENADE
+max_age:     dd 600, 120, 300, 90, 120, 20, 120, 120 ; ARROW, BULLET, ROCKET, BOLT, FIREBALL, KNIFE, GRENADE, SPELL
 
 ; arrow model: shaft, tip, fletching (box lo xyz, hi xyz); the tip points to -Z
 arrow_shaft: dd -0.03, -0.03, -0.25,  0.03, 0.03, 0.25
@@ -103,6 +106,15 @@ c_bolt_half: dd 0.09                    ; 0.18 cube
 c_bolt_col:  dd 0.75, 0.4, 1.0
 c_fire_half: dd 0.15                    ; 0.3 cube
 c_fire_col:  dd 1.0, 0.55, 0.15
+; rune spells (PROJ_SPELL): half edge of the cube and its colour by element (ELEM_PHYS, FIRE, FROST, SHOCK, POISON);
+; the mote of the trail is spell_fx's (spells.asm)
+c_spell_half: dd 0.12
+c_spell_col:
+    dd 0.85, 0.85, 1.0
+    dd 1.0, 0.55, 0.15
+    dd 0.6, 0.85, 1.0
+    dd 1.0, 1.0, 0.5
+    dd 0.45, 1.0, 0.3
 ; throwing knife: a 0.12 cube of steel, drawn in the world pass like an arrow
 knife_box:   dd -0.06, -0.06, -0.06,  0.06, 0.06, 0.06
 c_knife_col: dd 0.75, 0.75, 0.8
@@ -115,6 +127,9 @@ arrows:      resb MAX_ARROWS * ARROWENT_size
 arrows_end:
 arrow_net:   resd MAX_ARROWS            ; per projectile: ((owner peer + 1) << 8) | owner slot (owner peer 255 = the world's), the
                                         ; tag that pairs it with its twin on the other peers; 0 = not mirrored
+alignb 8
+arrow_hitmask: resq MAX_ARROWS          ; PROJ_SPELL: bit i = mob i was already struck by this spell (spells.asm owns both tables)
+arrow_spell:   resd MAX_ARROWS          ; PROJ_SPELL: the effect runes (bits 0..15) and the mob hits left (bits 16..19)
 
 section .text
 
@@ -126,6 +141,9 @@ arrows_clear:
     rep     stosb
     lea     rdi, [arrow_net]
     mov     ecx, MAX_ARROWS * 4
+    rep     stosb
+    lea     rdi, [arrow_hitmask]        ; the two spell tables are contiguous
+    mov     ecx, MAX_ARROWS * 12
     rep     stosb
     ret
 
@@ -167,6 +185,10 @@ arrows_spawn:
     mov     dword [r9 + ARROWENT.live], 1
     lea     rcx, [arrow_net]
     mov     dword [rcx + rax*4], 0      ; not mirrored (net_proj_out tags the ones that are)
+    lea     rcx, [arrow_spell]
+    mov     dword [rcx + rax*4], 0
+    lea     rcx, [arrow_hitmask]
+    mov     qword [rcx + rax*8], 0
     cmp     byte [net_role], NET_ROLE_OFF
     je      .done
     cmp     byte [net_applying], 0
@@ -183,6 +205,17 @@ arrows_spawn:
     call    net_proj_out
     pop     rax
 .done:
+    ret
+
+; arrow_slot() -> edi the slot of the projectile rbx points at (leaf: clobbers rax, rcx, rdx)
+arrow_slot:
+    mov     rax, rbx
+    lea     rcx, [arrows]
+    sub     rax, rcx
+    xor     edx, edx
+    mov     ecx, ARROWENT_size
+    div     rcx
+    mov     edi, eax
     ret
 
 ; arrow_advance(rdi arrow, rsi dir[3], xmm0 t, rdx out[3]): out = arrow position + dir * t.
@@ -289,6 +322,13 @@ arrows_step:
     subss   xmm0, [c_gravity]
     movss   [rbx + ARROWENT.vy], xmm0
 .no_gravity:
+    cmp     dword [rbx + ARROWENT.kind], PROJ_SPELL
+    jne     .segment
+    test    dword [rbx + ARROWENT.flags], AF_GHOST
+    jnz     .segment
+    call    arrow_slot
+    call    spells_proj_steer           ; Seek bends its flight towards a foe
+.segment:
     movss   xmm4, [c_dt]
     movss   xmm0, [rbx + ARROWENT.vx]
     mulss   xmm0, xmm4
@@ -336,10 +376,17 @@ arrows_step:
     test    eax, eax
     jnz     .mob_shot
     mov     dword [rsp + S_WHO], -1
+    xor     edx, edx
+    cmp     dword [rbx + ARROWENT.kind], PROJ_SPELL
+    jne     .ray
+    call    arrow_slot
+    lea     rcx, [arrow_hitmask]
+    mov     rdx, [rcx + rdi*8]          ; a spell never strikes the same mob twice
+.ray:
     mov     rdi, rbx
     lea     rsi, [rsp + S_DIR]
     movss   xmm0, [rsp + S_TMAX]
-    call    mobs_raycast
+    call    mobs_raycast_skip
     mov     [rsp + S_IDX], eax
     cmp     byte [net_role], NET_ROLE_OFF
     je      .mob_only
@@ -368,6 +415,22 @@ arrows_step:
     movss   [rsp + S_T], xmm0
 .target:
     HIT_POINT
+    cmp     dword [rbx + ARROWENT.kind], PROJ_SPELL
+    jne     .proj_hit
+    cmp     dword [rsp + S_WHO], 0
+    jge     .proj_hit                   ; a player (PvP): the generic blow below
+    call    arrow_slot
+    mov     esi, [rsp + S_IDX]
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    movss   xmm3, [rsp + S_H]
+    movss   xmm4, [rsp + S_H + 4]
+    call    spells_proj_hit             ; 1: it flies on (a Pierce orb with foes left), 0: it is spent
+    test    eax, eax
+    jz      .remove
+    jmp     .settle
+.proj_hit:
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_ROCKET
     je      .rocket_burst               ; a rocket goes off on the mob
@@ -661,6 +724,8 @@ arrows_step:
     je      .magic_block
     cmp     eax, PROJ_BOLT
     je      .bolt_block
+    cmp     eax, PROJ_SPELL
+    je      .spell_block
     test    dword [rbx + ARROWENT.flags], AF_EXPLOSIVE
     jnz     .magic_block                ; an explosive arrow never sticks
     mov     rdi, rbx
@@ -810,9 +875,29 @@ arrows_step:
     mov     esi, 6
     call    fx_burst
     jmp     .remove
+.spell_block:                           ; a rune spell: just short of the surface; its Burst goes off there
+    movss   xmm0, [rsp + S_TMAX]
+    subss   xmm0, [c_embed]
+    movss   [rsp + S_T], xmm0
+    HIT_POINT
+    call    arrow_slot
+    movss   xmm0, [rsp + S_HP]
+    movss   xmm1, [rsp + S_HP + 4]
+    movss   xmm2, [rsp + S_HP + 8]
+    call    spells_proj_end
+    jmp     .remove
 .expired:                               ; out of time: an arrow, bullet or bolt vanishes,
     test    dword [rbx + ARROWENT.flags], AF_GHOST
     jnz     .remove                     ; a ghost never goes off: the real one did, where it was
+    cmp     dword [rbx + ARROWENT.kind], PROJ_SPELL
+    jne     .expired_kind
+    call    arrow_slot
+    movss   xmm0, [rbx + ARROWENT.x]
+    movss   xmm1, [rbx + ARROWENT.y]
+    movss   xmm2, [rbx + ARROWENT.z]
+    call    spells_proj_end             ; out of time: its Burst goes off where it is
+    jmp     .remove
+.expired_kind:
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_ROCKET
     je      .go_off
@@ -851,6 +936,15 @@ arrows_step:
     mov     edi, FX_MAGIC
     cmp     eax, PROJ_BOLT
     je      .trail
+    cmp     eax, PROJ_SPELL
+    jne     .trail_fire
+    mov     ecx, [rbx + ARROWENT.flags]
+    shr     ecx, AF_ELEM_SHIFT
+    and     ecx, HITF_ELEM_MASK
+    lea     rdx, [spell_fx]
+    mov     edi, [rdx + rcx*4]          ; the mote of its element
+    jmp     .trail
+.trail_fire:
     mov     edi, FX_FIRE
     cmp     eax, PROJ_FIREBALL
     jne     .next
@@ -1167,6 +1261,8 @@ arrows_render:
     mov     eax, [rbx + ARROWENT.kind]
     cmp     eax, PROJ_BOLT
     je      .bolt
+    cmp     eax, PROJ_SPELL
+    je      .spell
     cmp     eax, PROJ_FIREBALL
     jne     .magic_next
     movss   xmm4, [c_fire_half]
@@ -1179,6 +1275,17 @@ arrows_render:
     movss   xmm0, [c_bolt_col]
     movss   xmm1, [c_bolt_col + 4]
     movss   xmm2, [c_bolt_col + 8]
+    jmp     .cube
+.spell:                                 ; a rune spell: a small cube in its element's colour
+    mov     ecx, [rbx + ARROWENT.flags]
+    shr     ecx, AF_ELEM_SHIFT
+    and     ecx, HITF_ELEM_MASK
+    lea     rcx, [rcx + rcx*2]          ; 3 floats per element
+    lea     rdx, [c_spell_col]
+    movss   xmm4, [c_spell_half]
+    movss   xmm0, [rdx + rcx*4]
+    movss   xmm1, [rdx + rcx*4 + 4]
+    movss   xmm2, [rdx + rcx*4 + 8]
 .cube:                                  ; the cube centred on the projectile, colour in xmm0..2
 %assign i 0
 %rep 3

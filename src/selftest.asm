@@ -38,6 +38,9 @@ extern test_fire_dies_on_stone, test_fire_hurts_player
 extern test_fx_explosion_spawns_and_expires, test_fx_debris_falls_and_bounces
 extern test_rpg_levels_and_points, test_rpg_skill_spend_rules, test_rpg_stats_from_paths_and_ranks
 extern test_rpg_save_load_validates, test_rpg_v3_bar_remap, test_rune_unlocks, test_quest_chain_progress_and_rewards, test_trade_exchanges_items
+extern test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
+extern test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
+extern test_spell_blood_magic, test_spell_preview
 extern test_guard_blocks_and_parries, test_dodge_iframes_and_stamina
 extern test_melee_combo_crit_backstab, test_stamina_mana_regen_and_max_health
 extern test_zombie_windup_can_be_parried, test_elite_saved_and_tougher, test_npc_hurt_and_not_saved
@@ -226,6 +229,18 @@ tests:
     TEST rpg_save_load_validates
     TEST rpg_v3_bar_remap
     TEST rune_unlocks
+    TEST spell_resolve
+    TEST spell_ball
+    TEST spell_pierce_chain
+    TEST spell_laser
+    TEST spell_nova_frost
+    TEST spell_phase
+    TEST spell_multi_element
+    TEST spell_seek
+    TEST spell_boons
+    TEST spell_arming
+    TEST spell_blood_magic
+    TEST spell_preview
     TEST quest_chain_progress_and_rewards
     TEST trade_exchanges_items
     TEST guard_blocks_and_parries
@@ -550,6 +565,18 @@ section .rodata
     TESTNAME rpg_save_load_validates
     TESTNAME rpg_v3_bar_remap
     TESTNAME rune_unlocks
+    TESTNAME spell_resolve
+    TESTNAME spell_ball
+    TESTNAME spell_pierce_chain
+    TESTNAME spell_laser
+    TESTNAME spell_nova_frost
+    TESTNAME spell_phase
+    TESTNAME spell_multi_element
+    TESTNAME spell_seek
+    TESTNAME spell_boons
+    TESTNAME spell_arming
+    TESTNAME spell_blood_magic
+    TESTNAME spell_preview
     TESTNAME quest_chain_progress_and_rewards
     TESTNAME trade_exchanges_items
     TESTNAME guard_blocks_and_parries

@@ -11,7 +11,7 @@
 default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
-global mob_spawn, mob_spawn_elite, mob_is_hostile, mobs_raycast
+global mob_spawn, mob_spawn_elite, mob_is_hostile, mobs_raycast, mobs_raycast_skip
 global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb, mob_drops
 global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
@@ -3057,8 +3057,12 @@ ray_aabb:
 
 ; mobs_raycast(rdi origin[3], rsi dir[3], xmm0 max) -> eax index of the nearest mob hit within
 ; max (or -1), xmm0 = its distance t (max on a miss). Boxes: [x +- half_w] x [y, y + height] x [z +- half_w].
-; Frame: lo[3] @0, hi[3] @16, best t @32.
+; mobs_raycast_skip(rdi origin[3], rsi dir[3], rdx skip, xmm0 max) is the same without the mobs whose bit is
+; set in skip (a spell that already struck them: MAX_MOBS is 64, one qword).
+; Frame: lo[3] @0, hi[3] @16, best t @32, skip @40.
 mobs_raycast:
+    xor     edx, edx
+mobs_raycast_skip:
     push    rbp
     mov     rbp, rsp
     push    rbx
@@ -3073,7 +3077,10 @@ mobs_raycast:
     mov     r15d, -1
     lea     rbx, [mobs]
     xor     r14d, r14d
+    mov     [rsp + 40], rdx
 .mob:
+    bt      qword [rsp + 40], r14
+    jc      .next
     cmp     dword [rbx + MOB.type], MOB_NONE
     je      .next
     movss   xmm3, [rbx + BODY.half_w]

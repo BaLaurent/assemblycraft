@@ -12,7 +12,7 @@ global combat_mana, combat_stamina
 global combat_guard_t, combat_guard_break_t, combat_dodge_t, combat_dodge_cd
 global combat_attack_cd, combat_combo, combat_combo_t, combat_riposte_t
 global combat_crit_next_t, combat_warcry_t, combat_blade_t, combat_stealth_t
-global combat_slow_t, combat_spend_t, combat_bullseye_t, combat_fanhammer_t
+global combat_slow_t, combat_spend_t, combat_bullseye_t, combat_fanhammer_t, combat_haste_t, combat_feather_t
 global combat_burn_t, combat_chill_t, combat_poison_t, combat_poison, combat_phoenix_cd
 global combat_hitstop, combat_hit_flags, combat_life_carry, combat_attacker
 global combat_reset, combat_refill, combat_max_mana, combat_max_stamina, combat_step
@@ -140,6 +140,8 @@ combat_poison_t:      resd 1            ; > 0: poisoned, the player takes a pois
 combat_phoenix_cd:    resd 1            ; > 0: the Phoenix ring is recovering
 combat_bullseye_t:    resd 1            ; > 0: Bullseye, firearms fly true and crit more (guns.asm reads it)
 combat_fanhammer_t:   resd 1            ; > 0: Fan the Hammer, firearms fire twice as fast, rounds free (guns.asm)
+combat_haste_t:       resd 1            ; > 0: the Haste rune, walking 30 % faster
+combat_feather_t:     resd 1            ; > 0: the Feather rune, a gentle fall (spells.asm holds the vertical speed up)
 combat_fang_t:        resd 1            ; guest: > 0: the last Shadow Fang backstab may still turn out to be a kill (combat_fang_slot)
 combat_timers_end:
 combat_combo:         resd 1            ; strikes in the running combo (0..2)
@@ -426,7 +428,7 @@ combat_set_guard:
     mov     dword [combat_guard_t], -1
     ret
 
-; combat_speed_mult() -> xmm0 walking speed factor: move speed stat, guard 0.4, slow 0.7, chill 0.6, blade 1.2
+; combat_speed_mult() -> xmm0 walking speed factor: move speed stat, guard 0.4, slow 0.7, chill 0.6, blade 1.2, haste 1.3
 combat_speed_mult:
     STATF   xmm0, STAT_MOVE_SPEED
     divss   xmm0, [k_100]
@@ -444,8 +446,12 @@ combat_speed_mult:
     mulss   xmm0, [k_0_6]
 .unchilled:
     cmp     dword [combat_blade_t], 0
-    jle     .done
+    jle     .hasted
     mulss   xmm0, [k_1_2]
+.hasted:
+    cmp     dword [combat_haste_t], 0
+    jle     .done
+    mulss   xmm0, [k_1_3]
 .done:
     ret
 

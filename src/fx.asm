@@ -2,8 +2,8 @@
 ; motes and gold glitter of combat, camera shake and a screen flash. Particles are not saved with
 ; the world; everything lives in fx_particles, in local coordinates (fx_shift follows the origin).
 ;
-; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC, FX_GOLD or
-; FX_FROST. Velocities are in blocks per second and every position moves v / 60 per fixed step.
+; A particle has kind 0 (free), FX_FIRE, FX_SMOKE, FX_DEBRIS, FX_SPARK, FX_MAGIC, FX_GOLD, FX_FROST
+; or FX_POISON. Velocities are in blocks per second and every position moves v / 60 per fixed step.
 ; fx_explosion, fx_debris and fx_burst spawn, fx_step runs once per fixed step, fx_render draws
 ; inside the world pass.
 %include "common.inc"
@@ -81,12 +81,13 @@ k_smoke_g1: dd 0.35
 k_spark_g:  dd 0.3
 k_magic_dv: dd 0.9
 k_gold_up:  dd 0.04
-; start and end colour (r, g, b, r, g, b) of the burst kinds SPARK, MAGIC, GOLD, FROST
+; start and end colour (r, g, b, r, g, b) of the burst kinds SPARK, MAGIC, GOLD, FROST, POISON
 k_burst_col:
     dd 1.0, 0.95, 0.6,  1.0, 0.6, 0.2
     dd 0.7, 0.3, 1.0,   0.3, 0.1, 0.6
     dd 1.0, 0.85, 0.3,  1.0, 0.6, 0.1
     dd 0.75, 0.9, 1.0,  0.4, 0.6, 1.0
+    dd 0.45, 1.0, 0.3,  0.15, 0.5, 0.1
 ; fx_burst rows by kind - FX_FIRE: size lo, size hi, life lo, number of lives (hi = lo + n - 1);
 ; the DEBRIS row is never used
 burst_tab:
@@ -97,6 +98,7 @@ burst_tab:
     dd 0.12, 0.2,  18, 13               ; MAGIC
     dd 0.1, 0.18,  30, 21               ; GOLD
     dd 0.12, 0.2,  20, 11               ; FROST
+    dd 0.12, 0.2,  18, 13               ; POISON
 ; render_box face order +X -X +Y -Y +Z -Z
 shades_block: dd 0.6, 0.6, 1.0, 0.5, 0.8, 0.8
 shades_flat:  dd 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
@@ -634,7 +636,7 @@ fx_burst:
     mov     r12d, esi
     mov     r14d, edi
     lea     eax, [rdi - FX_FIRE]
-    cmp     eax, FX_FROST - FX_FIRE
+    cmp     eax, FX_POISON - FX_FIRE
     ja      .done                       ; not a particle kind
     cmp     edi, FX_DEBRIS
     je      .done                       ; debris is fx_debris's
@@ -722,6 +724,8 @@ fx_step:
     cmp     eax, FX_MAGIC
     je      .magic
     cmp     eax, FX_FROST
+    je      .magic
+    cmp     eax, FX_POISON
     je      .magic
     cmp     eax, FX_GOLD
     je      .gold

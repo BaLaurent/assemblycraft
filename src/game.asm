@@ -42,6 +42,7 @@ extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_heavy,
 extern combat_speed_mult, combat_crit_roll, combat_max_mana
 extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
 extern abilities_reset, abilities_step, abilities_use, abilities_staff_bolt, abilities_shift
+extern spells_input, spells_cast, spells_step, spells_reset
 extern dmgnum_clear, dmgnum_step, dmgnum_shift
 extern structures_reset, structures_step, structures_refresh, structures_shift
 extern events_reset, events_shift
@@ -168,6 +169,7 @@ reset_session:
     call    sleep_cancel
     call    combat_reset
     call    abilities_reset
+    call    spells_reset
     call    dmgnum_clear
     call    debug_reset                 ; the debug menu is closed, its F12 count starts over
     pop     rbp
@@ -1903,6 +1905,19 @@ game_frame:
     inc     ebx
     cmp     ebx, 4
     jb      .ability
+    mov     edi, [frame_input + FRAMEINPUT.runes_held]
+    mov     esi, [frame_input + FRAMEINPUT.runes_down]
+    call    spells_input
+    cmp     dword [frame_input + FRAMEINPUT.cast], 0
+    je      .no_cast
+    cmp     dword [plane_riding], 0
+    jne     .no_cast                    ; seated in a plane or a boat: no spells
+    cmp     dword [boat_riding], 0
+    jne     .no_cast
+    lea     rdi, [rsp + F_EYE]
+    lea     rsi, [rsp + F_DIR]
+    call    spells_cast
+.no_cast:
     cmp     dword [frame_input + FRAMEINPUT.vehicle_view], 0
     je      .combat_done
     cmp     dword [plane_riding], 0
@@ -1910,6 +1925,9 @@ game_frame:
     xor     dword [plane_view], 1       ; third person <-> cockpit
     jmp     .combat_done
 .no_combat:
+    xor     edi, edi
+    xor     esi, esi
+    call    spells_input                ; no runes held while a screen is up or the mouse is free
     xor     edi, edi
     call    combat_set_guard
 .combat_done:
@@ -2882,6 +2900,7 @@ sim_step:
     mov     edi, [rsp + 40]
     call    combat_step
     call    abilities_step
+    call    spells_step
     call    dmgnum_step
     test    ebx, ebx
     jnz     .boats_done
