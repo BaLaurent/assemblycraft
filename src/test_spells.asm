@@ -10,7 +10,7 @@ default rel
 
 global test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
 global test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
-global test_spell_blood_magic, test_spell_preview
+global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst
 
 extern world_clear, world_set, mobs, mobs_clear, mob_spawn
 extern arrows, arrows_clear, arrows_step
@@ -51,6 +51,8 @@ k_eps:    dd 0.01
 k_abs:    dd 0x7FFFFFFF
 k_1_3:    dd 1.3
 k_13_5:   dd 13.5
+k_x18_5:  dd 18.5
+k_pitch90: dd 90.0
 
 ; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
 ; (only the answer is compared for an answer of 0)
@@ -988,6 +990,77 @@ test_spell_preview:
     call    str_eq
     test    eax, eax
     jz      .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; Dash: 8 mana and 120 steps; the player is shoved 18 b/s along -z, untouchable for 20 steps, the fall
+; forgotten; looking straight down there is no direction to dash in (nothing is paid). Burst: a Ball with
+; Burst explodes where it hits: a zombie 2 blocks beside the one it hit is hurt too, and the Ball is gone.
+test_spell_dash_burst:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SETF    [player + BODY.fall], 4.0
+    mov     edi, R(DASH)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 92.0
+    cmp     dword [spells_cd], 120
+    jne     .fail
+    EXPECT_NEAR [player + BODY.kbz], -18.0
+    EXPECT_NEAR [player + BODY.kbx], 0.0
+    EXPECT_NEAR [player + BODY.fall], 0.0
+    cmp     dword [surv + SURVIVAL.invuln], 20
+    jne     .fail
+    call    cleanup                     ; ---- looking straight down
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    movss   xmm0, [k_pitch90]
+    movss   [player + BODY.pitch], xmm0
+    lea     rdi, [view_buf + 12]
+    call    player_forward
+    mov     edi, R(DASH)
+    call    cast
+    test    eax, eax
+    jnz     .fail
+    EXPECT_NEAR [combat_mana], 100.0
+    cmp     dword [spells_cd], 0
+    jne     .fail
+    call    cleanup                     ; ---- Burst
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    SPAWN   k_x18_5, k_z10_5
+    mov     edi, R(BALL) | R(BURST)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    call    fly
+    HURT    0
+    jge     .fail
+    HURT    1
+    jge     .fail
+    call    live
+    test    eax, eax
+    jnz     .fail
     xor     eax, eax
     jmp     .ret
 .fail:
