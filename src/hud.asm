@@ -88,7 +88,7 @@ pal_stamina: dd RGBA(255, 234, 148, 255), C_STAMINA, RGBA(138, 98, 22, 255)
 pal_stamina_low: dd RGBA(255, 156, 116, 255), C_STAMINA_LOW, RGBA(108, 24, 18, 255)
 pal_xp:      dd RGBA(206, 250, 156, 255), C_XP, RGBA(50, 108, 36, 255)
 pal_hunger:  dd RGBA(244, 178, 104, 255), C_HUNGER, RGBA(104, 56, 22, 255)
-s_dbg_title: db "AssemblyCraft 0.12.1  ", 0
+s_dbg_title: db "AssemblyCraft 0.14.0  ", 0
 s_cheater:  db "CHEATER", 0
 s_cheat_mark: db "[C]", 0
 s_dbg_fps:  db " fps", 0
@@ -1552,7 +1552,7 @@ hud_abilities:
 ; short). Nothing is drawn with no rune.
 ; ebx = rune, r12d = the runes the character has, r13d = cells per row, r14d = cells so far, r15d = x0
 ; frame: text @0 (192), key label @192 (8), cells @200, rows @204, row @208, column @212, cell x @216, cell y @220,
-; ink width @224, held | armed @228, the opacity as the alpha byte of a colour @232, the cooldown sweep's colour @236
+; ink width @224, held | armed @228, the opacity as the alpha byte of a colour @232
 hud_spells:
     push    rbp
     mov     rbp, rsp
@@ -1597,18 +1597,12 @@ hud_spells:
     mov     [rsp + 204], eax
     mov     eax, [settings + SETTINGS.rune_alpha]   ; the opacity setting, 10..100 %
     imul    ecx, eax, 255
-    imul    esi, eax, 170               ; the cooldown sweep is 170 / 255 of black at full opacity
     mov     eax, ecx
     xor     edx, edx
     mov     ecx, 100
     div     ecx
     shl     eax, 24
     mov     [rsp + 232], eax
-    mov     eax, esi
-    xor     edx, edx
-    div     ecx
-    shl     eax, 24
-    mov     [rsp + 236], eax
     mov     eax, [spells_held]
     or      eax, [spells_armed]
     mov     [rsp + 228], eax
