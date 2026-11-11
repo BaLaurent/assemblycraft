@@ -26,7 +26,7 @@ global rpg_respec_cost, rpg_respec, rpg_respec_free, rpg_keystone
 global rpg_set_level, rpg_add_bonus_points, debug_stat_bonus
 global rpg_web_node, rpg_web_linked, rpg_reachable, web_edges, web_edge_count
 global rpg_ability_learned, rpg_ability_info, rpg_ability_tile, rpg_path_tile, rpg_bar_ability, rpg_bar_set
-global rpg_runes, rpg_learn_rune
+global rpg_runes, rpg_learn_rune, rpg_rune_banner
 global rpg_archetype_ranks, rpg_archetype, rpg_archetype_name, rpg_title
 global rpg_stat_info, rpg_format_stat
 global rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save, rpg_give_item
@@ -34,7 +34,7 @@ global rpg_on_mob_killed, rpg_on_block_mined, rpg_on_death, rpg_load, rpg_save, 
 extern surv, surv_max_health, combat_mana, combat_stamina, combat_refill, combat_heal
 extern inv, inv_add, inv_count, inv_remove_one, drops_spawn, player
 extern audio_play, hud_banner, fx_burst, quests_on_kill
-extern str_append, i32_to_str, key_name, settings
+extern str_append, str_copy, i32_to_str, key_name, settings
 extern gear_add_stats
 
 ; strings of the tables below live in their own read-only section so the records stay contiguous
@@ -53,6 +53,7 @@ s_empty:     db 0
 s_respec:    db "Skills and attributes reset", 0
 s_migrated:  db "Classes became one grimoire: skill points refunded", 0
 s_migrated_mk: db "New Marksman path: skill points refunded", 0
+s_rune_learned: db "Rune learned: ", 0
 s_begin_a:   db "Open your grimoire (", 0
 s_begin_b:   db ") to choose a path", 0
 
@@ -1131,6 +1132,30 @@ rpg_learn_rune:
     pop     rbx
     ret
 
+; rpg_rune_banner(rdi name zstr): the banner "Rune learned: <name>" (the web's Rune node, a Rune item)
+; rbx = name; frame: the line, 64 bytes
+rpg_rune_banner:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 72
+    mov     rbx, rdi
+    lea     rdi, [rsp]
+    lea     rsi, [s_rune_learned]
+    mov     edx, 63
+    call    str_copy
+    mov     rdi, rax
+    mov     rsi, rbx
+    call    str_append
+    mov     byte [rax], 0
+    lea     rdi, [rsp]
+    mov     esi, RGBA(255, 255, 255, 255)
+    call    hud_banner
+    add     rsp, 72
+    pop     rbx
+    pop     rbp
+    ret
+
 ; rpg_path_tile(edi archetype) -> eax atlas tile of the emblem on the path node of archetype 1..5:
 ; TILE_CLASS0 + a - 1 for 1..4, TILE_CLASS_MARKSMAN for 5; 0 for another value. Leaf, clobbers ecx.
 rpg_path_tile:
@@ -1711,6 +1736,12 @@ rpg_spend:
     movzx   r13d, byte [r12 + WEBNODE.stat]
     jmp     .taught
 .not_ability:
+    cmp     eax, NODE_RUNE
+    jne     .not_rune
+    mov     rdi, [r12 + WEBNODE.name]
+    call    rpg_rune_banner
+    jmp     .taught
+.not_rune:
     cmp     eax, NODE_PATH
     jne     .taught
     movzx   ecx, byte [r12 + WEBNODE.stat]

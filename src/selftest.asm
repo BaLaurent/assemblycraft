@@ -28,7 +28,7 @@ extern test_furnace_smelts, test_chest_spills_on_break
 extern test_mob_raycast_hits, test_mob_hurt_pig_drops_food, test_zombie_attacks_player
 extern test_mob_spawn_rules, test_game_save_load_roundtrip, test_drops_fall_and_pickup
 extern test_arrow_hits_mob, test_explosion_breaks_blocks, test_creeper_explodes
-extern test_skeleton_shoots_player, test_mob_drops_by_type
+extern test_skeleton_shoots_player, test_mob_drops_by_type, test_rune_drops
 extern test_gun_reload_fills_magazine, test_gun_fire_cooldown_and_dry
 extern test_shotgun_spawns_six_pellets, test_bullet_hits_mob_and_stops
 extern test_rocket_explodes_on_impact, test_rifle_kills_zombie_point_blank
@@ -201,6 +201,7 @@ tests:
     TEST creeper_explodes
     TEST skeleton_shoots_player
     TEST mob_drops_by_type
+    TEST rune_drops
     TEST gun_reload_fills_magazine
     TEST gun_fire_cooldown_and_dry
     TEST shotgun_spawns_six_pellets
@@ -523,6 +524,7 @@ section .rodata
     TESTNAME creeper_explodes
     TESTNAME skeleton_shoots_player
     TESTNAME mob_drops_by_type
+    TESTNAME rune_drops
     TESTNAME gun_reload_fills_magazine
     TESTNAME gun_fire_cooldown_and_dry
     TESTNAME shotgun_spawns_six_pellets

@@ -217,7 +217,8 @@ section .note.GNU-stack noalloc noexec nowrite progbits
 %define PLANE_PROP     (FIRST_ITEM + 90)
 %define PLANE_TAIL     (FIRST_ITEM + 91)
 %define PLANE          (FIRST_ITEM + 92)
-%define NUM_ITEMS      (FIRST_ITEM + 93) ; 237
+%define RUNE_FIRST     (FIRST_ITEM + 93) ; the NUM_RUNES Rune items, one per rune in rune order (237..252)
+%define NUM_ITEMS      (RUNE_FIRST + 16) ; 253
 
 ; ---- directions / block shapes ---------------------------------------------
 %define DIR_N          0                ; -z
@@ -713,7 +714,6 @@ endstruc                                ; 24
 %define MAGE_PATH_RUNES ((1 << RUNE_BALL) | (1 << RUNE_FIRE)) ; taught by the Mage path
 %define SPELL_MAX_RUNES 4               ; runes kept in one cast
 %define SPELL_ARM_STEPS 45              ; fixed steps a tapped rune stays armed
-%define RUNE_FIRST      (FIRST_ITEM + 93) ; the 16 Rune items (ids 237..252; NUM_ITEMS grows to cover them)
 
 %define ATTR_STR        0
 %define ATTR_DEX        1

@@ -192,6 +192,22 @@ n_pfuse:    db "Fuselage", 0
 n_pprop:    db "Propeller", 0
 n_ptail:    db "Tail", 0
 n_plane:    db "Airplane", 0
+n_rune_ball:    db "Ball Rune", 0
+n_rune_laser:   db "Laser Rune", 0
+n_rune_nova:    db "Nova Rune", 0
+n_rune_phase:   db "Phase Rune", 0
+n_rune_dash:    db "Dash Rune", 0
+n_rune_fire:    db "Fire Rune", 0
+n_rune_frost:   db "Frost Rune", 0
+n_rune_shock:   db "Shock Rune", 0
+n_rune_poison:  db "Poison Rune", 0
+n_rune_burst:   db "Burst Rune", 0
+n_rune_pierce:  db "Pierce Rune", 0
+n_rune_seek:    db "Seek Rune", 0
+n_rune_chain:   db "Chain Rune", 0
+n_rune_heal:    db "Heal Rune", 0
+n_rune_haste:   db "Haste Rune", 0
+n_rune_feather: db "Feather Rune", 0
 
 align 8
 ; display name; every variant id points at its base's name
@@ -240,6 +256,8 @@ item_names:
     dq n_boat
     dq n_revolver, n_hrifle, n_scope, n_extmag, n_rifled, n_comp
     dq n_pengine, n_pwing, n_pfuse, n_pprop, n_ptail, n_plane
+    dq n_rune_ball, n_rune_laser, n_rune_nova, n_rune_phase, n_rune_dash, n_rune_fire, n_rune_frost, n_rune_shock
+    dq n_rune_poison, n_rune_burst, n_rune_pierce, n_rune_seek, n_rune_chain, n_rune_heal, n_rune_haste, n_rune_feather
     END_TABLE item_names, 8, n_unused
 
 ; atlas tile of the inventory icon of a block (a word): its side tile or icon tile (0 for non-base variants).
@@ -333,6 +351,7 @@ item_max_stack:
     times 4 db 16                       ; attachments
     times 5 db 16                       ; plane components
     db 1                                ; airplane
+    times NUM_RUNES db 16               ; runes
     END_TABLE item_max_stack, 1, 0
 
 %define TOOLS4 TOOL_PICKAXE, TOOL_AXE, TOOL_SHOVEL, TOOL_SWORD

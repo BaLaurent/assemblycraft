@@ -3,14 +3,14 @@
 default rel
 
 global test_arrow_hits_mob, test_explosion_breaks_blocks, test_creeper_explodes
-global test_skeleton_shoots_player, test_mob_drops_by_type
+global test_skeleton_shoots_player, test_mob_drops_by_type, test_rune_drops
 global test_tnt_thrown_by_blast, test_tnt_falls, test_skill_arrows_ignore_hurt_window
 
 extern arrows, arrows_clear, arrows_spawn, arrows_step
 extern primed, tnt_clear, tnt_prime, tnt_step, explode_at
 extern mobs, mobs_clear, mobs_step, mob_spawn, mob_hurt
 extern mob_count_type
-extern drops, drops_clear
+extern drops, drops_clear, mob_drops
 extern player, body_init, rng_seed, world_clear, world_set, world_get
 extern game_mode, game_time, settings, surv, survival_reset, inv_clear, rpg_stats
 
@@ -652,6 +652,115 @@ test_skill_arrows_ignore_hurt_window:
     lea     rdi, [rpg_stats]
     mov     ecx, NUM_STATS
     rep     movsd
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; count_runes() -> eax Rune item entities on the ground
+count_runes:
+    lea     rcx, [drops]
+    mov     edx, MAX_DROPS
+    xor     esi, esi
+.l:
+    movzx   eax, byte [rcx + DROP.id]
+    sub     eax, RUNE_FIRST
+    cmp     eax, NUM_RUNES
+    adc     esi, 0                      ; carry: the id is a rune (RUNE_FIRST <= id < RUNE_FIRST + NUM_RUNES)
+    add     rcx, DROP_size
+    dec     edx
+    jnz     .l
+    mov     eax, esi
+    ret
+
+; rune_drops(edi mob type, esi kills) -> eax the Rune items that fell over that many kills at (8.5, 11, 8.5),
+; the ground swept after each, or -1 when a kill failed
+; rbx = type, r12d = kills left, r13d = runes so far
+rune_drops:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r12
+    push    r13
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, esi
+    xor     r13d, r13d
+.kill:
+    call    drops_clear
+    mov     edi, ebx
+    movss   xmm0, [k_8_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_8_5]
+    call    mob_spawn
+    test    eax, eax
+    js      .fail
+    mov     edi, eax
+    mov     esi, 100
+    xorps   xmm0, xmm0
+    movss   xmm1, [k_one]
+    call    mob_hurt
+    call    count_runes
+    add     r13d, eax
+    dec     r12d
+    jnz     .kill
+    mov     eax, r13d
+    jmp     .ret
+.fail:
+    mov     eax, -1
+.ret:
+    add     rsp, 8
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+
+; Rune drops: a pig never drops a rune over 400 kills, a zombie sometimes (about 2 % of its kills: more
+; than none and under a tenth of them), and the Fallen King always drops one
+test_rune_drops:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    mov     edi, MOB_PIG
+    mov     esi, 400
+    call    rune_drops
+    test    eax, eax
+    jnz     .fail
+    mov     edi, MOB_ZOMBIE
+    mov     esi, 400
+    call    rune_drops
+    test    eax, eax
+    jle     .fail
+    cmp     eax, 40
+    ja      .fail
+    call    drops_clear
+    mov     edi, MOB_BOSS
+    movss   xmm0, [k_8_5]
+    movss   xmm1, [k_11]
+    movss   xmm2, [k_8_5]
+    call    mob_spawn
+    test    eax, eax
+    js      .fail
+    imul    ebx, eax, MOB_size
+    lea     rax, [mobs]
+    add     rbx, rax
+    mov     rdi, rbx
+    call    mob_drops
+    call    count_runes
+    cmp     eax, 1
+    jne     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
     call    cleanup
     mov     eax, ebx
     add     rsp, 8

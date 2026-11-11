@@ -37,7 +37,7 @@ extern gatling_step, gatling_input, planes_hum
 extern fire_clear, fire_place, fire_step, fire_shift, fire_remove_box, fire_guest_step
 extern fx_clear, fx_step, fx_shift
 extern rpg_reset, rpg_load, rpg_save, rpg_on_death, rpg_on_block_mined, rpg_rank, rpg_stat
-extern rpg_recompute, rpg_stats, rpg_keystones, status_step
+extern rpg_recompute, rpg_stats, rpg_keystones, status_step, rpg_learn_rune, rpg_rune_banner, item_names, hud_banner
 extern combat_reset, combat_set_guard, combat_dodge, combat_melee, combat_heavy, combat_step, combat_heal
 extern combat_speed_mult, combat_crit_roll, combat_max_mana
 extern combat_guard_t, combat_hitstop, combat_mana, combat_stamina
@@ -104,6 +104,7 @@ lim_pos:      dd 65536.0               ; a saved position beyond this (or no num
 lim_y:        dd 256.0
 m_v6:         db "ACRAFT06"
 s_hdr_name:   db "/world.hdr", 0
+s_rune_known: db "You already know this rune", 0
 
 section .data
 align 4
@@ -1347,6 +1348,52 @@ try_potion:
     pop     rbp
     ret
 
+; try_rune() -> eax 1 when this frame's RMB press was spent on the held Rune item: a new rune is learned
+; (a banner, the spell sound, the swing; survival uses the item up), a known one only says so (nothing
+; is used up). ebx = the rune
+try_rune:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    xor     eax, eax
+    cmp     dword [frame_input + FRAMEINPUT.rmb_pressed], 0
+    je      .ret
+    call    held_id
+    lea     ebx, [rax - RUNE_FIRST]
+    cmp     ebx, NUM_RUNES
+    jae     .none                       ; not a Rune item (a smaller id wraps above NUM_RUNES)
+    mov     edi, ebx
+    call    rpg_learn_rune
+    test    eax, eax
+    jz      .known
+    lea     rax, [item_names]
+    mov     rdi, [rax + (RUNE_FIRST)*8 + rbx*8]
+    call    rpg_rune_banner
+    mov     edi, SND_SPELL
+    movss   xmm0, [vol_drink]
+    call    audio_play
+    call    swing_hand
+    cmp     dword [game_mode], MODE_SURVIVAL
+    jne     .done
+    mov     edi, 1
+    call    inv_consume_held
+    jmp     .done
+.known:
+    lea     rdi, [s_rune_known]
+    mov     esi, RGBA(255, 255, 255, 255)
+    call    hud_banner
+.done:
+    mov     eax, 1
+    jmp     .ret
+.none:
+    xor     eax, eax
+.ret:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
 ; mob_type_at(edi mob index or -1) -> eax its MOB.type (MOB_NONE for -1); clobbers rcx, rdi (leaf)
 mob_type_at:
     xor     eax, eax
@@ -2274,6 +2321,9 @@ game_frame:
 .no_plane_click:
     cmp     dword [game_has_target], 0
     jne     .use
+    call    try_rune
+    test    eax, eax
+    jnz     .pick
     call    try_potion
     jmp     .pick
 .use:
@@ -2392,6 +2442,9 @@ game_frame:
     call    inv_damage_held
     jmp     .pick
 .not_use:
+    call    try_rune
+    test    eax, eax
+    jnz     .pick
     call    try_potion
     test    eax, eax
     jnz     .pick

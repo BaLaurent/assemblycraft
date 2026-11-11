@@ -12,7 +12,7 @@ default rel
 
 global mobs, mob_count_type, mob_count_kind, mobs_clear, mobs_step, mobs_populate
 global mob_spawn, mob_spawn_elite, mob_is_hostile, mobs_raycast
-global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb
+global mob_hurt, mob_strike, mobs_intersect_block, ray_aabb, mob_drops
 global mobs_save, mobs_load, yaw_from, mobs_shift, mobs_remove_box, spawn_at_ground
 global mob_level_for, mob_set_level, mob_dmg_mult, mob_resist, mob_affix_name
 global make_elite, mob_scale, mob_blow, mob_blow_raw, mob_melee_hit, mob_arrow_flags, mob_index
@@ -3164,7 +3164,8 @@ mob_coins:
 ; table entries (item, base, range) drops base + rng % range. A hostile mob also rolls its gear
 ; (gear_drop_from_mob) and drops gold coins (mob_coins): every other time 1 + level / 10; an elite
 ; 3 + rng % 3 + level / 5 and a health potion with 30 % chance; the Fallen King 30 + level coins
-; and 4 diamonds. A folk's loot is its own (folk_drops): it rolls none of this.
+; and 4 diamonds. Last of all, a hostile mob drops a random Rune item with 2 % chance and the Fallen
+; King always drops one. A folk's loot is its own (folk_drops): it rolls none of this.
 mob_drops:
     push    rbp
     mov     rbp, rsp
@@ -3206,7 +3207,7 @@ mob_drops:
     jne     .elite
     call    rng_next                    ; a coin every other time
     test    al, 1
-    jnz     .done
+    jnz     .rune
     mov     eax, [rbx + MOB.level]
     xor     edx, edx
     mov     ecx, 10
@@ -3214,7 +3215,7 @@ mob_drops:
     lea     edx, [rax + 1]              ; 1 + level / 10
     mov     rdi, rbx
     call    mob_coins
-    jmp     .done
+    jmp     .rune
 .elite:
     call    rng_next                    ; 3 + rng % 3 + level / 5 coins
     xor     edx, edx
@@ -3233,12 +3234,12 @@ mob_drops:
     mov     ecx, 100
     div     ecx
     cmp     edx, 30
-    jae     .done
+    jae     .rune
     mov     rdi, rbx
     mov     esi, HEALTH_POTION
     mov     edx, 1
     call    mob_drop
-    jmp     .done
+    jmp     .rune
 .boss:
     mov     edx, [rbx + MOB.level]
     add     edx, 30                     ; 30 + level coins
@@ -3247,6 +3248,23 @@ mob_drops:
     mov     rdi, rbx
     mov     esi, DIAMOND
     mov     edx, 4
+    call    mob_drop
+    jmp     .rune_pick
+.rune:                                  ; 2 % of the other hostile mobs
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, 100
+    div     ecx
+    cmp     edx, 2
+    jae     .done
+.rune_pick:
+    call    rng_next
+    xor     edx, edx
+    mov     ecx, NUM_RUNES
+    div     ecx
+    mov     rdi, rbx
+    lea     esi, [rdx + RUNE_FIRST]
+    mov     edx, 1
     call    mob_drop
 .done:
     add     rsp, 8

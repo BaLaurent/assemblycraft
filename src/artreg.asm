@@ -3,9 +3,10 @@
 ;                 is the packing order. The models: skins_mobs.asm (the 7 mobs), skins_folk.asm (the folk, the
 ;                 elder, the merchant, the player avatar, the role extras and the hoods), skins_gear.asm (the
 ;                 guns and the rocket) and skins_vehicles.asm (the boat, the plane and its propeller).
-;   item_icons32  the 32x32 icon bitmap (SKBMP*) of every item, in item id order from STICK to PLANE: what
+;   item_icons32  the 32x32 icon bitmap (SKBMP*) of every item, in item id order from STICK to the last rune: what
 ;                 icons_build paints into the icon cells of the atlas. The bitmaps are iconart_a.asm (the 62
-;                 equipment icons) and iconart_b.asm (the 31 others), labelled ib_ + the lower-case item constant.
+;                 equipment icons), iconart_b.asm (the 31 others) and iconart_runes.asm (the 16 Rune items), labelled
+;                 ib_ + the lower-case item constant (ib_rune_<name> for the runes).
 ; render_init hands both tables to the engines; test_skin_models and test_icons_art prove them.
 %include "common.inc"
 default rel
@@ -29,6 +30,8 @@ extern ib_shadow_fang, ib_kings_blade, ib_celestial_bow, ib_health_potion, ib_ma
 extern ib_phoenix_ring, ib_storm_band, ib_ember_amulet, ib_viper_amulet, ib_iron_hammer, ib_diamond_hammer, ib_iron_spear, ib_diamond_spear
 extern ib_boat, ib_revolver, ib_hunting_rifle, ib_scope, ib_extended_mag, ib_rifled_barrel, ib_compensator, ib_plane_engine
 extern ib_plane_wing, ib_plane_fuselage, ib_plane_prop, ib_plane_tail, ib_plane
+extern ib_rune_ball, ib_rune_laser, ib_rune_nova, ib_rune_phase, ib_rune_dash, ib_rune_fire, ib_rune_frost, ib_rune_shock
+extern ib_rune_poison, ib_rune_burst, ib_rune_pierce, ib_rune_seek, ib_rune_chain, ib_rune_heal, ib_rune_haste, ib_rune_feather
 
 section .rodata
 align 8
@@ -67,6 +70,10 @@ item_icons32:
     dq ib_extended_mag, ib_rifled_barrel, ib_compensator, ib_plane_engine
     dq ib_plane_wing, ib_plane_fuselage, ib_plane_prop, ib_plane_tail
     dq ib_plane
+    dq ib_rune_ball, ib_rune_laser, ib_rune_nova, ib_rune_phase
+    dq ib_rune_dash, ib_rune_fire, ib_rune_frost, ib_rune_shock
+    dq ib_rune_poison, ib_rune_burst, ib_rune_pierce, ib_rune_seek
+    dq ib_rune_chain, ib_rune_heal, ib_rune_haste, ib_rune_feather
 %if $ - item_icons32 != ICON32_COUNT * 8
-%error "item_icons32 needs one SKBMP per item id from STICK to PLANE"
+%error "item_icons32 needs one SKBMP per item id from STICK to the last rune"
 %endif

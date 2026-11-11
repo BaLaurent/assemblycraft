@@ -390,12 +390,22 @@ loot_dungeon:
     db 10, ARROW,           8, 16
     db  5, PISTOL_ROUND,    8, 16
     db  5, COOKED_PORKCHOP, 2,  4
+%assign lr 0
+%rep NUM_RUNES                         ; a rune of each kind, weight 1
+    db  1, RUNE_FIRST + lr, 1, 1
+%assign lr lr + 1
+%endrep
 loot_crypt:
     db 30, GOLD_COIN,      10, 20
     db 15, DIAMOND,         2,  4
     db 20, HEALTH_POTION,   2,  3
     db 15, MANA_POTION,     2,  3
     db 20, GOLD_INGOT,      3,  6
+%assign lr 0
+%rep NUM_RUNES
+    db  1, RUNE_FIRST + lr, 1, 1
+%assign lr lr + 1
+%endrep
 loot_camp:
     db 30, GOLD_COIN,       2,  6
     db 15, ARROW,           4, 12
