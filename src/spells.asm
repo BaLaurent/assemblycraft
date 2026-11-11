@@ -12,7 +12,7 @@
 %include "common.inc"
 default rel
 
-global rune_tab, spell_fx, spells_cd, spells_cd_total, spells_armed, spells_held
+global rune_tab, spell_fx, spells_armed, spells_held
 global spells_resolve, spells_input, spells_cast, spells_step, spells_reset, spells_preview
 global spells_proj_hit, spells_proj_end, spells_proj_steer, spells_beam_fx
 
@@ -44,35 +44,35 @@ s_dropped:  db " (dropped: ", 0
 s_comma:    db ", ", 0
 s_close:    db ")", 0
 
-; RUNE name, description, mana, cooldown in steps, base damage of a delivery rune
-%macro RUNE 5
+; RUNE name, description, mana, base damage of a delivery rune
+%macro RUNE 4
 section .rodata.str
 %%n: db %1, 0
 %%d: db %2, 0
 section .rodata
     dq %%n, %%d
-    dd %3, %4, %5, 0
+    dd %3, %4, 0, 0
 %endmacro
 
 section .rodata
 align 8
-rune_tab:                               ; by rune id
-    RUNE "Ball",    "A bolt of power that flies straight",      10,  30, 6
-    RUNE "Laser",   "A beam through every foe in line",         16,  90, 5
-    RUNE "Nova",    "A burst all around you",                   18, 240, 5
-    RUNE "Phase",   "Teleport where you look",                  14, 240, 4
-    RUNE "Dash",    "A surge forward, untouchable for a moment", 8, 120, 4
-    RUNE "Fire",    "The spell burns",                           6,   0, 0
-    RUNE "Frost",   "The spell chills, then freezes",            6,   0, 0
-    RUNE "Shock",   "Shocked foes take more damage",             6,   0, 0
-    RUNE "Poison",  "The spell poisons, stacking",               6,   0, 0
-    RUNE "Burst",   "An explosion where the spell lands",       10,  60, 0
-    RUNE "Pierce",  "Goes through more foes and reaches further", 6,  0, 0
-    RUNE "Seek",    "The Ball homes in on a foe",                6,   0, 0
-    RUNE "Chain",   "Arcs on to two more foes",                  8,  30, 0
-    RUNE "Heal",    "Restore health",                           20, 240, 0
-    RUNE "Haste",   "Move faster for ten seconds",              12, 300, 0
-    RUNE "Feather", "Leap, then fall gently",                   10, 180, 0
+rune_tab:                               ; by rune id (no cooldowns: the caster's speed is the limit)
+    RUNE "Ball",    "A bolt of power that flies straight",      10, 6
+    RUNE "Laser",   "A beam through every foe in line",         16, 5
+    RUNE "Nova",    "A burst all around you",                   18, 5
+    RUNE "Phase",   "Teleport where you look",                  14, 4
+    RUNE "Dash",    "A surge forward, untouchable for a moment", 8, 4
+    RUNE "Fire",    "The spell burns",                           6, 0
+    RUNE "Frost",   "The spell chills, then freezes",            6, 0
+    RUNE "Shock",   "Shocked foes take more damage",             6, 0
+    RUNE "Poison",  "The spell poisons, stacking",               6, 0
+    RUNE "Burst",   "An explosion where the spell lands",       10, 0
+    RUNE "Pierce",  "Goes through more foes and reaches further", 6, 0
+    RUNE "Seek",    "The Ball homes in on a foe",                6, 0
+    RUNE "Chain",   "Arcs on to two more foes",                  8, 0
+    RUNE "Heal",    "Restore health",                           20, 0
+    RUNE "Haste",   "Move faster for ten seconds",              12, 0
+    RUNE "Feather", "Leap, then fall gently",                   10, 0
 %if $ - rune_tab != NUM_RUNES * RUNEINFO_size
 %error "rune_tab needs one record per rune"
 %endif
@@ -125,8 +125,6 @@ sp_deliveries:                          ; by delivery rune id: (rdi plan, rsi ey
 section .bss
 alignb 4
 sp_state:                               ; everything spells_reset clears
-spells_cd:       resd 1                 ; steps until the next cast
-spells_cd_total: resd 1                 ; the cooldown it started with (for the HUD)
 spells_armed:    resd 1                 ; runes tapped within SPELL_ARM_STEPS (a rune mask)
 spells_held:     resd 1                 ; runes whose key is down now
 sp_arm_t:        resd 1                 ; steps until the armed runes are forgotten
@@ -148,8 +146,8 @@ section .text
 ;   teleports the caster to where the spell ended (the Ball's last impact, the beam followed for Phase's 8 blocks, the
 ;   Nova's centre: you arrive first, then it bursts); Dash shoves the caster along the spell's direction (the Ball's
 ;   flight at its impact, the look for the others) after the rest, Dash alone being the shove and its blast.
-;   cost = (sum of the mana) * (100 + 15 (n - 1)) / 100 for n kept runes, cd = the sum of the
-;   cooldowns, dmg = d's base damage + 2 per element (0 for a self cast).
+;   cost = (sum of the mana) * (100 + 15 (n - 1)) / 100 for n kept runes, dmg = d's base damage + 2 per
+;   element (0 for a self cast). There is no cooldown.
 ; r8 = out, r9d = unlocked, r10d = stack & unlocked, r11d = kept, ebx = delivery
 spells_resolve:
     push    rbx
@@ -247,7 +245,6 @@ spells_resolve:
     call    sp_popcount
     mov     [r8 + SPELLPLAN.nelem], eax
     xor     esi, esi                    ; mana
-    xor     edi, edi                    ; steps
     xor     ecx, ecx                    ; runes
     lea     r10, [rune_tab]
     mov     edx, r11d
@@ -256,7 +253,6 @@ spells_resolve:
     btr     edx, eax
     shl     eax, 5                      ; RUNEINFO_size
     add     esi, [r10 + rax + RUNEINFO.cost]
-    add     edi, [r10 + rax + RUNEINFO.cd]
     inc     ecx
     test    edx, edx
     jnz     .sum
@@ -269,7 +265,6 @@ spells_resolve:
     mov     ecx, 100
     div     ecx
     mov     [r8 + SPELLPLAN.cost], eax
-    mov     [r8 + SPELLPLAN.cd], edi
     xor     eax, eax
     test    ebx, ebx
     js      .dmg
@@ -319,13 +314,10 @@ spells_input:
 .ret:
     ret
 
-; spells_step(): once per fixed step. The cooldown and the arming timer run down (the armed set is
-; forgotten when it reaches 0); under the Feather rune the fall is gentle: no fall damage, and the fall
+; spells_step(): once per fixed step. The arming timer runs down (the armed set is forgotten when it
+; reaches 0); under the Feather rune the fall is gentle: no fall damage, and the fall
 ; speed stays within 2 b/s.
 spells_step:
-    cmp     dword [spells_cd], 0
-    jle     .arm
-    dec     dword [spells_cd]
 .arm:
     cmp     dword [sp_arm_t], 0
     jle     .feather
@@ -342,7 +334,7 @@ spells_step:
 .ret:
     ret
 
-; spells_reset(): no cooldown, no armed or held rune
+; spells_reset(): no armed or held rune
 spells_reset:
     lea     rdi, [sp_state]
     mov     ecx, sp_state_end - sp_state
@@ -606,10 +598,10 @@ sp_chain:
 ; ---- casting ---------------------------------------------------------------------------------------
 
 ; spells_cast(rdi eye float[3], rsi dir float[3] unit look direction) -> eax 1 when a spell went off, 0 when
-; the click only dry-fired: nothing castable in the stack (held | armed), still cooling down, a Phase with no
+; the click only dry-fired: nothing castable in the stack (held | armed), a Phase with no
 ; room to land (sp_phase_plan) or a Dash with no horizontal look, or the mana was short (combat_pay: Blood
 ; Magic pays in health, Creative pays nothing). Failing or not, the armed runes are forgotten. A cast pays,
-; starts the cooldown (the plan's, shortened by COOLDOWN_RED), runs the delivery and then the boons, ends
+; runs the delivery and then the boons (there is no cooldown: the caster's speed is the limit), ends
 ; stealth and swings the hand.
 ; r12 = eye, r13 = dir, r14d = stack, then the critical roll, r15d = the delivery rune
 ; frame: SPELLPLAN @0, the Phase target float[3] @48
@@ -635,8 +627,6 @@ spells_cast:
     call    spells_resolve
     test    eax, eax
     jz      .fail
-    cmp     dword [spells_cd], 0
-    jg      .fail
     mov     r15d, [rsp + SPELLPLAN.delivery]
     cmp     r15d, RUNE_PHASE
     je      .plan
@@ -668,17 +658,6 @@ spells_cast:
     call    combat_pay
     test    eax, eax
     jz      .fail
-    mov     edi, STAT_COOLDOWN_RED      ; cooldown steps = cd * (100 - COOLDOWN_RED) / 100
-    call    rpg_stat
-    mov     ecx, 100
-    sub     ecx, eax
-    mov     eax, [rsp + SPELLPLAN.cd]
-    imul    eax, ecx
-    xor     edx, edx
-    mov     ecx, 100
-    div     ecx
-    mov     [spells_cd], eax
-    mov     [spells_cd_total], eax
     call    ab_crit
     mov     r14d, eax                   ; one roll for the whole cast
     test    r15d, r15d

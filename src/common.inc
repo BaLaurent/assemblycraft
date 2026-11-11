@@ -1339,9 +1339,8 @@ struc RUNEINFO
     .name: resq 1
     .desc: resq 1
     .cost: resd 1                       ; mana
-    .cd:   resd 1                       ; fixed steps
     .dmg:  resd 1                       ; base damage of a delivery rune, 0 otherwise
-    .pad:  resd 1
+    .pad:  resd 2
 endstruc
 %if RUNEINFO_size != 32
 %error "RUNEINFO must be 32 bytes"
@@ -1358,8 +1357,8 @@ struc SPELLPLAN
     .inert:    resd 1                   ; kept runes that do nothing here
     .boons:    resd 1
     .cost:     resd 1                   ; mana
-    .cd:       resd 1                   ; steps
     .dmg:      resd 1
+    .pad:      resd 1
 endstruc
 %if SPELLPLAN_size != 44
 %error "SPELLPLAN must be 44 bytes"

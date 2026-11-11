@@ -20,7 +20,7 @@ extern combat_reset, combat_mana, combat_haste_t, combat_feather_t, combat_speed
 extern game_mode, game_time, settings, surv, surv_max_health, survival_reset
 extern player, body_init, rng_seed, player_eye, player_forward, str_eq, str_len
 extern spells_resolve, spells_input, spells_cast, spells_step, spells_reset, spells_preview
-extern spells_cd, spells_cd_total, spells_armed, spells_held
+extern spells_armed, spells_held
 
 %define R(r)    (1 << RUNE_ %+ r)
 %define ALL_RUNES 0xFFFF
@@ -62,30 +62,30 @@ k_ph13_6:  dd 13.6
 k_ph5_5:   dd 5.5
 k_ph8:     dd 8.0
 
-; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
+; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, dmg
 ; (only the answer is compared for an answer of 0)
-%macro VEC 11
-    dd %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11
+%macro VEC 10
+    dd %1, %2, %3, %4, %5, %6, %7, %8, %9, %10
 %endmacro
 vectors:
-    VEC R(BALL) | R(FIRE), ALL_RUNES, 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 30, 8
-    VEC R(LASER) | R(FROST) | R(PIERCE), ALL_RUNES, 1, RUNE_LASER, R(FROST), R(PIERCE), 0, 0, 36, 90, 7
-    VEC R(FIRE) | R(POISON), ALL_RUNES, 1, RUNE_BALL, R(FIRE) | R(POISON), 0, 0, 0, 28, 30, 10
-    VEC R(FIRE) | R(POISON), ALL_RUNES & ~R(BALL), 0, 0, 0, 0, 0, 0, 0, 0, 0
-    VEC R(BALL) | R(LASER) | R(FIRE) | R(BURST) | R(SEEK) | R(HEAL), ALL_RUNES, 1, RUNE_BALL, R(FIRE), R(BURST), R(LASER), R(SEEK) | R(HEAL), 60, 180, 8
-    VEC R(NOVA) | R(SEEK), ALL_RUNES, 1, RUNE_NOVA, 0, 0, R(SEEK), 0, 27, 240, 5
-    VEC R(LASER) | R(SEEK), ALL_RUNES, 1, RUNE_LASER, 0, 0, R(SEEK), 0, 25, 90, 5     ; Seek is for the Ball
-    VEC R(HEAL), ALL_RUNES, 1, -1, 0, 0, 0, 0, 20, 240, 0
-    VEC 0, ALL_RUNES, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    VEC R(BALL) | R(PHASE), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE), 0, 0, 27, 270, 6      ; Phase rides the Ball: not inert
-    VEC R(LASER) | R(PHASE), ALL_RUNES, 1, RUNE_LASER, 0, R(PHASE), 0, 0, 34, 330, 5
-    VEC R(NOVA) | R(PHASE), ALL_RUNES, 1, RUNE_NOVA, 0, R(PHASE), 0, 0, 36, 480, 5
-    VEC R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_PHASE, 0, R(DASH), 0, 0, 25, 360, 4        ; Dash rides the Phase
-    VEC R(BALL) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(DASH), 0, 0, 20, 150, 6
-    VEC R(LASER) | R(DASH), ALL_RUNES, 1, RUNE_LASER, 0, R(DASH), 0, 0, 27, 210, 5
-    VEC R(NOVA) | R(DASH), ALL_RUNES, 1, RUNE_NOVA, 0, R(DASH), 0, 0, 29, 360, 5
-    VEC R(BALL) | R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE) | R(DASH), 0, 0, 41, 390, 6
-    VEC R(LASER) | R(FIRE), R(BALL) | R(FIRE), 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 30, 8   ; a locked rune is ignored, not dropped
+    VEC R(BALL) | R(FIRE), ALL_RUNES, 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 8
+    VEC R(LASER) | R(FROST) | R(PIERCE), ALL_RUNES, 1, RUNE_LASER, R(FROST), R(PIERCE), 0, 0, 36, 7
+    VEC R(FIRE) | R(POISON), ALL_RUNES, 1, RUNE_BALL, R(FIRE) | R(POISON), 0, 0, 0, 28, 10
+    VEC R(FIRE) | R(POISON), ALL_RUNES & ~R(BALL), 0, 0, 0, 0, 0, 0, 0, 0
+    VEC R(BALL) | R(LASER) | R(FIRE) | R(BURST) | R(SEEK) | R(HEAL), ALL_RUNES, 1, RUNE_BALL, R(FIRE), R(BURST), R(LASER), R(SEEK) | R(HEAL), 60, 8
+    VEC R(NOVA) | R(SEEK), ALL_RUNES, 1, RUNE_NOVA, 0, 0, R(SEEK), 0, 27, 5
+    VEC R(LASER) | R(SEEK), ALL_RUNES, 1, RUNE_LASER, 0, 0, R(SEEK), 0, 25, 5   ; Seek is for the Ball
+    VEC R(HEAL), ALL_RUNES, 1, -1, 0, 0, 0, 0, 20, 0
+    VEC 0, ALL_RUNES, 0, 0, 0, 0, 0, 0, 0, 0
+    VEC R(BALL) | R(PHASE), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE), 0, 0, 27, 6   ; Phase rides the Ball: not inert
+    VEC R(LASER) | R(PHASE), ALL_RUNES, 1, RUNE_LASER, 0, R(PHASE), 0, 0, 34, 5
+    VEC R(NOVA) | R(PHASE), ALL_RUNES, 1, RUNE_NOVA, 0, R(PHASE), 0, 0, 36, 5
+    VEC R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_PHASE, 0, R(DASH), 0, 0, 25, 4   ; Dash rides the Phase
+    VEC R(BALL) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(DASH), 0, 0, 20, 6
+    VEC R(LASER) | R(DASH), ALL_RUNES, 1, RUNE_LASER, 0, R(DASH), 0, 0, 27, 5
+    VEC R(NOVA) | R(DASH), ALL_RUNES, 1, RUNE_NOVA, 0, R(DASH), 0, 0, 29, 5
+    VEC R(BALL) | R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE) | R(DASH), 0, 0, 41, 6
+    VEC R(LASER) | R(FIRE), R(BALL) | R(FIRE), 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 8   ; a locked rune is ignored, not dropped
 vectors_end:
 
 s_pv_laser:   db "Laser + Frost + Pierce  36 mana", 0
@@ -296,7 +296,7 @@ test_spell_resolve:
     push    r13
     sub     rsp, 8
     lea     r12, [vectors]
-    mov     r13d, (vectors_end - vectors) / 44
+    mov     r13d, (vectors_end - vectors) / 40
 .row:
     mov     edi, [r12]
     mov     esi, [r12 + 4]
@@ -325,13 +325,10 @@ test_spell_resolve:
     cmp     [plan + SPELLPLAN.cost], eax
     jne     .fail
     mov     eax, [r12 + 36]
-    cmp     [plan + SPELLPLAN.cd], eax
-    jne     .fail
-    mov     eax, [r12 + 40]
     cmp     [plan + SPELLPLAN.dmg], eax
     jne     .fail
 .next:
-    add     r12, 44
+    add     r12, 40
     dec     r13d
     jnz     .row
     xor     eax, eax
@@ -346,10 +343,10 @@ test_spell_resolve:
     pop     rbp
     ret
 
-; Ball + Fire with 100 mana: 18 mana and a 30 step cooldown are spent and one PROJ_SPELL of the player's
-; flies: carrying 8, a fire element in its flags, no pickup. Flying into a zombie 6 blocks ahead it hurts
-; the zombie and sets it burning; the Ball is gone. With 10 mana the cast dry-fires: no mana spent, no
-; cooldown, nothing flies.
+; Ball + Fire with 100 mana: 18 mana is spent and one PROJ_SPELL of the player's flies: carrying 8, a fire
+; element in its flags, no pickup. Flying into a zombie 6 blocks ahead it hurts the zombie and sets it
+; burning; the Ball is gone. There is no cooldown: the same cast again at once also goes off (64 mana left).
+; With 10 mana the cast dry-fires: no mana spent, nothing flies.
 test_spell_ball:
     push    rbp
     mov     rbp, rsp
@@ -365,10 +362,6 @@ test_spell_ball:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 82.0
-    cmp     dword [spells_cd], 30
-    jne     .fail
-    cmp     dword [spells_cd_total], 30
-    jne     .fail
     cmp     dword [arrows + ARROWENT.live], 1
     jne     .fail
     cmp     dword [arrows + ARROWENT.kind], PROJ_SPELL
@@ -386,6 +379,12 @@ test_spell_ball:
     call    live
     test    eax, eax
     jnz     .fail                       ; it ended on the zombie
+    mov     edi, R(BALL) | R(FIRE)      ; ---- again at once: no cooldown
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    EXPECT_NEAR [combat_mana], 64.0
+    call    fly
     HURT    0
     jge     .fail
     cmp     dword MOBF(0, MOB.burn_t), 0
@@ -400,8 +399,6 @@ test_spell_ball:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_mana], 10.0
-    cmp     dword [spells_cd], 0
-    jne     .fail
     call    live
     test    eax, eax
     jnz     .fail
@@ -521,8 +518,6 @@ test_spell_laser:
     cmp     dword MOBF(0, MOB.chill_t), 0
     jle     .fail
     EXPECT_NEAR [combat_mana], 75.0
-    cmp     dword [spells_cd], 90
-    jne     .fail
     call    cleanup                     ; ---- a wall in the way
     call    fixture
 %assign y 11
@@ -596,8 +591,6 @@ test_spell_nova_frost:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 73.0
-    cmp     dword [spells_cd], 240
-    jne     .fail
     HURT    0
     jge     .fail
     cmp     dword MOBF(0, MOB.stun), 90
@@ -653,8 +646,6 @@ test_spell_phase:
     test    eax, eax
     jnz     .fail                       ; a wall 0.5 ahead: nowhere to go
     EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [spells_cd], 0
-    jne     .fail
     EXPECT_NEAR [player + BODY.z], 16.5
     call    cleanup                     ; ---- the wall 3.5 ahead
     call    fixture
@@ -687,8 +678,6 @@ test_spell_phase:
     EXPECT_NEAR [player + BODY.kbz], 0.0
     EXPECT_NEAR [player + BODY.fall], 0.0
     EXPECT_NEAR [combat_mana], 86.0
-    cmp     dword [spells_cd], 240
-    jne     .fail
     call    cleanup                     ; ---- looking 30 degrees down at the floor: it lands where the ray meets the ground
     call    fixture
     movss   xmm0, [k_yaw0]
@@ -853,8 +842,6 @@ test_spell_boons:
     cmp     dword [surv + SURVIVAL.health], 12
     jne     .fail
     EXPECT_NEAR [combat_mana], 80.0
-    cmp     dword [spells_cd], 240
-    jne     .fail
     call    spells_reset                ; ---- Haste
     call    combat_speed_mult
     movss   [rsp], xmm0
@@ -983,8 +970,6 @@ test_spell_blood_magic:
     EXPECT_NEAR [combat_mana], 100.0
     cmp     dword [surv + SURVIVAL.hurt_flash], 6
     jne     .fail
-    cmp     dword [spells_cd], 30
-    jne     .fail
     call    live
     cmp     eax, 1
     jne     .fail
@@ -996,8 +981,6 @@ test_spell_blood_magic:
     test    eax, eax
     jnz     .fail
     cmp     dword [surv + SURVIVAL.health], 2
-    jne     .fail
-    cmp     dword [spells_cd], 0
     jne     .fail
     call    live
     test    eax, eax
@@ -1127,8 +1110,6 @@ test_spell_dash_burst:
     cmp     eax, 1
     jne     .fail
     EXPECT_NEAR [combat_mana], 92.0
-    cmp     dword [spells_cd], 120
-    jne     .fail
     EXPECT_NEAR [player + BODY.kbz], -18.0
     EXPECT_NEAR [player + BODY.kbx], 0.0
     EXPECT_NEAR [player + BODY.fall], 0.0
@@ -1147,8 +1128,6 @@ test_spell_dash_burst:
     test    eax, eax
     jnz     .fail
     EXPECT_NEAR [combat_mana], 100.0
-    cmp     dword [spells_cd], 0
-    jne     .fail
     call    cleanup                     ; ---- Burst
     call    fixture
     movss   xmm0, [k_yaw0]
@@ -1285,8 +1264,6 @@ test_spell_phase_rider:
     call    cast
     cmp     eax, 1
     jne     .fail
-    cmp     dword [spells_cd], 270
-    jne     .fail
     EXPECT_NEAR [player + BODY.z], 16.5 ; still where you were: the Ball is in flight
     call    fly
     HURT    0
@@ -1392,8 +1369,6 @@ test_spell_phase_rider:
     jne     .fail
     mov     dword [arrows + ARROWENT.age], 119 ; one step from its 120 (it would end 56 blocks away, outside the world we built)
     call    fly
-    cmp     dword [spells_cd], 270
-    jne     .fail                       ; it was cast and paid ...
     EXPECT_NEAR [player + BODY.z], 16.5 ; ... but nothing took you 56 blocks into the air
     xor     eax, eax
     jmp     .ret

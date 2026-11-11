@@ -38,7 +38,7 @@ extern rpg_state, rpg_level, rpg_xp_need, rpg_stat, rpg_bar_ability, rpg_keyston
 extern rpg_title, rpg_ability_info, rpg_ability_tile, quests_current, quests_progress
 extern combat_mana, combat_stamina, combat_max_mana, combat_max_stamina, combat_stealth_t
 extern abilities_cd, abilities_cd_total, structures_nearest
-extern rpg_runes, spells_cd, spells_cd_total, spells_held, spells_armed, spells_preview
+extern rpg_runes, spells_held, spells_armed, spells_preview
 extern game_heavy_s, combat_burn_t, combat_chill_t, combat_poison_t
 extern item_gear, gear_name, gear_rarity, gear_rarity_color, rpg_points, rpg_attr_points
 extern mob_affix_name
@@ -1547,7 +1547,7 @@ hud_abilities:
 ; hud_spells(edi x0): the runes the character casts with, bottom right: 14 x 14 carved cells, each the rune's item icon, in
 ; rune order, at most as many to a row as fit right of the hotbar (x0 + 182, at least 4), the rows stacked upward 24
 ; apart and right-aligned; the key that casts it on a paper tab 9 above the cell (two characters at most), a gold frame
-; on the runes held or tapped (armed), the global cooldown sweeping down every cell. While any rune is held or armed
+; on the runes held or tapped (armed). While any rune is held or armed
 ; the spell it makes is written above the strip, right-aligned, in cream (red when it casts nothing or the mana is
 ; short). Nothing is drawn with no rune.
 ; ebx = rune, r12d = the runes the character has, r13d = cells per row, r14d = cells so far, r15d = x0
@@ -1672,26 +1672,6 @@ hud_spells:
     mov     r8d, [rsp + 232]
     or      r8d, 0xFFFFFF
     call    ui_item_icon_tint
-    mov     eax, [spells_cd]            ; the cooldown sweeps down every cell
-    mov     ecx, [spells_cd_total]
-    test    eax, eax
-    jle     .label
-    test    ecx, ecx
-    jle     .label
-    imul    eax, eax, 12
-    xor     edx, edx
-    div     ecx
-    mov     ecx, 12
-    cmp     eax, ecx
-    cmova   eax, ecx
-    mov     ecx, eax
-    mov     edi, [rsp + 216]
-    inc     edi
-    mov     esi, [rsp + 220]
-    inc     esi
-    mov     edx, 12
-    mov     r8d, [rsp + 236]
-    call    ui_rect
 .label:
     lea     eax, [rbx + BIND_RUNE0]
     lea     rcx, [settings + SETTINGS.keys]
