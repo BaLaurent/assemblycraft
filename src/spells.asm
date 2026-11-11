@@ -144,8 +144,8 @@ section .text
 ;   but is not counted against the cap); else -1, a self cast: elements and modifiers are inert and
 ;   without a boon there is nothing to cast. With a delivery d: the other deliveries are inert, elems =
 ;   the element runes, mods = the modifiers spell_applies lists for d (the rest are inert). Phase carried by a Ball,
-;   Laser or Nova is not inert: it joins mods and teleports the caster to where the spell ended (the Ball's impact,
-;   the beam's far end, the Nova's centre: you arrive first, then it bursts).
+;   Laser or Nova is not inert: it joins mods and teleports the caster to where the spell ended (the Ball's last
+;   impact, the beam followed for Phase's 8 blocks, the Nova's centre: you arrive first, then it bursts).
 ;   cost = (sum of the mana) * (100 + 15 (n - 1)) / 100 for n kept runes, cd = the sum of the
 ;   cooldowns, dmg = d's base damage + 2 per element (0 for a self cast).
 ; r8 = out, r9d = unlocked, r10d = stack & unlocked, r11d = kept, ebx = delivery
@@ -1528,19 +1528,7 @@ spells_proj_hit:
     mov     rax, [rsp + 24]
     lea     rcx, [arrow_hitmask]
     mov     [rcx + r12*8], rax
-    bt      r14d, RUNE_PHASE
-    jnc     .no_warp
-    lea     rdi, [rsp]
-    lea     rsi, [rbx + ARROWENT.vx]
-    lea     rdx, [rsp + 40]
-    call    sp_land
-    test    eax, eax
-    jz      .warp_done
-    lea     rdi, [rsp + 40]
-    call    sp_teleport                 ; Phase carried by the Ball: you arrive where it hit
-.warp_done:
-    and     r14d, 0xFFFF                ; a Ball carrying Phase is spent at its first hit
-.no_warp:
+
     bt      r14d, RUNE_BURST
     jnc     .hits
     movss   xmm0, [rsp]
@@ -1554,8 +1542,7 @@ spells_proj_hit:
     and     edx, AF_CRIT
     shl     edx, 8
     call    sp_burst_at
-    xor     eax, eax
-    jmp     .ret
+    jmp     .spent
 .hits:
     mov     eax, r14d
     shr     eax, 16
@@ -1569,6 +1556,17 @@ spells_proj_hit:
     mov     eax, 1
     jmp     .ret
 .spent:
+    bt      r14d, RUNE_PHASE
+    jnc     .gone
+    lea     rdi, [rsp]
+    lea     rsi, [rbx + ARROWENT.vx]
+    lea     rdx, [rsp + 40]
+    call    sp_land
+    test    eax, eax
+    jz      .gone
+    lea     rdi, [rsp + 40]
+    call    sp_teleport                 ; Phase carried by the Ball: you arrive where it last hit
+.gone:
     xor     eax, eax
 .ret:
     add     rsp, 56
@@ -1580,15 +1578,17 @@ spells_proj_hit:
     pop     rbp
     ret
 
-; spells_proj_end(edi slot, xmm0 x, xmm1 y, xmm2 z): a Ball ends without a mob (it met a block or ran out of
-; time): Burst explodes where it ended, and sparks of its element fly
-; rbx = the projectile, r12d = its runes; frame: point @0, the mote's kind @12
+; spells_proj_end(edi slot, xmm0 x, xmm1 y, xmm2 z, esi 1 when it met a block, 0 when it ran out of time): a Ball ends
+; without a mob: Burst explodes where it ended, sparks of its element fly, and a Ball carrying Phase takes you to
+; the block it met (not to where it ran out of time: that can be 56 blocks away in the air)
+; rbx = the projectile, r12d = its runes; frame: point @0, met a block @12, the Phase landing @16
 spells_proj_end:
     push    rbp
     mov     rbp, rsp
     push    rbx
     push    r12
     sub     rsp, 32
+    mov     [rsp + 12], esi
     movss   [rsp], xmm0
     movss   [rsp + 4], xmm1
     movss   [rsp + 8], xmm2
@@ -1621,6 +1621,8 @@ spells_proj_end:
     call    fx_burst
     bt      r12d, RUNE_PHASE
     jnc     .no_warp
+    cmp     dword [rsp + 12], 0
+    je      .no_warp
     lea     rdi, [rsp]
     lea     rsi, [rbx + ARROWENT.vx]
     lea     rdx, [rsp + 16]

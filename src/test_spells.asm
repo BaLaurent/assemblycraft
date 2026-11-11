@@ -59,6 +59,8 @@ k_ph10:    dd 10.0
 k_ph12:    dd 12.0
 k_ph12_2:  dd 12.2
 k_ph13_6:  dd 13.6
+k_ph5_5:   dd 5.5
+k_ph8:     dd 8.0
 
 ; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
 ; (only the answer is compared for an answer of 0)
@@ -1353,6 +1355,42 @@ test_spell_phase_rider:
     jne     .fail
     HURT    0
     jl      .fail
+    call    cleanup                     ; ---- Pierce keeps counting: three foes are struck and you land at the last one
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    SPAWN   k_x16_5, k_z8_5
+    SPAWN   k_x16_5, k_z6_5
+    mov     edi, R(BALL) | R(PHASE) | R(PIERCE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    call    fly
+    HURT    0
+    jge     .fail
+    HURT    1
+    jge     .fail
+    HURT    2
+    jge     .fail
+    movss   xmm0, [player + BODY.z]
+    comiss  xmm0, [k_ph8]
+    jae     .fail
+    comiss  xmm0, [k_ph5_5]
+    jbe     .fail
+    call    cleanup                     ; ---- a Ball that runs out of time in mid-air: you stay where you are
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(BALL) | R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    mov     dword [arrows + ARROWENT.age], 119 ; one step from its 120 (it would end 56 blocks away, outside the world we built)
+    call    fly
+    cmp     dword [spells_cd], 270
+    jne     .fail                       ; it was cast and paid ...
+    EXPECT_NEAR [player + BODY.z], 16.5 ; ... but nothing took you 56 blocks into the air
     xor     eax, eax
     jmp     .ret
 .fail:

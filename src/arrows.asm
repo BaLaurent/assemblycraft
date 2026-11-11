@@ -884,6 +884,7 @@ arrows_step:
     movss   xmm0, [rsp + S_HP]
     movss   xmm1, [rsp + S_HP + 4]
     movss   xmm2, [rsp + S_HP + 8]
+    mov     esi, 1                      ; it met a block
     call    spells_proj_end
     jmp     .remove
 .expired:                               ; out of time: an arrow, bullet or bolt vanishes,
@@ -895,7 +896,8 @@ arrows_step:
     movss   xmm0, [rbx + ARROWENT.x]
     movss   xmm1, [rbx + ARROWENT.y]
     movss   xmm2, [rbx + ARROWENT.z]
-    call    spells_proj_end             ; out of time: its Burst goes off where it is
+    xor     esi, esi                    ; it ran out of time
+    call    spells_proj_end             ; its Burst goes off where it is
     jmp     .remove
 .expired_kind:
     mov     eax, [rbx + ARROWENT.kind]
