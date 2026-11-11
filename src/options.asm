@@ -17,8 +17,9 @@ extern settings, settings_path, settings_save, settings_apply, settings_reset_ke
 extern app_goto, app_settings_parent, app_entered, app_window
 extern str_append, i32_to_str
 
-; Controls layout (GUI units): two columns of 10 rows when they fit, else one column of 19. The
-; rows stand on a page CTRL_PAGE_PAD wider than their span, so a layout needs that much room:
+; Controls layout (GUI units): two columns of 10 rows when they fit, else one column. Two pages: the
+; general bindings (0 .. BIND_RUNE0 - 1, the Cast key among them) and the 16 rune keys; a button flips
+; between them. The rows stand on a page CTRL_PAGE_PAD wider than their span, so a layout needs that much room:
 ; wide (ui_w >= 481): the 465-unit layout, labels 125 wide, 100-wide key buttons
 ; compact (ui_w >= 417): 401 units, labels 112 wide, 84-wide key buttons (the 426-wide GUI
 ;   of the default 1280x720 window)
@@ -34,6 +35,8 @@ s_controls:     db "Controls", 0
 s_controls_btn: db "Controls...", 0
 s_done:         db "Done", 0
 s_reset_keys:   db "Reset Keys", 0
+s_page_runes:   db "Rune keys", 0
+s_page_general: db "General keys", 0
 s_capturing:    db "> ??? <", 0
 
 s_fov:          db "FOV: ", 0
@@ -84,11 +87,32 @@ s_b_ability4:   db "Ability 4", 0
 s_b_chat:       db "Chat", 0
 s_b_players:    db "Player list", 0
 s_b_vehicle:    db "Vehicle view", 0
+s_b_cast:       db "Cast spell", 0
+s_b_rune_ball:  db "Ball rune", 0
+s_b_rune_laser: db "Laser rune", 0
+s_b_rune_nova:  db "Nova rune", 0
+s_b_rune_phase: db "Phase rune", 0
+s_b_rune_dash:  db "Dash rune", 0
+s_b_rune_fire:  db "Fire rune", 0
+s_b_rune_frost: db "Frost rune", 0
+s_b_rune_shock: db "Shock rune", 0
+s_b_rune_poison: db "Poison rune", 0
+s_b_rune_burst: db "Burst rune", 0
+s_b_rune_pierce: db "Pierce rune", 0
+s_b_rune_seek:  db "Seek rune", 0
+s_b_rune_chain: db "Chain rune", 0
+s_b_rune_heal:  db "Heal rune", 0
+s_b_rune_haste: db "Haste rune", 0
+s_b_rune_feather: db "Feather rune", 0
 align 8
 bind_labels:    dq s_b_forward, s_b_back, s_b_left, s_b_right, s_b_jump
                 dq s_b_sneak, s_b_sprint, s_b_inventory, s_b_fly, s_b_reload
                 dq s_b_dodge, s_b_ability1, s_b_ability2, s_b_ability3, s_b_skills
-                dq s_b_ability4, s_b_chat, s_b_players, s_b_vehicle
+                dq s_b_ability4, s_b_chat, s_b_players, s_b_vehicle, s_b_cast
+                dq s_b_rune_ball, s_b_rune_laser, s_b_rune_nova, s_b_rune_phase, s_b_rune_dash
+                dq s_b_rune_fire, s_b_rune_frost, s_b_rune_shock, s_b_rune_poison, s_b_rune_burst
+                dq s_b_rune_pierce, s_b_rune_seek, s_b_rune_chain, s_b_rune_heal, s_b_rune_haste
+                dq s_b_rune_feather
 
 ; Names of keys that glfwGetKeyName does not report: dw key, zstr; dw 0 ends it.
 %macro KEY 2
@@ -136,6 +160,7 @@ slider_render:  dq settings + SETTINGS.render_dist, s_render, s_chunks
 slider_volume:  dq settings + SETTINGS.volume, s_volume, s_pct
                 dd 0, 100
 capturing:      dd -1                   ; binding row waiting for a key, or -1
+ctrl_page:      dd 0                    ; Controls page: 0 the general bindings, 1 the rune keys
 
 section .text
 
@@ -366,10 +391,11 @@ screen_controls:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 72                     ; [rsp] key label (32), [rsp+32] capture state, [rsp+36] layout
+    sub     rsp, 72                     ; [rsp] key label (32), [rsp+32] capture state, [rsp+36] layout, [rsp+64] first row, [rsp+68] end row
     cmp     dword [app_entered], 0
     je      .entered
     mov     dword [capturing], -1
+    mov     dword [ctrl_page], 0
     mov     dword [app_entered], 0
 .entered:
     mov     r15d, [capturing]           ; capture state when the frame began
@@ -389,6 +415,15 @@ screen_controls:
 .layout:
     mov     r12d, [ui_w]
     shr     r12d, 1                     ; cx
+    xor     eax, eax                    ; the page's rows: [first, end)
+    mov     ecx, BIND_RUNE0
+    cmp     dword [ctrl_page], 0
+    je      .page_set
+    mov     eax, BIND_RUNE0
+    mov     ecx, NUM_BINDINGS
+.page_set:
+    mov     [rsp + 64], eax
+    mov     [rsp + 68], ecx
     ; layout: [rsp+36] rows per column, [rsp+40] column step, [rsp+44] label x of column 0,
     ; [rsp+48] button offset from the label, [rsp+52] button width, [rsp+56] label x of the row
     mov     eax, [ui_w]
@@ -396,7 +431,9 @@ screen_controls:
     jae     .wide
     cmp     eax, CTRL_COMPACT_W
     jae     .compact
-    mov     dword [rsp + 36], NUM_BINDINGS
+    mov     ecx, [rsp + 68]
+    sub     ecx, [rsp + 64]
+    mov     [rsp + 36], ecx             ; one column holds the whole page
     mov     dword [rsp + 40], 0
     lea     eax, [r12 - 150]
     mov     [rsp + 44], eax
@@ -438,9 +475,10 @@ screen_controls:
     cmovl   esi, eax
     lea     rdi, [s_controls]
     call    screen_page
-    xor     ebx, ebx                    ; row
+    mov     ebx, [rsp + 64]             ; row
 .row:
     mov     eax, ebx
+    sub     eax, [rsp + 64]
     xor     edx, edx
     div     dword [rsp + 36]            ; eax = column, edx = row within the column
     imul    eax, [rsp + 40]
@@ -491,25 +529,40 @@ screen_controls:
     call    ui_text_ink_centered
 .next:
     inc     ebx
-    cmp     ebx, NUM_BINDINGS
+    cmp     ebx, [rsp + 68]
     jb      .row
     lea     rdi, [s_reset_keys]
     lea     esi, [r12 - 155]
     mov     edx, [ui_h]
     sub     edx, 28
-    mov     ecx, 150
+    mov     ecx, 100
+    mov     r8d, 1
+    call    ui_button
+    test    eax, eax
+    jz      .page_button
+    call    settings_reset_keys
+    mov     dword [capturing], -1
+.page_button:
+    lea     rdi, [s_page_runes]
+    lea     rax, [s_page_general]
+    cmp     dword [ctrl_page], 0
+    cmovne  rdi, rax
+    lea     esi, [r12 - 50]
+    mov     edx, [ui_h]
+    sub     edx, 28
+    mov     ecx, 100
     mov     r8d, 1
     call    ui_button
     test    eax, eax
     jz      .done_button
-    call    settings_reset_keys
+    xor     dword [ctrl_page], 1
     mov     dword [capturing], -1
 .done_button:
     lea     rdi, [s_done]
-    lea     esi, [r12 + 5]
+    lea     esi, [r12 + 55]
     mov     edx, [ui_h]
     sub     edx, 28
-    mov     ecx, 150
+    mov     ecx, 100
     mov     r8d, 1
     call    ui_button
     test    eax, eax

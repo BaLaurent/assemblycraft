@@ -6,7 +6,7 @@
 default rel
 
 global frame_input, ui_input, input_captured
-global input_init, input_poll, input_set_captured
+global input_init, input_poll, input_set_captured, key_bound
 
 extern settings
 
@@ -56,9 +56,11 @@ prev_reload:    resd 1
 prev_skills:    resd 1
 prev_dodge:     resd 1
 prev_ability:   resd 4
-cap_edges:      resd 8                 ; dodge, ability 1..4 edges, chat edge, player-list held, vehicle-view edge until the captured branch
+cap_edges:      resd 11                ; dodge, ability 1..4 edges, chat edge, player-list held, vehicle-view edge, runes held, rune edges, cast edge until the captured branch
 prev_chat:      resd 1
 prev_vview:     resd 1
+rune_prev:      resd 1                 ; bit r = rune r's key was down at the previous poll
+cast_prev:      resd 1
 prev_num:       resd 9
 
 section .text
@@ -231,6 +233,22 @@ input_set_captured:
     and     edx, eax
     mov     [%1], eax
 %endmacro
+
+; key_bound(edi code) -> eax 1 when any binding of the settings holds that key code (leaf)
+key_bound:
+    lea     rdx, [settings + SETTINGS.keys]
+    xor     eax, eax
+.l:
+    cmp     [rdx + rax*4], edi
+    je      .yes
+    inc     eax
+    cmp     eax, NUM_BINDINGS
+    jb      .l
+    xor     eax, eax
+    ret
+.yes:
+    mov     eax, 1
+    ret
 
 ; input_poll(rdi window): call after glfwPollEvents
 input_poll:
@@ -421,8 +439,29 @@ input_poll:
     BIND    BIND_VEHICLE_VIEW
     EDGE    prev_vview
     mov     [cap_edges + 28], edx
+    mov     dword [cap_edges + 32], 0   ; the rune keys: the held mask and what rose since the last poll
+%assign r 0
+%rep NUM_RUNES
+    BIND    BIND_RUNE0 + r
+    shl     eax, r
+    or      [cap_edges + 32], eax
+%assign r r + 1
+%endrep
+    mov     eax, [cap_edges + 32]
+    EDGE    rune_prev
+    mov     [cap_edges + 36], edx
+    BIND    BIND_CAST
+    EDGE    cast_prev
+    mov     [cap_edges + 40], edx
     xor     ecx, ecx
 .num:
+    lea     edi, [KEY_1 + ecx]
+    call    key_bound                   ; a digit bound to an action (a rune on a mouse button, say) picks no slot
+    test    eax, eax
+    jz      .num_free
+    mov     dword [prev_num + rcx*4], 0
+    jmp     .num_next
+.num_free:
     push    rcx
     push    rcx                         ; keep rsp 16-aligned for the call
     mov     rdi, rbx
@@ -487,6 +526,12 @@ input_poll:
     mov     [frame_input + FRAMEINPUT.players], eax
     mov     eax, [cap_edges + 28]
     mov     [frame_input + FRAMEINPUT.vehicle_view], eax
+    mov     eax, [cap_edges + 32]
+    mov     [frame_input + FRAMEINPUT.runes_held], eax
+    mov     eax, [cap_edges + 36]
+    mov     [frame_input + FRAMEINPUT.runes_down], eax
+    mov     eax, [cap_edges + 40]
+    mov     [frame_input + FRAMEINPUT.cast], eax
     ; buttons, ignoring the click that captured the mouse until both are released
     cmp     dword [suppress], 0
     je      .buttons

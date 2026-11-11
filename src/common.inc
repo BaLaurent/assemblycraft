@@ -960,10 +960,12 @@ endstruc                                ; 24
 %define BIND_ABILITY3   13
 %define BIND_SKILLS     14
 %define BIND_ABILITY4   15
-%define NUM_BINDINGS    19
+%define NUM_BINDINGS    36
 %define BIND_CHAT       16
 %define BIND_PLAYERS    17
 %define BIND_VEHICLE_VIEW 18            ; read only while seated in a vehicle (V by default); ABILITY3 only on foot
+%define BIND_CAST       19              ; casts the runes held or tapped (Right Shift by default)
+%define BIND_RUNE0      20              ; BIND_RUNE0 + r: rune r's key (Controls page 2); a bound digit no longer picks a hotbar slot
 
 ; ---- sounds ---------------------------------------------------------------
 %define SND_CLICK       0

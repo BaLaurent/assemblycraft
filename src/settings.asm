@@ -14,10 +14,11 @@ extern file_read, file_write_atomic
     dd 70, 100, 8, 100, 2, 0, 1, 0, 0
     dd 87, 83, 65, 68, 32, 340, 341, 69, 70, 82 ; W S A D Space LShift LCtrl E F R
     dd 67, 81, 71, 86, 75, 88           ; C Q G V K X
-    dd 84, 258, 86                      ; T (chat), Tab (player list), V (vehicle view)
+    dd 84, 258, 86, 344                 ; T (chat), Tab (player list), V (vehicle view), Right Shift (cast)
+    dd 89, 85, 73, 79, 80, 72, 74, 76, 59, 78, 77, 44, 46, 48, 45, 61 ; runes: Y U I O P  H J L ;  N M , .  0 - =
 %endmacro
 
-; one table record = 32 bytes: name[16] NUL padded, field offset, min, max, flag
+; one table record = 32 bytes: name[16] NUL padded, field offset, min, max, flag (a name is at most 15 characters)
 ; flag 1: a value outside min..max resets to the default instead of clamping (key codes)
 %macro SETENT 5
     %%s: db %1, 0
@@ -65,6 +66,23 @@ settings_table:
     SETENT "key_chat",        SETTINGS.keys + 4 * BIND_CHAT,      32, 348, 1
     SETENT "key_players",     SETTINGS.keys + 4 * BIND_PLAYERS,   32, 348, 1
     SETENT "key_vehicleview", SETTINGS.keys + 4 * BIND_VEHICLE_VIEW, 32, 348, 1
+    SETENT "key_cast",        SETTINGS.keys + 4 * BIND_CAST,      32, 348, 1
+    SETENT "key_r_ball",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_BALL),    32, 348, 1
+    SETENT "key_r_laser",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_LASER),   32, 348, 1
+    SETENT "key_r_nova",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_NOVA),    32, 348, 1
+    SETENT "key_r_phase",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_PHASE),   32, 348, 1
+    SETENT "key_r_dash",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_DASH),    32, 348, 1
+    SETENT "key_r_fire",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_FIRE),    32, 348, 1
+    SETENT "key_r_frost",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_FROST),   32, 348, 1
+    SETENT "key_r_shock",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_SHOCK),   32, 348, 1
+    SETENT "key_r_poison",    SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_POISON),  32, 348, 1
+    SETENT "key_r_burst",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_BURST),   32, 348, 1
+    SETENT "key_r_pierce",    SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_PIERCE),  32, 348, 1
+    SETENT "key_r_seek",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_SEEK),    32, 348, 1
+    SETENT "key_r_chain",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_CHAIN),   32, 348, 1
+    SETENT "key_r_heal",      SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_HEAL),    32, 348, 1
+    SETENT "key_r_haste",     SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_HASTE),   32, 348, 1
+    SETENT "key_r_feather",   SETTINGS.keys + 4 * (BIND_RUNE0 + RUNE_FEATHER), 32, 348, 1
 settings_table_end:
 
 section .bss

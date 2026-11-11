@@ -21,7 +21,7 @@ extern test_armor_reduces_damage
 extern test_saves_sanitize_name, test_saves_scan_rename_delete
 extern test_settings_roundtrip, test_settings_clamps_bad_values, test_settings_reload_key
 extern test_vehicleview_default_key, test_vehicleview_roundtrip
-extern test_vehicleview_missing_key, test_vehicleview_labels
+extern test_vehicleview_missing_key, test_vehicleview_labels, test_bound_digit_skips_hotbar
 extern test_craft_advanced_recipes, test_break_tiers, test_inv_click_armor_containers
 extern test_recipe_fill_and_sets, test_recipe_fits_grid, test_furnace_book_fill
 extern test_furnace_smelts, test_chest_spills_on_break
@@ -190,6 +190,7 @@ tests:
     TEST vehicleview_roundtrip
     TEST vehicleview_missing_key
     TEST vehicleview_labels
+    TEST bound_digit_skips_hotbar
     TEST furnace_smelts
     TEST chest_spills_on_break
     TEST mob_raycast_hits
@@ -513,6 +514,7 @@ section .rodata
     TESTNAME vehicleview_roundtrip
     TESTNAME vehicleview_missing_key
     TESTNAME vehicleview_labels
+    TESTNAME bound_digit_skips_hotbar
     TESTNAME furnace_smelts
     TESTNAME chest_spills_on_break
     TESTNAME mob_raycast_hits
