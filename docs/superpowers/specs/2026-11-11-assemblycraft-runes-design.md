@@ -581,3 +581,6 @@ Run from the repo root.
 - `rpg_rune_banner(name)` (rpg.asm) writes "Rune learned: <name>" for both a web rune node and a Rune item, so `spells_rune_name` does not exist; `spell_fx` (element -> particle kind) is exported by spells.asm and used by arrows.asm.
 - `RUNE_FIRST` is defined beside the item ids in `common.inc`; `SPELLMSG` lives in `netmisc.asm` with `PROJMSG` and `FXMSG`.
 - A guest or a host drops a `PROJ_SPELL` projectile whose element is above poison, and `MT_SPELL` beams are limited to 10 a second per sender.
+
+- Phase is not inert next to a Ball, a Laser or a Nova (the plan said it was): it rides them and teleports the caster to where the spell ended: the Ball's impact (a mob, the face of a wall, the floor; you land in free space up to 4 blocks back along its flight), the far end of the beam, or the Nova's centre (you arrive first, then it bursts). The plan's `Phase + Dash` rule is unchanged: the first movement wins and Dash is inert.
+- Phase's landing lifts a blocked candidate onto the floor or a one block ledge, up to the eye height (1.5 blocks), so looking down at the ground works and the landing is never past where the ray meets the floor.

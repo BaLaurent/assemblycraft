@@ -143,7 +143,9 @@ section .text
 ;   or modifier along, it is the Ball when unlocked (the implicit Ball joins kept: it pays and cools down,
 ;   but is not counted against the cap); else -1, a self cast: elements and modifiers are inert and
 ;   without a boon there is nothing to cast. With a delivery d: the other deliveries are inert, elems =
-;   the element runes, mods = the modifiers spell_applies lists for d (the rest are inert).
+;   the element runes, mods = the modifiers spell_applies lists for d (the rest are inert). Phase carried by a Ball,
+;   Laser or Nova is not inert: it joins mods and teleports the caster to where the spell ended (the Ball's impact,
+;   the beam's far end, the Nova's centre: you arrive first, then it bursts).
 ;   cost = (sum of the mana) * (100 + 15 (n - 1)) / 100 for n kept runes, cd = the sum of the
 ;   cooldowns, dmg = d's base damage + 2 per element (0 for a self cast).
 ; r8 = out, r9d = unlocked, r10d = stack & unlocked, r11d = kept, ebx = delivery
@@ -214,6 +216,12 @@ spells_resolve:
     not     ecx
     and     eax, ecx                    ; the modifiers this delivery cannot use
     or      [r8 + SPELLPLAN.inert], eax
+    cmp     ebx, RUNE_NOVA
+    ja      .boons                      ; a Phase or Dash delivery carries nothing
+    bt      r11d, RUNE_PHASE
+    jnc     .boons
+    btr     dword [r8 + SPELLPLAN.inert], RUNE_PHASE
+    bts     dword [r8 + SPELLPLAN.mods], RUNE_PHASE
     jmp     .boons
 .self:
     mov     eax, r11d
@@ -622,7 +630,12 @@ spells_cast:
     jg      .fail
     mov     r15d, [rsp + SPELLPLAN.delivery]
     cmp     r15d, RUNE_PHASE
-    jne     .dash_check
+    je      .plan
+    test    dword [rsp + SPELLPLAN.mods], 1 << RUNE_PHASE
+    jz      .dash_check
+    cmp     r15d, RUNE_BALL
+    je      .pay                        ; a Ball that carries Phase finds its landing when it ends
+.plan:                                  ; Phase itself, or carried by a Laser or Nova: the spot must exist
     mov     rdi, r12
     mov     rsi, r13
     lea     rdx, [rsp + 48]
@@ -812,6 +825,7 @@ sp_laser:
     push    r15
     sub     rsp, 88
     mov     rbx, rdi
+    mov     [rsp + 80], r8              ; the Phase target, when the beam carries Phase
     mov     r12, rsi
     mov     r13, rdx
     mov     r14d, ecx
@@ -919,6 +933,11 @@ sp_laser:
     mov     edi, SND_SPELL
     movss   xmm0, [k_vol]
     call    audio_play
+    test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_PHASE
+    jz      .no_warp
+    mov     rdi, [rsp + 80]
+    call    sp_teleport                 ; Phase carried by the beam: you follow it
+.no_warp:
     add     rsp, 88
     pop     r15
     pop     r14
@@ -942,6 +961,11 @@ sp_nova:
     mov     rbx, rdi
     mov     r12d, ecx
     shl     r12d, 8                     ; HITF_CRIT
+    test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_PHASE
+    jz      .no_warp
+    mov     rdi, r8
+    call    sp_teleport                 ; Phase carried by the Nova: you arrive first, it bursts there
+.no_warp:
     movss   xmm0, [k_5]
     test    dword [rbx + SPELLPLAN.mods], 1 << RUNE_BURST
     jz      .area
@@ -1006,13 +1030,43 @@ sp_nova:
     pop     rbp
     ret
 
+; sp_free_lift(rdi cand float[3]) -> eax 1 when the player's box is free with its feet at cand, or at the first
+; quarter block height up to 1.5 blocks above it (cand.y is raised to that height); 0 when none is (the eye height
+; is the limit: no further than a ray at the ground meets it)
+; rbx = cand; frame: lifts left @0
+sp_free_lift:
+    push    rbx
+    sub     rsp, 16
+    mov     rbx, rdi
+    movss   xmm0, [rbx]
+    movss   xmm1, [rbx + 4]
+    movss   xmm2, [rbx + 8]
+    call    ab_box_free
+    test    eax, eax
+    jnz     .ret
+    mov     dword [rsp], 6
+.lift:
+    movss   xmm1, [rbx + 4]
+    addss   xmm1, [k_quarter]
+    movss   [rbx + 4], xmm1
+    movss   xmm0, [rbx]
+    movss   xmm2, [rbx + 8]
+    call    ab_box_free
+    test    eax, eax
+    jnz     .ret
+    dec     dword [rsp]
+    jnz     .lift
+    xor     eax, eax
+.ret:
+    add     rsp, 16
+    pop     rbx
+    ret
+
 ; sp_phase_plan(rdi eye float[3], rsi dir float[3], rdx out float[3]) -> eax 1 when the player can teleport at
 ; least a block: marches along dir in quarter-block steps up to 8 blocks, the candidate feet being
-; eye + dir * s - (0, 1.62, 0). A candidate whose box is not free is lifted in quarter blocks, up to 1.5 blocks (the eye
-; height: no further than a ray at the ground meets it), to the first height where it is (the floor, a one block ledge):
-; none free ends the march.
-; out = the last free candidate
-; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3], lifts left @12
+; eye + dir * s - (0, 1.62, 0), lifted onto the floor or a one block ledge by sp_free_lift; the first candidate
+; with no free height ends the march; out = the last free candidate
+; rbx = out, r12 = eye, r13 = dir, r14d = step, r15d = last free step; frame: candidate float[3]
 sp_phase_plan:
     push    rbp
     mov     rbp, rsp
@@ -1043,23 +1097,10 @@ sp_phase_plan:
     mulss   xmm2, xmm3
     addss   xmm2, [r12 + 8]
     movss   [rsp + 8], xmm2
-    call    ab_box_free
+    lea     rdi, [rsp]
+    call    sp_free_lift
     test    eax, eax
-    jnz     .free
-    mov     dword [rsp + 12], 6
-.lift:
-    movss   xmm1, [rsp + 4]
-    addss   xmm1, [k_quarter]
-    movss   [rsp + 4], xmm1
-    movss   xmm0, [rsp]
-    movss   xmm2, [rsp + 8]
-    call    ab_box_free
-    test    eax, eax
-    jnz     .free
-    dec     dword [rsp + 12]
-    jnz     .lift
-    jmp     .stop
-.free:
+    jz      .stop
     mov     r15d, r14d
     mov     eax, [rsp]
     mov     [rbx], eax
@@ -1083,6 +1124,122 @@ sp_phase_plan:
     pop     rbp
     ret
 
+; sp_teleport(rdi pos float[3]): the player appears at pos, motion and fall forgotten; magic sparks at both ends and
+; the blink sound
+; rbx = pos
+sp_teleport:
+    push    rbx
+    sub     rsp, 16
+    mov     rbx, rdi
+    movss   xmm0, [k_2]
+    mov     edi, FX_MAGIC
+    mov     esi, 20
+    call    ab_burst
+    mov     eax, [rbx]
+    mov     [player + BODY.x], eax
+    mov     eax, [rbx + 4]
+    mov     [player + BODY.y], eax
+    mov     eax, [rbx + 8]
+    mov     [player + BODY.z], eax
+    xor     eax, eax
+    mov     [player + BODY.vy], eax
+    mov     [player + BODY.kbx], eax
+    mov     [player + BODY.kbz], eax
+    mov     [player + BODY.fall], eax
+    movss   xmm0, [k_2]
+    mov     edi, FX_MAGIC
+    mov     esi, 20
+    call    ab_burst
+    mov     edi, SND_BLINK
+    movss   xmm0, [k_vol]
+    call    audio_play
+    add     rsp, 16
+    pop     rbx
+    ret
+
+; sp_land(rdi point float[3], rsi travel float[3], rdx out float[3]) -> eax 1 when the player can stand at (or
+; just back along the travel direction from) point: the feet candidate is point - (0, 1.62, 0), then back along
+; the (normalised) travel direction in quarter blocks up to 4 blocks, each lifted by sp_free_lift; out = the first
+; free one. A Ball carrying Phase lands you where it hit: in front of a wall, beside a mob.
+; rbx = point, r13 = out, r14d = step back; frame: candidate float[3] @0, unit travel @16
+sp_land:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r13
+    push    r14
+    sub     rsp, 40
+    mov     rbx, rdi
+    mov     r13, rdx
+    xor     r14d, r14d
+    movss   xmm0, [rsi]
+    mulss   xmm0, xmm0
+    movss   xmm1, [rsi + 4]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    movss   xmm1, [rsi + 8]
+    mulss   xmm1, xmm1
+    addss   xmm0, xmm1
+    sqrtss  xmm0, xmm0
+    xorps   xmm4, xmm4                  ; no direction: no way back
+    comiss  xmm0, [k_tiny]
+    jb      .norm
+    movss   xmm4, [k_one]
+    divss   xmm4, xmm0
+.norm:
+    movss   xmm1, [rsi]
+    mulss   xmm1, xmm4
+    movss   [rsp + 16], xmm1
+    movss   xmm1, [rsi + 4]
+    mulss   xmm1, xmm4
+    movss   [rsp + 20], xmm1
+    movss   xmm1, [rsi + 8]
+    mulss   xmm1, xmm4
+    movss   [rsp + 24], xmm1
+.step:
+    cvtsi2ss xmm3, r14d
+    mulss   xmm3, [k_quarter]
+    movss   xmm0, [rsp + 16]
+    mulss   xmm0, xmm3
+    movss   xmm1, [rbx]
+    subss   xmm1, xmm0
+    movss   [rsp], xmm1
+    movss   xmm0, [rsp + 20]
+    mulss   xmm0, xmm3
+    movss   xmm1, [rbx + 4]
+    subss   xmm1, xmm0
+    subss   xmm1, [k_eye_h]
+    movss   [rsp + 4], xmm1
+    movss   xmm0, [rsp + 24]
+    mulss   xmm0, xmm3
+    movss   xmm1, [rbx + 8]
+    subss   xmm1, xmm0
+    movss   [rsp + 8], xmm1
+    lea     rdi, [rsp]
+    call    sp_free_lift
+    test    eax, eax
+    jnz     .found
+    inc     r14d
+    cmp     r14d, 16
+    jbe     .step
+    xor     eax, eax
+    jmp     .ret
+.found:
+    mov     eax, [rsp]
+    mov     [r13], eax
+    mov     eax, [rsp + 4]
+    mov     [r13 + 4], eax
+    mov     eax, [rsp + 8]
+    mov     [r13 + 8], eax
+    mov     eax, 1
+.ret:
+    add     rsp, 40
+    pop     r14
+    pop     r13
+    pop     rbx
+    pop     rbp
+    ret
+
 ; sp_phase: the player appears at the planned spot (r8), motion and fall forgotten; magic sparks at both ends;
 ; with an element or Burst a blast (3 blocks, x 1.5 with Burst) at the arrival
 ; rbx = plan, r12 = the spot, r13d = crit flags
@@ -1097,28 +1254,8 @@ sp_phase:
     mov     r12, r8
     mov     r13d, ecx
     shl     r13d, 8                     ; HITF_CRIT
-    movss   xmm0, [k_2]
-    mov     edi, FX_MAGIC
-    mov     esi, 20
-    call    ab_burst
-    mov     eax, [r12]
-    mov     [player + BODY.x], eax
-    mov     eax, [r12 + 4]
-    mov     [player + BODY.y], eax
-    mov     eax, [r12 + 8]
-    mov     [player + BODY.z], eax
-    xor     eax, eax
-    mov     [player + BODY.vy], eax
-    mov     [player + BODY.kbx], eax
-    mov     [player + BODY.kbz], eax
-    mov     [player + BODY.fall], eax
-    movss   xmm0, [k_2]
-    mov     edi, FX_MAGIC
-    mov     esi, 20
-    call    ab_burst
-    mov     edi, SND_BLINK
-    movss   xmm0, [k_vol]
-    call    audio_play
+    mov     rdi, r12
+    call    sp_teleport
     mov     eax, [rbx + SPELLPLAN.elems]
     or      eax, [rbx + SPELLPLAN.mods]
     jz      .ret
@@ -1337,7 +1474,7 @@ spells_proj_steer:
 ; joins arrow_hitmask. Chain arcs on from the first mob it strikes. With Burst it explodes here and is
 ; spent; else one of its mob hits is used up and it goes on while some are left (Pierce: 3, else 1).
 ; rbx = the projectile, r12d = slot, r13d = mob, r14d = arrow_spell word, r15 = struck mask
-; frame: point @0, push @16, struck mask @24, hits left @32
+; frame: point @0, push @16, struck mask @24, hits left @32, the Phase landing @40
 spells_proj_hit:
     push    rbp
     mov     rbp, rsp
@@ -1346,7 +1483,7 @@ spells_proj_hit:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 40
+    sub     rsp, 56
     mov     r12d, edi
     mov     r13d, esi
     movss   [rsp], xmm0
@@ -1391,6 +1528,19 @@ spells_proj_hit:
     mov     rax, [rsp + 24]
     lea     rcx, [arrow_hitmask]
     mov     [rcx + r12*8], rax
+    bt      r14d, RUNE_PHASE
+    jnc     .no_warp
+    lea     rdi, [rsp]
+    lea     rsi, [rbx + ARROWENT.vx]
+    lea     rdx, [rsp + 40]
+    call    sp_land
+    test    eax, eax
+    jz      .warp_done
+    lea     rdi, [rsp + 40]
+    call    sp_teleport                 ; Phase carried by the Ball: you arrive where it hit
+.warp_done:
+    and     r14d, 0xFFFF                ; a Ball carrying Phase is spent at its first hit
+.no_warp:
     bt      r14d, RUNE_BURST
     jnc     .hits
     movss   xmm0, [rsp]
@@ -1421,7 +1571,7 @@ spells_proj_hit:
 .spent:
     xor     eax, eax
 .ret:
-    add     rsp, 40
+    add     rsp, 56
     pop     r15
     pop     r14
     pop     r13
@@ -1469,6 +1619,17 @@ spells_proj_end:
     movss   xmm3, [k_one]
     mov     esi, 8
     call    fx_burst
+    bt      r12d, RUNE_PHASE
+    jnc     .no_warp
+    lea     rdi, [rsp]
+    lea     rsi, [rbx + ARROWENT.vx]
+    lea     rdx, [rsp + 16]
+    call    sp_land
+    test    eax, eax
+    jz      .no_warp
+    lea     rdi, [rsp + 16]
+    call    sp_teleport                 ; Phase carried by the Ball: you arrive where it ended
+.no_warp:
     add     rsp, 32
     pop     r12
     pop     rbx

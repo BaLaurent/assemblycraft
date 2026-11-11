@@ -10,7 +10,7 @@ default rel
 
 global test_spell_resolve, test_spell_ball, test_spell_pierce_chain, test_spell_laser, test_spell_nova_frost
 global test_spell_phase, test_spell_multi_element, test_spell_seek, test_spell_boons, test_spell_arming
-global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview
+global test_spell_blood_magic, test_spell_preview, test_spell_dash_burst, test_spell_cost_matches_preview, test_spell_phase_rider
 
 extern world_clear, world_set, mobs, mobs_clear, mob_spawn
 extern arrows, arrows_clear, arrows_step
@@ -55,6 +55,10 @@ k_x18_5:  dd 18.5
 k_pitch90: dd 90.0
 k_pitch30: dd 30.0
 k_z14_5:   dd 14.5
+k_ph10:    dd 10.0
+k_ph12:    dd 12.0
+k_ph12_2:  dd 12.2
+k_ph13_6:  dd 13.6
 
 ; the plan's worked results: stack, unlocked, answer, delivery, elems, mods, inert, dropped, cost, cd, dmg
 ; (only the answer is compared for an answer of 0)
@@ -71,6 +75,10 @@ vectors:
     VEC R(LASER) | R(SEEK), ALL_RUNES, 1, RUNE_LASER, 0, 0, R(SEEK), 0, 25, 90, 5     ; Seek is for the Ball
     VEC R(HEAL), ALL_RUNES, 1, -1, 0, 0, 0, 0, 20, 240, 0
     VEC 0, ALL_RUNES, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    VEC R(BALL) | R(PHASE), ALL_RUNES, 1, RUNE_BALL, 0, R(PHASE), 0, 0, 27, 270, 6      ; Phase rides the Ball: not inert
+    VEC R(LASER) | R(PHASE), ALL_RUNES, 1, RUNE_LASER, 0, R(PHASE), 0, 0, 34, 330, 5
+    VEC R(NOVA) | R(PHASE), ALL_RUNES, 1, RUNE_NOVA, 0, R(PHASE), 0, 0, 36, 480, 5
+    VEC R(PHASE) | R(DASH), ALL_RUNES, 1, RUNE_PHASE, 0, 0, R(DASH), 0, 25, 360, 4        ; two movements: the first wins
     VEC R(LASER) | R(FIRE), R(BALL) | R(FIRE), 1, RUNE_BALL, R(FIRE), 0, 0, 0, 18, 30, 8   ; a locked rune is ignored, not dropped
 vectors_end:
 
@@ -1239,6 +1247,112 @@ test_spell_cost_matches_preview:
     call    cost_check
     test    eax, eax
     jnz     .fail
+    xor     eax, eax
+    jmp     .ret
+.fail:
+    mov     eax, 1
+.ret:
+    mov     ebx, eax
+    call    cleanup
+    mov     eax, ebx
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
+
+; Phase rides a Ball, a Laser or a Nova. Ball + Phase: nothing moves at the cast; the Ball strikes the zombie 6 blocks ahead
+; and you stand beside it (z between 10 and 12), 27 mana and a 270 step cooldown. Against a 3 high wall 5 blocks ahead the
+; Ball ends in front of it and you with it (z 12.2 .. 13.6). Laser + Phase: the zombie is struck and you stand 8 blocks
+; ahead (z 8.5). Nova + Phase: a zombie 10 blocks off (out of a Nova's 5) but 2 from where you arrive is struck, and the
+; same Nova without Phase misses it.
+test_spell_phase_rider:
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    sub     rsp, 8
+    call    world_clear
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    mov     edi, R(BALL) | R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    cmp     dword [spells_cd], 270
+    jne     .fail
+    EXPECT_NEAR [player + BODY.z], 16.5 ; still where you were: the Ball is in flight
+    call    fly
+    HURT    0
+    jge     .fail
+    movss   xmm0, [player + BODY.z]
+    comiss  xmm0, [k_ph12]
+    jae     .fail
+    comiss  xmm0, [k_ph10]
+    jbe     .fail
+    EXPECT_NEAR [player + BODY.y], 11.0
+    call    cleanup                     ; ---- the Ball meets a wall
+    call    fixture
+%assign x 15
+%rep 3
+%assign y 11
+%rep 3
+    mov     edi, x
+    mov     esi, y
+    mov     edx, 11
+    mov     ecx, STONE
+    call    world_set
+%assign y y + 1
+%endrep
+%assign x x + 1
+%endrep
+    movss   xmm0, [k_yaw0]
+    call    aim
+    mov     edi, R(BALL) | R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    call    fly
+    movss   xmm0, [player + BODY.z]
+    comiss  xmm0, [k_ph13_6]
+    jae     .fail
+    comiss  xmm0, [k_ph12_2]
+    jbe     .fail
+    call    cleanup                     ; ---- Laser + Phase
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z10_5
+    mov     edi, R(LASER) | R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    HURT    0
+    jge     .fail
+    EXPECT_NEAR [player + BODY.z], 8.5
+    call    cleanup                     ; ---- Nova + Phase: you arrive first, it bursts there
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z6_5
+    mov     edi, R(NOVA) | R(PHASE)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    HURT    0
+    jge     .fail
+    EXPECT_NEAR [player + BODY.z], 8.5
+    call    cleanup                     ; ---- the same Nova without Phase misses it
+    call    fixture
+    movss   xmm0, [k_yaw0]
+    call    aim
+    SPAWN   k_x16_5, k_z6_5
+    mov     edi, R(NOVA)
+    call    cast
+    cmp     eax, 1
+    jne     .fail
+    HURT    0
+    jl      .fail
     xor     eax, eax
     jmp     .ret
 .fail:
